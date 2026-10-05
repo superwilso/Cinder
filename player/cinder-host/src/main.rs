@@ -567,7 +567,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0, snd_end)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { more: false, shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" })),
             // Settings ▸ Display (handoff 5k): palette, accent, night, the volume readout, size.
             ("display", &|c: &mut Canvas| cinder_ui::display::render(c, &theme, &fonts, 1,
@@ -841,8 +841,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         for (ask, name) in [(cinder_ui::confirm::Ask::Restart, "restart"),
                             (cinder_ui::confirm::Ask::PowerOff, "poweroff")] {
             let mut c = Canvas::new();
-            settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
-                &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+            settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(true),
+                &settings::SettingsView { more: true, shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
@@ -850,12 +850,13 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             save(&c, &format!("confirm_{name}"));
         }
 
-        // Settings mid-scroll — the header must survive it (device report, 2026-07-28).
+        // Settings just after More settings is tapped: unfolded, that row under the header — which
+        // must survive the scroll (device report, 2026-07-28).
         {
             let mut c = Canvas::new();
-            settings::render(&mut c, &theme, &fonts, settings::ROW_BRIGHTNESS,
-                settings::max_scroll_px() / 2,
-                &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+            settings::render(&mut c, &theme, &fonts, settings::ROW_MORE,
+                settings::row_top_px(settings::ROW_MORE),
+                &settings::SettingsView { more: true, shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);

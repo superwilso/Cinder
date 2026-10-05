@@ -165,5 +165,8 @@ mode measured the same. Everything that measures different is a runtime table lo
    UPG was gone afterwards, NVRAM stayed `bc41b677…`, and `boot_log.txt` has no line from the
    tuning script (it always logs, even to abort). So Sony's updater stopped before running the
    script. Not pursued, since re-applying changes nothing audible.
-2. The Plus-mode gap on W1, if anyone wants it: point `cinder-signature.sh` at W1's source copy
+2. *Closed 2026-10-05 (host-tested, not yet run on a player):* `cinder-signature.sh` now writes
+   the `normal_nt` copy too. Read on the owner's player the same day: `CINDER_SIGNATURE=pv2`, live
+   library `c8de2a65…` (stock), `boot_log.txt` "Normal (no tuning) mode initialized". The original
+   note: the Plus-mode gap on W1, if anyone wants it: point `cinder-signature.sh` at W1's source copy
    (`/system/etc/.mod/adler/normal_nt/`) as well as the live library.

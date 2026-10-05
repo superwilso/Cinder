@@ -13,6 +13,8 @@
 # genuinely two different directories until the mount succeeds, exactly like
 # the device's ramdisk /data and /emmc@usrdata.
 #
+# The block under test is the installer's own text, cut out at its fences.
+#
 # The inner script is generated to a file (not passed through `declare -f`),
 # because a function round-tripped through `bash -c` re-quotes its heredocs and
 # silently eats the stub's expansions.
@@ -25,6 +27,14 @@ check() { if [ "$2" = "$3" ]; then printf '  ok    %-52s -> %s\n' "$1" "$2"; PAS
 
 # ── the inner scenario runner (runs INSIDE the namespace) ───────────────────────────────────
 # usage: scenario.sh <sandbox> <mountable:alias|p28|none> <sabotage_readback:1|0> <proc:1|0>
+# The block under test is the installer's own lines, between its `# >>> NAME` and `# <<< NAME`
+# fences, with the device's absolute paths pointed into the sandbox.
+block() {  # $1 = fence name; the rest are sed arguments
+  local n="$1"; shift
+  awk -v n="$n" '$0 ~ "^# <<< " n {f=0} f; $0 ~ "^# >>> " n {f=1}' \
+      "$(dirname "$0")/../deploy/install_cinderhome.sh" | sed "$@"
+}
+
 cat > "$SP/scenario.sh" <<'SCENARIO'
 #!/bin/bash
 set -u
@@ -66,7 +76,7 @@ cat > "$R/bin/busybox" <<'EOF'
 cmd="$1"; shift
 case "$cmd" in
   grep) exec /usr/bin/grep "$@";;
-  cat)  exec /usr/bin/cat "$@";;
+  cat)  case "$SABOTAGE$*" in 1*cable_pass_once*) exit 0;; esac; exec /usr/bin/cat "$@";;
   mkdir) exec /usr/bin/mkdir "$@";;
   chmod) exec /usr/bin/chmod "$@";;
   touch) exec /usr/bin/touch "$@";;
@@ -75,49 +85,15 @@ case "$cmd" in
 esac
 EOF
 chmod +x "$R/bin/busybox"
+export SABOTAGE
 
 data_dir="$R/ram_data"; mounts_file="$R/proc/mounts"
 BB="$R/bin/busybox"
 PATH="$R/bin:$PATH"
 
-# ── the block under test: verbatim semantics from install_cinderhome.sh ──
-[ -d "$data_dir" ] || "$BB" mkdir -p "$data_dir" 2>/dev/null
-SENTINEL=0
-SENTINEL_TOKEN="cinder-premount $$"
-echo "$SENTINEL_TOKEN" > "$data_dir/.cinder_premount" 2>/dev/null \
-    && [ "$("$BB" cat "$data_dir/.cinder_premount" 2>/dev/null)" = "$SENTINEL_TOKEN" ] && SENTINEL=1
-data_is_mounted() {
-    if [ "$SENTINEL" = 1 ]; then
-        [ "$("$BB" cat "$data_dir/.cinder_premount" 2>/dev/null)" = "$SENTINEL_TOKEN" ] && return 1
-        return 0
-    fi
-    "$BB" grep -q " $data_dir " "$mounts_file" 2>/dev/null
-}
-mount -t ext4 -o rw /emmc@usrdata "$data_dir" 2>/dev/null
-mount -o remount,rw /emmc@usrdata "$data_dir" 2>/dev/null
-data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 "$data_dir" 2>/dev/null
-DATA_MOUNTED=0
-data_is_mounted && DATA_MOUNTED=1
-"$BB" rm -f "$data_dir/.cinder_premount" 2>/dev/null
-[ "$DATA_MOUNTED" = 1 ] && echo "state: /data (/emmc@usrdata) mounted" \
-                        || echo "WARN: /emmc@usrdata could not be mounted at /data"
-
-# the pass write, with an optional sabotage: the write "succeeds" but the
-# read-back is wrong (the shape of the pre-fix ramdisk lie)
+. "$R/mount.sh"
 "$BB" mkdir -p "$data_dir/cinder" 2>/dev/null
-if [ "$SABOTAGE" = 1 ]; then
-    echo 1 > "$data_dir/cinder/cable_pass_once" 2>/dev/null
-    rm -f "$data_dir/cinder/cable_pass_once" 2>/dev/null   # read back below finds nothing
-else
-    echo 1 > "$data_dir/cinder/cable_pass_once" 2>/dev/null
-fi
-if [ "$DATA_MOUNTED" = 1 ] \
-   && [ "$("$BB" cat "$data_dir/cinder/cable_pass_once" 2>/dev/null)" = "1" ]; then
-    "$BB" chmod 644 "$data_dir/cinder/cable_pass_once" 2>/dev/null
-    echo "cable pass: the next boot starts Cinder with the cable in"
-else
-    echo "WARN: the cable pass could not be written"
-fi
+. "$R/pass.sh"
 echo "DATA_MOUNTED=$DATA_MOUNTED"
 [ -e "$R/realpart/cinder/cable_pass_once" ] && echo "on_partition=yes" || echo "on_partition=no"
 SCENARIO
@@ -134,44 +110,48 @@ fi
 
 run() {  # $1 = mountable alias|p28|none, $2 = sabotage 1|0, $3 = /proc mounted 1|0
   local R; R="$(mktemp -d "$SP/run.XXXXXX")"
-  unshare -rm bash "$SP/scenario.sh" "$R" "$1" "$2" "${3:-1}"
+  local P=(-e "s#/proc/mounts#$R/proc/mounts#g" -e "s#/data#$R/ram_data#g" -e "s#/system#$R/system#g")
+  block mount-block "${P[@]}" > "$R/mount.sh"; block cable-pass "${P[@]}" > "$R/pass.sh"
+  unshare -rm bash "$SP/scenario.sh" "$R" "$1" "$2" "${3:-1}" | sed "s#$R/ram_data#/data#g"
 }
+
+mline() { echo "$o" | grep -m1 -o -E '^state: /data \(/emmc@usrdata\) mounted|^WARN: /emmc@usrdata could not be mounted at /data'; }
+pline() { echo "$o" | grep -m1 -o -E '^cable pass: the next boot starts Cinder with the cable in|^WARN: the cable pass could not be written'; }
 
 echo "── 1. /data mountable (the fixed case) ──"
 o="$(run alias 0)"
 check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "1"
-check "mount line logged"     "$(echo "$o" | sed -n '1p')"                  "state: /data (/emmc@usrdata) mounted"
-check "pass write succeeds"   "$(echo "$o" | sed -n '2p')"                  "cable pass: the next boot starts Cinder with the cable in"
+check "mount line logged"     "$(mline)" "state: /data (/emmc@usrdata) mounted"
+check "pass write succeeds"   "$(pline)" "cable pass: the next boot starts Cinder with the cable in"
 check "pass on the partition" "$(echo "$o" | sed -n 's/^on_partition=//p')" "yes"
 
 echo "── 2. /data NOT mountable (the pre-fix case, now loud) ──"
 o="$(run none 0)"
 check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "0"
-check "mount WARN logged"     "$(echo "$o" | sed -n '1p')"                  "WARN: /emmc@usrdata could not be mounted at /data"
-check "pass write refused"    "$(echo "$o" | sed -n '2p')"                  "WARN: the cable pass could not be written"
+check "mount WARN logged"     "$(mline)" "WARN: /emmc@usrdata could not be mounted at /data"
+check "pass write refused"    "$(pline)" "WARN: the cable pass could not be written"
 check "nothing on partition"  "$(echo "$o" | sed -n 's/^on_partition=//p')" "no"
 
 echo "── 3. write 'succeeds' but read-back fails (the pre-fix lie) ──"
 o="$(run alias 1)"
-check "pass write refused"    "$(echo "$o" | sed -n '2p')"                  "WARN: the cable pass could not be written"
-check "nothing on partition"  "$(echo "$o" | sed -n 's/^on_partition=//p')" "no"
+check "pass write refused"    "$(pline)" "WARN: the cable pass could not be written"
 
 echo "── 4. mounted, but the updater has no /proc (the sentinel decides) ──"
 o="$(run alias 0 0)"
 check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "1"
-check "pass write succeeds"   "$(echo "$o" | sed -n '2p')"                  "cable pass: the next boot starts Cinder with the cable in"
+check "pass write succeeds"   "$(pline)" "cable pass: the next boot starts Cinder with the cable in"
 check "pass on the partition" "$(echo "$o" | sed -n 's/^on_partition=//p')" "yes"
 
 echo "── 5. no /emmc@* aliases — the raw-partition retry carries it ──"
 o="$(run p28 0)"
 check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "1"
-check "pass write succeeds"   "$(echo "$o" | sed -n '2p')"                  "cable pass: the next boot starts Cinder with the cable in"
+check "pass write succeeds"   "$(pline)" "cable pass: the next boot starts Cinder with the cable in"
 check "pass on the partition" "$(echo "$o" | sed -n 's/^on_partition=//p')" "yes"
 
 echo "── 6. nothing mountable AND no /proc (the sentinel says no, loudly) ──"
 o="$(run none 0 0)"
 check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "0"
-check "pass write refused"    "$(echo "$o" | sed -n '2p')"                  "WARN: the cable pass could not be written"
+check "pass write refused"    "$(pline)" "WARN: the cable pass could not be written"
 check "nothing on partition"  "$(echo "$o" | sed -n 's/^on_partition=//p')" "no"
 
 echo

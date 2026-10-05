@@ -170,6 +170,7 @@ fi
 # stay 0, and we get exactly the updater behaviour this script has always had. Failing that way
 # round is the safe one: unmounting a ramdisk mount costs nothing, unmounting a live player's
 # /data costs the player.
+# >>> mount-block — tools/test_install_mounts.sh and test_cable_pass.sh run these lines as they are
 SYSTEM_PREMOUNTED=0
 SYSTEM_PREMOUNT_RO=0
 DATA_PREMOUNTED=0
@@ -296,6 +297,7 @@ else
     echo "      clears will not survive the reboot; a boot with the USB cable in will show the"
     echo "      stock player. Unplug the cable and restart the player to reach Cinder."
 fi
+# <<< mount-block
 
 # the staged binary must be present (user copies 'cinder-home' to the storage root first)
 if [ ! -f "$SRC" ]; then
@@ -1310,7 +1312,14 @@ fi
 # uid 100 is `system`, which is what appmgr (hagoromo2, `user system`) execs the Home app as.
 "$BB" chown 100:100 /data/cinder 2>/dev/null
 "$BB" chmod 0755 /data/cinder 2>/dev/null
-"$BB" rm -f /data/cinder/off /data/cinder/bootcount /data/cinder/DISABLED_badboot /data/cinder/once_stock 2>/dev/null
+"$BB" rm -f /data/cinder/off /data/cinder/DISABLED_badboot /data/cinder/once_stock 2>/dev/null
+# bootcount is written as 0, not removed: cinder-guard.sh runs before the launcher and reads a
+# missing count as "appmgr never exec'd the launcher", so the first boot after every install was
+# logged as that failure and counted against the guard. Owned by 100 for the reason above: the
+# launcher rewrites it.
+echo 0 > /data/cinder/bootcount
+"$BB" chown 100:100 /data/cinder/bootcount 2>/dev/null
+"$BB" chmod 0644 /data/cinder/bootcount 2>/dev/null
 # The post-install cable pass ($CABLE_PASS in the launcher above). The installer tells people not to
 # unplug, so the boot after this one has a cable in, and without the pass it lands on Sony's player
 # and the install looks as if it failed. Written only past the sanity gate, so an aborted install
@@ -1319,6 +1328,7 @@ fi
 # unverified `echo >` here could "succeed" onto the updater's ramdisk, print the OK line, and
 # still never reach the launcher — a write that is not read back is a write that did not
 # happen (issue #14).
+# >>> cable-pass — tools/test_cable_pass.sh runs these lines as they are
 if [ "$DATA_MOUNTED" = 1 ] \
    && echo 1 > /data/cinder/cable_pass_once 2>/dev/null \
    && [ "$("$BB" cat /data/cinder/cable_pass_once 2>/dev/null)" = "1" ]; then
@@ -1330,6 +1340,7 @@ else
     echo "      show the stock player while the cable is in. Unplug the cable, hold POWER to"
     echo "      switch the player off, and switch it on without the cable to start Cinder."
 fi
+# <<< cable-pass
 # Library search: an opt-in component with no files, so the choice itself is what gets installed.
 # A flag in /data/cinder — machine-written state, off the MSC volume a PC can edit — that
 # cinder-home reads at startup. Written or removed on EVERY install, so an Update that turns it

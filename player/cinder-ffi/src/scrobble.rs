@@ -207,6 +207,22 @@ mod tests {
         assert_eq!(line.split('\t').nth(2).unwrap(), "TabHereNewline");
     }
 
+    /// The same file is in Flint's tree, where its reader is tested against it
+    /// (`contracts/scrobbler.log`). This is the writer's half: header, a row with no track
+    /// number, and a skip, byte for byte.
+    #[test]
+    fn log_matches_the_shared_contract() {
+        let row = |artist: &str, album: &str, title: &str, no, len, rating, at| {
+            let t = Track { artist: artist.into(), album: album.into(), title: title.into(), track_no: no, length_s: len };
+            format_line(&t, rating, at) + "\n"
+        };
+        let body = format!("{HEADER}#CLIENT/Cinder NW-A55 0.1\n")
+            + &row("Bonobo", "Migration", "Break Apart", 3, 268, "L", 1_758_300_000)
+            + &row("Sigur Rós", "( )", "Untitled 1", 0, 398, "L", 1_758_300_300)
+            + &row("Bicep", "Isles", "Atlas", 1, 258, "S", 1_758_300_600);
+        assert_eq!(body, include_str!("../../../contracts/scrobbler.log"));
+    }
+
     #[test]
     fn writes_header_then_listened_line() {
         let dir = std::env::temp_dir().join(format!("cinder_scrob_{}", std::process::id()));

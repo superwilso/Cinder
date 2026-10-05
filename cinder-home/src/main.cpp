@@ -86,6 +86,40 @@ void clog_(const char* m) {
     std::fflush(stderr);
 }
 
+// ONE FILE FOR THE SWITCHES. Each of these was an empty file of its own on /contents
+// (cinder_no_suspend, cinder_ram_suspend, ...), found only by reading this source. They are now
+// also lines in /contents/cinder_advanced.conf — `ram_suspend` or `ram_suspend=on`, `#` comments —
+// and deploy/cinder_advanced.conf.example lists them all. The old files still work, so nothing a
+// player already has stops meaning what it meant.
+//
+// Read every time, never cached: several callers poll on purpose so that removing the switch
+// takes effect at once, and /contents is unreadable for a stretch of boot, which a cache would
+// latch as "off". fopen, not access, as file_exists below: one way of asking.
+bool adv_on(const char* key) {
+    char path[96];
+    std::snprintf(path, sizeof path, "/contents/cinder_%s", key);
+    if (FILE* f = std::fopen(path, "r")) { std::fclose(f); return true; }
+    FILE* f = std::fopen("/contents/cinder_advanced.conf", "r");
+    if (!f) return false;
+    const size_t n = std::strlen(key);
+    char line[128];
+    bool on = false;
+    while (std::fgets(line, sizeof line, f)) {
+        const char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (std::strncmp(p, key, n) != 0) continue;
+        p += n;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '\r' || *p == '\n') { on = true; continue; }   // bare key
+        if (*p != '=') continue;                                               // a longer key
+        p++;
+        while (*p == ' ' || *p == '\t') p++;
+        on = !std::strncmp(p, "on", 2) || !std::strncmp(p, "1", 1) || !std::strncmp(p, "yes", 3);
+    }
+    std::fclose(f);
+    return on;
+}
+
 // ---- crash + hang diagnostics ----------------------------------------------------------
 // The first device runs hang inside the device's CuiAppModule::OnInitialize, which we can't
 // instrument from source. This handler captures the EXACT location: on a fatal signal OR a
@@ -1149,7 +1183,7 @@ static void scrobble_open_ours(const char* who) {
         clog_(m);
         return;
     }
-    if (::access("/contents/cinder_no_scrobble", F_OK) == 0) {
+    if (adv_on("no_scrobble")) {
         std::snprintf(m, sizeof m, "%s: scrobble disabled (/contents/cinder_no_scrobble) — leaving "
                       "the log to the other scrobbler", who);
         clog_(m);
@@ -1240,7 +1274,7 @@ void deferred_up() {
         // but it cost two bad boots on a device the user is holding, and the burden of proof is on
         // it. Kept, off, and one file away.
         static int async_lib = -1;
-        if (async_lib < 0) async_lib = access("/contents/cinder_async_library", F_OK) == 0 ? 1 : 0;
+        if (async_lib < 0) async_lib = adv_on("async_library") ? 1 : 0;
         if (async_lib) {
             if (!g_lib_thread_started) {
                 g_lib_thread_started = true;
@@ -1729,7 +1763,7 @@ void* healthy_timer(void*) {
 // enters MSC manually on every channel, and stable is unchanged (auto-MSC is a real feature there).
 bool dev_skip_auto_msc() {
 #ifdef CINDER_DEV
-    return ::access("/contents/cinder_automsc_on", F_OK) != 0;
+    return !adv_on("automsc_on");
 #else
     return false;
 #endif
@@ -3136,7 +3170,7 @@ bool cpu_tune(const char* verb) {
     static int fails = 0;
     if (fails >= 3) return false;
     if (std::strcmp(verb, "uncap") != 0) {
-        if (FILE* f = std::fopen("/contents/cinder_no_cpu_tune", "r")) { std::fclose(f); return false; }
+        if (adv_on("no_cpu_tune")) return false;
     }
     char cmd[96];
     std::snprintf(cmd, sizeof cmd, "/system/vendor/unknown321/bin/cinder-power %s", verb);
@@ -3720,7 +3754,6 @@ void screen_toggle() {
 // ACK only tells the kernel something it could not otherwise find out.
 namespace fbsync {
 
-const char kDisable[]   = "/contents/cinder_no_fbsync";
 const char kSleepNode[] = "/sys/power/wait_for_fb_sleep";
 const char kWakeNode[]  = "/sys/power/wait_for_fb_wake";
 
@@ -3791,7 +3824,7 @@ void* thread(void*) {
 }
 
 void start() {
-    if (::access(kDisable, F_OK) == 0) { clog_("fbsync: disabled (/contents/cinder_no_fbsync)"); return; }
+    if (adv_on("no_fbsync")) { clog_("fbsync: disabled (/contents/cinder_no_fbsync)"); return; }
     if (::access(kSleepNode, R_OK) != 0 || ::access(kWakeNode, R_OK) != 0) {
         clog_("fbsync: /sys/power/wait_for_fb_* absent — nothing to answer");
         return;
@@ -3811,9 +3844,7 @@ bool contents_mounted();   // defined with the USB-MSC block, far below
 
 namespace socsusp {
 
-const char kDisableFile[] = "/contents/cinder_no_suspend";
 const char kConfigFile[]  = "/contents/cinder_suspend_s";
-const char kRamFile[]     = "/contents/cinder_ram_suspend";
 const char kStateNode[]   = "/sys/power/state";
 const char kWakeLock[]    = "/sys/power/wake_lock";
 const char kWakeUnlock[]  = "/sys/power/wake_unlock";
@@ -3888,9 +3919,9 @@ bool file_exists(const char* path) {
 // Idle seconds before suspending, or 0 for disabled. Latched once decided: deliberately not
 // hot-reloadable, because a half-written config file should not be able to change it mid-boot.
 //
-// ON BY DEFAULT since 2026-09-28 (stage 1 only — stage 2 stays behind kRamFile). Absent file =
+// ON BY DEFAULT since 2026-09-28 (stage 1 only — stage 2 stays behind `ram_suspend`). Absent file =
 // kDefaultThresholdS. A file holding 0 turns it off; a positive number is the threshold; anything
-// unparseable falls back to the default and says so. The escape hatch (kDisableFile) is still
+// unparseable falls back to the default and says so. The escape hatch (`no_suspend`) is still
 // checked every tick. What earned the default: stage 1 holds a wakelock, so it can never reach the
 // suspend-to-RAM path that cost the 2026-09-04 forced reboot; it ran clean off-cable on 09-04
 // (486 s idle, 18,509 deep-idle entries, USB back on replug) and 09-06 (205 s playing the jack),
@@ -4003,7 +4034,7 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
 
     const int thr = threshold_s();
     if (!thr) return;                       // disabled — the default
-    if (file_exists(kDisableFile)) return;  // the escape hatch, checked every tick on purpose
+    if (adv_on("no_suspend")) return;  // the escape hatch, checked every tick on purpose
 
     static long last_rc   = -1;
     static int  idle_secs = 0;
@@ -4112,7 +4143,7 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
     // player to RAM ten seconds after the screen went dark, which is "Power, glance, Power" turned
     // into a suspend/resume cycle. The file is read each time, so deleting it stops it.
     static int ram_dwell = 0;
-    if (!ram_idle || !file_exists(kRamFile)) { ram_dwell = 0; return; }
+    if (!ram_idle || !adv_on("ram_suspend")) { ram_dwell = 0; return; }
     if (++ram_dwell < kRamDwellS) return;
     ram_dwell = 0;
     clog_("suspend: idle and off the cable -> releasing the wakelock (suspend to RAM; Power wakes it)");
@@ -12964,7 +12995,7 @@ void* render_driver(void*) {
                 // Still JACK ONLY (the WCN reason above stands until an A2DP run is done), and
                 // opt-OUT with /contents/cinder_no_suspend_playing, checked every tick.
                 const bool suspend_while_playing =
-                    access("/contents/cinder_no_suspend_playing", F_OK) != 0;
+                    !adv_on("no_suspend_playing");
                 const bool on_jack_now = cinder_get_bt_route() == 0;
                 // ── THE A2DP RUN, AS AN OPT-IN (2026-10-04) ──────────────────────────────────
                 // Screen-off Bluetooth listening is the state this player spends hours in, and it
@@ -12985,7 +13016,7 @@ void* render_driver(void*) {
                 // 1285/s -> 931/s with the display domain off. One player and one pair of
                 // headphones, so the one-strike stop stays and /contents/cinder_no_suspend_bt turns
                 // it off. (/contents/cinder_suspend_bt, the old opt-in, is no longer read.)
-                const bool bt_flag = access("/contents/cinder_no_suspend_bt", F_OK) != 0;
+                const bool bt_flag = !adv_on("no_suspend_bt");
                 if (!socsusp::g_early) {
                     bt_held = false;
                 } else if (audible && !on_jack_now) {

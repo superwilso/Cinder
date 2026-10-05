@@ -14,14 +14,22 @@
 #      "not mounted" in one live session (so the cable pass was silently skipped) and "mounted" in
 #      the next.
 #
-# Same shape as test_cable_pass.sh: the block under test is mirrored verbatim and run inside
-# `unshare -rm` so the stub mount can do REAL bind mounts.
+# Same shape as test_cable_pass.sh: the block under test is extracted from the installer and run
+# inside `unshare -rm` so the stub mount can do REAL bind mounts.
 set -u
 SP="$(mktemp -d /tmp/cinder_mounts_test.XXXXXX)"
 trap 'rm -rf "$SP"' EXIT
 PASS=0; FAIL=0
 check() { if [ "$2" = "$3" ]; then printf '  ok    %-52s -> %s\n' "$1" "$2"; PASS=$((PASS+1))
   else printf '  FAIL  %-52s -> %s (want %s)\n' "$1" "$2" "$3"; FAIL=$((FAIL+1)); fi; }
+
+# The block under test is the installer's own lines, between its `# >>> NAME` and `# <<< NAME`
+# fences, with the device's absolute paths pointed into the sandbox.
+block() {  # $1 = fence name; the rest are sed arguments
+  local n="$1"; shift
+  awk -v n="$n" '$0 ~ "^# <<< " n {f=0} f; $0 ~ "^# >>> " n {f=1}' \
+      "$(dirname "$0")/../deploy/install_cinderhome.sh" | sed "$@"
+}
 
 cat > "$SP/scenario.sh" <<'SCENARIO'
 #!/bin/bash
@@ -90,59 +98,7 @@ if [ "$LIVE" = 1 ]; then
 fi
 # LIVE=0 is the updater: no /proc/mounts at all, nothing mounted.
 
-# ── block under test: verbatim semantics from install_cinderhome.sh ──────────────────────────
-SYSTEM_PREMOUNTED=0
-SYSTEM_PREMOUNT_RO=0
-DATA_PREMOUNTED=0
-if "$BB" grep -q " $sys_dir " "$mounts_file" 2>/dev/null; then
-    SYSTEM_PREMOUNTED=1
-    case ",$("$BB" awk -v d="$sys_dir" '$2 == d { print $4; exit }' "$mounts_file" 2>/dev/null)," in
-        *,ro,*) SYSTEM_PREMOUNT_RO=1 ;;
-    esac
-fi
-"$BB" grep -q " $data_dir " "$mounts_file" 2>/dev/null && DATA_PREMOUNTED=1
-
-cleanup_mounts() {
-    if [ "$DATA_PREMOUNTED" = 1 ]; then :; else umount "$data_dir" 2>/dev/null; fi
-    if [ "$SYSTEM_PREMOUNTED" = 1 ]; then
-        [ "$SYSTEM_PREMOUNT_RO" = 1 ] && mount -o remount,ro "$sys_dir" 2>/dev/null
-    else
-        umount "$sys_dir" 2>/dev/null
-    fi
-    true
-}
-
-mount -t ext4 -o rw /emmc@android "$sys_dir" 2>/dev/null
-mount -o remount,rw /emmc@android "$sys_dir" 2>/dev/null
-
-SENTINEL=0
-SENTINEL_TOKEN="cinder-premount $$"
-if [ "$DATA_PREMOUNTED" != 1 ]; then
-    echo "$SENTINEL_TOKEN" > "$data_dir/.cinder_premount" 2>/dev/null \
-        && [ "$("$BB" cat "$data_dir/.cinder_premount" 2>/dev/null)" = "$SENTINEL_TOKEN" ] && SENTINEL=1
-fi
-data_is_mounted() {
-    if [ "$SENTINEL" = 1 ]; then
-        [ "$("$BB" cat "$data_dir/.cinder_premount" 2>/dev/null)" = "$SENTINEL_TOKEN" ] && return 1
-        return 0
-    fi
-    "$BB" grep -q " $data_dir " "$mounts_file" 2>/dev/null
-}
-if [ "$DATA_PREMOUNTED" = 1 ]; then
-    :   # already mounted by the running system — its options are not ours to change
-else
-    mount -t ext4 -o rw /emmc@usrdata "$data_dir" 2>/dev/null
-    mount -o remount,rw /emmc@usrdata "$data_dir" 2>/dev/null
-    data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 "$data_dir" 2>/dev/null
-fi
-DATA_MOUNTED=0
-if [ "$DATA_PREMOUNTED" = 1 ]; then
-    DATA_MOUNTED=1
-else
-    data_is_mounted && DATA_MOUNTED=1
-fi
-"$BB" rm -f "$data_dir/.cinder_premount" 2>/dev/null
-# ── end block under test ─────────────────────────────────────────────────────────────────────
+. "$R/block.sh"
 
 echo "DATA_MOUNTED=$DATA_MOUNTED"
 echo "DATA_PREMOUNTED=$DATA_PREMOUNTED"
@@ -166,7 +122,9 @@ if ! unshare -rm true 2>/dev/null; then
   exit 0
 fi
 
-run() { local R; R="$(mktemp -d "$SP/run.XXXXXX")"; unshare -rm bash "$SP/scenario.sh" "$R" "$1" "${2:-0}"; }
+run() { local R; R="$(mktemp -d "$SP/run.XXXXXX")"
+  block mount-block -e "s#/proc/mounts#$R/proc/mounts#g" -e "s#/data#$R/data#g" -e "s#/system#$R/system#g" > "$R/block.sh"
+  unshare -rm bash "$SP/scenario.sh" "$R" "$1" "${2:-0}"; }
 field() { echo "$1" | sed -n "s/^$2=//p"; }
 
 echo "── 1. LIVE system: we are a guest, and must leave the mounts as we found them ──"

@@ -1414,6 +1414,9 @@ pub struct App {
     liked_count: usize,
     /// Settings is taller than the panel, so it scrolls like the library lists.
     settings_scroll_px: i32,
+    /// Settings ▸ More settings is unfolded. For the session: the screen opens folded after a
+    /// restart, which is the short list the fold exists for.
+    settings_more: bool,
     /// Screen-off (idle) timeout in SECONDS; 0 = off, which is the default — nothing changes unless
     /// the user opts in. `screen_off_idx` cycles the presets from the Settings row.
     screen_off_idx: usize,
@@ -1800,6 +1803,7 @@ impl Default for App {
             play_list: Vec::new(),
             liked_count: 0,
             settings_scroll_px: 0,
+            settings_more: false,
             // 30 s by default. This was OFF, deliberately, because "a failed wake looks like a dead
             // device" — but wake is now proven three ways (touch, the Power button, any key), the
             // auto-off path leaves the touch controller POWERED precisely so a tap can wake it, and
@@ -3309,6 +3313,18 @@ impl App {
             self.boot_stock_armed = false;
         }
         match self.settings_sel {
+            crate::settings::ROW_MORE => {
+                // Unfold with the first hidden row just under the header, so the tap visibly
+                // produces something; fold back to the top, where the whole short list shows.
+                self.settings_more = !self.settings_more;
+                self.settings_scroll_px = if self.settings_more {
+                    crate::settings::row_top_px(crate::settings::ROW_MORE)
+                        .min(crate::settings::max_scroll_px(true))
+                } else {
+                    0
+                };
+                vec![]
+            }
             crate::settings::ROW_DISPLAY => {
                 self.push(Screen::Display);
                 vec![]
@@ -4051,7 +4067,7 @@ impl App {
                 vec![]
             }
             Screen::Settings => {
-                if let Some(row) = crate::settings::row_at(y, self.settings_scroll_px) {
+                if let Some(row) = crate::settings::row_at(y, self.settings_scroll_px, self.settings_more) {
                     self.settings_sel = row;
                     return self.settings_activate();
                 }
@@ -5715,7 +5731,7 @@ impl App {
                 self.palette_scroll_px = (self.palette_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Settings => {
-                let max = crate::settings::max_scroll_px();
+                let max = crate::settings::max_scroll_px(self.settings_more);
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Sound => {
@@ -7639,7 +7655,7 @@ impl App {
                     vec![]
                 }
                 Button::Down => {
-                    if self.settings_sel + 1 < crate::settings::ROWS {
+                    if self.settings_sel + 1 < crate::settings::rows(self.settings_more) {
                         self.settings_sel += 1;
                     }
                     vec![]
@@ -8367,6 +8383,7 @@ impl App {
                     bt_idle_off: self.bt_idle_off,
                     boot_stock: boot_stock_lbl,
                     clock: &clock_lbl,
+                    more: self.settings_more,
                 };
                 crate::settings::render(c, &theme, fonts, self.settings_sel, self.settings_scroll_px, &view)
             }
@@ -11357,9 +11374,9 @@ mod tests {
     fn every_settings_row_is_reachable_at_some_scroll_position() {
         use crate::settings::{max_scroll_px, row_at, ROWS};
         let mut hit: Vec<usize> = Vec::new();
-        for scroll in 0..=max_scroll_px() {
+        for scroll in 0..=max_scroll_px(true) {
             for y in 0..crate::canvas::H as i32 {
-                if let Some(r) = row_at(y, scroll) {
+                if let Some(r) = row_at(y, scroll, true) {
                     if !hit.contains(&r) {
                         hit.push(r);
                     }
@@ -12524,8 +12541,8 @@ mod tests {
         a.settings_sel = crate::settings::ROW_BOOT_STOCK;
         assert!(a.settings_activate().is_empty(), "first tap only arms");
         assert!(a.boot_stock_armed);
-        let y = crate::settings::LIST_TOP + crate::kit::SECTION_H + crate::kit::ROW_H / 2;
-        assert_eq!(crate::settings::row_at(y, 0), Some(crate::settings::ROW_DISPLAY));
+        let y = crate::settings::LIST_TOP + crate::kit::ROW_H / 2;
+        assert_eq!(crate::settings::row_at(y, 0, false), Some(crate::settings::ROW_DISPLAY));
         a.settings_scroll_px = 0;
         a.tap(240, y);
         assert_eq!(a.current(), Screen::Display);
@@ -12577,9 +12594,9 @@ mod tests {
     #[test]
     fn settings_scrolls_far_enough_to_reach_the_last_row() {
         use crate::settings::{content_height, max_scroll_px};
-        assert!(max_scroll_px() > 0, "content is taller than the panel; it must scroll");
+        assert!(max_scroll_px(true) > 0, "content is taller than the panel; it must scroll");
         assert!(
-            content_height() - max_scroll_px() <= crate::canvas::H as i32,
+            content_height(true) - max_scroll_px(true) <= crate::canvas::H as i32,
             "bottom of the content is still off-screen at full scroll"
         );
     }
@@ -12916,6 +12933,7 @@ mod tests {
         assert!(!a.quick_is_open());
         // The list still scrolls: the guard that stops a scroll under an overlay is not tripped.
         a.go(Screen::Settings);
+        a.settings_more = true;
         a.scroll_px(120);
         assert!(a.settings_scroll_px > 0, "a drag still scrolls Settings with the panel off");
     }
@@ -14283,11 +14301,23 @@ mod tests {
         assert_eq!(a.current(), Screen::Display);
         a.press(Button::Back);
         assert_eq!(a.current(), Screen::Settings);
-        // cursor clamps at the last row
+        // The cursor clamps at More settings while the list is folded…
+        for _ in 0..30 {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.settings_sel, crate::settings::ROW_MORE);
+        // …which unfolds the rest under the header, and then the last row is the clamp.
+        a.press(Button::Select);
+        assert!(a.settings_more && a.settings_scroll_px > 0);
         for _ in 0..30 {
             a.press(Button::Down);
         }
         assert_eq!(a.settings_sel, crate::settings::ROWS - 1);
+        // Folding it away puts the short list back at the top.
+        a.settings_sel = crate::settings::ROW_MORE;
+        a.press(Button::Select);
+        assert!(!a.settings_more);
+        assert_eq!(a.settings_scroll_px, 0);
     }
 
     /// Walk the Menu cursor to the row that leads to `want` and open it. Derived from MENU rather
@@ -14541,6 +14571,7 @@ mod tests {
     #[test]
     fn the_database_row_asks_for_a_rescan_and_the_label_always_recovers() {
         let mut a = open_from_menu(Screen::Settings);
+        a.settings_more = true;
         for _ in 0..crate::settings::ROW_DATABASE {
             a.press(Button::Down);
         }

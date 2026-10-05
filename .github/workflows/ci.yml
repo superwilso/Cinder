@@ -97,6 +97,12 @@ jobs:
       # are the groups that catch things that are actually wrong, both pass clean right now, and a
       # new one appearing is a real regression worth stopping on. Widen as the backlog is worked
       # off.
+      # The tree was formatted once, in a commit of its own (see .git-blame-ignore-revs), so this
+      # only ever fails on the lines a change touched.
+      - name: Format
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: ${{ matrix.dir }}
+        run: cargo fmt --all -- --check
       - name: Clippy (correctness + suspicious)
         working-directory: ${{ matrix.dir }}
         run: cargo clippy --all-targets -- -D clippy::correctness -D clippy::suspicious
@@ -196,6 +202,8 @@ jobs:
       # on it, so every path runs here against a scratch root.
       - name: preload installer (nothing half installed, exact boot script only)
         run: bash cinder-home/tools/test_preload.sh
+      - name: sound signature (patch, revert, Walkman One's boot copy)
+        run: bash cinder-home/tools/test_signature.sh
       - name: boot guard (wrapper trial, Home app backstop)
         run: bash cinder-home/tools/test_guard.sh
 
