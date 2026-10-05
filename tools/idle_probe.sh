@@ -21,6 +21,7 @@ arm)
     cat > "$T" <<EOF
 snap() {
     cat /proc/uptime > $OUT/\$1.uptime
+    date +%s > $OUT/\$1.wall
     cat /proc/stat > $OUT/\$1.stat
     cat /proc/interrupts > $OUT/\$1.irq
     cat /sys/power/idle_state > $OUT/\$1.idle 2>/dev/null
@@ -32,22 +33,33 @@ snap() {
     dd if=/proc/clkmgr/fmeter bs=4096 count=1 > $OUT/\$1.fmeter 2>/dev/null
     cat /sys/devices/system/cpu/cpu0/cpufreq/stats/time_in_state > $OUT/\$1.freq
     cat /sys/class/power_supply/battery/voltage_now > $OUT/\$1.volt 2>/dev/null
-    for t in /proc/[0-9]*/task/*; do
-        echo "T \$t \$(cat \$t/comm 2>/dev/null) \$(grep '^voluntary' \$t/status 2>/dev/null | cut -f2)"
-    done > $OUT/\$1.threads
+    # One awk for every thread. A shell loop here forks three times a thread, which is half a
+    # minute of load inside the window and was enough to bring the second core up (2026-10-05).
+    /xbin/busybox awk -f /tmp/idle_probe.awk /proc/[0-9]*/task/* > $OUT/\$1.threads
 }
 i=0
 while [ "\$(cat /sys/class/power_supply/usb/online)" != "0" ]; do
     sleep 2; i=\$((i+1)); [ \$i -gt 1800 ] && exit 0     # nobody pulled the cable in an hour
 done
 sleep $SETTLE
+echo 1 > /proc/timer_stats
 snap a
 sleep $WIN
 snap b
+echo 0 > /proc/timer_stats
+cat /proc/timer_stats > $OUT/timers.txt
+for f in /sys/devices/platform/mt-pmic/*_STATUS; do echo "\$f \$(cat \$f)"; done > $OUT/rails.txt
 tail -40 /contents/cinderhome.log > $OUT/log.txt
 echo ok > $OUT/done
 sync
 EOF
+    cat > "$T.awk" <<'AWK'
+BEGIN { for (i = 1; i < ARGC; i++) { f = ARGV[i]; c = ""; v = "";
+    if ((getline c < (f "/comm")) <= 0) continue; close(f "/comm");
+    while ((getline l < (f "/status")) > 0) if (l ~ /^voluntary/) { split(l, b, "\t"); v = b[2] }
+    close(f "/status"); print "T", f, c, v } }
+AWK
+    adb push "$T.awk" /tmp/idle_probe.awk > /dev/null && rm -f "$T.awk"
     adb push "$T" /tmp/idle_probe_dev.sh > /dev/null && rm -f "$T"
     # busybox's own sh in its own session, and a command after the `&`: with the stock shell, or with
     # the `&` last on the line, adb shell either never returns or takes the probe down with it.
@@ -71,6 +83,10 @@ def rd(n):
 ta, tb = float(rd('a.uptime').split()[0]), float(rd('b.uptime').split()[0])
 w = tb - ta
 print(f"window {w:.0f} s, off the cable")
+try:
+    ww = int(rd('b.wall')) - int(rd('a.wall'))
+    print(f"wall clock {ww} s: uptime stood still for {max(0, ww - w):.0f} s of it ({max(0, ww - w) / ww:.0%}, the time in deep idle)")
+except (ValueError, ZeroDivisionError): pass
 def stat(n, key):
     for l in rd(n).splitlines():
         if l.startswith(key + ' '): return int(l.split()[1])
@@ -104,6 +120,9 @@ for tag in ('a', 'b'):
     print(f"deep idle entries at {tag}: {m.group(1) if m else '?'}")
 print("deep idle blockers at b:", ' '.join(re.findall(r'dpidle_block_cnt\[(\w+)\]=([1-9]\d*)', rd('b.dpidle')) and
       [f"{k}={v}" for k, v in re.findall(r'dpidle_block_cnt\[(\w+)\]=(\d+)', rd('b.dpidle'))]))
+cnt = lambda t: dict(re.findall(r'dpidle_block_cnt\[(\w+)\]=(\d+)', rd(t + '.dpidle')))
+ca, cb = cnt('a'), cnt('b')
+print("deep idle blocked, per second in the window:", ' '.join(f"{k}={(int(cb[k]) - int(ca.get(k, 0))) / w:.0f}" for k in cb))
 for name, mask in re.findall(r'dpidle_block_mask\[(\w+)\s*\]=(0x[0-9a-f]+)', rd('b.dpidle')):
     if int(mask, 16): print(f"  blocking clock group {name}: {mask}")
 print("PCM:", ', '.join(l.split('/')[5] + '=' + l.split()[-1] for l in rd('b.pcm').splitlines() if 'closed' not in l) or 'all closed')
@@ -111,6 +130,10 @@ print("PLLs on:", ', '.join(re.findall(r'\]\s*(\w+):\s*[\d.]+ MHz:\s+ON', rd('b.
 print("power domains on:", ', '.join(re.findall(r'\[(SYS_\w+)\s*\]=\[\w+\], state\(1\)', rd('b.subsys'))))
 for l in rd('b.fmeter').splitlines():
     if 'WHPLL' in l or 'UNIV_48M' in l: print("fmeter:", l.strip())
+print("rails on:", ' '.join(l.split('/')[-1].split('_STATUS')[0] for l in rd('rails.txt').splitlines() if l.endswith(' 1')))
+print("timers that fired (count over the window; D = deferrable, wakes nothing):")
+for l in sorted((l for l in rd('timers.txt').splitlines() if re.match(r'\s*\d+D?,', l)), key=lambda l: -int(re.match(r'\s*(\d+)', l).group(1)))[:12]:
+    print("  " + l.strip())
 print("battery mV:", rd('a.volt').strip(), "->", rd('b.volt').strip())
 EOF
     echo "raw files: $D"
