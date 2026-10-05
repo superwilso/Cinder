@@ -50,6 +50,16 @@ reads it between the suspend and the write back, except the one test this is for
 If cinder-home dies between the two writes the ID stays 3 until the next restart: the USB-DAC
 would then advertise the higher rate limit. Nothing else changes.
 
-## Not yet proven
+## Run on the player, 2026-10-05 22:20 (dev build, Walkman One)
 
-That the port really comes up after a resume with the ID at 3. Checklist 33.2 is the test.
+Suspended at 253.5 s, Power woke it at 254.6 s, the cable went in, and five seconds later
+`cinder-msc usb-resume` found `gadget state=CONFIGURED` and did nothing. Windows listed the player.
+Entering and leaving USB mass storage by hand worked afterwards.
+
+Left over, dev channel only: Windows saw product ID `0B8B`, not the storage-plus-adb composite the
+dev build sets at boot, and after the mass-storage round trip adb showed the player `offline` until
+a restart. So the gadget's mode after a resume is not the one Cinder composed, and adbd does not
+survive. Next step: have `usb-resume` log `functions` and `idProduct`, then re-run the dev adb
+composition after a resume.
+
+Not checked: the write back to the player's own ID (the restart that followed reset it anyway).
