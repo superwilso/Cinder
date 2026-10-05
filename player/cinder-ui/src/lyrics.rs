@@ -44,13 +44,19 @@ impl Lyrics {
         if !self.is_synced() {
             return None;
         }
-        let started = self.lines.partition_point(|l| l.at_ms.map_or(true, |t| t <= pos_ms));
+        let started = self
+            .lines
+            .partition_point(|l| l.at_ms.map_or(true, |t| t <= pos_ms));
         started.checked_sub(1)
     }
 
     /// The value shown in the Lyrics row on Track information.
     pub fn summary(&self) -> String {
-        let n = self.lines.iter().filter(|l| !l.text.trim().is_empty()).count();
+        let n = self
+            .lines
+            .iter()
+            .filter(|l| !l.text.trim().is_empty())
+            .count();
         let unit = if n == 1 { "line" } else { "lines" };
         if self.is_synced() {
             format!("Synced, {n} {unit}")
@@ -127,7 +133,14 @@ pub fn render(
         let st = sty(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
         text::draw(c, f, X, (TOP + 40) as f32, "No lyrics for this song.", &st);
         let hint = sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0);
-        text::draw(c, f, X, (TOP + 70) as f32, "Put a .lrc file with the same name", &hint);
+        text::draw(
+            c,
+            f,
+            X,
+            (TOP + 70) as f32,
+            "Put a .lrc file with the same name",
+            &hint,
+        );
         text::draw(c, f, X, (TOP + 92) as f32, "next to the song.", &hint);
         return;
     };
@@ -137,8 +150,14 @@ pub fn render(
     let synced = lyr.is_synced();
     let (plain, ahead, now) = (
         base_style(t),
-        TextStyle { color: t.dim, ..base_style(t) },
-        TextStyle { color: t.acc, ..base_style(t) },
+        TextStyle {
+            color: t.dim,
+            ..base_style(t)
+        },
+        TextStyle {
+            color: t.acc,
+            ..base_style(t)
+        },
     );
     c.set_clip_y(y0, BOTTOM);
     let mut y = TOP + PAD_TOP - scroll;
@@ -172,7 +191,10 @@ mod tests {
         Lyrics {
             lines: stamps
                 .iter()
-                .map(|&ms| Line { at_ms: Some(ms), text: format!("at {ms}") })
+                .map(|&ms| Line {
+                    at_ms: Some(ms),
+                    text: format!("at {ms}"),
+                })
                 .collect(),
         }
     }
@@ -181,15 +203,28 @@ mod tests {
     fn the_current_line_is_the_last_one_that_has_started() {
         let l = synced(&[500, 1000, 5000]);
         assert_eq!(l.current(0), None, "nothing has started yet");
-        assert_eq!(l.current(500), Some(0), "a line is current from its own timestamp");
+        assert_eq!(
+            l.current(500),
+            Some(0),
+            "a line is current from its own timestamp"
+        );
         assert_eq!(l.current(999), Some(0));
         assert_eq!(l.current(1000), Some(1));
-        assert_eq!(l.current(u32::MAX), Some(2), "the last line stays current to the end");
+        assert_eq!(
+            l.current(u32::MAX),
+            Some(2),
+            "the last line stays current to the end"
+        );
     }
 
     #[test]
     fn plain_lyrics_have_no_current_line() {
-        let l = Lyrics { lines: vec![Line { at_ms: None, text: "words".into() }] };
+        let l = Lyrics {
+            lines: vec![Line {
+                at_ms: None,
+                text: "words".into(),
+            }],
+        };
         assert_eq!(l.current(10_000), None);
         assert_eq!(l.summary(), "1 line");
     }
@@ -197,7 +232,13 @@ mod tests {
     #[test]
     fn the_summary_counts_words_not_gaps() {
         let mut l = synced(&[0, 1000]);
-        l.lines.insert(1, Line { at_ms: Some(500), text: String::new() });
+        l.lines.insert(
+            1,
+            Line {
+                at_ms: Some(500),
+                text: String::new(),
+            },
+        );
         assert_eq!(l.summary(), "Synced, 2 lines");
     }
 
@@ -205,11 +246,20 @@ mod tests {
     /// the page — a follow position outside the range would fight the clamp in `render` and jitter.
     #[test]
     fn following_stays_inside_the_scroll_range() {
-        for hs in [vec![], vec![38], vec![38; 3], vec![38, 64, 18, 90, 38].repeat(20)] {
+        for hs in [
+            vec![],
+            vec![38],
+            vec![38; 3],
+            vec![38, 64, 18, 90, 38].repeat(20),
+        ] {
             let max = max_scroll_px(&hs);
             for cur in 0..=hs.len() {
                 let s = follow_scroll(&hs, cur);
-                assert!((0..=max).contains(&s), "cur {cur} of {} -> {s}, max {max}", hs.len());
+                assert!(
+                    (0..=max).contains(&s),
+                    "cur {cur} of {} -> {s}, max {max}",
+                    hs.len()
+                );
             }
         }
     }
@@ -232,6 +282,9 @@ mod tests {
         assert_eq!(hs[0], LINE_H + GAP);
         assert!(hs[1] >= 2 * LINE_H + GAP, "the long line wrapped: {hs:?}");
         assert_eq!(hs[2], BLANK_H);
-        assert_eq!(content_h(&hs), PAD_TOP + hs.iter().sum::<i32>() + PAD_BOTTOM);
+        assert_eq!(
+            content_h(&hs),
+            PAD_TOP + hs.iter().sum::<i32>() + PAD_BOTTOM
+        );
     }
 }

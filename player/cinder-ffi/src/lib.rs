@@ -15,12 +15,12 @@ mod art_cache;
 mod art_load;
 mod likes;
 mod lyrics;
+mod pcm_tap;
 mod playlists;
 mod present;
 mod scrobble;
-mod stats;
-mod pcm_tap;
 mod spectrum;
+mod stats;
 mod vizsig;
 
 use cinder_ui::now_playing::NowPlaying;
@@ -358,7 +358,8 @@ impl Framebuffer {
         if rc != 0 {
             // One-time diagnostic: a failing flip means an invisible UI, which is otherwise
             // indistinguishable from the old frozen-boot-image symptom on device.
-            static FLIP_ERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            static FLIP_ERR: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
             if !FLIP_ERR.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 eprintln!(
                     "cinder-ffi: fb flip ioctl FAILED (errno {}) — UI will not reach the panel",
@@ -515,9 +516,9 @@ struct Render {
     //
     // Neither lives in /contents: that is the USB-MSC volume, it disappears from under us while
     // the PC holds it, and a machine-written queue file has nothing a user would want to edit.
-    resume_path: Option<String>,      // sequence file; written only when the body changes
+    resume_path: Option<String>, // sequence file; written only when the body changes
     resume_last_body: String,
-    resume_pos_path: Option<String>,  // position file; written at most every RESUME_POS_EVERY
+    resume_pos_path: Option<String>, // position file; written at most every RESUME_POS_EVERY
     resume_pos_last: String,
     resume_pos_at: std::time::Instant,
     /// A restored sequence that PlayerService has NOT been told about. Cinder does not hand it
@@ -590,8 +591,8 @@ struct Render {
     // lookup per track change, and persisted to its own file rather than the settings blob — it
     // grows with the library, and losing every preference because one liked-list line is corrupt
     // would be a bad trade. `liked_path` is None until cinder_db_open supplies it.
-    duration_checked: bool,         // have we compared the DB duration against the service's yet?
-    last_tick: std::time::Instant,  // real-time anchor for fling/HUD animation
+    duration_checked: bool, // have we compared the DB duration against the service's yet?
+    last_tick: std::time::Instant, // real-time anchor for fling/HUD animation
     /// Monotonic anchor for animations that need an ABSOLUTE phase rather than a delta — currently
     /// the title marquee, whose position is a function of elapsed time, not of accumulated frames.
     /// Deriving it from `last_tick` would tie the animation to how often the screen happened to be
@@ -636,7 +637,10 @@ struct Render {
 }
 
 fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Current wall-clock time as "HH:MM" in LOCAL time (libc localtime_r respects the device TZ).
@@ -684,7 +688,9 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
     // incl. why the watchdog contract survives the move). /contents/cinder_nothread or
     // CINDER_NOTHREAD=1 keeps the original in-line present: the escape depends on strictly less.
     let no_thread = std::path::Path::new("/contents/cinder_nothread").exists()
-        || std::env::var("CINDER_NOTHREAD").map(|v| v == "1").unwrap_or(false);
+        || std::env::var("CINDER_NOTHREAD")
+            .map(|v| v == "1")
+            .unwrap_or(false);
     let present = if no_thread {
         println!("cinder-ffi: synchronous present (present thread disabled by flag)");
         match Framebuffer::open() {
@@ -813,8 +819,16 @@ fn fmt_time(ms: i64) -> String {
 /// Bit-depth/sample-rate aren't in cinder-db yet (they're extra MediaStore ext props) —
 /// extend here once those props are read; until then we show the container + a Hi-Res mark.
 fn codec_label(filename: &str, is_hires: bool) -> (String, String) {
-    let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_uppercase();
-    let ext = if ext.is_empty() || ext.len() > 4 { "PCM".to_string() } else { ext };
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let ext = if ext.is_empty() || ext.len() > 4 {
+        "PCM".to_string()
+    } else {
+        ext
+    };
     if is_hires {
         (format!("{ext} · Hi-Res"), format!("{ext} HR"))
     } else {
@@ -873,7 +887,13 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
 fn profiles_body(map: [usize; 3]) -> String {
     cinder_ui::profile::Output::ALL
         .iter()
-        .map(|o| format!("{}={}\n", o.key(), cinder_ui::profile::letter(map[o.idx()]).to_ascii_lowercase()))
+        .map(|o| {
+            format!(
+                "{}={}\n",
+                o.key(),
+                cinder_ui::profile::letter(map[o.idx()]).to_ascii_lowercase()
+            )
+        })
         .collect()
 }
 
@@ -985,7 +1005,8 @@ impl ProfileLoad {
             "bank_tone" => {
                 for (i, part) in v.split(',').take(cinder_ui::tone::BANDS).enumerate() {
                     if let Ok(n) = part.trim().parse::<i8>() {
-                        bank.tone_bands[i] = n.clamp(-cinder_ui::tone::BAND_MAX, cinder_ui::tone::BAND_MAX);
+                        bank.tone_bands[i] =
+                            n.clamp(-cinder_ui::tone::BAND_MAX, cinder_ui::tone::BAND_MAX);
                     }
                 }
             }
@@ -1003,7 +1024,9 @@ impl ProfileLoad {
             // Which profile each output uses. An unreadable letter leaves that output on A.
             "profile_jack" | "profile_bt" | "profile_usb" => {
                 if let (Some(o), Some(i)) = (
-                    cinder_ui::profile::Output::ALL.iter().find(|o| o.key() == k),
+                    cinder_ui::profile::Output::ALL
+                        .iter()
+                        .find(|o| o.key() == k),
                     cinder_ui::profile::parse_letter(v),
                 ) {
                     self.profiles[o.idx()] = i;
@@ -1042,7 +1065,10 @@ impl ProfileLoad {
 
 /// Temp file + fsync + rename, for settings, views, stats, likes and playlists. `/contents` is
 /// removable flash a user unplugs, so a torn write must leave the previous file, never half of one.
-pub(crate) fn write_atomic(path: impl AsRef<std::path::Path>, body: impl AsRef<[u8]>) -> std::io::Result<()> {
+pub(crate) fn write_atomic(
+    path: impl AsRef<std::path::Path>,
+    body: impl AsRef<[u8]>,
+) -> std::io::Result<()> {
     use std::io::Write;
     let path = path.as_ref();
     let mut tmp = path.as_os_str().to_owned();
@@ -1113,7 +1139,10 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
     // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
     body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
-    body.push_str(&format!("sensme_follow_time={}\n", r.app.sensme_follow() as u8));
+    body.push_str(&format!(
+        "sensme_follow_time={}\n",
+        r.app.sensme_follow() as u8
+    ));
     // Menu ▸ Soundscapes: the sound is kept while switched off, so the switch brings it back.
     let (_, alone, music) = r.app.ambient();
     body.push_str(&format!(
@@ -1128,7 +1157,12 @@ fn settings_body(r: &Render) -> String {
     // Sound ▸ Advanced ▸ DAC EQ, RAW half-decibels in the helper's argument order.
     body.push_str(&format!(
         "dac_eq={}\n",
-        r.app.dac_eq().iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+        r.app
+            .dac_eq()
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     ));
     // Settings ▸ Display ▸ Volume: `full` or `minimal`, as a word — the handoff names the key and
     // its values, and a word survives a future third style where an index would shift.
@@ -1165,7 +1199,10 @@ fn settings_body(r: &Render) -> String {
     if !st.is_empty() {
         body.push_str(&format!(
             "fm_stations={}\n",
-            st.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",")
+            st.iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         ));
     }
     // Shelf pins were session-scoped, so every reboot silently wiped the user's bookmarks — the
@@ -1210,7 +1247,9 @@ fn load_views(r: &mut Render, path: &str) {
     if r.app.views_body() != r.views_saved && !r.views_saved.is_empty() {
         return;
     }
-    let body = std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    let body = std::fs::read(path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
     r.app.set_views_body(&body);
     // What the UI makes of the file, not the file's bytes: a hand-edited file with a stray line
     // must not look like a pending change and be rewritten on the next tap.
@@ -1224,7 +1263,9 @@ fn load_views(r: &mut Render, path: &str) {
 /// on disk that this side does not have by name is kept, so a save can add to the file but never
 /// silently drop what it had not read.
 fn save_views(r: &mut Render) {
-    let Some(path) = r.views_path.clone() else { return };
+    let Some(path) = r.views_path.clone() else {
+        return;
+    };
     let body = r.app.views_body();
     if body == r.views_saved {
         return;
@@ -1237,7 +1278,8 @@ fn save_views(r: &mut Render) {
         let unseen: Vec<_> = disk
             .into_iter()
             .filter(|d| {
-                let known = |vs: &[cinder_ui::views::SavedView]| vs.iter().any(|v| v.id() == d.id());
+                let known =
+                    |vs: &[cinder_ui::views::SavedView]| vs.iter().any(|v| v.id() == d.id());
                 !known(&saved) && !known(&mine)
             })
             .collect();
@@ -1273,7 +1315,9 @@ fn flush_stats(r: &mut Render, now: bool) {
 /// palette on screen back to Cinder. The outcome is logged only when it changes: this runs every
 /// time Settings opens, and the same broken file must not print on every visit.
 fn scan_palettes(r: &mut Render) {
-    let Some(dir) = r.palette_dir.clone() else { return };
+    let Some(dir) = r.palette_dir.clone() else {
+        return;
+    };
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1283,7 +1327,10 @@ fn scan_palettes(r: &mut Render) {
             return;
         }
         Err(e) => {
-            eprintln!("cinder-ffi: palettes: cannot read {}: {e} — keeping the loaded set", dir.display());
+            eprintln!(
+                "cinder-ffi: palettes: cannot read {}: {e} — keeping the loaded set",
+                dir.display()
+            );
             return;
         }
     };
@@ -1296,7 +1343,10 @@ fn scan_palettes(r: &mut Render) {
         let Some(stem) = cinder_ui::palette::palette_stem(&name) else {
             continue;
         };
-        if let Some(t) = ent.metadata().ok().and_then(|m| m.modified().ok())
+        if let Some(t) = ent
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         {
             added.insert(stem.to_ascii_lowercase(), t.as_secs());
@@ -1315,7 +1365,11 @@ fn scan_palettes(r: &mut Render) {
     }
     let loaded: Vec<String> = list.iter().map(|p| p.id.clone()).collect();
     if r.app.set_palettes(list, skipped.clone()) {
-        eprintln!("cinder-ffi: palettes: [{}] from {}", loaded.join(", "), dir.display());
+        eprintln!(
+            "cinder-ffi: palettes: [{}] from {}",
+            loaded.join(", "),
+            dir.display()
+        );
         for s in &skipped {
             eprintln!("cinder-ffi: palette skipped: {s}");
         }
@@ -1331,7 +1385,9 @@ const RESUME_POS_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 // body is ~7 bytes a track, so even a whole-library shuffle context is a ~25 KB format + memcmp
 // at 1 Hz, against a tick that already makes 400 ms IPC round trips. Best-effort, like settings.
 fn save_resume(r: &mut Render) {
-    let Some(path) = r.resume_path.clone() else { return };
+    let Some(path) = r.resume_path.clone() else {
+        return;
+    };
     let body = r.app.playback_encode();
     if body == r.resume_last_body {
         return;
@@ -1343,14 +1399,22 @@ fn save_resume(r: &mut Render) {
 // Persist "what was playing and where in it", rate-limited. `force` bypasses the timer for the
 // moments that matter more than the cadence: a pause, or the shell shutting us down.
 fn save_resume_pos(r: &mut Render, force: bool) {
-    let Some(path) = r.resume_pos_path.clone() else { return };
-    let Some(t) = r.last_track.as_ref() else { return };
+    let Some(path) = r.resume_pos_path.clone() else {
+        return;
+    };
+    let Some(t) = r.last_track.as_ref() else {
+        return;
+    };
     if !force && r.resume_pos_at.elapsed() < RESUME_POS_EVERY {
         return;
     }
     // Second granularity: the file is compared before it is written, so a paused player stops
     // writing entirely instead of rewriting the same millisecond count forever.
-    let body = format!("track={}\npos={}\n", t.object_id, (r.play_pos_ms.max(0) / 1000) * 1000);
+    let body = format!(
+        "track={}\npos={}\n",
+        t.object_id,
+        (r.play_pos_ms.max(0) / 1000) * 1000
+    );
     r.resume_pos_at = std::time::Instant::now();
     if body == r.resume_pos_last {
         return;
@@ -1374,7 +1438,9 @@ fn conf_lines(body: &str) -> impl Iterator<Item = (&str, &str)> {
 
 // Decode a comma-separated id list. Junk entries are skipped, not fatal.
 fn id_list(v: &str) -> Vec<i64> {
-    v.split(',').filter_map(|s| s.trim().parse::<i64>().ok()).collect()
+    v.split(',')
+        .filter_map(|s| s.trim().parse::<i64>().ok())
+        .collect()
 }
 
 // Set the progress bar + elapsed/remaining from a position (ms) and duration (ms). Duration 0
@@ -1425,7 +1491,9 @@ fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinde
     let years = db.release_years();
     let ms_years = t_phase.elapsed().as_millis();
     let year_num = |id: Option<i64>| -> i32 {
-        id.and_then(|i| years.get(&i)).and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0)
+        id.and_then(|i| years.get(&i))
+            .and_then(|s| s.trim().parse::<i32>().ok())
+            .unwrap_or(0)
     };
 
     // Only the release YEAR needs the FK map; everything else is on the track itself, so the
@@ -1489,7 +1557,11 @@ fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinde
     // The old code also took the album's artist from whichever track sorted FIRST BY TITLE, which
     // for a compilation is simply an arbitrary pick.
     let group_artist = |t: &cinder_db::Track| -> String {
-        if t.album_artist.trim().is_empty() { t.artist.clone() } else { t.album_artist.clone() }
+        if t.album_artist.trim().is_empty() {
+            t.artist.clone()
+        } else {
+            t.album_artist.clone()
+        }
     };
     for t in &tracks {
         if let Some(aid) = t.album_id {
@@ -1607,13 +1679,17 @@ fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinde
     // One alphabetical order for the whole Library (cinder_ui::collate): byte order put every
     // lowercase or accented name after "Z" — `alt‐J`, `bôa`, `the north` below `Zola Jesus`.
     album_rows.sort_by(|x, y| {
-        cinder_ui::collate::cmp(&x.artist, &y.artist).then_with(|| cinder_ui::collate::cmp(&x.name, &y.name))
+        cinder_ui::collate::cmp(&x.artist, &y.artist)
+            .then_with(|| cinder_ui::collate::cmp(&x.name, &y.name))
     });
     let mut album_groups: Vec<ArtistGroup> = Vec::new();
     for ar in album_rows {
         match album_groups.last_mut() {
             Some(g) if g.artist == ar.artist => g.albums.push(ar),
-            _ => album_groups.push(ArtistGroup { artist: ar.artist.clone(), albums: vec![ar] }),
+            _ => album_groups.push(ArtistGroup {
+                artist: ar.artist.clone(),
+                albums: vec![ar],
+            }),
         }
     }
 
@@ -1628,7 +1704,13 @@ fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinde
             } else {
                 albs.iter().take(2).map(|(n, id)| (n.clone(), *id)).unzip()
             };
-            ArtistRow { albums: albs.len() as u32, tracks: tr, arts, album_ids, name }
+            ArtistRow {
+                albums: albs.len() as u32,
+                tracks: tr,
+                arts,
+                album_ids,
+                name,
+            }
         })
         .collect();
     artists.sort_by(|a, b| cinder_ui::collate::cmp(&a.name, &b.name));
@@ -1687,7 +1769,11 @@ fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinde
             .into_iter()
             .map(|(id, tracks)| {
                 let raw = names.get(&id).cloned().unwrap_or_default();
-                let name = if raw.trim().is_empty() { "(No genre)".to_string() } else { raw };
+                let name = if raw.trim().is_empty() {
+                    "(No genre)".to_string()
+                } else {
+                    raw
+                };
                 cinder_ui::model::GenreRow { id, name, tracks }
             })
             .collect();
@@ -1777,11 +1863,7 @@ fn build_folders(
     let mut out: Vec<FolderRow> = Vec::new();
 
     // Intern one path, creating every missing ancestor above it. Returns its index.
-    fn intern(
-        path: &str,
-        idx: &mut HashMap<String, usize>,
-        out: &mut Vec<FolderRow>,
-    ) -> usize {
+    fn intern(path: &str, idx: &mut HashMap<String, usize>, out: &mut Vec<FolderRow>) -> usize {
         if let Some(i) = idx.get(path) {
             return *i;
         }
@@ -1790,7 +1872,11 @@ fn build_folders(
         // 0, and slicing to 0 would make the parent the empty string, i.e. a phantom root above
         // every mount.
         let parent = (cut > 0).then(|| intern(&path[..cut], idx, out));
-        let name = if parent.is_some() { &path[cut + 1..] } else { path };
+        let name = if parent.is_some() {
+            &path[cut + 1..]
+        } else {
+            path
+        };
         let me = out.len();
         out.push(FolderRow {
             path: path.to_string(),
@@ -1811,7 +1897,9 @@ fn build_folders(
     // index together — which is what lets the tree hold ready-made SongRows instead of rebuilding
     // them, and keeps a folder row identical to the same track's row anywhere else.
     for (t, row) in tracks.iter().zip(songs.iter()) {
-        let Some(cut) = t.filename.rfind('/') else { continue };
+        let Some(cut) = t.filename.rfind('/') else {
+            continue;
+        };
         if cut == 0 {
             continue; // a bare "/name" — no directory to file it under
         }
@@ -1844,7 +1932,8 @@ fn build_folders(
     // Subdirectories alphabetically, in the Library's one collation (case and accents folded).
     let names: Vec<String> = out.iter().map(|f| f.name.clone()).collect();
     for f in out.iter_mut() {
-        f.tracks.sort_by(|a, b| a.track.cmp(&b.track).then_with(|| a.title.cmp(&b.title)));
+        f.tracks
+            .sort_by(|a, b| a.track.cmp(&b.track).then_with(|| a.title.cmp(&b.title)));
     }
     for i in 0..out.len() {
         let mut subs = std::mem::take(&mut out[i].subdirs);
@@ -1858,7 +1947,11 @@ fn build_folders(
         .filter(|i| out[*i].parent.is_none() && out[*i].total > 0)
         .collect();
     roots.sort_by(|a, b| cinder_ui::collate::cmp(&names[*a], &names[*b]));
-    eprintln!("cinder-ffi: folders: {} dirs, {} root(s)", out.len(), roots.len());
+    eprintln!(
+        "cinder-ffi: folders: {} dirs, {} root(s)",
+        out.len(),
+        roots.len()
+    );
     (out, roots)
 }
 
@@ -1878,14 +1971,51 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
 const SCREEN_NAMES: [&str; 44] = [
-    "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
-    "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
-    "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
-    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet", "Lyrics",
-    "Search", "SensMe", "Display", "Palette", "Help", "DacEq", "PlaylistEdit", "ViewEdit",
+    "Lock",
+    "NowPlaying",
+    "Menu",
+    "Library",
+    "Album",
+    "Artist",
+    "Playlist",
+    "UpNext",
+    "Eq",
+    "Sound",
+    "Bluetooth",
+    "Settings",
+    "Fm",
+    "UsbDac",
+    "Receiver",
+    "Onboarding",
+    "UsbStorage",
+    "Shelf",
+    "Pairing",
+    "GenreFilter",
+    "TrackInfo",
+    "Folders",
+    "ClockSet",
+    "Advanced",
+    "Tone",
+    "BtCodec",
+    "Keyboard",
+    "PlaylistPick",
+    "TrackPick",
+    "Device",
+    "VizSet",
+    "Lyrics",
+    "Search",
+    "SensMe",
+    "Display",
+    "Palette",
+    "Help",
+    "DacEq",
+    "PlaylistEdit",
+    "ViewEdit",
     // 40 is Soundscape (2026-10-04); 41 and 42 were left spare when R4 and R5 were built side by
     // side; R5's screens start at 43.
-    "Soundscape", "?", "?",
+    "Soundscape",
+    "?",
+    "?",
     "Profiles",
 ];
 
@@ -1894,16 +2024,47 @@ const SCREEN_NAMES: [&str; 44] = [
 fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
     use cinder_ui::nav::Screen as S;
     match s {
-        S::Lock => 0, S::NowPlaying => 1, S::Menu => 2, S::Library => 3, S::Album => 4,
-        S::Artist => 5, S::Playlist => 6, S::UpNext => 7, S::Eq => 8, S::Sound => 9,
-        S::Bluetooth => 10, S::Settings => 11, S::Fm => 12, S::UsbDac => 13, S::Receiver => 14,
-        S::Onboarding => 15, S::UsbStorage => 16, S::Shelf => 17, S::Pairing => 18,
-        S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
-        S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
-        S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
-        S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32, S::SensMe => 33,
-        S::Display => 34, S::Palette => 35, S::Help => 36, S::DacEq => 37,
-        S::PlaylistEdit => 38, S::ViewEdit => 39, S::Soundscape => 40,
+        S::Lock => 0,
+        S::NowPlaying => 1,
+        S::Menu => 2,
+        S::Library => 3,
+        S::Album => 4,
+        S::Artist => 5,
+        S::Playlist => 6,
+        S::UpNext => 7,
+        S::Eq => 8,
+        S::Sound => 9,
+        S::Bluetooth => 10,
+        S::Settings => 11,
+        S::Fm => 12,
+        S::UsbDac => 13,
+        S::Receiver => 14,
+        S::Onboarding => 15,
+        S::UsbStorage => 16,
+        S::Shelf => 17,
+        S::Pairing => 18,
+        S::GenreFilter => 19,
+        S::TrackInfo => 20,
+        S::Folders => 21,
+        S::ClockSet => 22,
+        S::Advanced => 23,
+        S::Tone => 24,
+        S::BtCodec => 25,
+        S::Keyboard => 26,
+        S::PlaylistPick => 27,
+        S::TrackPick => 28,
+        S::Device => 29,
+        S::VizSet => 30,
+        S::Lyrics => 31,
+        S::Search => 32,
+        S::SensMe => 33,
+        S::Display => 34,
+        S::Palette => 35,
+        S::Help => 36,
+        S::DacEq => 37,
+        S::PlaylistEdit => 38,
+        S::ViewEdit => 39,
+        S::Soundscape => 40,
         S::Profiles => 43,
     }
 }
@@ -1975,8 +2136,12 @@ fn bake_gradient_art(r: &mut Render) {
     }
     let day = cinder_ui::Theme::day();
     let night = cinder_ui::Theme::night();
-    r.art_full = Some(cinder_ui::art::gradient_image(&day, 480, 480, &r.np.art, 1.0));
-    r.art_thumb = Some(cinder_ui::art::gradient_image(&night, 92, 92, &r.np.art, 0.32));
+    r.art_full = Some(cinder_ui::art::gradient_image(
+        &day, 480, 480, &r.np.art, 1.0,
+    ));
+    r.art_thumb = Some(cinder_ui::art::gradient_image(
+        &night, 92, 92, &r.np.art, 0.32,
+    ));
 }
 
 fn viz_decay(r: &mut Render, dt_ms: u32) -> bool {
@@ -2000,7 +2165,8 @@ const TAP_FRESH_MS: u128 = 1500;
 const TAP_LOG_EVERY_S: u64 = 15;
 
 fn tap_fresh(r: &Render) -> bool {
-    r.tap_at.is_some_and(|t| t.elapsed().as_millis() <= TAP_FRESH_MS)
+    r.tap_at
+        .is_some_and(|t| t.elapsed().as_millis() <= TAP_FRESH_MS)
 }
 
 /// Where playback is now, in ms: the service's last report carried forward by the clock. The
@@ -2009,7 +2175,11 @@ fn live_pos_ms(r: &Render) -> i64 {
     if r.real_pos_ms >= 0 && r.np.playing {
         let since = r.real_pos_at.elapsed().as_millis() as i64;
         let pos = r.real_pos_ms + since;
-        if r.cur_duration_ms > 0 { pos.min(r.cur_duration_ms) } else { pos }
+        if r.cur_duration_ms > 0 {
+            pos.min(r.cur_duration_ms)
+        } else {
+            pos
+        }
     } else {
         r.play_pos_ms
     }
@@ -2019,10 +2189,16 @@ fn live_pos_ms(r: &Render) -> i64 {
 /// moment in a form the tap reads, which leaves the frame to the analyzer.
 fn viz_tap(r: &mut Render) -> bool {
     let pos_ms = live_pos_ms(r);
-    let Some(w) = r.tap.window((pos_ms + TAP_LEAD_MS) * 1000, spectrum::PCM_FFT) else {
+    let Some(w) = r
+        .tap
+        .window((pos_ms + TAP_LEAD_MS) * 1000, spectrum::PCM_FFT)
+    else {
         // SAY WHY, at the tuning line's rate. Until 2026-10-04 a miss was silent, and a whole
         // session of misses looked exactly like a build without the tap.
-        if r.np.playing && r.tap_log_at.is_none_or(|t| t.elapsed().as_secs() >= TAP_LOG_EVERY_S) {
+        if r.np.playing
+            && r.tap_log_at
+                .is_none_or(|t| t.elapsed().as_secs() >= TAP_LOG_EVERY_S)
+        {
             r.tap_log_at = Some(std::time::Instant::now());
             match r.tap.held() {
                 Some((a, b)) => eprintln!(
@@ -2044,14 +2220,19 @@ fn viz_tap(r: &mut Render) -> bool {
     r.tap_peak = peak;
     r.sig.update(&w.samples, &w.left, &w.right, dt);
     r.sig.push_hist(&r.viz_levels);
-    let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
+    let (mut peaks, mut held) = (
+        std::mem::take(&mut r.viz_peaks),
+        std::mem::take(&mut r.viz_held_ms),
+    );
     spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
     r.viz_peaks = peaks;
     r.viz_held_ms = held;
     let now = std::time::Instant::now();
     r.viz_at = now;
     r.tap_at = Some(now);
-    if r.tap_log_at.is_none_or(|t| t.elapsed().as_secs() >= TAP_LOG_EVERY_S) {
+    if r.tap_log_at
+        .is_none_or(|t| t.elapsed().as_secs() >= TAP_LOG_EVERY_S)
+    {
         r.tap_log_at = Some(now);
         eprintln!(
             "cinder-ffi: pcm tap — pos {pos_ms} ms, slot {} holds {}..{} ms ({} ms off), {} Hz, {} bands",
@@ -2126,7 +2307,12 @@ fn load_grid_covers(r: &mut Render) {
             break;
         }
         loaded += 1;
-        match r.art_cache_keys.get(id).copied().and_then(|k| art_cache::load(k, art_cache::T96)) {
+        match r
+            .art_cache_keys
+            .get(id)
+            .copied()
+            .and_then(|k| art_cache::load(k, art_cache::T96))
+        {
             Some(img) => r.app.put_grid_cover(*id, img),
             None => {
                 r.grid_miss.insert(*id);
@@ -2165,7 +2351,10 @@ pub extern "C" fn cinder_render_tick() {
         use std::sync::atomic::Ordering::Relaxed;
         PANIC_SCREEN.store(screen_ord(r.app.current()), Relaxed);
         PANIC_PAGE.store(r.app.np_page(), Relaxed);
-        PANIC_TRACK.store(r.last_track.as_ref().map_or(0, |t| t.object_id as u64), Relaxed);
+        PANIC_TRACK.store(
+            r.last_track.as_ref().map_or(0, |t| t.object_id as u64),
+            Relaxed,
+        );
     }
     if viz_decay(r, dt_ms) {
         r.dirty = true;
@@ -2244,13 +2433,22 @@ pub extern "C" fn cinder_render_tick() {
         viz_size: r.app.viz_size(), // nav re-injects this too; kept honest here
         page: r.app.np_page(),
         // real FFT spectrum if the shell is feeding PCM AND we're animating; else None (synthetic)
-        viz_levels: if animate && !r.viz_levels.is_empty() { Some(&r.viz_levels) } else { None },
+        viz_levels: if animate && !r.viz_levels.is_empty() {
+            Some(&r.viz_levels)
+        } else {
+            None
+        },
         // Markers only exist while they are switched on AND there are bars to mark: `hold_peaks`
         // empties the buffer when the setting is off, so this needs no second look at the config.
-        viz_peaks: if animate && !r.viz_peaks.is_empty() { Some(&r.viz_peaks) } else { None },
+        viz_peaks: if animate && !r.viz_peaks.is_empty() {
+            Some(&r.viz_peaks)
+        } else {
+            None
+        },
         // The decoded audio for the sample styles; its parts are empty unless the tap is live.
         viz_sig: if animate { Some(&sig) } else { None },
-        scrubbing: r.scrub_ms.is_some(), lyrics: false,
+        scrubbing: r.scrub_ms.is_some(),
+        lyrics: false,
     };
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
     // the list/menu screens from their own state.
@@ -2266,7 +2464,11 @@ pub extern "C" fn cinder_render_tick() {
     static WIN_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     const RASTER_LAST: u32 = 30_000;
     let sampling = RASTER_N.load(std::sync::atomic::Ordering::Relaxed) < RASTER_LAST;
-    let raster_t0 = if sampling { Some(std::time::Instant::now()) } else { None };
+    let raster_t0 = if sampling {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     r.app.render(&mut r.canvas, &r.fonts, &np);
     if let Some(raster_t0) = raster_t0 {
         use std::sync::atomic::Ordering::Relaxed;
@@ -2357,12 +2559,31 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
             }
         }
         let np2 = NowPlaying {
-            title: &np.title, artist: &np.artist, codec: &np.codec, badge: &np.badge,
-            clock: &np.clock, battery: np.battery, elapsed: &np.elapsed, remaining: &np.remaining,
-            progress: np.progress, art: &np.art, art_full: None, art_thumb: None,
-            liked: np.liked, playing: np.playing, shuffle: np.shuffle, repeat: np.repeat,
-            viz_seed: 2.0, viz_kind: 0, viz_size: 0, page: 0, viz_levels: None, viz_peaks: None, viz_sig: None,
-            scrubbing: false, lyrics: false,
+            title: &np.title,
+            artist: &np.artist,
+            codec: &np.codec,
+            badge: &np.badge,
+            clock: &np.clock,
+            battery: np.battery,
+            elapsed: &np.elapsed,
+            remaining: &np.remaining,
+            progress: np.progress,
+            art: &np.art,
+            art_full: None,
+            art_thumb: None,
+            liked: np.liked,
+            playing: np.playing,
+            shuffle: np.shuffle,
+            repeat: np.repeat,
+            viz_seed: 2.0,
+            viz_kind: 0,
+            viz_size: 0,
+            page: 0,
+            viz_levels: None,
+            viz_peaks: None,
+            viz_sig: None,
+            scrubbing: false,
+            lyrics: false,
         };
         r.canvas.clear_clip();
         let t0 = std::time::Instant::now();
@@ -2380,8 +2601,11 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
     // What the pump actually achieves with the present thread: raster and present overlap, so a
     // frame costs max(raster, present), not their sum. (Measured serially above on purpose — the
     // split still says WHERE time goes; this line says what it adds up to in production.)
-    let pipelined: u64 =
-        raster.iter().zip(present.iter()).map(|(a, b)| *a.max(b)).sum();
+    let pipelined: u64 = raster
+        .iter()
+        .zip(present.iter())
+        .map(|(a, b)| *a.max(b))
+        .sum();
     let threaded = matches!(r.present, Sink::Threaded(_));
     let report = |name: &str, v: &mut Vec<u64>| {
         // A zero-frame bench would index an empty vector three times below. This runs only from
@@ -2435,10 +2659,16 @@ pub extern "C" fn cinder_art_probe(object_id: libc::c_longlong) -> libc::c_int {
     match art_load::load(db, object_id as i64) {
         Some(img) => {
             let ms = t0.elapsed().as_millis();
-            println!("cinder-ffi: art probe obj={object_id}: decoded {}x{} in {ms} ms", img.w, img.h);
+            println!(
+                "cinder-ffi: art probe obj={object_id}: decoded {}x{} in {ms} ms",
+                img.w, img.h
+            );
             let t1 = std::time::Instant::now();
             let _ = img.scaled_to(92, 92);
-            println!("cinder-ffi: art probe: scale to 92x92 took {} ms", t1.elapsed().as_millis());
+            println!(
+                "cinder-ffi: art probe: scale to 92x92 took {} ms",
+                t1.elapsed().as_millis()
+            );
             0
         }
         None => {
@@ -2519,7 +2749,7 @@ pub extern "C" fn cinder_input(button: libc::c_int) -> libc::c_int {
     let Some(r) = guard.as_mut() else { return 0 };
     let actions = r.app.press(b);
     r.dirty = true; // a press changes cursor/screen/HUD — repaint next tick
-    // Keep the renderer's theme in sync with navigator-driven theme changes.
+                    // Keep the renderer's theme in sync with navigator-driven theme changes.
     r.night = r.app.night;
     // Persist UI preferences (theme/visualiser) if this press changed one (no-op otherwise).
     save_settings(r);
@@ -2629,7 +2859,11 @@ fn song_row_of(t: &cinder_db::Track) -> cinder_ui::model::SongRow {
     } else {
         t.title.clone()
     };
-    let art = if t.album.is_empty() { title.clone() } else { t.album.clone() };
+    let art = if t.album.is_empty() {
+        title.clone()
+    } else {
+        t.album.clone()
+    };
     cinder_ui::model::SongRow {
         title,
         artist: t.artist.clone(),
@@ -2647,7 +2881,11 @@ fn song_row_of(t: &cinder_db::Track) -> cinder_ui::model::SongRow {
         // which allocates nothing (`SongRow::group_artist` supplies the fallback).
         album_artist: {
             let aa = t.album_artist.trim();
-            if aa.is_empty() || aa == t.artist.trim() { String::new() } else { t.album_artist.clone() }
+            if aa.is_empty() || aa == t.artist.trim() {
+                String::new()
+            } else {
+                t.album_artist.clone()
+            }
         },
         format: cinder_ui::model::Format::of_path(&t.filename),
         // Filled by `build_library` from the SensMe map, which is keyed by object id — this
@@ -2671,11 +2909,14 @@ fn track_info_rows(r: &Render, t: &cinder_db::Track) -> Vec<(String, String)> {
             rows.push((k.to_string(), v));
         }
     };
-    put("Title", if t.title.is_empty() {
-        t.filename.rsplit('/').next().unwrap_or("").to_string()
-    } else {
-        t.title.clone()
-    });
+    put(
+        "Title",
+        if t.title.is_empty() {
+            t.filename.rsplit('/').next().unwrap_or("").to_string()
+        } else {
+            t.title.clone()
+        },
+    );
     put("Artist", t.artist.clone());
     // Only when it differs — on most files it repeats the artist, and a row that says the same
     // thing twice is noise on a screen whose whole job is the details that are NOT obvious.
@@ -2686,7 +2927,10 @@ fn track_info_rows(r: &Render, t: &cinder_db::Track) -> Vec<(String, String)> {
     // Genre and year come from the already-built library rather than fresh queries: the row is in
     // memory, the maps behind it were resolved once at build, and this runs on the render thread.
     let lib = r.app.library();
-    if let Some(g) = t.genre_id.and_then(|id| lib.genres.iter().find(|g| g.id == id)) {
+    if let Some(g) = t
+        .genre_id
+        .and_then(|id| lib.genres.iter().find(|g| g.id == id))
+    {
         put("Genre", g.name.clone());
     }
     if let Some(row) = lib.songs.iter().find(|s| s.object_id == t.object_id) {
@@ -2695,11 +2939,14 @@ fn track_info_rows(r: &Render, t: &cinder_db::Track) -> Vec<(String, String)> {
         }
     }
     if t.track_no > 0 {
-        put("Track", if t.disc_no > 1 {
-            format!("{} (disc {})", t.track_no, t.disc_no)
-        } else {
-            t.track_no.to_string()
-        });
+        put(
+            "Track",
+            if t.disc_no > 1 {
+                format!("{} (disc {})", t.track_no, t.disc_no)
+            } else {
+                t.track_no.to_string()
+            },
+        );
     }
     if let Some(ms) = t.duration_raw.filter(|m| *m > 0) {
         put("Duration", fmt_time(ms));
@@ -2711,11 +2958,14 @@ fn track_info_rows(r: &Render, t: &cinder_db::Track) -> Vec<(String, String)> {
     // gone, which is itself worth not claiming a size for.
     if let Ok(md) = std::fs::metadata(&t.filename) {
         let bytes = md.len();
-        put("Size", if bytes >= 1 << 20 {
-            format!("{:.1} MB", bytes as f64 / (1u64 << 20) as f64)
-        } else {
-            format!("{} KB", (bytes + 1023) / 1024)
-        });
+        put(
+            "Size",
+            if bytes >= 1 << 20 {
+                format!("{:.1} MB", bytes as f64 / (1u64 << 20) as f64)
+            } else {
+                format!("{} KB", (bytes + 1023) / 1024)
+            },
+        );
     }
     put("File", t.filename.clone());
     rows
@@ -2738,7 +2988,9 @@ fn play_window(len: usize, start: usize) -> (usize, usize) {
     if len <= MAX_PLAY_SEQUENCE {
         return (0, len);
     }
-    let lo = start.saturating_sub(MAX_PLAY_SEQUENCE / 4).min(len - MAX_PLAY_SEQUENCE);
+    let lo = start
+        .saturating_sub(MAX_PLAY_SEQUENCE / 4)
+        .min(len - MAX_PLAY_SEQUENCE);
     (lo, lo + MAX_PLAY_SEQUENCE)
 }
 
@@ -2789,12 +3041,14 @@ fn set_pending(r: &mut Render, seq: Vec<cinder_db::Track>, start: usize) {
         r.pending_play.clear();
         r.pending_play_start = 0;
         if chosen_dropped {
-            r.app.notify("Can't play a 32-bit FLAC: this player's decoder stops at 24-bit");
+            r.app
+                .notify("Can't play a 32-bit FLAC: this player's decoder stops at 24-bit");
         }
         return;
     }
     if chosen_dropped {
-        r.app.notify("Skipped a 32-bit FLAC: this player can't decode above 24-bit");
+        r.app
+            .notify("Skipped a 32-bit FLAC: this player can't decode above 24-bit");
     }
     let (lo, hi) = play_window(seq.len(), start);
     if lo > 0 || hi < seq.len() {
@@ -2809,7 +3063,8 @@ fn set_pending(r: &mut Render, seq: Vec<cinder_db::Track>, start: usize) {
         seq.drain(..lo);
     }
     let start = start.saturating_sub(lo).min(seq.len().saturating_sub(1));
-    r.app.set_play_context(seq.iter().map(song_row_of).collect(), start);
+    r.app
+        .set_play_context(seq.iter().map(song_row_of).collect(), start);
     let files: Vec<String> = seq.into_iter().map(|t| t.filename).collect();
     // "KEEP UP NEXT" HAS TO KEEP IT IN THE SEQUENCE, not just on the screen.
     //
@@ -2869,14 +3124,20 @@ fn play_order_uris(r: &Render, lead: Option<&str>) -> Vec<String> {
     let index = uri_index(r);
     let ctx = r.app.context();
     let from = r.app.context_idx() + 1;
-    let tail = if from < ctx.len() { &ctx[from..] } else { &[][..] };
-    play_order(lead, tail.iter().map(|row| index.get(&row.object_id).cloned()))
+    let tail = if from < ctx.len() {
+        &ctx[from..]
+    } else {
+        &[][..]
+    };
+    play_order(
+        lead,
+        tail.iter().map(|row| index.get(&row.object_id).cloned()),
+    )
 }
 
 /// `object_id → file path` for the whole library, in ONE query — see `play_order_uris`.
 fn uri_index(r: &Render) -> std::collections::HashMap<i64, String> {
-    r.db
-        .as_ref()
+    r.db.as_ref()
         .and_then(|db| db.tracks(cinder_db::Sort::Artist).ok())
         .map(|v| v.into_iter().map(|t| (t.object_id, t.filename)).collect())
         .unwrap_or_default()
@@ -2888,8 +3149,15 @@ fn uri_index(r: &Render) -> std::collections::HashMap<i64, String> {
 fn context_uris(r: &Render, from: usize) -> Vec<String> {
     let index = uri_index(r);
     let ctx = r.app.context();
-    let rows = if from < ctx.len() { &ctx[from..] } else { &[][..] };
-    play_order(None, rows.iter().map(|row| index.get(&row.object_id).cloned()))
+    let rows = if from < ctx.len() {
+        &ctx[from..]
+    } else {
+        &[][..]
+    };
+    play_order(
+        None,
+        rows.iter().map(|row| index.get(&row.object_id).cloned()),
+    )
 }
 
 /// NOTHING HAS PLAYED YET, and the user has built a list by queueing. Make the first ▶ play it,
@@ -2982,7 +3250,11 @@ fn artist_tracks(db: Option<&cinder_db::Db>, name: &str) -> Option<Vec<cinder_db
         .ok()?
         .into_iter()
         .filter(|t| {
-            let group = if t.album_artist.trim().is_empty() { &t.artist } else { &t.album_artist };
+            let group = if t.album_artist.trim().is_empty() {
+                &t.artist
+            } else {
+                &t.album_artist
+            };
             group == name
         })
         .collect();
@@ -3009,7 +3281,11 @@ fn deal_tracks(
         .iter()
         .map(|t| shuffle::Row {
             album: shuffle::album_key(t.album_id.unwrap_or(0), t.object_id),
-            artist: shuffle::artist_key(if t.album_artist.trim().is_empty() { &t.artist } else { &t.album_artist }),
+            artist: shuffle::artist_key(if t.album_artist.trim().is_empty() {
+                &t.artist
+            } else {
+                &t.album_artist
+            }),
             disc: t.disc_no as i32,
             track: t.track_no as i32,
         })
@@ -3036,8 +3312,12 @@ fn shuffle_tracks(
     match scope {
         // "N TRACKS · RANDOM ORDER"
         S::AllSongs => {
-            let mut v: Vec<cinder_db::Track> =
-                db.tracks(cinder_db::Sort::Title).ok()?.into_iter().filter(|t| keep(t)).collect();
+            let mut v: Vec<cinder_db::Track> = db
+                .tracks(cinder_db::Sort::Title)
+                .ok()?
+                .into_iter()
+                .filter(|t| keep(t))
+                .collect();
             let pre = v.iter().map(|t| t.object_id).collect();
             rng.shuffle(&mut v);
             (!v.is_empty()).then_some((v, pre))
@@ -3045,8 +3325,12 @@ fn shuffle_tracks(
         // "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE" — shuffle the albums, keep each album's
         // tracks in their disc/track order.
         S::ByAlbum => {
-            let tracks: Vec<cinder_db::Track> =
-                db.tracks_album_order().ok()?.into_iter().filter(|t| keep(t)).collect();
+            let tracks: Vec<cinder_db::Track> = db
+                .tracks_album_order()
+                .ok()?
+                .into_iter()
+                .filter(|t| keep(t))
+                .collect();
             let pre: Vec<i64> = tracks.iter().map(|t| t.object_id).collect();
             let mut albums: Vec<Vec<cinder_db::Track>> = Vec::new();
             let mut cur_id: Option<i64> = None;
@@ -3064,7 +3348,8 @@ fn shuffle_tracks(
         // "RANDOM ARTIST · SHUFFLED WITHIN ARTIST" — one artist, their tracks shuffled.
         S::ByArtist => {
             let tracks = db.tracks(cinder_db::Sort::Artist).ok()?;
-            let mut by_artist: std::collections::BTreeMap<String, Vec<cinder_db::Track>> = Default::default();
+            let mut by_artist: std::collections::BTreeMap<String, Vec<cinder_db::Track>> =
+                Default::default();
             for t in tracks {
                 if !t.artist.is_empty() && keep(&t) {
                     by_artist.entry(t.artist.clone()).or_default().push(t);
@@ -3087,8 +3372,10 @@ fn shuffle_tracks(
                 return None;
             }
             let pick = &pls[(rng.next() % pls.len() as u64) as usize];
-            let mut v: Vec<cinder_db::Track> =
-                playlist_tracks(Some(db), pick.id)?.into_iter().filter(|t| keep(t)).collect();
+            let mut v: Vec<cinder_db::Track> = playlist_tracks(Some(db), pick.id)?
+                .into_iter()
+                .filter(|t| keep(t))
+                .collect();
             let pre = v.iter().map(|t| t.object_id).collect();
             rng.shuffle(&mut v);
             (!v.is_empty()).then_some((v, pre))
@@ -3140,8 +3427,10 @@ fn sensme_tracks(
     let resolved = db.tracks_by_object_ids(&ids).ok()?;
     // Driven by the ids, so the order on screen is the order that plays; a member whose file has
     // gone is skipped rather than failing the whole channel.
-    let tracks: Vec<cinder_db::Track> =
-        ids.iter().filter_map(|id| resolved.get(id).cloned()).collect();
+    let tracks: Vec<cinder_db::Track> = ids
+        .iter()
+        .filter_map(|id| resolved.get(id).cloned())
+        .collect();
     (!tracks.is_empty()).then_some(tracks)
 }
 
@@ -3177,7 +3466,9 @@ fn playlist_cover_images(
 ) -> std::collections::HashMap<i64, cinder_ui::art::Image> {
     let mut out = std::collections::HashMap::new();
     for list in &store.lists {
-        let Some(src) = list.cover_source() else { continue };
+        let Some(src) = list.cover_source() else {
+            continue;
+        };
         if !playlists::Playlist::cover_is_image(&src) {
             continue;
         }
@@ -3275,7 +3566,9 @@ fn user_playlist_rows(
 /// re-issued whenever the database is rebuilt, and a playlist that forgets its tracks on a rescan
 /// would be worse than no playlist at all.
 fn add_track_to_playlist(r: &mut Render, playlist_id: i64, object_id: i64) {
-    let track = r.db.as_ref().and_then(|db| db.track_by_object_id(object_id).ok().flatten());
+    let track =
+        r.db.as_ref()
+            .and_then(|db| db.track_by_object_id(object_id).ok().flatten());
     let Some(track) = track else {
         eprintln!("cinder-ffi: playlist add: object {object_id} is not in the library");
         return;
@@ -3294,8 +3587,10 @@ fn add_track_to_playlist(r: &mut Render, playlist_id: i64, object_id: i64) {
 /// album plus one per playlist, and it would also throw away the scroll position of the screen
 /// the user is editing on.
 fn refresh_playlists(r: &mut Render) {
-    let mut rows =
-        merge_playlist_rows(user_playlist_rows(&r.plists, r.db.as_ref()), &r.db_playlists);
+    let mut rows = merge_playlist_rows(
+        user_playlist_rows(&r.plists, r.db.as_ref()),
+        &r.db_playlists,
+    );
     // The two cover passes, in the order they depend on each other: the automatic cover needs the
     // finished rows (it reads the first member that actually resolved), and the picture covers are
     // independent of them.
@@ -3344,10 +3639,15 @@ fn merge_playlist_rows(
 /// the file is not in the library right now. The same batch resolve `user_playlist_rows` builds
 /// the page from, so "the n-th resolved entry" here is the n-th row there.
 fn playlist_entry_ids(r: &Render, id: i64) -> Vec<Option<i64>> {
-    let (Some(db), Some(list)) = (r.db.as_ref(), r.plists.get(id)) else { return Vec::new() };
+    let (Some(db), Some(list)) = (r.db.as_ref(), r.plists.get(id)) else {
+        return Vec::new();
+    };
     let names: Vec<&str> = list.entries.iter().map(|e| e.uri.as_str()).collect();
     let resolved = db.tracks_by_filenames(&names).unwrap_or_default();
-    list.entries.iter().map(|e| resolved.get(e.uri.as_str()).map(|t| t.object_id)).collect()
+    list.entries
+        .iter()
+        .map(|e| resolved.get(e.uri.as_str()).map(|t| t.object_id))
+        .collect()
 }
 
 /// The tracks of one of OUR playlists, in saved order, resolved to DB rows for playback.
@@ -3395,7 +3695,9 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::PlayIndex(object_id) => {
             // Resolve the chosen track to its album context (URIs in play order + start index)
             // so the shell can hand PlayerService a real sequence. No DB / no match -> no action.
-            let ctx = r.db.as_ref().and_then(|db| db.album_context(*object_id).ok().flatten());
+            let ctx =
+                r.db.as_ref()
+                    .and_then(|db| db.album_context(*object_id).ok().flatten());
             match ctx {
                 Some((tracks, idx)) if !tracks.is_empty() => {
                     // Tapping a track plays its ALBUM, from that track, in album order.
@@ -3417,11 +3719,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // for the same reason `PlayContextAt` does: a file that has gone must not slide the
             // start onto the wrong song.
             let ids = r.app.take_play_list();
-            let by_id = r
-                .db
-                .as_ref()
-                .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
-                .unwrap_or_default();
+            let by_id =
+                r.db.as_ref()
+                    .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
+                    .unwrap_or_default();
             let mut seq: Vec<cinder_db::Track> = Vec::with_capacity(ids.len());
             let mut start = 0usize;
             for (i, id) in ids.iter().enumerate() {
@@ -3471,11 +3772,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // standing here. `tracks_by_object_ids` resolves the lot in one scan; the loop below
             // still walks `ids` in order and still counts survivors as it goes, so the start-index
             // reasoning in the paragraph above is untouched.
-            let by_id = r
-                .db
-                .as_ref()
-                .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
-                .unwrap_or_default();
+            let by_id =
+                r.db.as_ref()
+                    .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
+                    .unwrap_or_default();
             let mut seq: Vec<cinder_db::Track> = Vec::with_capacity(ids.len());
             let mut start = 0usize;
             for (i, id) in ids.iter().enumerate() {
@@ -3541,7 +3841,9 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     8
                 }
                 None => {
-                    eprintln!("cinder-ffi: PlayPlaylist({playlist_id}): empty or unknown — ignored");
+                    eprintln!(
+                        "cinder-ffi: PlayPlaylist({playlist_id}): empty or unknown — ignored"
+                    );
                     return None;
                 }
             }
@@ -3567,7 +3869,11 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 }
             }
         }
-        Action::PlaySensMe { chan, from, shuffle } => {
+        Action::PlaySensMe {
+            chan,
+            from,
+            shuffle,
+        } => {
             // THE CHANNEL IS THE CONTEXT, exactly as a playlist is: an object id only knows its
             // album, so playing a member through `PlayIndex` would play that track's album and
             // drop the channel after one song.
@@ -3649,8 +3955,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     8
                 }
                 None => {
-                    eprintln!("cinder-ffi: Shuffle({scope:?}): nothing to play under the active \
-                               filter — ignored");
+                    eprintln!(
+                        "cinder-ffi: Shuffle({scope:?}): nothing to play under the active \
+                               filter — ignored"
+                    );
                     return None;
                 }
             }
@@ -3725,9 +4033,16 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     refresh_playlists(r);
                     // Stay on Up Next: the list you saved is the one on screen, and the toast says
                     // where it went.
-                    let songs = if n == 1 { "1 song".to_string() } else { format!("{n} songs") };
+                    let songs = if n == 1 {
+                        "1 song".to_string()
+                    } else {
+                        format!("{n} songs")
+                    };
                     r.app.notify(&format!("Saved to Playlists \u{b7} {songs}"));
-                    eprintln!("cinder-ffi: Up Next saved as {name:?}: {n} of {} tracks", tracks.len());
+                    eprintln!(
+                        "cinder-ffi: Up Next saved as {name:?}: {n} of {} tracks",
+                        tracks.len()
+                    );
                 }
                 Err(e) => eprintln!("cinder-ffi: save Up Next {name:?}: {e}"),
             }
@@ -3757,10 +4072,16 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // The editor's DONE. The order is in ids of what the page showed; the store works in
             // file entries, some of which the page never showed (their files are not in the
             // library right now) — `Store::reorder` keeps those where they were.
-            let (id, order) = r.app.take_playlist_edit().filter(|(id, _)| id == playlist_id)?;
+            let (id, order) = r
+                .app
+                .take_playlist_edit()
+                .filter(|(id, _)| id == playlist_id)?;
             let resolved = playlist_entry_ids(r, id);
             match r.plists.reorder(id, &resolved, &order) {
-                Ok(true) => eprintln!("cinder-ffi: playlist edit saved — {} members kept", order.len()),
+                Ok(true) => eprintln!(
+                    "cinder-ffi: playlist edit saved — {} members kept",
+                    order.len()
+                ),
                 Ok(false) => {}
                 Err(e) => eprintln!("cinder-ffi: playlist edit: {e}"),
             }
@@ -3771,11 +4092,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::RateTrack(object_id, stars) => {
             // The UI has already changed its copy. This is the write — keyed by PATH, because the
             // object id will not survive the next rescan.
-            let path = r
-                .db
-                .as_ref()
-                .and_then(|db| db.track_by_object_id(*object_id).ok().flatten())
-                .map(|t| t.filename);
+            let path =
+                r.db.as_ref()
+                    .and_then(|db| db.track_by_object_id(*object_id).ok().flatten())
+                    .map(|t| t.filename);
             match path {
                 Some(path) => {
                     r.stats.rate(&path, *stars);
@@ -3789,12 +4109,12 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // `PlayListAt`'s shuffled twin: the ids on screen (a smart playlist), dealt at random,
             // with the order they had kept so the shuffle toggle can put it back.
             let ids = r.app.take_play_list();
-            let by_id = r
-                .db
-                .as_ref()
-                .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
-                .unwrap_or_default();
-            let seq: Vec<cinder_db::Track> = ids.iter().filter_map(|id| by_id.get(id).cloned()).collect();
+            let by_id =
+                r.db.as_ref()
+                    .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
+                    .unwrap_or_default();
+            let seq: Vec<cinder_db::Track> =
+                ids.iter().filter_map(|id| by_id.get(id).cloned()).collect();
             if seq.is_empty() {
                 eprintln!("cinder-ffi: ShuffleList: nothing in the list resolved — ignored");
                 return None;
@@ -3831,7 +4151,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // is rebuilt, and a cover that forgot which track it came from on a rescan would be a
             // cover that quietly reverted.
             let path = (*object_id != 0)
-                .then(|| r.db.as_ref().and_then(|db| db.track_by_object_id(*object_id).ok().flatten()))
+                .then(|| {
+                    r.db.as_ref()
+                        .and_then(|db| db.track_by_object_id(*object_id).ok().flatten())
+                })
                 .flatten()
                 .map(|t| t.filename);
             if *object_id != 0 && path.is_none() {
@@ -3883,11 +4206,23 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         }
         // FM. The frequency/direction the shell needs is fetched with cinder_fm_* rather than
         // packed into the return code, which is a single int.
-        Action::FmPower(on) => { r.fm_power = *on; 40 }
-        Action::FmTune(khz) => { r.app.fm_report_khz(*khz); 41 }
-        Action::FmSeek(dir) => { r.fm_seek_dir = *dir; 42 }
+        Action::FmPower(on) => {
+            r.fm_power = *on;
+            40
+        }
+        Action::FmTune(khz) => {
+            r.app.fm_report_khz(*khz);
+            41
+        }
+        Action::FmSeek(dir) => {
+            r.fm_seek_dir = *dir;
+            42
+        }
         Action::FmScan => 43,
-        Action::FmBtOut(on) => { r.fm_bt = *on; 44 }
+        Action::FmBtOut(on) => {
+            r.fm_bt = *on;
+            44
+        }
         Action::ThemeChanged(_) => 16, // shell also drives the backlight (night = minimal light)
         Action::Sleep => 10,
         Action::EnterUsbMsc => {
@@ -4039,8 +4374,8 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             arm_first_play(r);
             return None;
         }
-        Action::Restart => 24,              // PowerMgrServiceClient::Reboot — back into Cinder
-        Action::PowerOff => 25,             // PowerMgrServiceClient::SetStatus(PowerOff)
+        Action::Restart => 24, // PowerMgrServiceClient::Reboot — back into Cinder
+        Action::PowerOff => 25, // PowerMgrServiceClient::SetStatus(PowerOff)
         Action::ToggleLiked => {
             // Handled entirely in-process: the set and its file live here, so there is nothing for
             // the shell to carry out.
@@ -4089,7 +4424,9 @@ pub extern "C" fn cinder_tap(x: libc::c_int, y: libc::c_int) -> libc::c_int {
 pub extern "C" fn cinder_swipe(dir: libc::c_int, x: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let actions = r.app.swipe(if dir < 0 { -1 } else { 1 }, x as i32, y as i32);
+    let actions = r
+        .app
+        .swipe(if dir < 0 { -1 } else { 1 }, x as i32, y as i32);
     r.dirty = true;
     r.night = r.app.night;
     save_settings(r);
@@ -4242,7 +4579,11 @@ pub extern "C" fn cinder_touch_down() {
 /// cinder_pending_play_start. The list stays until the next PlayIndex replaces it.
 #[no_mangle]
 pub extern "C" fn cinder_pending_play_count() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.pending_play.len() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.pending_play.len() as libc::c_int)
 }
 
 /// Copy pending-play URI `i` (0-based) into `buf` (NUL-terminated). Returns the FULL byte length
@@ -4253,13 +4594,19 @@ pub extern "C" fn cinder_pending_play_count() -> libc::c_int {
 /// one to PlayerService queues a file that doesn't exist. Silently playing the wrong thing is worse
 /// than skipping the track.
 #[no_mangle]
-pub extern "C" fn cinder_pending_play_uri(i: libc::c_int, buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
+pub extern "C" fn cinder_pending_play_uri(
+    i: libc::c_int,
+    buf: *mut c_char,
+    cap: libc::c_int,
+) -> libc::c_int {
     if buf.is_null() || cap <= 0 {
         return -1;
     }
     let guard = cell().lock().unwrap();
     let Some(r) = guard.as_ref() else { return -1 };
-    let Some(uri) = r.pending_play.get(i as usize) else { return -1 };
+    let Some(uri) = r.pending_play.get(i as usize) else {
+        return -1;
+    };
     unsafe { copy_str_into(uri, buf, cap) }
 }
 
@@ -4284,14 +4631,24 @@ pub extern "C" fn cinder_uri_undecodable(uri: *const c_char) -> libc::c_int {
     if uri.is_null() {
         return 0;
     }
-    let Ok(u) = unsafe { std::ffi::CStr::from_ptr(uri) }.to_str() else { return 0 };
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.undecodable.contains(u) as libc::c_int)
+    let Ok(u) = unsafe { std::ffi::CStr::from_ptr(uri) }.to_str() else {
+        return 0;
+    };
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.undecodable.contains(u) as libc::c_int)
 }
 
 /// The start index within the pending-play list (the track the user actually tapped).
 #[no_mangle]
 pub extern "C" fn cinder_pending_play_start() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.pending_play_start as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.pending_play_start as libc::c_int)
 }
 
 /// The Hold/lock SWITCH changed state (held != 0 = locked). The navigator disables the touchscreen
@@ -4325,7 +4682,11 @@ pub extern "C" fn cinder_power_held() -> libc::c_int {
 /// "Power off?" prompt out from under the finger that is about to answer it.
 #[no_mangle]
 pub extern "C" fn cinder_modal_open() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.modal_open() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.modal_open() as libc::c_int)
 }
 
 /// Force the next `cinder_render_tick` to repaint + blit even if nothing changed. The shell calls
@@ -4618,7 +4979,10 @@ pub extern "C" fn cinder_get_bt_enhanced() -> libc::c_int {
 #[no_mangle]
 pub extern "C" fn cinder_set_bt_enhanced_supported(on: libc::c_int) -> libc::c_int {
     let mut g = cell().lock().unwrap();
-    let r = match g.as_mut() { Some(r) => r, None => return 0 };
+    let r = match g.as_mut() {
+        Some(r) => r,
+        None => return 0,
+    };
     if r.app.set_bt_enhanced_supported(on != 0) {
         r.dirty = true;
         1
@@ -4645,12 +5009,20 @@ pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
 /// which switches the radio off after ten minutes of a dark screen with nothing playing over it.
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_idle_off() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_idle_off() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.bt_idle_off() as libc::c_int)
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_debug_log() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_debug_log() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.bt_debug_log() as libc::c_int)
 }
 
 /// The shell stopped the HCI capture at its size limit and saved it: the switch goes off and the
@@ -4761,10 +5133,14 @@ pub extern "C" fn cinder_get_profile_output() -> libc::c_int {
 /// State only — it raises no action. The panel is a readout of what the hardware is doing; nothing
 /// the user can do on that screen changes the format.
 #[no_mangle]
-pub extern "C" fn cinder_set_usb_dac_format(rate: libc::c_uint, bits: libc::c_uint,
-                                            chans: libc::c_uint) {
+pub extern "C" fn cinder_set_usb_dac_format(
+    rate: libc::c_uint,
+    bits: libc::c_uint,
+    chans: libc::c_uint,
+) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_usb_dac_format(rate as u32, bits as u32, chans as u32);
+        r.app
+            .set_usb_dac_format(rate as u32, bits as u32, chans as u32);
     }
 }
 
@@ -4830,14 +5206,22 @@ pub extern "C" fn cinder_get_brightness() -> libc::c_int {
 /// action and at boot.
 #[no_mangle]
 pub extern "C" fn cinder_get_screen_off_s() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.screen_off_s() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.screen_off_s() as libc::c_int)
 }
 
 /// Auto power-off, in MINUTES (0 = off). The shell polls this from its 1 Hz housekeeping and owns
 /// the idle timer; the UI only remembers the choice.
 #[no_mangle]
 pub extern "C" fn cinder_get_auto_off_min() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.auto_off_min() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.auto_off_min() as libc::c_int)
 }
 
 /// L/R balance position, 0..=100 with 50 = centre. The shell turns it into the codec's two
@@ -4873,8 +5257,15 @@ pub extern "C" fn cinder_set_mono_shim(on: libc::c_int) {
 /// writes both levels already through the level curve, as gains in thousandths. The shell picks one
 /// of the two from the play state; the curve lives here so the UI and the shell cannot disagree.
 #[no_mangle]
-pub extern "C" fn cinder_get_ambient(milli_alone: *mut libc::c_int, milli_music: *mut libc::c_int) -> libc::c_int {
-    let (sound, alone, music) = cell().lock().unwrap().as_ref().map_or((0, 0, 0), |r| r.app.ambient());
+pub extern "C" fn cinder_get_ambient(
+    milli_alone: *mut libc::c_int,
+    milli_music: *mut libc::c_int,
+) -> libc::c_int {
+    let (sound, alone, music) = cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or((0, 0, 0), |r| r.app.ambient());
     // SAFETY: the shell passes pointers to two live ints, or null for one it does not want.
     unsafe {
         if !milli_alone.is_null() {
@@ -4907,7 +5298,9 @@ pub extern "C" fn cinder_get_balance() -> libc::c_int {
         .lock()
         .unwrap()
         .as_ref()
-        .map_or(cinder_ui::sound::BALANCE_CENTRE as libc::c_int, |r| r.app.balance() as libc::c_int)
+        .map_or(cinder_ui::sound::BALANCE_CENTRE as libc::c_int, |r| {
+            r.app.balance() as libc::c_int
+        })
 }
 
 /// Seed the UI volume from the device's REAL level (raw 0..120 steps — the stock scale, 1:1 with
@@ -4927,7 +5320,9 @@ pub extern "C" fn cinder_set_volume(level: libc::c_int) {
 /// scrolls exactly as before.
 #[no_mangle]
 pub extern "C" fn cinder_quick_pull_begin(x: libc::c_int, y: libc::c_int) -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.quick_pull_begin(x as i32, y as i32) as libc::c_int)
+    cell().lock().unwrap().as_ref().map_or(0, |r| {
+        r.app.quick_pull_begin(x as i32, y as i32) as libc::c_int
+    })
 }
 
 /// The pull travelled far enough: open the panel. 1 if it opened.
@@ -4946,7 +5341,11 @@ pub extern "C" fn cinder_quick_pull_open() -> libc::c_int {
 /// (locked, onboarding, or the Shelf is already open) so the shell can let the contact scroll.
 #[no_mangle]
 pub extern "C" fn cinder_shelf_swipe() -> libc::c_int {
-    cell().lock().unwrap().as_mut().map_or(0, |r| r.app.shelf_swipe_open() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_mut()
+        .map_or(0, |r| r.app.shelf_swipe_open() as libc::c_int)
 }
 
 /// Is the user's volume limit on? The shell clamps to Sony's AVLS threshold when it is.
@@ -4956,7 +5355,11 @@ pub extern "C" fn cinder_shelf_swipe() -> libc::c_int {
 /// back a jack number while something else was plugged in.
 #[no_mangle]
 pub extern "C" fn cinder_get_volume_limit() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.volume_limit() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.volume_limit() as libc::c_int)
 }
 
 /// Read the current UI volume as the raw 0..120 step level. The shell writes it 1:1 to the device
@@ -4977,7 +5380,10 @@ pub extern "C" fn cinder_set_bt_connected(name: *const libc::c_char) {
     let owned: Option<String> = if name.is_null() {
         None
     } else {
-        unsafe { std::ffi::CStr::from_ptr(name) }.to_str().ok().map(|s| s.to_string())
+        unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_str()
+            .ok()
+            .map(|s| s.to_string())
     };
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_bt_connected(owned.as_deref());
@@ -5002,7 +5408,11 @@ pub extern "C" fn cinder_set_clock_epoch(epoch: i64) {
 /// `time_t` is 32-bit here and the signed wrap at 2038-01-19 turns a future date into 1901.
 #[no_mangle]
 pub extern "C" fn cinder_get_clock_epoch() -> i64 {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.clock_epoch_pending())
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.clock_epoch_pending())
 }
 
 /// Start a fresh paired-device list. Call this, then `cinder_bt_paired_add` once per device **in the
@@ -5029,7 +5439,9 @@ pub extern "C" fn cinder_bt_paired_add(
         if p.is_null() {
             String::new()
         } else {
-            unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+            unsafe { std::ffi::CStr::from_ptr(p) }
+                .to_string_lossy()
+                .into_owned()
         }
     };
     let mut name = cstr(name);
@@ -5058,7 +5470,9 @@ pub extern "C" fn cinder_bt_found_add(name: *const libc::c_char, kind: *const li
         if p.is_null() {
             String::new()
         } else {
-            unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+            unsafe { std::ffi::CStr::from_ptr(p) }
+                .to_string_lossy()
+                .into_owned()
         }
     };
     // A scan very often reports an address before the name resolves. Showing "(unnamed)" beats
@@ -5078,11 +5492,17 @@ pub extern "C" fn cinder_bt_found_add(name: *const libc::c_char, kind: *const li
 /// 2 = passkey (display only — nothing to accept), 3 = SSP request. The shell pushes whatever the
 /// listener reported; the UI answers with CONFIRM/CANCEL and never sees the address.
 #[no_mangle]
-pub extern "C" fn cinder_bt_prompt_set(kind: libc::c_int, name: *const libc::c_char, code: libc::c_uint) {
+pub extern "C" fn cinder_bt_prompt_set(
+    kind: libc::c_int,
+    name: *const libc::c_char,
+    code: libc::c_uint,
+) {
     let name = if name.is_null() {
         String::new()
     } else {
-        unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned()
+        unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned()
     };
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_bt_prompt(kind as u8, &name, code as u32);
@@ -5100,7 +5520,11 @@ pub extern "C" fn cinder_bt_prompt_clear() {
 /// SetSearchMode, and writes it when the radio's own search window ends.
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_scanning() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_scanning() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.bt_scanning() as libc::c_int)
 }
 
 #[no_mangle]
@@ -5259,7 +5683,11 @@ pub extern "C" fn cinder_get_tone_bands(out: *mut libc::c_schar) -> libc::c_int 
 /// BT Receiver: 1 while the switch is on and its page is still in the stack (`App::rx_on`).
 #[no_mangle]
 pub extern "C" fn cinder_get_rx_on() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.rx_on() as libc::c_int)
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.rx_on() as libc::c_int)
 }
 
 /// BT Receiver status, from the shell's once-a-second read of BtPlayerService.
@@ -5274,10 +5702,13 @@ pub extern "C" fn cinder_set_rx_status(
     let peer = if peer.is_null() {
         String::new()
     } else {
-        unsafe { CStr::from_ptr(peer) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(peer) }
+            .to_string_lossy()
+            .into_owned()
     };
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_rx_status(phase.clamp(0, 3) as u8, &peer, codec, freq, bitrate);
+        r.app
+            .set_rx_status(phase.clamp(0, 3) as u8, &peer, codec, freq, bitrate);
         r.dirty = true;
     }
 }
@@ -5300,37 +5731,58 @@ pub extern "C" fn cinder_get_dac_eq(out: *mut libc::c_schar) -> libc::c_int {
 /// ── FM radio ────────────────────────────────────────────────────────────────────────────────
 #[no_mangle]
 pub extern "C" fn cinder_fm_khz() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() { Some(r) => r.app.fm_khz(), None => 0 }
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.fm_khz(),
+        None => 0,
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_seek_dir() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() { Some(r) => r.fm_seek_dir, None => 1 }
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.fm_seek_dir,
+        None => 1,
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_playing() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() { Some(r) => r.fm_power as libc::c_int, None => 0 }
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.fm_power as libc::c_int,
+        None => 0,
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_bt_out() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() { Some(r) => r.fm_bt as libc::c_int, None => 0 }
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.fm_bt as libc::c_int,
+        None => 0,
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_report_bt_out(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() { r.app.fm_set_bt_out(on != 0); r.dirty = true; }
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.fm_set_bt_out(on != 0);
+        r.dirty = true;
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_report_khz(khz: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() { r.app.fm_report_khz(khz); r.dirty = true; }
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.fm_report_khz(khz);
+        r.dirty = true;
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_report_playing(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() { r.app.fm_set_playing(on != 0); r.dirty = true; }
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.fm_set_playing(on != 0);
+        r.dirty = true;
+    }
 }
 
 #[no_mangle]
@@ -5405,7 +5857,11 @@ pub extern "C" fn cinder_scrobble_open(path: *const c_char, client: *const c_cha
     let c = unsafe { cstr(client) };
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -2 };
-    let client = if c.is_empty() { "Cinder NW-A55".to_string() } else { c };
+    let client = if c.is_empty() {
+        "Cinder NW-A55".to_string()
+    } else {
+        c
+    };
     r.scrob = Some(scrobble::Scrobbler::new(p, client));
     0
 }
@@ -5435,7 +5891,10 @@ pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int)
         r.viz_levels = spectrum::from_bands(src, cfg.bands, &prev, &mut peak, &cfg, dt);
         r.viz_peak = peak;
         r.sig.push_hist(&r.viz_levels);
-        let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
+        let (mut peaks, mut held) = (
+            std::mem::take(&mut r.viz_peaks),
+            std::mem::take(&mut r.viz_held_ms),
+        );
         spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
         r.viz_peaks = peaks;
         r.viz_held_ms = held;
@@ -5479,19 +5938,28 @@ pub extern "C" fn cinder_set_battery(pct: libc::c_int) {
 /// Every pointer must be a valid NUL-terminated C string or null; they are only read here.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn cinder_set_battery_detail(pct: libc::c_int,
-                                                   status: *const c_char,
-                                                   health: *const c_char,
-                                                   mv: libc::c_int,
-                                                   chg_state: libc::c_int,
-                                                   chg_fault: libc::c_int,
-                                                   raw: *const c_char) {
+pub unsafe extern "C" fn cinder_set_battery_detail(
+    pct: libc::c_int,
+    status: *const c_char,
+    health: *const c_char,
+    mv: libc::c_int,
+    chg_state: libc::c_int,
+    chg_fault: libc::c_int,
+    raw: *const c_char,
+) {
     let status = cstr(status);
     let health = cstr(health);
     let raw = cstr(raw);
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_battery_detail(pct.clamp(0, 100) as u8, &status, &health,
-                                 mv, chg_state, chg_fault, &raw);
+        r.app.set_battery_detail(
+            pct.clamp(0, 100) as u8,
+            &status,
+            &health,
+            mv,
+            chg_state,
+            chg_fault,
+            &raw,
+        );
         mark_device_dirty(r);
     }
 }
@@ -5521,9 +5989,13 @@ pub extern "C" fn cinder_set_device_temps(cpu: libc::c_int, pmic: libc::c_int, a
 /// # Safety
 /// `gov` must be a valid NUL-terminated C string or null.
 #[no_mangle]
-pub unsafe extern "C" fn cinder_set_device_cpu(khz: libc::c_int, max_khz: libc::c_int,
-                                               online: libc::c_int, total: libc::c_int,
-                                               gov: *const c_char) {
+pub unsafe extern "C" fn cinder_set_device_cpu(
+    khz: libc::c_int,
+    max_khz: libc::c_int,
+    online: libc::c_int,
+    total: libc::c_int,
+    gov: *const c_char,
+) {
     let gov = cstr(gov);
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_device_cpu(khz, max_khz, online, total, &gov);
@@ -5534,12 +6006,21 @@ pub unsafe extern "C" fn cinder_set_device_cpu(khz: libc::c_int, max_khz: libc::
 /// Memory from /proc/meminfo in kB, then the music volume total and free and the app-data free, all
 /// in MB. `i32::MIN` for anything unreadable.
 #[no_mangle]
-pub extern "C" fn cinder_set_device_storage(mem_total_kb: libc::c_int, mem_avail_kb: libc::c_int,
-                                            music_total_mb: libc::c_int, music_free_mb: libc::c_int,
-                                            data_free_mb: libc::c_int) {
+pub extern "C" fn cinder_set_device_storage(
+    mem_total_kb: libc::c_int,
+    mem_avail_kb: libc::c_int,
+    music_total_mb: libc::c_int,
+    music_free_mb: libc::c_int,
+    data_free_mb: libc::c_int,
+) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_device_storage(mem_total_kb, mem_avail_kb, music_total_mb, music_free_mb,
-                                 data_free_mb);
+        r.app.set_device_storage(
+            mem_total_kb,
+            mem_avail_kb,
+            music_total_mb,
+            music_free_mb,
+            data_free_mb,
+        );
         mark_device_dirty(r);
     }
 }
@@ -5557,7 +6038,11 @@ fn base_firmware() -> &'static str {
     BASE.get_or_init(|| {
         let w1 = std::path::Path::new("/sbin/boot_complete.sh").is_file()
             && std::path::Path::new("/opt2").is_dir();
-        if w1 { "WALKMAN ONE" } else { "SONY STOCK" }
+        if w1 {
+            "WALKMAN ONE"
+        } else {
+            "SONY STOCK"
+        }
     })
 }
 
@@ -5600,7 +6085,9 @@ pub extern "C" fn cinder_toast(msg: *const c_char) {
     if msg.is_null() {
         return;
     }
-    let Ok(s) = (unsafe { CStr::from_ptr(msg) }).to_str() else { return };
+    let Ok(s) = (unsafe { CStr::from_ptr(msg) }).to_str() else {
+        return;
+    };
     if s.is_empty() {
         return;
     }
@@ -5634,7 +6121,9 @@ pub extern "C" fn cinder_clock_tick() {
         let now = std::time::Instant::now();
         let dt = now.saturating_duration_since(r.last_pos).as_millis() as i64;
         r.last_pos = now;
-        if r.scrub_ms.is_none() && r.np.playing && r.cur_duration_ms > 0
+        if r.scrub_ms.is_none()
+            && r.np.playing
+            && r.cur_duration_ms > 0
             && r.play_pos_ms < r.cur_duration_ms
         {
             // Prefer the real service position, interpolated forward from when it arrived (it
@@ -5655,7 +6144,9 @@ pub extern "C" fn cinder_clock_tick() {
             }
             // The Lyrics page repaints only when the sung line changes. This tick is ~1 s, so the
             // highlight can trail a line's start by up to that much.
-            if r.app.set_lyrics_position(pos.clamp(0, u32::MAX as i64) as u32) {
+            if r.app
+                .set_lyrics_position(pos.clamp(0, u32::MAX as i64) as u32)
+            {
                 r.dirty = true;
             }
         }
@@ -5706,7 +6197,10 @@ pub extern "C" fn cinder_clock_tick() {
             _ => false,
         };
         let on_bt = r.app.bt_route();
-        if r.queue_pending && r.np.playing && (!on_bt || last_in_sequence) && r.cur_duration_ms > 0
+        if r.queue_pending
+            && r.np.playing
+            && (!on_bt || last_in_sequence)
+            && r.cur_duration_ms > 0
             && r.play_pos_ms > 0
             && r.cur_duration_ms.saturating_sub(r.play_pos_ms) <= QUEUE_REBUILD_LEAD_MS
         {
@@ -5745,16 +6239,23 @@ pub extern "C" fn cinder_clock_tick() {
             && r.play_pos_ms > 0
             && r.cur_duration_ms.saturating_sub(r.play_pos_ms) <= QUEUE_REBUILD_LEAD_MS
         {
-            if let (Some((start, end)), Some(current)) =
-                (r.app.album_run(), r.last_track.as_ref().map(|t| t.filename.clone()))
-            {
+            if let (Some((start, end)), Some(current)) = (
+                r.app.album_run(),
+                r.last_track.as_ref().map(|t| t.filename.clone()),
+            ) {
                 if r.app.context_idx() + 1 == end && end - start >= 2 {
                     r.album_lap_staged = true;
                     let index = uri_index(r);
                     let rows = &r.app.context()[start..end];
-                    let uris = play_order(Some(&current), rows.iter().map(|row| index.get(&row.object_id).cloned()));
+                    let uris = play_order(
+                        Some(&current),
+                        rows.iter().map(|row| index.get(&row.object_id).cloned()),
+                    );
                     if uris.len() > 1 {
-                        eprintln!("cinder-ffi: repeat album — lapping {} songs", uris.len() - 1);
+                        eprintln!(
+                            "cinder-ffi: repeat album — lapping {} songs",
+                            uris.len() - 1
+                        );
                         r.pending_play = uris;
                         r.pending_play_start = 0;
                         r.queue_flush = true;
@@ -5854,10 +6355,19 @@ pub extern "C" fn cinder_scrobble_tick(playing: libc::c_int) {
         // The play counter, by the same rule and the same clock, whether or not the scrobble log
         // is being written. The shell does not call this while the volume is with a PC, so the
         // write below never lands on a volume that is not ours.
-        if let Some(path) = r.listen.tick_ms(playing != 0, dt.min(5000)).map(str::to_string) {
+        if let Some(path) = r
+            .listen
+            .tick_ms(playing != 0, dt.min(5000))
+            .map(str::to_string)
+        {
             let st = r.stats.count_play(&path, now_unix() as i64);
             r.stats_changed = std::time::Instant::now();
-            if let Some(id) = r.last_track.as_ref().filter(|t| t.filename == path).map(|t| t.object_id) {
+            if let Some(id) = r
+                .last_track
+                .as_ref()
+                .filter(|t| t.filename == path)
+                .map(|t| t.object_id)
+            {
                 r.app.set_track_stat(id, st);
                 r.dirty = true;
             }
@@ -6067,7 +6577,8 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "bt_volume" => {
                         if let Ok(n) = v.parse::<u16>() {
                             let scaled = (n * crate::VOL_BT_MAX as u16
-                                / cinder_ui::overlay::BT_VOL_MAX_LEGACY as u16) as u8;
+                                / cinder_ui::overlay::BT_VOL_MAX_LEGACY as u16)
+                                as u8;
                             r.app.set_bt_volume(scaled);
                         }
                     }
@@ -6081,7 +6592,8 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "bt_volume64" => {
                         if let Ok(n) = v.parse::<u16>() {
                             let scaled = (n * crate::VOL_BT_MAX as u16
-                                / cinder_ui::overlay::BT_VOL_MAX_LEGACY_64 as u16) as u8;
+                                / cinder_ui::overlay::BT_VOL_MAX_LEGACY_64 as u16)
+                                as u8;
                             r.app.set_bt_volume(scaled);
                         }
                     }
@@ -6151,9 +6663,21 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // Sound ▸ Advanced. All three absent in files written by older builds, which
                     // leaves the whole screen at its defaults (everything off, mode 0) — the state
                     // the device was in before the screen existed.
-                    "adv" => { if let Ok(n) = v.parse::<u8>() { r.app.set_adv_flags(n); } }
-                    "dsee_mode" => { if let Ok(n) = v.parse::<usize>() { r.app.set_dsee_mode(n); } }
-                    "vinyl_type" => { if let Ok(n) = v.parse::<usize>() { r.app.set_vinyl_type(n); } }
+                    "adv" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_adv_flags(n);
+                        }
+                    }
+                    "dsee_mode" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            r.app.set_dsee_mode(n);
+                        }
+                    }
+                    "vinyl_type" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            r.app.set_vinyl_type(n);
+                        }
+                    }
                     // Tone Control bands, RAW half-decibels. Absent in older files = flat, which
                     // is what the device had before the editor existed. set_tone_bands clamps, so
                     // a hand-edited value cannot reach the service out of range — past the end it
@@ -6162,7 +6686,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "tone" => {
                         let mut b = [0i8; cinder_ui::tone::BANDS];
                         for (i, part) in v.split(',').take(cinder_ui::tone::BANDS).enumerate() {
-                            if let Ok(n) = part.trim().parse::<i8>() { b[i] = n; }
+                            if let Ok(n) = part.trim().parse::<i8>() {
+                                b[i] = n;
+                            }
                         }
                         r.app.set_tone_bands(b);
                     }
@@ -6172,7 +6698,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "dac_eq" => {
                         let mut b = [0i8; cinder_ui::dac_eq::BANDS];
                         for (i, part) in v.split(',').take(cinder_ui::dac_eq::BANDS).enumerate() {
-                            if let Ok(n) = part.trim().parse::<i8>() { b[i] = n; }
+                            if let Ok(n) = part.trim().parse::<i8>() {
+                                b[i] = n;
+                            }
                         }
                         r.app.set_dac_eq(b);
                     }
@@ -6223,7 +6751,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         let list: Vec<i32> = v
                             .split(',')
                             .filter_map(|s| s.trim().parse::<i32>().ok())
-                            .filter(|k| (cinder_ui::fm::MIN_KHZ..=cinder_ui::fm::MAX_KHZ).contains(k))
+                            .filter(|k| {
+                                (cinder_ui::fm::MIN_KHZ..=cinder_ui::fm::MAX_KHZ).contains(k)
+                            })
                             .collect();
                         if !list.is_empty() {
                             r.app.fm_set_stations(&list);
@@ -6273,16 +6803,24 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
 ///
 /// This does NOT start playback and does not touch PlayerService. See `resume_pending`.
 #[no_mangle]
-pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c_char) -> libc::c_int {
+pub extern "C" fn cinder_resume_load(
+    seq_path: *const c_char,
+    pos_path: *const c_char,
+) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -2 };
     let cstr = |p: *const c_char| -> Option<String> {
         if p.is_null() {
             return None;
         }
-        unsafe { CStr::from_ptr(p) }.to_str().ok().map(str::to_string)
+        unsafe { CStr::from_ptr(p) }
+            .to_str()
+            .ok()
+            .map(str::to_string)
     };
-    let (Some(seq_path), Some(pos_path)) = (cstr(seq_path), cstr(pos_path)) else { return -2 };
+    let (Some(seq_path), Some(pos_path)) = (cstr(seq_path), cstr(pos_path)) else {
+        return -2;
+    };
 
     let seq_body = std::fs::read_to_string(&seq_path).unwrap_or_default();
     let pos_body = std::fs::read_to_string(&pos_path).unwrap_or_default();
@@ -6350,7 +6888,8 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     // nothing still has a "previously played", and dropping it because there is no sequence to
     // resume would empty the list on exactly the reboot where the user wants to see what they
     // were listening to.
-    r.app.history_restore(history.iter().map(song_row_of).collect());
+    r.app
+        .history_restore(history.iter().map(song_row_of).collect());
     if ctx.is_empty() && queue.is_empty() && pick.is_none() {
         return 0;
     }
@@ -6377,18 +6916,29 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     let (cur_id, rest_ids): (Option<i64>, Vec<i64>) = {
         let c = r.app.context();
         let i = r.app.context_idx();
-        (c.get(i).map(|t| t.object_id), c.iter().skip(i + 1).map(|t| t.object_id).collect())
+        (
+            c.get(i).map(|t| t.object_id),
+            c.iter().skip(i + 1).map(|t| t.object_id).collect(),
+        )
     };
-    let Some(cur) = cur_id.and_then(|id| by_id.get(&id)) else { return 0 };
+    let Some(cur) = cur_id.and_then(|id| by_id.get(&id)) else {
+        return 0;
+    };
     // Through `play_order` for the NO-ADJACENT-DUPLICATES rule: two copies of one file side by
     // side never report a track start between them, so the list and the service would part ways.
     let uris: Vec<String> = play_order(
         Some(&cur.filename),
-        rest_ids.iter().map(|id| by_id.get(id).map(|t| t.filename.clone())),
+        rest_ids
+            .iter()
+            .map(|id| by_id.get(id).map(|t| t.filename.clone())),
     );
     // Only honour the saved position if it belongs to the track we are about to resume — the two
     // files are written independently, so a crash between them can leave them one track apart.
-    let pos = if resume_id == cur.object_id { resume_pos } else { 0 };
+    let pos = if resume_id == cur.object_id {
+        resume_pos
+    } else {
+        0
+    };
 
     apply_track(&mut r.np, cur);
     r.np.liked = r.liked.contains(&cur.object_id);
@@ -6410,7 +6960,11 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     eprintln!(
         "cinder-ffi: resumed {} tracks{}, at index {} pos {} ms",
         r.app.context().len(),
-        if pick.is_some() || !queue.is_empty() { " (old-format queue spliced in)" } else { "" },
+        if pick.is_some() || !queue.is_empty() {
+            " (old-format queue spliced in)"
+        } else {
+            ""
+        },
         r.app.context_idx(),
         r.play_pos_ms
     );
@@ -6428,7 +6982,9 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
 pub extern "C" fn cinder_resume_take_pending() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let Some((uris, start, pos)) = r.resume_pending.take() else { return 0 };
+    let Some((uris, start, pos)) = r.resume_pending.take() else {
+        return 0;
+    };
     // Anything the user did between the boot and this press — swipe-queued a song, reordered the
     // queue, pressed shuffle — happened to `App`, not to this snapshot. Rebuild from the live
     // state when that is so; the current track still leads, so the press still resumes the same
@@ -6477,7 +7033,9 @@ pub extern "C" fn cinder_resume_rearm() {
         if r.resume_pending.is_some() {
             return;
         }
-        let Some(current) = r.last_track.as_ref().map(|t| t.filename.clone()) else { return };
+        let Some(current) = r.last_track.as_ref().map(|t| t.filename.clone()) else {
+            return;
+        };
         // SNAPSHOT NOW, not at the press. The USB-MSC exit reloads the library straight after
         // this, and `cinder_db_open` drops `last_track` (so the cover is re-read) — a rebuild
         // deferred to the press found no current track and gave up, and ▶ still did nothing
@@ -6541,9 +7099,11 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
             let ids: Vec<i64> = bare.iter().map(|(_, oid)| *oid).collect();
             let paths = db.tracks_by_object_ids(&ids).unwrap_or_default();
             for (aid, oid) in bare {
-                let dir = paths
-                    .get(&oid)
-                    .and_then(|t| std::path::Path::new(&t.filename).parent().map(|d| d.to_string_lossy().into_owned()));
+                let dir = paths.get(&oid).and_then(|t| {
+                    std::path::Path::new(&t.filename)
+                        .parent()
+                        .map(|d| d.to_string_lossy().into_owned())
+                });
                 if let Some(dir) = dir {
                     sources.push((aid, oid, art_cache::key_of(&format!("{dir}/#folder-cover"))));
                 }
@@ -6625,7 +7185,10 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
                 };
                 done += 1;
                 if let Ok(mut g) = cell().lock() {
-                    let Some(r) = g.as_mut() else { stop = true; break }; // renderer gone — stop
+                    let Some(r) = g.as_mut() else {
+                        stop = true;
+                        break;
+                    }; // renderer gone — stop
                     r.app.library_mut().thumbs.insert(album_id, t48);
                     r.grid_miss.remove(&album_id);
                     // ONLY IF THE SCREEN CAN SHOW ARTWORK AT ALL. This was unconditional, and the
@@ -6665,7 +7228,8 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
 /// appears, without leaving a thread sweeping a library of genuinely artless albums forever.
 const ART_BUILD_ROUNDS: u32 = 6;
 
-static ART_BUILDER_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ART_BUILDER_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 // ── The now-playing cover, decoded off the render thread ──────────────────────────────────────
 //
@@ -6688,7 +7252,9 @@ static ART_BUILDER_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::A
 /// (0..6 = bundled, 16.. = fallback, matching `text::resolve`), or -1 for an invalid codepoint.
 #[no_mangle]
 pub extern "C" fn cinder_font_probe(cp: u32) -> libc::c_int {
-    let Some(ch) = char::from_u32(cp) else { return -1 };
+    let Some(ch) = char::from_u32(cp) else {
+        return -1;
+    };
     // FontSet holds RefCells (single-threaded by design — render runs under the cinder-ffi mutex),
     // so it lives in a thread-local rather than a static: same object across calls, which is what
     // makes the per-character memory delta mean anything.
@@ -6720,7 +7286,9 @@ static COVER_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 
 /// Ask for `object_id`'s cover. Returns immediately; the worker installs it when it is ready.
 fn request_cover(r: &Render, object_id: i64) {
-    let Some(path) = r.db_path.clone() else { return };
+    let Some(path) = r.db_path.clone() else {
+        return;
+    };
     *COVER_REQ.lock().unwrap() = Some(object_id);
     COVER_WAKE.notify_one();
     if COVER_THREAD.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -6755,9 +7323,9 @@ fn request_cover(r: &Render, object_id: i64) {
             }
             let Ok(mut g) = cell().lock() else { break };
             let Some(r) = g.as_mut() else { break }; // renderer gone (shutdown)
-            // STILL WANTED? The track may have changed while we decoded. Installing anyway would
-            // paint the previous song's cover over the current one and leave it there until the
-            // next change — worse than the gradient it replaced.
+                                                     // STILL WANTED? The track may have changed while we decoded. Installing anyway would
+                                                     // paint the previous song's cover over the current one and leave it there until the
+                                                     // next change — worse than the gradient it replaced.
             if r.art_key == Some(want) {
                 r.art_full = full;
                 r.art_thumb = thumb;
@@ -6767,8 +7335,6 @@ fn request_cover(r: &Render, object_id: i64) {
         COVER_THREAD.store(false, std::sync::atomic::Ordering::SeqCst);
     });
 }
-
-
 
 /// Fingerprint of the library store's CONTENT at `path` (see `cinder_db::content_signature`), or
 /// 0 for "cannot tell" — the writer holds it, or it is damaged. Opens its own read-only connection
@@ -6864,7 +7430,10 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let t_phase = std::time::Instant::now();
     let lib = build_library_with(&db, Some(&track_stats));
     let ms_build = t_phase.elapsed().as_millis();
-    eprintln!("cinder-ffi: track stats: {} rated or played", track_stats.len());
+    eprintln!(
+        "cinder-ffi: track stats: {} rated or played",
+        track_stats.len()
+    );
     eprintln!(
         "cinder-ffi: library loaded — {} tracks, {} albums, {} artists",
         lib.songs.len(),
@@ -6880,7 +7449,10 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let t_phase = std::time::Instant::now();
     let liked = likes::liked_load_all();
     let ms_liked = t_phase.elapsed().as_millis();
-    eprintln!("cinder-ffi: liked songs: {} loaded from internal and SD card", liked.len());
+    eprintln!(
+        "cinder-ffi: liked songs: {} loaded from internal and SD card",
+        liked.len()
+    );
 
     // A liked list pushed from the PC (likesync) lands here as artist/title rows and is resolved
     // against the library that was just built — object ids are rebuilt whenever the database is, so
@@ -6896,24 +7468,29 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
             .album_groups
             .iter()
             .flat_map(|group| {
-                group.albums.iter().map(move |album| (album.album_id, group.artist.as_str()))
+                group
+                    .albums
+                    .iter()
+                    .map(move |album| (album.album_id, group.artist.as_str()))
             })
             .collect();
         lib.songs
             .iter()
             .map(|s| {
                 let filed_under = album_artist.get(&s.album_id).copied().unwrap_or("");
-                (s.object_id, s.artist.clone(), s.title.clone(), filed_under.to_string())
+                (
+                    s.object_id,
+                    s.artist.clone(),
+                    s.title.clone(),
+                    filed_under.to_string(),
+                )
             })
             .collect()
     };
-    let (outcome, imported) = likes::apply_import_all(
-        songs
-            .iter()
-            .map(|(id, artist, title, filed)| {
-                (*id, artist.as_str(), title.as_str(), filed.as_str())
-            }),
-    );
+    let (outcome, imported) =
+        likes::apply_import_all(songs.iter().map(|(id, artist, title, filed)| {
+            (*id, artist.as_str(), title.as_str(), filed.as_str())
+        }));
     let ms_import = t_phase.elapsed().as_millis();
     match outcome {
         likes::Outcome::None => {}
@@ -6941,21 +7518,21 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let t_phase = std::time::Instant::now();
     let Some(r) = guard.as_mut() else { return -2 };
     r.dirty = true; // the library (or its absence) changed -> repaint
-    // FORGET WHAT WE DECIDED ABOUT THE CURRENT COVER. `art_key` exists to stop us re-decoding the
-    // same track on every poll, and that is exactly wrong across a reopen: if the cover was read
-    // while the music volume was missing, the decode failed, the gradient went up, and art_key
-    // pinned that answer for the rest of the boot. Nothing ever asked again, so an album stayed
-    // grey after /contents came back.
-    //
-    // That is not hypothetical — it is the "anything by Sprain is just showing as a gradient"
-    // report. Sony's own stack unmounts /contents when a cable appears (see the reclaim in
-    // cinder-home), and any cover read inside that window logs `magic=unreadable` and is cached as
-    // a failure. Clearing the key here means the next paint re-requests it through the normal
-    // path; the worker installs the real cover a moment later.
-    //
-    // Cleared at INSTALL time rather than on entry (where it used to be): with the build outside
-    // the lock, frames keep running while it happens, and clearing the key early would just let
-    // those frames re-cache an answer derived from the library we are about to replace.
+                    // FORGET WHAT WE DECIDED ABOUT THE CURRENT COVER. `art_key` exists to stop us re-decoding the
+                    // same track on every poll, and that is exactly wrong across a reopen: if the cover was read
+                    // while the music volume was missing, the decode failed, the gradient went up, and art_key
+                    // pinned that answer for the rest of the boot. Nothing ever asked again, so an album stayed
+                    // grey after /contents came back.
+                    //
+                    // That is not hypothetical — it is the "anything by Sprain is just showing as a gradient"
+                    // report. Sony's own stack unmounts /contents when a cable appears (see the reclaim in
+                    // cinder-home), and any cover read inside that window logs `magic=unreadable` and is cached as
+                    // a failure. Clearing the key here means the next paint re-requests it through the normal
+                    // path; the worker installs the real cover a moment later.
+                    //
+                    // Cleared at INSTALL time rather than on entry (where it used to be): with the build outside
+                    // the lock, frames keep running while it happens, and clearing the key early would just let
+                    // those frames re-cache an answer derived from the library we are about to replace.
     r.art_key = None;
     // …and make the next now-playing poll count as a TRACK CHANGE, because that is the only thing
     // that re-reads the cover. The re-request is nested inside `if changed`, so clearing art_key on
@@ -7115,8 +7692,12 @@ pub extern "C" fn cinder_prev_means_restart() -> libc::c_int {
 pub extern "C" fn cinder_prepare_previous_play() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let Some(current) = r.last_track.clone() else { return 0 };
-    let Some(target) = r.play_history.pop() else { return 0 };
+    let Some(current) = r.last_track.clone() else {
+        return 0;
+    };
+    let Some(target) = r.play_history.pop() else {
+        return 0;
+    };
 
     // Keep the remaining history before the target, then replay the target and current item,
     // followed by the rest of the list. The start index points at target, making repeated presses
@@ -7125,7 +7706,11 @@ pub extern "C" fn cinder_prepare_previous_play() -> libc::c_int {
     let start = sequence.len();
     sequence.push(target.filename.clone());
     sequence.push(current.filename.clone());
-    sequence.extend(play_order_uris(r, Some(&current.filename)).into_iter().skip(1));
+    sequence.extend(
+        play_order_uris(r, Some(&current.filename))
+            .into_iter()
+            .skip(1),
+    );
     r.pending_play = sequence;
     r.pending_play_start = start;
     r.rewind_from = Some(current.object_id);
@@ -7182,10 +7767,10 @@ pub extern "C" fn cinder_prepare_skip_play() -> libc::c_int {
     // whatever order it holds NOW rather than the track being skipped away from.
     let uris = play_order_uris(r, None);
     if uris.is_empty() {
-        return 0;   // nothing after this resolved to a playable file; fall through to NextTrack
+        return 0; // nothing after this resolved to a playable file; fall through to NextTrack
     }
     r.queue_pending = false;
-    r.queue_flush = false;   // this IS the flush; do not let the boundary re-issue it again
+    r.queue_flush = false; // this IS the flush; do not let the boundary re-issue it again
     r.pending_play = uris;
     r.pending_play_start = 0;
     r.dirty = true;
@@ -7196,7 +7781,9 @@ pub extern "C" fn cinder_prepare_skip_play() -> libc::c_int {
 /// local clock. It is the best point to resume after an immediate queue sequence rebuild.
 #[no_mangle]
 pub extern "C" fn cinder_play_position_ms() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.play_pos_ms.clamp(0, i32::MAX as i64) as libc::c_int)
+    cell().lock().unwrap().as_ref().map_or(0, |r| {
+        r.play_pos_ms.clamp(0, i32::MAX as i64) as libc::c_int
+    })
 }
 
 /// Tell the UI that playback jumped to `ms` because the SHELL seeked on its own (the ◁ rewind
@@ -7323,7 +7910,9 @@ fn liked_export_tsv(r: &Render) {
 /// Toggle the current track's liked state. Takes `&mut Render` because the action mapper already
 /// holds the lock — calling the FFI wrapper from there would deadlock.
 fn liked_toggle_current(r: &mut Render) -> libc::c_int {
-    let Some(id) = r.last_track.as_ref().map(|t| t.object_id) else { return -1 };
+    let Some(id) = r.last_track.as_ref().map(|t| t.object_id) else {
+        return -1;
+    };
     let now_liked = if r.liked.remove(&id) {
         false
     } else {
@@ -7416,12 +8005,17 @@ pub extern "C" fn cinder_set_now_playing_uri(
     r.np.playing = playing != 0;
     r.np.battery = battery.clamp(0, 100) as u8;
     r.dirty = true; // now-playing changed -> repaint
-    let track = r.db.as_ref().and_then(|db| db.track_by_filename(&u).ok().flatten());
+    let track =
+        r.db.as_ref()
+            .and_then(|db| db.track_by_filename(&u).ok().flatten());
     match track {
         Some(t) => {
             // Reset the local play-clock only on a genuine track change; seed it from the passed
             // progress hint (usually 0; >0 once the shell can supply a real PlayStatus position).
-            let changed = r.last_track.as_ref().map_or(true, |p| p.object_id != t.object_id);
+            let changed = r
+                .last_track
+                .as_ref()
+                .map_or(true, |p| p.object_id != t.object_id);
             apply_track(&mut r.np, &t);
             if changed {
                 if let Some(previous) = r.last_track.as_ref() {
@@ -7515,8 +8109,7 @@ pub extern "C" fn cinder_set_now_playing_uri(
                     // staged, `pending_play` is a sequence PlayerService has never seen, and
                     // matching against it would drop this queue edit on the floor.
                     let already_live = !r.queue_flush
-                        && r
-                            .pending_play
+                        && r.pending_play
                             .iter()
                             .position(|u| *u == t.filename)
                             .is_some_and(|i| r.pending_play[i..] == uris[..]);
@@ -7549,7 +8142,10 @@ pub extern "C" fn cinder_set_now_playing_uri(
             }
             set_progress(&mut r.np, r.play_pos_ms, r.cur_duration_ms);
             // The play counter times the same track (`stats::Listen` ignores a re-poll itself).
-            r.listen.set_track(&t.filename, (t.duration_raw.unwrap_or(0).max(0) / 1000) as u32);
+            r.listen.set_track(
+                &t.filename,
+                (t.duration_raw.unwrap_or(0).max(0) / 1000) as u32,
+            );
             // Feed the scrobbler on a genuine track change (not a re-poll of the same track).
             if let Some(s) = r.scrob.as_mut() {
                 let meta = scrobble::Track {
@@ -7573,7 +8169,10 @@ pub extern "C" fn cinder_set_now_playing_uri(
             let lyr = lyrics::load_for(&t.filename);
             let mut rows = track_info_rows(r, &t);
             if let Some(l) = &lyr {
-                let at = rows.iter().position(|(k, _)| k == "Album").map_or(rows.len().min(2), |i| i + 1);
+                let at = rows
+                    .iter()
+                    .position(|(k, _)| k == "Album")
+                    .map_or(rows.len().min(2), |i| i + 1);
                 rows.insert(at, ("Lyrics".to_string(), l.summary()));
             }
             r.app.set_track_info(rows);
@@ -7631,8 +8230,14 @@ mod tests {
     /// change is saved (`play_in_order`).
     #[test]
     fn playing_in_order_turns_shuffle_off_once() {
-        let mut np = super::Np { shuffle: true, ..Default::default() };
-        assert!(super::shuffle_off(&mut np), "a change must be reported so it is saved");
+        let mut np = super::Np {
+            shuffle: true,
+            ..Default::default()
+        };
+        assert!(
+            super::shuffle_off(&mut np),
+            "a change must be reported so it is saved"
+        );
         assert!(!np.shuffle);
         assert!(!super::shuffle_off(&mut np), "already off: nothing to save");
         assert!(!np.shuffle);
@@ -7661,7 +8266,9 @@ mod tests {
     /// Silently passes when the variable is unset, so it costs a normal `cargo test` nothing.
     #[test]
     fn profile_library_build() {
-        let Ok(path) = std::env::var("CINDER_PROFILE_DB") else { return };
+        let Ok(path) = std::env::var("CINDER_PROFILE_DB") else {
+            return;
+        };
         let t = |label: &str, d: std::time::Duration| {
             println!("  {label:<28} {:>9.1} ms", d.as_secs_f64() * 1000.0);
         };
@@ -7722,7 +8329,10 @@ mod tests {
         let st = app.fm_stations();
         body.push_str(&format!(
             "fm_stations={}\n",
-            st.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",")
+            st.iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         ));
         assert_eq!(body, "fm_khz=105400\nfm_stations=98300,106200,91000\n");
 
@@ -7753,12 +8363,20 @@ mod tests {
             .filter_map(|s| s.trim().parse::<i32>().ok())
             .filter(|k| (cinder_ui::fm::MIN_KHZ..=cinder_ui::fm::MAX_KHZ).contains(k))
             .collect();
-        assert_eq!(list, vec![98_300, 106_200], "out-of-band and unparseable both dropped");
+        assert_eq!(
+            list,
+            vec![98_300, 106_200],
+            "out-of-band and unparseable both dropped"
+        );
         app.fm_set_stations(&list);
         assert_eq!(app.fm_stations(), &[98_300, 106_200]);
 
         app.fm_report_khz(999_999);
-        assert_eq!(app.fm_khz(), cinder_ui::fm::MAX_KHZ, "clamped, not stored raw");
+        assert_eq!(
+            app.fm_khz(),
+            cinder_ui::fm::MAX_KHZ,
+            "clamped, not stored raw"
+        );
     }
 
     /// A stopped analyzer must not leave its last frame on screen. The bars fall to nothing and the
@@ -7774,21 +8392,67 @@ mod tests {
     fn every_screen_has_a_distinct_panic_name() {
         use cinder_ui::nav::Screen as S;
         let all = [
-            S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::Artist, S::Playlist, S::UpNext, S::Eq,
-            S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
-            S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
-            S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
-            S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe, S::Display, S::Palette, S::Help,
-            S::DacEq, S::PlaylistEdit, S::ViewEdit, S::Soundscape, S::Profiles,
+            S::Lock,
+            S::NowPlaying,
+            S::Menu,
+            S::Library,
+            S::Album,
+            S::Artist,
+            S::Playlist,
+            S::UpNext,
+            S::Eq,
+            S::Sound,
+            S::Bluetooth,
+            S::Settings,
+            S::Fm,
+            S::UsbDac,
+            S::Receiver,
+            S::Onboarding,
+            S::UsbStorage,
+            S::Shelf,
+            S::Pairing,
+            S::GenreFilter,
+            S::TrackInfo,
+            S::Folders,
+            S::ClockSet,
+            S::Advanced,
+            S::Tone,
+            S::BtCodec,
+            S::Keyboard,
+            S::PlaylistPick,
+            S::TrackPick,
+            S::Device,
+            S::VizSet,
+            S::Lyrics,
+            S::Search,
+            S::SensMe,
+            S::Display,
+            S::Palette,
+            S::Help,
+            S::DacEq,
+            S::PlaylistEdit,
+            S::ViewEdit,
+            S::Soundscape,
+            S::Profiles,
         ];
         // Two ordinals (41, 42) are spare — see SCREEN_NAMES.
         const RESERVED: usize = 2;
-        assert_eq!(all.len() + RESERVED, SCREEN_NAMES.len(), "table and variant list disagree");
+        assert_eq!(
+            all.len() + RESERVED,
+            SCREEN_NAMES.len(),
+            "table and variant list disagree"
+        );
         let mut seen = std::collections::BTreeSet::new();
         for sc in all {
             let i = screen_ord(sc) as usize;
-            assert!(i < SCREEN_NAMES.len(), "{sc:?} maps past the end of the name table");
-            assert!(seen.insert(i), "{sc:?} shares an ordinal with another screen");
+            assert!(
+                i < SCREEN_NAMES.len(),
+                "{sc:?} maps past the end of the name table"
+            );
+            assert!(
+                seen.insert(i),
+                "{sc:?} shares an ordinal with another screen"
+            );
         }
     }
 
@@ -7798,9 +8462,17 @@ mod tests {
     #[test]
     fn followed_members_survive_a_save_and_unfollowed_ones_are_shared() {
         use cinder_ui::nav::{SoundSetup, FOLLOW_DAC_EQ, FOLLOW_MONO};
-        let spare = SoundSetup { mono: true, linear_amp: true, dac_eq: [1, 2, 3, -4, 5], ..SoundSetup::default() };
+        let spare = SoundSetup {
+            mono: true,
+            linear_amp: true,
+            dac_eq: [1, 2, 3, -4, 5],
+            ..SoundSetup::default()
+        };
         let body = format!("setup=0\n{}", setup_body(&spare));
-        assert!(body.contains("bank_mono=1\nbank_amp=1\nbank_dac_eq=1,2,3,-4,5\n"), "{body}");
+        assert!(
+            body.contains("bank_mono=1\nbank_amp=1\nbank_dac_eq=1,2,3,-4,5\n"),
+            "{body}"
+        );
         let load = |follow: u8| {
             let mut pl = ProfileLoad::default();
             for line in body.lines() {
@@ -7813,9 +8485,16 @@ mod tests {
             app.setup_inactive()
         };
         let got = load(FOLLOW_MONO | FOLLOW_DAC_EQ);
-        assert_eq!((got.mono, got.linear_amp, got.dac_eq), (true, false, [1, 2, 3, -4, 5]));
+        assert_eq!(
+            (got.mono, got.linear_amp, got.dac_eq),
+            (true, false, [1, 2, 3, -4, 5])
+        );
         let got = load(0);
-        assert_eq!((got.mono, got.linear_amp, got.dac_eq), (false, false, [0; 5]), "none followed: all live");
+        assert_eq!(
+            (got.mono, got.linear_amp, got.dac_eq),
+            (false, false, [0; 5]),
+            "none followed: all live"
+        );
     }
 
     /// Both sound profiles and the per-output choice survive a save and a load — the whole of each,
@@ -7825,21 +8504,43 @@ mod tests {
     fn both_profiles_and_the_output_map_survive_a_save() {
         use cinder_ui::nav::SoundSetup;
         let spare = SoundSetup {
-            dsee: true, vpt: true, vpt_mode: 2, dc: true, dc_type: 4, clear: false, balance: 62,
-            eq_preset: 0, eq_bands: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10],
-            src_direct: true, clear_phase: true, dsee_custom: true, dsee_mode: 3, vinyl_type: 2,
-            tone: true, tone_bands: [4, -6, 8],
+            dsee: true,
+            vpt: true,
+            vpt_mode: 2,
+            dc: true,
+            dc_type: 4,
+            clear: false,
+            balance: 62,
+            eq_preset: 0,
+            eq_bands: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10],
+            src_direct: true,
+            clear_phase: true,
+            dsee_custom: true,
+            dsee_mode: 3,
+            vinyl_type: 2,
+            tone: true,
+            tone_bands: [4, -6, 8],
             ..SoundSetup::default()
         };
-        let body = format!("setup=0\n{}{}", setup_body(&spare), profiles_body([0, 1, 1]));
-        assert!(body.contains("profile_jack=a\nprofile_bt=b\nprofile_usb=b\n"), "{body}");
+        let body = format!(
+            "setup=0\n{}{}",
+            setup_body(&spare),
+            profiles_body([0, 1, 1])
+        );
+        assert!(
+            body.contains("profile_jack=a\nprofile_bt=b\nprofile_usb=b\n"),
+            "{body}"
+        );
 
         let mut pl = ProfileLoad::default();
         for line in body.lines() {
             let (k, v) = line.split_once('=').unwrap();
             assert!(pl.line(k, v), "{k} is a profile key and was not taken");
         }
-        assert!(!pl.line("eq", "0,0"), "the live profile's keys are not ProfileLoad's");
+        assert!(
+            !pl.line("eq", "0,0"),
+            "the live profile's keys are not ProfileLoad's"
+        );
         let mut app = cinder_ui::nav::App::new();
         pl.install(&mut app);
         assert_eq!(app.setup_inactive(), spare);
@@ -7849,7 +8550,13 @@ mod tests {
         // Written while Bluetooth (B) was live: the boot is on the jack, so A must come back live
         // and what the file called "live" must be banked as B.
         let mut pl = ProfileLoad::default();
-        for line in format!("setup=1\n{}{}", setup_body(&SoundSetup::default()), profiles_body([0, 1, 0])).lines() {
+        for line in format!(
+            "setup=1\n{}{}",
+            setup_body(&SoundSetup::default()),
+            profiles_body([0, 1, 0])
+        )
+        .lines()
+        {
             let (k, v) = line.split_once('=').unwrap();
             pl.line(k, v);
         }
@@ -7871,26 +8578,53 @@ mod tests {
         app.set_tone_bands([6, 0, -6]);
         app.set_vinyl_type(3);
         let mut pl = ProfileLoad::default();
-        for (k, v) in [("setup", "0"), ("bank_sound", "1"), ("bank_balance", "50"), ("bank_preset", "3")] {
+        for (k, v) in [
+            ("setup", "0"),
+            ("bank_sound", "1"),
+            ("bank_balance", "50"),
+            ("bank_preset", "3"),
+        ] {
             pl.line(k, v);
         }
         pl.install(&mut app);
         let b = app.setup_inactive();
-        assert!(b.src_direct && b.tone && b.dsee, "the spare lost the shared Advanced values");
+        assert!(
+            b.src_direct && b.tone && b.dsee,
+            "the spare lost the shared Advanced values"
+        );
         assert_eq!((b.tone_bands, b.vinyl_type), ([6, 0, -6], 3));
-        assert_eq!(app.profile_map(), [0, 0, 0], "no profile_* keys: every output on A");
+        assert_eq!(
+            app.profile_map(),
+            [0, 0, 0],
+            "no profile_* keys: every output on A"
+        );
 
         let mut pl = ProfileLoad::default();
         for (k, v) in [
-            ("bank_sound", "zz"), ("bank_tone", "99,-99,x"), ("bank_eq", "127,-128"),
-            ("profile_bt", "q"), ("profile_usb", "B"), ("bank_adv", "255"), ("bank_dsee_mode", "999"),
+            ("bank_sound", "zz"),
+            ("bank_tone", "99,-99,x"),
+            ("bank_eq", "127,-128"),
+            ("profile_bt", "q"),
+            ("profile_usb", "B"),
+            ("bank_adv", "255"),
+            ("bank_dsee_mode", "999"),
         ] {
             assert!(pl.line(k, v));
         }
-        assert_eq!(pl.bank.tone_bands, [cinder_ui::tone::BAND_MAX, -cinder_ui::tone::BAND_MAX, 0]);
-        assert_eq!(&pl.bank.eq_bands[..2], &[crate::EQ_BAND_MAX, -crate::EQ_BAND_MAX]);
+        assert_eq!(
+            pl.bank.tone_bands,
+            [cinder_ui::tone::BAND_MAX, -cinder_ui::tone::BAND_MAX, 0]
+        );
+        assert_eq!(
+            &pl.bank.eq_bands[..2],
+            &[crate::EQ_BAND_MAX, -crate::EQ_BAND_MAX]
+        );
         assert_eq!(pl.profiles, [0, 0, 1]);
-        assert_eq!(pl.bank.adv_bits(), 0b1_1111, "bit 5 (the amp) is not a profile value");
+        assert_eq!(
+            pl.bank.adv_bits(),
+            0b1_1111,
+            "bit 5 (the amp) is not a profile value"
+        );
         // The out-of-range mode is clamped when the spare goes live.
         let mut app = cinder_ui::nav::App::new();
         pl.bank_seen = true;
@@ -7924,7 +8658,11 @@ mod tests {
     #[test]
     fn the_time_of_day_names_match_the_channel_table() {
         for (id, name) in cinder_ui::model::SENSME_TIME_NAMES {
-            assert_eq!(cinder_db::SENSME_CHANNELS[id as usize], name, "channel {id}");
+            assert_eq!(
+                cinder_db::SENSME_CHANNELS[id as usize],
+                name,
+                "channel {id}"
+            );
         }
     }
 
@@ -7935,7 +8673,10 @@ mod tests {
         assert!(viz_decay_levels(&mut lv, 100));
         assert!((lv[0] - 0.75).abs() < 1e-6, "got {lv:?}");
         assert!((lv[1] - 0.25).abs() < 1e-6, "got {lv:?}");
-        assert!(lv[2] <= 0.0, "the smallest bar should have bottomed out: {lv:?}");
+        assert!(
+            lv[2] <= 0.0,
+            "the smallest bar should have bottomed out: {lv:?}"
+        );
         // Keep going: it must reach empty, not hover just above zero forever.
         for _ in 0..10 {
             viz_decay_levels(&mut lv, 100);
@@ -7950,7 +8691,10 @@ mod tests {
         let mut lv: Vec<f32> = Vec::new();
         assert!(!viz_decay_levels(&mut lv, 100));
         let mut lv = vec![0.0f32; 4];
-        assert!(viz_decay_levels(&mut lv, 100), "all-zero bars still need clearing once");
+        assert!(
+            viz_decay_levels(&mut lv, 100),
+            "all-zero bars still need clearing once"
+        );
         assert!(lv.is_empty());
         assert!(!viz_decay_levels(&mut lv, 100), "and then never again");
     }
@@ -7975,10 +8719,22 @@ mod tests {
 
     #[test]
     fn codec_from_extension() {
-        assert_eq!(codec_label("/music/x.flac", true), ("FLAC · Hi-Res".into(), "FLAC HR".into()));
-        assert_eq!(codec_label("/music/x.mp3", false), ("MP3".into(), "MP3".into()));
-        assert_eq!(codec_label("/music/noext", false), ("PCM".into(), "PCM".into()));
-        assert_eq!(codec_label("/a/b.DSF", true), ("DSF · Hi-Res".into(), "DSF HR".into()));
+        assert_eq!(
+            codec_label("/music/x.flac", true),
+            ("FLAC · Hi-Res".into(), "FLAC HR".into())
+        );
+        assert_eq!(
+            codec_label("/music/x.mp3", false),
+            ("MP3".into(), "MP3".into())
+        );
+        assert_eq!(
+            codec_label("/music/noext", false),
+            ("PCM".into(), "PCM".into())
+        );
+        assert_eq!(
+            codec_label("/a/b.DSF", true),
+            ("DSF · Hi-Res".into(), "DSF HR".into())
+        );
     }
 
     #[test]
@@ -8096,7 +8852,10 @@ mod tests {
             ..Default::default()
         };
         // Same names, different case, as the de-dup folds case.
-        let ours = vec![row(-1, "Late Night On The Bus Mix 08", 24, true), row(-2, "Teef", 24, true)];
+        let ours = vec![
+            row(-1, "Late Night On The Bus Mix 08", 24, true),
+            row(-2, "Teef", 24, true),
+        ];
         let sonys = [
             row(33582, "late night on the bus mix 08", 24, false),
             row(33406, "TEEF", 24, false),
@@ -8106,15 +8865,30 @@ mod tests {
         let merged = merge_playlist_rows(ours, &sonys);
         assert_eq!(merged.len(), 3, "one row per name, not per source");
 
-        let by = |n: &str| merged.iter().find(|r| r.name.eq_ignore_ascii_case(n)).unwrap().clone();
-        assert!(by("Teef").user, "the collision must keep OUR row, or it cannot be edited");
-        assert_eq!(by("Teef").id, -2, "and keep our id, which is what writes the file back");
+        let by = |n: &str| {
+            merged
+                .iter()
+                .find(|r| r.name.eq_ignore_ascii_case(n))
+                .unwrap()
+                .clone()
+        };
+        assert!(
+            by("Teef").user,
+            "the collision must keep OUR row, or it cannot be edited"
+        );
+        assert_eq!(
+            by("Teef").id,
+            -2,
+            "and keep our id, which is what writes the file back"
+        );
         assert!(by("Late Night On The Bus Mix 08").user);
         // A playlist only Sony knows about is still listed — just not editable.
         assert!(!by("Hi-fi").user);
 
         assert!(
-            merged.windows(2).all(|w| w[0].name.to_lowercase() <= w[1].name.to_lowercase()),
+            merged
+                .windows(2)
+                .all(|w| w[0].name.to_lowercase() <= w[1].name.to_lowercase()),
             "still sorted by name"
         );
     }
@@ -8149,7 +8923,11 @@ mod tests {
         // in-memory fixture can't exercise it because Db caches the DURATION akey at open,
         // before this test populates the schema table.)
         // artist track counts
-        let bfl_artist = lib.artists.iter().find(|a| a.name == "Benjamin Francis Leftwich").unwrap();
+        let bfl_artist = lib
+            .artists
+            .iter()
+            .find(|a| a.name == "Benjamin Francis Leftwich")
+            .unwrap();
         assert_eq!(bfl_artist.tracks, 2);
         assert_eq!(bfl_artist.albums, 1);
     }
@@ -8159,16 +8937,34 @@ mod tests {
     #[test]
     fn build_library_reads_sensme_channels() {
         let lib = build_library(&fixture_db());
-        assert_eq!(lib.sensme_tracks, 2, "two of the three tracks were analysed");
+        assert_eq!(
+            lib.sensme_tracks, 2,
+            "two of the three tracks were analysed"
+        );
         let names: Vec<&str> = lib.channels.iter().map(|c| c.name).collect();
-        assert_eq!(names, vec!["Active", "Morning"], "only the channels with members");
+        assert_eq!(
+            names,
+            vec!["Active", "Morning"],
+            "only the channels with members"
+        );
         let active = &lib.channels[0];
         assert_eq!(active.id, 0);
-        let titles: Vec<&str> =
-            active.tracks.iter().map(|&i| lib.songs[i as usize].title.as_str()).collect();
+        let titles: Vec<&str> = active
+            .tracks
+            .iter()
+            .map(|&i| lib.songs[i as usize].title.as_str())
+            .collect();
         assert_eq!(titles, vec!["Atlas Hands", "Harvest Moon"]);
-        assert_eq!(lib.channels[1].tracks.len(), 1, "Morning has only the first track");
-        let box_of_stones = lib.songs.iter().find(|s| s.title == "Box of Stones").unwrap();
+        assert_eq!(
+            lib.channels[1].tracks.len(),
+            1,
+            "Morning has only the first track"
+        );
+        let box_of_stones = lib
+            .songs
+            .iter()
+            .find(|s| s.title == "Box of Stones")
+            .unwrap();
         assert_eq!(box_of_stones.sensme, 0, "never analysed, so in no channel");
     }
 
@@ -8185,19 +8981,28 @@ mod tests {
         };
         assert_eq!(
             uris(0),
-            Some(vec!["/music/atlas.flac".to_string(), "/music/harvest.flac".to_string()]),
+            Some(vec![
+                "/music/atlas.flac".to_string(),
+                "/music/harvest.flac".to_string()
+            ]),
         );
         assert_eq!(uris(8), Some(vec!["/music/atlas.flac".to_string()]));
         assert_eq!(
             uris(cinder_ui::sensme::ALL),
-            Some(vec!["/music/atlas.flac".to_string(), "/music/harvest.flac".to_string()]),
+            Some(vec![
+                "/music/atlas.flac".to_string(),
+                "/music/harvest.flac".to_string()
+            ]),
             "the track in two channels appears once",
         );
         // A channel nothing is in, and one that does not exist, play nothing rather than
         // everything — the failure that turns "this channel is empty" into "shuffle the library".
         assert_eq!(uris(5), None);
         assert_eq!(uris(200), None);
-        assert!(sensme_tracks(None, &lib, 0).is_none(), "no database, no sequence");
+        assert!(
+            sensme_tracks(None, &lib, 0).is_none(),
+            "no database, no sequence"
+        );
     }
 
     /// Playlists reach the browsable library, and the orphan type-3 row (object 7, no parent)
@@ -8221,9 +9026,18 @@ mod tests {
     #[test]
     fn play_playlist_resolves_uris_in_saved_order() {
         let db = fixture_db();
-        let uris: Vec<String> =
-            playlist_tracks(Some(&db), 60).unwrap().into_iter().map(|t| t.filename).collect();
-        assert_eq!(uris, vec!["/music/harvest.flac".to_string(), "/music/atlas.flac".to_string()]);
+        let uris: Vec<String> = playlist_tracks(Some(&db), 60)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.filename)
+            .collect();
+        assert_eq!(
+            uris,
+            vec![
+                "/music/harvest.flac".to_string(),
+                "/music/atlas.flac".to_string()
+            ]
+        );
     }
 
     /// Browsing groups by ALBUM ARTIST. The fixture's second track has a different TRACK artist
@@ -8237,7 +9051,9 @@ mod tests {
     fn the_library_carries_album_artist_format_and_stats() {
         let db = fixture_db();
         let tracks = db.tracks(cinder_db::Sort::Title).unwrap();
-        let guest = tracks.iter().find(|t| t.artist != t.album_artist && !t.album_artist.is_empty())
+        let guest = tracks
+            .iter()
+            .find(|t| t.artist != t.album_artist && !t.album_artist.is_empty())
             .expect("the fixture has a guest track");
         let own = tracks.iter().find(|t| t.object_id == 1).unwrap();
 
@@ -8250,15 +9066,31 @@ mod tests {
 
         let lib = build_library_with(&db, Some(&store));
         let row = |id: i64| lib.songs.iter().find(|s| s.object_id == id).unwrap();
-        assert_eq!(row(own.object_id).album_artist, "", "same as the artist: nothing stored");
+        assert_eq!(
+            row(own.object_id).album_artist,
+            "",
+            "same as the artist: nothing stored"
+        );
         assert_eq!(row(own.object_id).group_artist(), own.artist);
-        assert_eq!(row(guest.object_id).group_artist(), guest.album_artist, "a guest files under the album artist");
+        assert_eq!(
+            row(guest.object_id).group_artist(),
+            guest.album_artist,
+            "a guest files under the album artist"
+        );
         assert_eq!(row(own.object_id).format, cinder_ui::model::Format::Flac);
         assert_eq!(lib.stat(own.object_id).rating, 5);
         assert_eq!(lib.stat(guest.object_id).plays, 1);
-        assert_eq!(lib.stats.len(), 2, "a path the library does not hold maps to nothing");
+        assert_eq!(
+            lib.stats.len(),
+            2,
+            "a path the library does not hold maps to nothing"
+        );
         // The album page's rating is the mean of what is rated in it.
-        let album = lib.albums_flat().into_iter().find(|a| a.track_list.iter().any(|s| s.object_id == own.object_id)).unwrap();
+        let album = lib
+            .albums_flat()
+            .into_iter()
+            .find(|a| a.track_list.iter().any(|s| s.object_id == own.object_id))
+            .unwrap();
         assert_eq!(lib.album_rating(album), Some(5));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -8267,7 +9099,11 @@ mod tests {
     fn browsing_groups_by_album_artist_not_track_artist() {
         let lib = build_library(&fixture_db());
         // One album, one artist group — not one group per guest.
-        assert_eq!(lib.album_groups.len(), 2, "expected one group per ALBUM artist");
+        assert_eq!(
+            lib.album_groups.len(),
+            2,
+            "expected one group per ALBUM artist"
+        );
         let smoke = lib
             .album_groups
             .iter()
@@ -8275,7 +9111,11 @@ mod tests {
             .expect("Last Smoke must appear under an album-artist group");
         assert_eq!(smoke.artist, "Benjamin Francis Leftwich");
         assert_eq!(
-            smoke.albums.iter().filter(|a| a.name == "Last Smoke").count(),
+            smoke
+                .albums
+                .iter()
+                .filter(|a| a.name == "Last Smoke")
+                .count(),
             1,
             "the album was split by a guest track artist"
         );
@@ -8293,10 +9133,20 @@ mod tests {
             guest_artist.arts
         );
         // And its track count is its OWN album's, not inflated by the guest track.
-        assert_eq!(guest_artist.tracks, 1, "a guest track was counted against the wrong artist");
+        assert_eq!(
+            guest_artist.tracks, 1,
+            "a guest track was counted against the wrong artist"
+        );
         // …but the SONG row still credits the guest, which is where it belongs.
-        let guest = lib.songs.iter().find(|s| s.title == "Box of Stones").unwrap();
-        assert_eq!(guest.artist, "Cold Stone & Sea", "song rows must show the track artist");
+        let guest = lib
+            .songs
+            .iter()
+            .find(|s| s.title == "Box of Stones")
+            .unwrap();
+        assert_eq!(
+            guest.artist, "Cold Stone & Sea",
+            "song rows must show the track artist"
+        );
     }
 
     /// Every shuffle scope resolves to a non-empty queue drawn only from real tracks, and none of
@@ -8305,15 +9155,23 @@ mod tests {
     fn shuffle_scopes_resolve_to_real_tracks() {
         use cinder_ui::nav::ShuffleScope as S;
         let db = fixture_db();
-        let all: std::collections::BTreeSet<&str> =
-            ["/music/atlas.flac", "/music/box.flac", "/music/harvest.flac"].into_iter().collect();
+        let all: std::collections::BTreeSet<&str> = [
+            "/music/atlas.flac",
+            "/music/box.flac",
+            "/music/harvest.flac",
+        ]
+        .into_iter()
+        .collect();
         for scope in [S::AllSongs, S::ByAlbum, S::ByArtist, S::Playlist] {
             let (seq, pre) = shuffle_tracks(Some(&db), scope, &keep_all)
                 .unwrap_or_else(|| panic!("{scope:?} empty"));
             let uris = uris_of(seq.clone());
             assert!(!uris.is_empty());
             for u in &uris {
-                assert!(all.contains(u.as_str()), "{scope:?} produced a non-track: {u}");
+                assert!(
+                    all.contains(u.as_str()),
+                    "{scope:?} produced a non-track: {u}"
+                );
             }
             // EVERY scope reports the order it replaced, and it describes exactly the sequence
             // handed back — `App::note_pre_shuffle` refuses one of a different length, so a scope
@@ -8322,11 +9180,26 @@ mod tests {
             let mut b: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
             a.sort_unstable();
             b.sort_unstable();
-            assert_eq!(a, b, "{scope:?}: the pre-shuffle order is not this sequence");
+            assert_eq!(
+                a, b,
+                "{scope:?}: the pre-shuffle order is not this sequence"
+            );
         }
         // AllSongs is the whole library; ByAlbum keeps every track too (it only reorders albums).
-        assert_eq!(shuffle_tracks(Some(&db), S::AllSongs, &keep_all).unwrap().0.len(), 3);
-        assert_eq!(shuffle_tracks(Some(&db), S::ByAlbum, &keep_all).unwrap().0.len(), 3);
+        assert_eq!(
+            shuffle_tracks(Some(&db), S::AllSongs, &keep_all)
+                .unwrap()
+                .0
+                .len(),
+            3
+        );
+        assert_eq!(
+            shuffle_tracks(Some(&db), S::ByAlbum, &keep_all)
+                .unwrap()
+                .0
+                .len(),
+            3
+        );
     }
 
     /// The band's caption names the active filter, so the band has to obey it — on BOTH axes. The
@@ -8391,7 +9264,6 @@ mod tests {
         }
     }
 
-
     /// The play order handed to PlayerService: the audible track leads, then the rest of the
     /// list — and NO TWO ADJACENT ENTRIES ARE THE SAME FILE.
     ///
@@ -8404,7 +9276,10 @@ mod tests {
         assert!(!is_real_year(""));
         assert!(!is_real_year(" 0 "));
         assert!(is_real_year("1993"));
-        assert!(is_real_year("1990s"), "a label that is not a number is still a label");
+        assert!(
+            is_real_year("1990s"),
+            "a label that is not a number is still a label"
+        );
     }
 
     /// A long sequence is cut to a window that CONTAINS the tapped track.
@@ -8415,35 +9290,64 @@ mod tests {
         assert_eq!(play_window(m + 100, 0), (0, m));
         let (lo, hi) = play_window(3 * m, 600);
         assert!((lo..hi).contains(&600) && hi - lo == m, "{lo}..{hi}");
-        assert_eq!(600 - lo, m / 4, "a quarter of the window before the tapped track");
+        assert_eq!(
+            600 - lo,
+            m / 4,
+            "a quarter of the window before the tapped track"
+        );
         let (lo, hi) = play_window(3 * m, 3 * m - 1);
-        assert_eq!((lo, hi), (2 * m, 3 * m), "the last track keeps the window inside the list");
+        assert_eq!(
+            (lo, hi),
+            (2 * m, 3 * m),
+            "the last track keeps the window inside the list"
+        );
     }
 
     /// A 32-bit FLAC never reaches Up Next, and the start stays on the song the user chose — or
     /// the one after it when the chosen song is the one taken out.
     #[test]
     fn undecodable_tracks_leave_the_sequence_before_up_next_sees_it() {
-        let t = |f: &str| cinder_db::Track { filename: f.to_string(), ..Default::default() };
-        let names = |v: &[cinder_db::Track]| v.iter().map(|t| t.filename.clone()).collect::<Vec<_>>();
+        let t = |f: &str| cinder_db::Track {
+            filename: f.to_string(),
+            ..Default::default()
+        };
+        let names =
+            |v: &[cinder_db::Track]| v.iter().map(|t| t.filename.clone()).collect::<Vec<_>>();
         let seq = || vec![t("a"), t("wide"), t("c"), t("d")];
         let bad: std::collections::HashSet<String> = ["wide".to_string()].into();
 
         let (kept, start, dropped) = drop_undecodable(seq(), 2, &bad);
-        assert_eq!((names(&kept), start, dropped), (vec!["a".into(), "c".into(), "d".into()], 1, false),
-                   "a song after the removed one keeps pointing at itself");
+        assert_eq!(
+            (names(&kept), start, dropped),
+            (vec!["a".into(), "c".into(), "d".into()], 1, false),
+            "a song after the removed one keeps pointing at itself"
+        );
         let (kept, start, dropped) = drop_undecodable(seq(), 1, &bad);
-        assert_eq!((kept[start].filename.as_str(), dropped), ("c", true), "chosen and removed: the next song");
+        assert_eq!(
+            (kept[start].filename.as_str(), dropped),
+            ("c", true),
+            "chosen and removed: the next song"
+        );
         let (_, start, _) = drop_undecodable(seq(), 0, &bad);
         assert_eq!(start, 0, "a song before the removed one is untouched");
 
         let (kept, start, dropped) = drop_undecodable(vec![t("a"), t("wide")], 1, &bad);
-        assert_eq!((names(&kept), start, dropped), (vec!["a".to_string()], 0, true),
-                   "the last song removed wraps to the first, as the shell's backstop does");
+        assert_eq!(
+            (names(&kept), start, dropped),
+            (vec!["a".to_string()], 0, true),
+            "the last song removed wraps to the first, as the shell's backstop does"
+        );
         let (kept, _, dropped) = drop_undecodable(vec![t("wide")], 0, &bad);
-        assert!(kept.is_empty() && dropped, "nothing playable is reported, not papered over");
+        assert!(
+            kept.is_empty() && dropped,
+            "nothing playable is reported, not papered over"
+        );
         let (kept, start, dropped) = drop_undecodable(seq(), 3, &Default::default());
-        assert_eq!((kept.len(), start, dropped), (4, 3, false), "an empty set changes nothing");
+        assert_eq!(
+            (kept.len(), start, dropped),
+            (4, 3, false),
+            "an empty set changes nothing"
+        );
     }
 
     #[test]
@@ -8457,13 +9361,21 @@ mod tests {
         // …and so does a doubled pick.
         assert_eq!(
             play_order(Some("/a.flac"), [u("/b.flac"), u("/b.flac"), u("/c.flac")]),
-            vec!["/a.flac".to_string(), "/b.flac".to_string(), "/c.flac".to_string()],
+            vec![
+                "/a.flac".to_string(),
+                "/b.flac".to_string(),
+                "/c.flac".to_string()
+            ],
         );
         // But a DELIBERATE repeat with something in between is kept: the URI changes at each
         // boundary there, so each copy is reported and consumed exactly as it should be.
         assert_eq!(
             play_order(Some("/a.flac"), [u("/b.flac"), u("/a.flac")]),
-            vec!["/a.flac".to_string(), "/b.flac".to_string(), "/a.flac".to_string()],
+            vec![
+                "/a.flac".to_string(),
+                "/b.flac".to_string(),
+                "/a.flac".to_string()
+            ],
         );
         // Rows that no longer resolve to a file drop out rather than shortening the list around
         // them — and dropping one must not make its neighbours adjacent duplicates by accident.
@@ -8505,7 +9417,11 @@ mod tests {
         // still resumes exactly where it was left.
         assert_eq!(
             play_order(None, [u("/q.flac"), u("/b.flac"), u("/c.flac")]),
-            vec!["/q.flac".to_string(), "/b.flac".to_string(), "/c.flac".to_string()],
+            vec![
+                "/q.flac".to_string(),
+                "/b.flac".to_string(),
+                "/c.flac".to_string()
+            ],
         );
         // Skipping onto a pick that IS the album's next track collapses to one copy, so the
         // adjacent-duplicate rule still holds on this path (it is what stops a track playing twice
@@ -8529,7 +9445,6 @@ mod tests {
             ],
         );
     }
-
 
     /// No DB → no action (rather than an empty queue).
     #[test]
@@ -8581,12 +9496,26 @@ mod tests {
     fn uri_copy_reports_full_length_so_truncation_is_detectable() {
         let mut buf = [0i8; 32];
         let long = "/contents/MUSIC/".to_string() + &"ま".repeat(50) + "/track.flac";
-        assert!(long.len() > buf.len(), "test needs a URI longer than the buffer");
+        assert!(
+            long.len() > buf.len(),
+            "test needs a URI longer than the buffer"
+        );
 
         let got = unsafe { copy_str_into(&long, buf.as_mut_ptr(), buf.len() as libc::c_int) };
-        assert_eq!(got as usize, long.len(), "must return the FULL length, not the copied one");
-        assert!(got >= buf.len() as libc::c_int, "caller must be able to detect truncation");
-        assert_eq!(buf[buf.len() - 1], 0, "still NUL-terminated inside the buffer");
+        assert_eq!(
+            got as usize,
+            long.len(),
+            "must return the FULL length, not the copied one"
+        );
+        assert!(
+            got >= buf.len() as libc::c_int,
+            "caller must be able to detect truncation"
+        );
+        assert_eq!(
+            buf[buf.len() - 1],
+            0,
+            "still NUL-terminated inside the buffer"
+        );
 
         // One that fits reports its own length, which is < cap — the "safe to use" signal.
         let short = "/contents/a.flac";
@@ -8607,7 +9536,10 @@ mod tests {
         // A realistic torn write: a valid run, a half-written line, a blank, then more valid ids.
         std::fs::write(&p, "101\n202\n\nnot-a-number\n  303  \n\u{0}\n404").unwrap();
         let set = liked_load(p.to_str().unwrap());
-        assert_eq!(set.iter().copied().collect::<Vec<_>>(), vec![101, 202, 303, 404]);
+        assert_eq!(
+            set.iter().copied().collect::<Vec<_>>(),
+            vec![101, 202, 303, 404]
+        );
         // A missing file is an empty list, not an error — first run has no file.
         assert!(liked_load("/nonexistent/cinder/liked.conf").is_empty());
         std::fs::remove_dir_all(&dir).ok();
@@ -8617,9 +9549,18 @@ mod tests {
     fn prev_rewinds_past_the_grace_window() {
         // The reported bug: ◁ was an unconditional PlayController::PrevTrack(), so at the head of
         // a queue it did nothing at all, and mid-track it jumped away instead of restarting.
-        assert!(!prev_means_restart(0, 240_000), "at the very start ◁ steps back a track");
-        assert!(!prev_means_restart(3_000, 240_000), "the grace window itself still steps back");
-        assert!(prev_means_restart(3_001, 240_000), "past it, ◁ rewinds to the start");
+        assert!(
+            !prev_means_restart(0, 240_000),
+            "at the very start ◁ steps back a track"
+        );
+        assert!(
+            !prev_means_restart(3_000, 240_000),
+            "the grace window itself still steps back"
+        );
+        assert!(
+            prev_means_restart(3_001, 240_000),
+            "past it, ◁ rewinds to the start"
+        );
         assert!(prev_means_restart(200_000, 240_000));
         // Unknown duration (track not in the DB) → no position to rewind within, so step back and
         // let the shell's PrevTrack-failed fallback cover the head-of-sequence case.
@@ -8664,8 +9605,14 @@ mod tests {
         use cinder_ui::now_playing::{RAIL_GRAB_BOT, RAIL_GRAB_TOP, RAIL_Y};
         assert!(RAIL_GRAB_TOP <= RAIL_Y, "band must include the rail itself");
         assert!(RAIL_GRAB_BOT >= RAIL_Y + 4);
-        assert!(RAIL_GRAB_BOT - RAIL_GRAB_TOP >= 40, "too thin to hit with a thumb");
-        assert!(RAIL_GRAB_BOT < 692 - 44, "band overlaps the play/pause target");
+        assert!(
+            RAIL_GRAB_BOT - RAIL_GRAB_TOP >= 40,
+            "too thin to hit with a thumb"
+        );
+        assert!(
+            RAIL_GRAB_BOT < 692 - 44,
+            "band overlaps the play/pause target"
+        );
     }
 
     // ── the settings file is not trusted input ──────────────────────────────────────────────
@@ -8685,9 +9632,17 @@ mod tests {
     fn out_of_range_eq_gains_clamp_rather_than_zeroing_the_band() {
         // The clamp the loader applies, asserted directly on the same expression.
         let clamp = |g: i8| g.clamp(-EQ_BAND_MAX, EQ_BAND_MAX);
-        assert_eq!(clamp(127), EQ_BAND_MAX, "i8 max must pin to +20, not reach the DSP");
+        assert_eq!(
+            clamp(127),
+            EQ_BAND_MAX,
+            "i8 max must pin to +20, not reach the DSP"
+        );
         assert_eq!(clamp(-128), -EQ_BAND_MAX, "i8 min must pin to -20");
-        assert_eq!(clamp(100), EQ_BAND_MAX, "a hand-edited 100 pins to +20, not 0");
+        assert_eq!(
+            clamp(100),
+            EQ_BAND_MAX,
+            "a hand-edited 100 pins to +20, not 0"
+        );
         assert_eq!(clamp(21), EQ_BAND_MAX, "one over the top pins");
         assert_eq!(clamp(-21), -EQ_BAND_MAX, "one under the bottom pins");
         for g in -EQ_BAND_MAX..=EQ_BAND_MAX {

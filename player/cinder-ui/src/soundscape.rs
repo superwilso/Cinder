@@ -61,7 +61,11 @@ pub const LEVEL_STEP: u8 = 5;
 
 /// The label for a sound id ("Rain"), or "Off".
 pub fn label(id: u8) -> &'static str {
-    SOUNDS.iter().find(|s| s.0 == id).map(|s| s.1).unwrap_or("Off")
+    SOUNDS
+        .iter()
+        .find(|s| s.0 == id)
+        .map(|s| s.1)
+        .unwrap_or("Off")
 }
 
 /// The level curve: percent on the slider to a linear gain in thousandths, which is what the shell
@@ -211,7 +215,8 @@ pub fn chip_at(x: i32, y: i32) -> Option<usize> {
     if !(GRID_TOP - kit::CHIP_GAP / 2..GRID_BOTTOM + kit::CHIP_GAP / 2).contains(&y) {
         return None;
     }
-    let row = ((y - GRID_TOP + kit::CHIP_GAP / 2) / GRID_PITCH).clamp(0, GRID_ROWS as i32 - 1) as usize;
+    let row =
+        ((y - GRID_TOP + kit::CHIP_GAP / 2) / GRID_PITCH).clamp(0, GRID_ROWS as i32 - 1) as usize;
     let chip_y = GRID_TOP + row as i32 * GRID_PITCH;
     let col = kit::chip_at(COLS, chip_y, x, chip_y + kit::CHIP_H / 2)?;
     let i = row * COLS + col;
@@ -260,8 +265,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
     debug_assert_eq!(y, STRIP_TOP);
     kit::strip(c, t, f, STRIP_TOP, &strip_text(v));
     let sub = if v.on { label(v.sound) } else { "Off" };
-    kit::row(c, t, f, ROW_SWITCH, kit::ROW_H,
-             &Row::new("Soundscape").sub(sub).trail(Trail::Switch(v.on)).sel(sel == SEL_SWITCH));
+    kit::row(
+        c,
+        t,
+        f,
+        ROW_SWITCH,
+        kit::ROW_H,
+        &Row::new("Soundscape")
+            .sub(sub)
+            .trail(Trail::Switch(v.on))
+            .sel(sel == SEL_SWITCH),
+    );
     kit::section_label(c, t, f, SOUND_LABEL, "SOUND", None);
     for (i, (id, name)) in SOUNDS.iter().enumerate() {
         let (x, y, w) = chip_rect(i);
@@ -279,25 +293,83 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
             crate::widgets::stroke_rect(c, x - 3, y - 3, w + 6, kit::CHIP_H + 6, t.ink, 1);
         }
         let ink = if chosen && v.on { t.acc_ink } else { t.ink };
-        let st = sty(Family::Sans, Weight::SemiBold, crate::scale::SECONDARY, ink, 0.0);
+        let st = sty(
+            Family::Sans,
+            Weight::SemiBold,
+            crate::scale::SECONDARY,
+            ink,
+            0.0,
+        );
         let s = fit(f, name, &st, (w - 16) as f32);
         let tw = text::measure(f, &s, &st);
-        text::draw(c, f, x as f32 + (w as f32 - tw) / 2.0, (y + kit::CHIP_H / 2 + 6) as f32, &s, &st);
+        text::draw(
+            c,
+            f,
+            x as f32 + (w as f32 - tw) / 2.0,
+            (y + kit::CHIP_H / 2 + 6) as f32,
+            &s,
+            &st,
+        );
     }
     kit::section_label(c, t, f, LEVEL_LABEL, "LEVEL", None);
-    level_row(c, t, f, ROW_ALONE, "On its own", v.alone, sel == SEL_ALONE, v.on);
-    level_row(c, t, f, ROW_MUSIC, "With music", v.music, sel == SEL_MUSIC, v.on);
+    level_row(
+        c,
+        t,
+        f,
+        ROW_ALONE,
+        "On its own",
+        v.alone,
+        sel == SEL_ALONE,
+        v.on,
+    );
+    level_row(
+        c,
+        t,
+        f,
+        ROW_MUSIC,
+        "With music",
+        v.music,
+        sel == SEL_MUSIC,
+        v.on,
+    );
     // The note: two lines at most, dim, wrapped by words.
-    let st = sty(Family::Sans, Weight::Regular, crate::scale::SECONDARY, t.dim, 0.0);
+    let st = sty(
+        Family::Sans,
+        Weight::Regular,
+        crate::scale::SECONDARY,
+        t.dim,
+        0.0,
+    );
     let mut y = NOTE_TOP + 26;
-    for line in crate::track_info::wrap(f, reach_text(v.hook), &st, (kit::RIGHT - kit::LEFT) as f32).iter().take(3) {
+    for line in crate::track_info::wrap(f, reach_text(v.hook), &st, (kit::RIGHT - kit::LEFT) as f32)
+        .iter()
+        .take(3)
+    {
         text::draw(c, f, kit::LEFT as f32, y as f32, line, &st);
         y += 21;
     }
 }
 
-fn level_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, title: &str, pct: u8, sel: bool, on: bool) {
-    kit::row(c, t, f, y, kit::ROW_H, &Row::new(title).trail(Trail::Reserve(W as i32 - SLIDER_X0 + 6)).sel(sel));
+fn level_row(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    title: &str,
+    pct: u8,
+    sel: bool,
+    on: bool,
+) {
+    kit::row(
+        c,
+        t,
+        f,
+        y,
+        kit::ROW_H,
+        &Row::new(title)
+            .trail(Trail::Reserve(W as i32 - SLIDER_X0 + 6))
+            .sel(sel),
+    );
     let cy = y + kit::ROW_H / 2;
     // Dimmed, not hidden, while switched off: the levels can be set before turning it on.
     let fg = if on { t.acc } else { t.faint };
@@ -305,8 +377,20 @@ fn level_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, title: &str, pct: u
     let kx = level_x(pct);
     fill_rect(c, SLIDER_X0, cy - 1, kx - SLIDER_X0, 2, fg);
     fill_rect(c, kx - 7, cy - 9, 14, 18, fg);
-    right(c, f, kit::RIGHT as f32, (cy + 5) as f32, &format!("{pct}%"),
-          &sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.04));
+    right(
+        c,
+        f,
+        kit::RIGHT as f32,
+        (cy + 5) as f32,
+        &format!("{pct}%"),
+        &sty(
+            Family::Mono,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.faint,
+            0.04,
+        ),
+    );
     hline(c, y + kit::ROW_H - 1, t.line);
 }
 
@@ -317,7 +401,10 @@ mod tests {
     #[test]
     fn the_page_fits_above_the_now_playing_bar() {
         let note_bottom = NOTE_TOP + 26 + 2 * 21 + 6;
-        assert!(note_bottom <= crate::H as i32 - crate::chrome::NP_BAR_H, "Soundscapes runs to {note_bottom}");
+        assert!(
+            note_bottom <= crate::H as i32 - crate::chrome::NP_BAR_H,
+            "Soundscapes runs to {note_bottom}"
+        );
     }
 
     #[test]
@@ -328,7 +415,10 @@ mod tests {
             assert!(!seen[id as usize], "{name}: id {id} twice");
             seen[id as usize] = true;
         }
-        assert!(seen[1..].iter().all(|s| *s), "every id 1..={MAX_ID} has a chip");
+        assert!(
+            seen[1..].iter().all(|s| *s),
+            "every id 1..={MAX_ID} has a chip"
+        );
         assert_eq!(label(DEFAULT_SOUND), "Rain");
         assert_eq!(label(0), "Off");
         assert_eq!(label(99), "Off");
@@ -347,9 +437,17 @@ mod tests {
         for y in GRID_TOP..GRID_BOTTOM {
             assert!(chip_at(100, y).is_some(), "a dead strip at y {y}");
         }
-        assert_eq!(chip_at(100, GRID_TOP - kit::CHIP_GAP), None, "the SOUND label is not a chip");
+        assert_eq!(
+            chip_at(100, GRID_TOP - kit::CHIP_GAP),
+            None,
+            "the SOUND label is not a chip"
+        );
         assert!(!switch_hit(GRID_TOP));
-        assert_eq!(level_row_at(GRID_BOTTOM + 2), None, "the LEVEL label is not a slider");
+        assert_eq!(
+            level_row_at(GRID_BOTTOM + 2),
+            None,
+            "the LEVEL label is not a slider"
+        );
     }
 
     #[test]
@@ -371,9 +469,16 @@ mod tests {
     fn the_level_curve_is_even_in_decibels() {
         assert_eq!(gain_milli(0), 0);
         assert_eq!(gain_milli(100), 1000);
-        assert!((14..=18).contains(&gain_milli(1)), "1% is about -36 dB: {}", gain_milli(1));
+        assert!(
+            (14..=18).contains(&gain_milli(1)),
+            "1% is about -36 dB: {}",
+            gain_milli(1)
+        );
         let half = gain_milli(50) as f32 / 1000.0;
-        assert!((20.0 * half.log10() + 18.2).abs() < 0.5, "50% is about -18 dB");
+        assert!(
+            (20.0 * half.log10() + 18.2).abs() < 0.5,
+            "50% is about -18 dB"
+        );
         let mut last = 0;
         for p in 0..=100 {
             let g = gain_milli(p);
@@ -384,10 +489,26 @@ mod tests {
 
     #[test]
     fn the_strip_says_what_and_where() {
-        let v = View { on: true, sound: 6, alone: 60, music: 30, route: Route::AloneJack, hook: false };
+        let v = View {
+            on: true,
+            sound: 6,
+            alone: 60,
+            music: 30,
+            route: Route::AloneJack,
+            hook: false,
+        };
         assert_eq!(strip_text(&v), "BEACH · ON ITS OWN · HEADPHONES");
-        assert_eq!(strip_text(&View { route: Route::NoHook, ..v }), "BEACH · SILENT WHILE MUSIC PLAYS");
-        assert_eq!(strip_text(&View { on: false, ..v }), "OFF · TAP A SOUND TO START");
+        assert_eq!(
+            strip_text(&View {
+                route: Route::NoHook,
+                ..v
+            }),
+            "BEACH · SILENT WHILE MUSIC PLAYS"
+        );
+        assert_eq!(
+            strip_text(&View { on: false, ..v }),
+            "OFF · TAP A SOUND TO START"
+        );
         for c in 0..=7 {
             assert_eq!(Route::from_code(c).code(), c);
         }

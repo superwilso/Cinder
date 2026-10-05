@@ -63,7 +63,8 @@ pub fn hit_info(x: i32, y: i32, night: bool) -> bool {
     if night {
         // Full width: the thumb at x=24 is part of the same block, and nothing else on the night
         // header is tappable, so there is no neighbour to leave room for.
-        return (INFO_NIGHT_TOP..=INFO_NIGHT_BOT).contains(&y) && (0..crate::canvas::W as i32).contains(&x);
+        return (INFO_NIGHT_TOP..=INFO_NIGHT_BOT).contains(&y)
+            && (0..crate::canvas::W as i32).contains(&x);
     }
     (INFO_TOP..=INFO_BOT).contains(&y) && x >= 0 && x < HEART_CX - HEART_HALF - 2
 }
@@ -180,8 +181,22 @@ pub struct Layout {
 
 impl Layout {
     pub fn new(rail: Rail, page_top: i32, page_bot: i32) -> Layout {
-        let none = (Shape::Rect { x: 0, y: 0, w: 0, h: 0 }, Hit::Menu);
-        Layout { regions: [none; MAX_REGIONS], len: 0, rail, page_top, page_bot }
+        let none = (
+            Shape::Rect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            },
+            Hit::Menu,
+        );
+        Layout {
+            regions: [none; MAX_REGIONS],
+            len: 0,
+            rail,
+            page_top,
+            page_bot,
+        }
     }
 
     /// Add a target. Earlier targets win where two overlap. Past `MAX_REGIONS` the rest are
@@ -200,12 +215,18 @@ impl Layout {
 
     /// What a tap at `(x, y)` means.
     pub fn hit(&self, x: i32, y: i32) -> Option<Hit> {
-        self.regions().iter().find(|(s, _)| s.contains(x, y)).map(|(_, h)| *h)
+        self.regions()
+            .iter()
+            .find(|(s, _)| s.contains(x, y))
+            .map(|(_, h)| *h)
     }
 
     /// Where `hit` is, if this layout has it.
     pub fn at(&self, hit: Hit) -> Option<Shape> {
-        self.regions().iter().find(|(_, h)| *h == hit).map(|(s, _)| *s)
+        self.regions()
+            .iter()
+            .find(|(_, h)| *h == hit)
+            .map(|(s, _)| *s)
     }
 }
 
@@ -233,33 +254,114 @@ pub const SMALL_R: i32 = 30;
 /// band. The order is the priority where two overlap.
 fn cinder_layout(night: bool, lyrics: bool) -> Layout {
     let w = crate::canvas::W as i32;
-    let rail = Rail { x0: RAIL_X0, y: RAIL_Y, w: RAIL_W, h: RAIL_H, grab_top: RAIL_GRAB_TOP, grab_bot: RAIL_GRAB_BOT };
+    let rail = Rail {
+        x0: RAIL_X0,
+        y: RAIL_Y,
+        w: RAIL_W,
+        h: RAIL_H,
+        grab_top: RAIL_GRAB_TOP,
+        grab_bot: RAIL_GRAB_BOT,
+    };
     let mut l = Layout::new(rail, PAGE_TOP, PAGE_SWIPE_BOT);
     if lyrics {
-        l.push(Shape::Rect { x: 0, y: crate::chrome::STATUS_H, w: LYRICS_HIT_W, h: 44 }, Hit::Lyrics);
+        l.push(
+            Shape::Rect {
+                x: 0,
+                y: crate::chrome::STATUS_H,
+                w: LYRICS_HIT_W,
+                h: 44,
+            },
+            Hit::Lyrics,
+        );
     }
     l.push(
-        Shape::Rect { x: HEART_CX - HEART_HALF, y: HEART_CY - HEART_HALF, w: 2 * HEART_HALF + 1, h: 2 * HEART_HALF + 1 },
+        Shape::Rect {
+            x: HEART_CX - HEART_HALF,
+            y: HEART_CY - HEART_HALF,
+            w: 2 * HEART_HALF + 1,
+            h: 2 * HEART_HALF + 1,
+        },
         Hit::Like,
     );
     let info = if night {
-        Shape::Rect { x: 0, y: INFO_NIGHT_TOP, w, h: INFO_NIGHT_BOT - INFO_NIGHT_TOP + 1 }
+        Shape::Rect {
+            x: 0,
+            y: INFO_NIGHT_TOP,
+            w,
+            h: INFO_NIGHT_BOT - INFO_NIGHT_TOP + 1,
+        }
     } else {
-        Shape::Rect { x: 0, y: INFO_TOP, w: HEART_CX - HEART_HALF - 2, h: INFO_BOT - INFO_TOP + 1 }
+        Shape::Rect {
+            x: 0,
+            y: INFO_TOP,
+            w: HEART_CX - HEART_HALF - 2,
+            h: INFO_BOT - INFO_TOP + 1,
+        }
     };
     l.push(info, Hit::Info);
     let ty = TRANSPORT_Y;
-    l.push(Shape::Circle { cx: 240, cy: ty, r: PLAY_R }, Hit::PlayPause);
-    l.push(Shape::Circle { cx: PREV_X, cy: ty, r: SIDE_R }, Hit::Prev);
-    l.push(Shape::Circle { cx: NEXT_X, cy: ty, r: SIDE_R }, Hit::Next);
-    l.push(Shape::Circle { cx: SHUFFLE_X, cy: ty, r: SMALL_R }, Hit::Shuffle);
-    l.push(Shape::Circle { cx: REPEAT_X, cy: ty, r: SMALL_R }, Hit::Repeat);
+    l.push(
+        Shape::Circle {
+            cx: 240,
+            cy: ty,
+            r: PLAY_R,
+        },
+        Hit::PlayPause,
+    );
+    l.push(
+        Shape::Circle {
+            cx: PREV_X,
+            cy: ty,
+            r: SIDE_R,
+        },
+        Hit::Prev,
+    );
+    l.push(
+        Shape::Circle {
+            cx: NEXT_X,
+            cy: ty,
+            r: SIDE_R,
+        },
+        Hit::Next,
+    );
+    l.push(
+        Shape::Circle {
+            cx: SHUFFLE_X,
+            cy: ty,
+            r: SMALL_R,
+        },
+        Hit::Shuffle,
+    );
+    l.push(
+        Shape::Circle {
+            cx: REPEAT_X,
+            cy: ty,
+            r: SMALL_R,
+        },
+        Hit::Repeat,
+    );
     let slot = w / TOOLBAR_SLOTS as i32;
     for i in 0..TOOLBAR_SLOTS {
         let y = TOOLBAR_TOP + 1;
-        l.push(Shape::Rect { x: i as i32 * slot, y, w: slot, h: crate::canvas::H as i32 - y }, Hit::Toolbar(i as u8));
+        l.push(
+            Shape::Rect {
+                x: i as i32 * slot,
+                y,
+                w: slot,
+                h: crate::canvas::H as i32 - y,
+            },
+            Hit::Toolbar(i as u8),
+        );
     }
-    l.push(Shape::Rect { x: 0, y: 0, w, h: crate::chrome::HEADER_BOTTOM }, Hit::Menu);
+    l.push(
+        Shape::Rect {
+            x: 0,
+            y: 0,
+            w,
+            h: crate::chrome::HEADER_BOTTOM,
+        },
+        Hit::Menu,
+    );
     l
 }
 
@@ -268,7 +370,7 @@ pub struct NowPlaying<'a> {
     pub title: &'a str,
     pub artist: &'a str,
     pub codec: &'a str, // "FLAC · 24bit / 96.0 kHz"
-    pub badge: &'a str,  // status-bar badge "FLAC 24/96"
+    pub badge: &'a str, // status-bar badge "FLAC 24/96"
     pub clock: &'a str,
     pub battery: u8,
     pub elapsed: &'a str,
@@ -348,7 +450,13 @@ pub const PAGE_BOT: i32 = 514;
 /// primary skip affordance on a device with no d-pad.)
 pub const PAGE_SWIPE_BOT: i32 = PAGE_BOT;
 
-fn s(fam: Family, weight: Weight, size: f32, color: embedded_graphics::pixelcolor::Rgb888, tracking: f32) -> TextStyle {
+fn s(
+    fam: Family,
+    weight: Weight,
+    size: f32,
+    color: embedded_graphics::pixelcolor::Rgb888,
+    tracking: f32,
+) -> TextStyle {
     sty(fam, weight, size, color, tracking)
 }
 
@@ -395,7 +503,13 @@ const LYRICS_LABEL: &str = "LYRICS";
 pub const LYRICS_HIT_W: i32 = 120;
 
 fn lyrics_style(t: &Theme) -> TextStyle {
-    s(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.14)
+    s(
+        Family::Mono,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.acc,
+        0.14,
+    )
 }
 
 /// Did a tap land on the Lyrics chip? `shown` = the chip is drawn (the song has lyrics).
@@ -411,7 +525,14 @@ pub(crate) fn lyrics_chip(c: &mut Canvas, t: &Theme, f: &FontSet) {
     let w = text::measure(f, &label, &st) as i32 + 24;
     fill_rect(c, LYRICS_X0, LYRICS_Y0, w, LYRICS_H, t.panel);
     crate::widgets::stroke_rect(c, LYRICS_X0, LYRICS_Y0, w, LYRICS_H, t.ctrl(), 1);
-    text::draw(c, f, (LYRICS_X0 + 12) as f32, (LYRICS_Y0 + LYRICS_H / 2 + 5) as f32, &label, &st);
+    text::draw(
+        c,
+        f,
+        (LYRICS_X0 + 12) as f32,
+        (LYRICS_Y0 + LYRICS_H / 2 + 5) as f32,
+        &label,
+        &st,
+    );
 }
 
 /// Page indicator: one dot per page, in the strip between the paging block and the title. Small
@@ -444,7 +565,11 @@ pub(crate) fn level_stats(np: &NowPlaying) -> (f32, f32) {
 
 /// Can the spectrum page draw the chosen style right now?
 pub(crate) fn viz_live(np: &NowPlaying) -> bool {
-    crate::viz::can_draw(crate::viz::from_index(np.viz_kind), np.viz_levels, np.viz_sig)
+    crate::viz::can_draw(
+        crate::viz::from_index(np.viz_kind),
+        np.viz_levels,
+        np.viz_sig,
+    )
 }
 
 /// What the spectrum page says instead, `(headline, caption)`. Music is playing but the style needs
@@ -453,7 +578,10 @@ pub(crate) fn viz_live(np: &NowPlaying) -> bool {
 pub(crate) fn viz_absent_text(np: &NowPlaying) -> (&'static str, &'static str) {
     let kind = crate::viz::from_index(np.viz_kind);
     if np.viz_levels.is_some() && crate::viz::needs_samples(kind) {
-        ("Needs library playback", "FM, USB-DAC AND THE RECEIVER GIVE BANDS ONLY")
+        (
+            "Needs library playback",
+            "FM, USB-DAC AND THE RECEIVER GIVE BANDS ONLY",
+        )
     } else if np.viz_levels.is_some() {
         ("Gathering", "THE PICTURE BUILDS AS THE MUSIC PLAYS")
     } else {
@@ -467,18 +595,51 @@ fn spectrum_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, seed: 
     let (x, w) = (24, 432);
     let (y, h) = (154, 348); // stands at 502, clear of the page dots at 524
     if viz_live(np) {
-        crate::viz::draw_any(c, x, y, w, h, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, 255, 255);
+        crate::viz::draw_any(
+            c,
+            x,
+            y,
+            w,
+            h,
+            seed,
+            crate::viz::from_index(np.viz_kind),
+            t.acc,
+            t.line,
+            np.viz_levels,
+            np.viz_peaks,
+            np.viz_sig,
+            255,
+            255,
+        );
     } else {
         // No analyzer feeding us. Say so rather than drawing a still, empty graph that reads as a
         // broken screen — the same rule the rest of the app follows about showing what isn't there.
         let (head, cap) = viz_absent_text(np);
-        crate::widgets::center(c, f, 240.0, 330.0, head,
-            &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0));
-        crate::widgets::center(c, f, 240.0, 356.0, cap,
-            &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+        crate::widgets::center(
+            c,
+            f,
+            240.0,
+            330.0,
+            head,
+            &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0),
+        );
+        crate::widgets::center(
+            c,
+            f,
+            240.0,
+            356.0,
+            cap,
+            &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+        );
     }
-    crate::widgets::center(c, f, 240.0, 130.0, crate::viz::name_upper(np.viz_kind),
-        &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+    crate::widgets::center(
+        c,
+        f,
+        240.0,
+        130.0,
+        crate::viz::name_upper(np.viz_kind),
+        &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+    );
 }
 
 /// PAGE 2, night layout. Same page, different block: the compact header occupies the top ~160px,
@@ -487,13 +648,40 @@ fn spectrum_page_night(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, 
     let (x, w) = (24, 432);
     let (y, h) = (220, 260); // stands at 480, clear of the page dots
     if viz_live(np) {
-        crate::viz::draw_any(c, x, y, w, h, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, 255, 255);
+        crate::viz::draw_any(
+            c,
+            x,
+            y,
+            w,
+            h,
+            seed,
+            crate::viz::from_index(np.viz_kind),
+            t.acc,
+            t.line,
+            np.viz_levels,
+            np.viz_peaks,
+            np.viz_sig,
+            255,
+            255,
+        );
     } else {
-        crate::widgets::center(c, f, 240.0, 340.0, viz_absent_text(np).0,
-            &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0));
+        crate::widgets::center(
+            c,
+            f,
+            240.0,
+            340.0,
+            viz_absent_text(np).0,
+            &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0),
+        );
     }
-    crate::widgets::center(c, f, 240.0, 196.0, crate::viz::name_upper(np.viz_kind),
-        &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+    crate::widgets::center(
+        c,
+        f,
+        240.0,
+        196.0,
+        crate::viz::name_upper(np.viz_kind),
+        &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+    );
 }
 
 /// Decimal for 0..=999 into a caller-supplied buffer. Allocation-free, and clamped rather than
@@ -535,8 +723,14 @@ fn level_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     // The night layout puts the track header at the top of the screen, where the day layout has
     // artwork — so this caption has to move out from under it rather than sit at a fixed y.
     let label_y = if t.night { 200.0 } else { 130.0 };
-    crate::widgets::center(c, f, 240.0, label_y, "OUTPUT LEVEL",
-        &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+    crate::widgets::center(
+        c,
+        f,
+        240.0,
+        label_y,
+        "OUTPUT LEVEL",
+        &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+    );
 
     // Track, then fill. A visible empty track is what makes the fill mean something — a bare bar
     // on a black screen has no scale to be read against.
@@ -549,7 +743,14 @@ fn level_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     // Peak marker: a 3px rule at the loudest band. Peak sits at or right of the mean by definition,
     // so it never hides inside the fill.
     let px = x + ((w - 3) as f32 * peak).round() as i32;
-    fill_rect(c, px, y - 8, 3, h + 16, if peak > 0.0 { t.ink } else { t.line });
+    fill_rect(
+        c,
+        px,
+        y - 8,
+        3,
+        h + 16,
+        if peak > 0.0 { t.ink } else { t.line },
+    );
 
     // Scale ticks under the meter, at tenths. Every fifth is full height.
     for i in 0..=10 {
@@ -564,11 +765,23 @@ fn level_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     // allocations a frame is churn this device has already been bitten by once — the per-frame
     // Canvas allocation that ended in an allocator abort, and an abort here means a reboot.
     let mut mb = [0u8; 3];
-    crate::widgets::center(c, f, 240.0, 430.0, dec((mean * 100.0).round() as i32, &mut mb),
-        &s(Family::Mono, Weight::Bold, 56.0, t.ink, 0.0));
+    crate::widgets::center(
+        c,
+        f,
+        240.0,
+        430.0,
+        dec((mean * 100.0).round() as i32, &mut mb),
+        &s(Family::Mono, Weight::Bold, 56.0, t.ink, 0.0),
+    );
     let mut pb = [0u8; 8];
-    crate::widgets::center(c, f, 240.0, 460.0, peak_label((peak * 100.0).round() as i32, &mut pb),
-        &s(Family::Mono, Weight::Regular, 12.0, t.faint, 0.14));
+    crate::widgets::center(
+        c,
+        f,
+        240.0,
+        460.0,
+        peak_label((peak * 100.0).round() as i32, &mut pb),
+        &s(Family::Mono, Weight::Regular, 12.0, t.faint, 0.14),
+    );
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
@@ -584,10 +797,22 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     // square) above three empty text runs, which is what the device actually showed.
     if np.title.is_empty() && np.artist.is_empty() {
         let cy = if t.night { 120.0 } else { 274.0 };
-        crate::widgets::center(c, f, 240.0, cy, "Nothing playing",
-            &s(Family::Sans, Weight::Regular, 22.0, t.dim, 0.0));
-        crate::widgets::center(c, f, 240.0, cy + 26.0, "CHOOSE A TRACK FROM YOUR LIBRARY",
-            &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+        crate::widgets::center(
+            c,
+            f,
+            240.0,
+            cy,
+            "Nothing playing",
+            &s(Family::Sans, Weight::Regular, 22.0, t.dim, 0.0),
+        );
+        crate::widgets::center(
+            c,
+            f,
+            240.0,
+            cy + 26.0,
+            "CHOOSE A TRACK FROM YOUR LIBRARY",
+            &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+        );
         idle_chrome(c, t, f);
         return;
     }
@@ -611,7 +836,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         // truncating. It was the tighter of the two boxes to begin with (COL_W against 372px).
         crate::widgets::marquee(c, f, COL_X, 110.0, np.title, &ts, COL_W);
         crate::widgets::marquee(c, f, COL_X, 133.0, np.artist, &as_, COL_W);
-        text::draw(c, f, COL_X, 153.0, &crate::widgets::fit(f, np.codec, &cs, COL_W), &cs);
+        text::draw(
+            c,
+            f,
+            COL_X,
+            153.0,
+            &crate::widgets::fit(f, np.codec, &cs, COL_W),
+            &cs,
+        );
         // Night pages the same way the day theme does, but the block is different: there is no
         // full-bleed cover to page, only the airy negative space under the compact header. So the
         // header stays put and the SPACE changes. Swiping still works, the dots still say where you
@@ -627,7 +859,22 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
                 if let Some((vy, vh, at, ab)) =
                     crate::viz::size_box(crate::viz::size_from_index(np.viz_size), 436, true)
                 {
-                    crate::viz::draw_any(c, 24, vy, 432, vh, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, at, ab);
+                    crate::viz::draw_any(
+                        c,
+                        24,
+                        vy,
+                        432,
+                        vh,
+                        seed,
+                        crate::viz::from_index(np.viz_kind),
+                        t.acc,
+                        t.line,
+                        np.viz_levels,
+                        np.viz_peaks,
+                        np.viz_sig,
+                        at,
+                        ab,
+                    );
                 }
             }
             NpPage::Spectrum => spectrum_page_night(c, t, f, np, seed),
@@ -652,7 +899,22 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
                 // only its top and the cover's composition below never shifts.
                 let vsize = crate::viz::size_from_index(np.viz_size);
                 if let Some((vy, vh, at, ab)) = crate::viz::size_box(vsize, 508, false) {
-                    crate::viz::draw_any(c, 24, vy, 432, vh, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, at, ab);
+                    crate::viz::draw_any(
+                        c,
+                        24,
+                        vy,
+                        432,
+                        vh,
+                        seed,
+                        crate::viz::from_index(np.viz_kind),
+                        t.acc,
+                        t.line,
+                        np.viz_levels,
+                        np.viz_peaks,
+                        np.viz_sig,
+                        at,
+                        ab,
+                    );
                 }
             }
             NpPage::Spectrum => spectrum_page(c, t, f, np, seed),
@@ -674,8 +936,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         // short and fixed, the name is the one that can be arbitrarily long.
         let ast = s(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
         let cst = s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08);
-        let cw = if np.codec.is_empty() { 0.0 } else { text::measure(f, np.codec, &cst) };
-        crate::widgets::marquee(c, f, 24.0, 583.0, np.artist, &ast, (456.0 - cw - 12.0 - 24.0).max(0.0));
+        let cw = if np.codec.is_empty() {
+            0.0
+        } else {
+            text::measure(f, np.codec, &cst)
+        };
+        crate::widgets::marquee(
+            c,
+            f,
+            24.0,
+            583.0,
+            np.artist,
+            &ast,
+            (456.0 - cw - 12.0 - 24.0).max(0.0),
+        );
         if !np.codec.is_empty() {
             crate::widgets::right(c, f, 456.0, 583.0, np.codec, &cst);
         }
@@ -689,8 +963,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     // Wired at last: `liked` and icons::heart existed but nothing ever drew the glyph, so the
     // field was carried through four crates for an invisible feature. Sits on the title row, which
     // is where the eye already is and clear of every transport target.
-    icons::heart(c, HEART_CX as f32, HEART_CY as f32, 26.0,
-                 if np.liked { t.acc } else { t.faint });
+    icons::heart(
+        c,
+        HEART_CX as f32,
+        HEART_CY as f32,
+        26.0,
+        if np.liked { t.acc } else { t.faint },
+    );
 
     // ---------- progress (shared) ----------
     let (py, px0, pw) = (RAIL_Y, RAIL_X0, RAIL_W);
@@ -706,12 +985,32 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             .draw(c)
             .ok();
     }
-    text::draw(c, f, 24.0, 636.0, np.elapsed, &s(Family::Mono, Weight::Regular, 13.0, t.dim, 0.0));
-    right(c, f, 456.0, 636.0, np.remaining, &s(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
+    text::draw(
+        c,
+        f,
+        24.0,
+        636.0,
+        np.elapsed,
+        &s(Family::Mono, Weight::Regular, 13.0, t.dim, 0.0),
+    );
+    right(
+        c,
+        f,
+        456.0,
+        636.0,
+        np.remaining,
+        &s(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0),
+    );
 
     // ---------- transport (centre y 692, larger controls) ----------
     let ty = TRANSPORT_Y as f32;
-    icons::shuffle(c, SHUFFLE_X as f32, ty, 24.0, if np.shuffle { t.acc } else { t.faint });
+    icons::shuffle(
+        c,
+        SHUFFLE_X as f32,
+        ty,
+        24.0,
+        if np.shuffle { t.acc } else { t.faint },
+    );
     icons::prev(c, PREV_X as f32, ty, 38.0, t.ink);
     Circle::with_center(Point::new(240, ty as i32), 92)
         .into_styled(PrimitiveStyle::with_fill(t.acc))
@@ -723,14 +1022,27 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         icons::play(c, 240.0, ty, 38.0, t.acc_ink);
     }
     icons::next(c, NEXT_X as f32, ty, 38.0, t.ink);
-    icons::repeat(c, REPEAT_X as f32, ty, 24.0, if np.repeat > 0 { t.acc } else { t.faint });
+    icons::repeat(
+        c,
+        REPEAT_X as f32,
+        ty,
+        24.0,
+        if np.repeat > 0 { t.acc } else { t.faint },
+    );
     if np.repeat == 1 {
         // the "one" dot inside the loop glyph
         fill_rect(c, 435, ty as i32 - 1, 3, 3, t.acc);
     } else if np.repeat == REPEAT_ALBUM {
         // Named under the glyph: an A inside a 24 px loop is too small to read at arm's length,
         // and the transport row has 30 px of free space beneath it before the toolbar rule.
-        crate::widgets::center(c, f, 436.0, ty + 27.0, "ALBUM", &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1));
+        crate::widgets::center(
+            c,
+            f,
+            436.0,
+            ty + 27.0,
+            "ALBUM",
+            &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1),
+        );
     }
 
     // ---------- bottom toolbar (744..800): library · queue · bt · settings --------------------
@@ -805,7 +1117,8 @@ mod tests {
             viz_peaks: None,
             viz_sig: None,
             page,
-            scrubbing: false, lyrics: false,
+            scrubbing: false,
+            lyrics: false,
         }
     }
 
@@ -852,7 +1165,8 @@ mod tests {
         let mut clean_loud = Canvas::new();
         render(&mut clean_loud, &t, &f, &np_with(0, 0, &loud));
         assert_eq!(
-            art_pixels_differing(&clean, &clean_loud), 0,
+            art_pixels_differing(&clean, &clean_loud),
+            0,
             "OFF let the audio change the cover — something is still being drawn"
         );
 
@@ -860,7 +1174,10 @@ mod tests {
         for size in 1..crate::viz::SIZE_COUNT {
             let mut c = Canvas::new();
             render(&mut c, &t, &f, &np_with(0, size, &levels));
-            assert!(art_pixels_differing(&clean, &c) > 100, "size {size} drew nothing at all");
+            assert!(
+                art_pixels_differing(&clean, &c) > 100,
+                "size {size} drew nothing at all"
+            );
         }
     }
 
@@ -895,8 +1212,16 @@ mod tests {
                     let l = layout(style, night, lyrics);
                     let at = format!("{style:?} night={night} lyrics={lyrics}");
                     // Every control Cinder has, and the Lyrics chip exactly when there are lyrics.
-                    let mut want = vec![Hit::Like, Hit::Info, Hit::PlayPause, Hit::Prev, Hit::Next, Hit::Shuffle,
-                                        Hit::Repeat, Hit::Menu];
+                    let mut want = vec![
+                        Hit::Like,
+                        Hit::Info,
+                        Hit::PlayPause,
+                        Hit::Prev,
+                        Hit::Next,
+                        Hit::Shuffle,
+                        Hit::Repeat,
+                        Hit::Menu,
+                    ];
                     want.extend((0..TOOLBAR_SLOTS as u8).map(Hit::Toolbar));
                     for hit in &want {
                         assert!(l.at(*hit).is_some(), "{at}: no {hit:?}");
@@ -906,33 +1231,65 @@ mod tests {
                     for (shape, hit) in l.regions() {
                         let (x, y, bw, bh) = shape.bounds();
                         // On the panel, big enough for a thumb, and reachable at its middle.
-                        assert!(x >= 0 && y >= 0 && x + bw <= w + 1 && y + bh <= h + 1, "{at}: {hit:?} off the panel");
-                        assert!(bw >= 44 && bh >= 44, "{at}: {hit:?} is {bw}x{bh}, under 44 px");
+                        assert!(
+                            x >= 0 && y >= 0 && x + bw <= w + 1 && y + bh <= h + 1,
+                            "{at}: {hit:?} off the panel"
+                        );
+                        assert!(
+                            bw >= 44 && bh >= 44,
+                            "{at}: {hit:?} is {bw}x{bh}, under 44 px"
+                        );
                         let (cx, cy) = shape.centre();
-                        assert_eq!(l.hit(cx, cy), Some(*hit), "{at}: {hit:?}'s middle is someone else's");
+                        assert_eq!(
+                            l.hit(cx, cy),
+                            Some(*hit),
+                            "{at}: {hit:?}'s middle is someone else's"
+                        );
                         // The rail's band is the rail's: no control inside it.
                         let clear = y + bh <= l.rail.grab_top || y > l.rail.grab_bot;
-                        assert!(*hit == Hit::Menu || clear, "{at}: {hit:?} is inside the rail's grab band");
+                        assert!(
+                            *hit == Hit::Menu || clear,
+                            "{at}: {hit:?} is inside the rail's grab band"
+                        );
                     }
                     let r = l.rail;
-                    assert!(r.grab_bot - r.grab_top >= 44, "{at}: the rail's band is under 44 px");
-                    assert!((r.grab_top..=r.grab_bot).contains(&r.y), "{at}: the rail is outside its own band");
-                    assert!(r.x0 >= 0 && r.x0 + r.w <= w && r.w > 0, "{at}: the rail is off the panel");
-                    assert!(l.page_top < l.page_bot && l.page_bot <= r.grab_top, "{at}: the page block");
+                    assert!(
+                        r.grab_bot - r.grab_top >= 44,
+                        "{at}: the rail's band is under 44 px"
+                    );
+                    assert!(
+                        (r.grab_top..=r.grab_bot).contains(&r.y),
+                        "{at}: the rail is outside its own band"
+                    );
+                    assert!(
+                        r.x0 >= 0 && r.x0 + r.w <= w && r.w > 0,
+                        "{at}: the rail is off the panel"
+                    );
+                    assert!(
+                        l.page_top < l.page_bot && l.page_bot <= r.grab_top,
+                        "{at}: the page block"
+                    );
                     if style == Style::Cinder {
                         continue;
                     }
                     // A new style starts clean: no two targets overlap, and the band under the
                     // status bar is the Menu's and the Lyrics chip's alone.
-                    assert!(l.page_top >= header, "{at}: the page block reaches into the Menu band");
-                    let own: Vec<&(Shape, Hit)> =
-                        l.regions().iter().filter(|(_, hit)| !matches!(hit, Hit::Menu | Hit::Lyrics)).collect();
+                    assert!(
+                        l.page_top >= header,
+                        "{at}: the page block reaches into the Menu band"
+                    );
+                    let own: Vec<&(Shape, Hit)> = l
+                        .regions()
+                        .iter()
+                        .filter(|(_, hit)| !matches!(hit, Hit::Menu | Hit::Lyrics))
+                        .collect();
                     for (i, (a, ha)) in own.iter().enumerate() {
                         let (ax, ay, aw, ah) = a.bounds();
                         assert!(ay >= header, "{at}: {ha:?} is in the Menu band");
                         for (b, hb) in &own[i + 1..] {
                             let (bx, by, bw, bh) = b.bounds();
-                            let overlap = ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+                            let overlap =
+                                ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
                             assert!(!overlap, "{at}: {ha:?} overlaps {hb:?}");
                         }
                     }
@@ -961,8 +1318,16 @@ mod tests {
         ] {
             assert_eq!(l.hit(x, y), want, "({x}, {y})");
         }
-        assert_eq!(layout(Style::Cinder, true, false).hit(200, 110), Some(Hit::Info), "night's title block");
-        assert_eq!(layout(Style::Cinder, false, true).hit(40, 60), Some(Hit::Lyrics), "before the Menu band");
+        assert_eq!(
+            layout(Style::Cinder, true, false).hit(200, 110),
+            Some(Hit::Info),
+            "night's title block"
+        );
+        assert_eq!(
+            layout(Style::Cinder, false, true).hit(40, 60),
+            Some(Hit::Lyrics),
+            "before the Menu band"
+        );
     }
 
     /// Every style draws every state without a panic: day and night, each page, idle, scrubbing,
@@ -977,15 +1342,29 @@ mod tests {
             crate::text::set_scale_idx(idx);
             for style in Style::ALL {
                 for night in [false, true] {
-                    let t = Theme { style, ..if night { Theme::night() } else { Theme::day() } };
+                    let t = Theme {
+                        style,
+                        ..if night { Theme::night() } else { Theme::day() }
+                    };
                     for page in 0..PAGES {
                         for repeat in 0..=REPEAT_ALBUM {
-                            let np = NowPlaying { repeat, scrubbing: repeat == 2, lyrics: page == 1, ..np_with(page, 1, &levels) };
+                            let np = NowPlaying {
+                                repeat,
+                                scrubbing: repeat == 2,
+                                lyrics: page == 1,
+                                ..np_with(page, 1, &levels)
+                            };
                             let mut c = Canvas::new();
                             render(&mut c, &t, &f, &np);
                         }
                     }
-                    let idle = NowPlaying { title: "", artist: "", codec: "", badge: "", ..np_with(0, 0, &levels) };
+                    let idle = NowPlaying {
+                        title: "",
+                        artist: "",
+                        codec: "",
+                        badge: "",
+                        ..np_with(0, 0, &levels)
+                    };
                     let mut c = Canvas::new();
                     render(&mut c, &t, &f, &idle);
                 }
@@ -993,5 +1372,4 @@ mod tests {
             crate::text::set_scale_idx(crate::text::SCALE_DEFAULT_IDX);
         }
     }
-
 }

@@ -12,13 +12,13 @@
 //! read it. Every recurring bug in this file's neighbours has been a render and a hit test that
 //! each computed the same geometry and then drifted.
 
+use crate::canvas::W;
 use crate::library::{scrollbar, LIST_BOTTOM};
 use crate::model::{FolderRow, Library};
 use crate::text::{self, Family, FontSet, TextStyle, Weight};
 use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline, sty};
 use crate::{icons, Canvas};
-use crate::canvas::W;
 
 /// Screen-y of the first row.
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
@@ -111,8 +111,17 @@ fn count_label(f: &FolderRow) -> String {
 }
 
 fn name_style(t: &Theme, dir: bool) -> TextStyle {
-    sty(Family::Sans, if dir { Weight::SemiBold } else { Weight::Regular }, 18.0,
-        if dir { t.ink } else { t.ink }, 0.0)
+    sty(
+        Family::Sans,
+        if dir {
+            Weight::SemiBold
+        } else {
+            Weight::Regular
+        },
+        18.0,
+        if dir { t.ink } else { t.ink },
+        0.0,
+    )
 }
 
 pub fn render(
@@ -129,10 +138,7 @@ pub fn render(
     // The path is long, so it goes in the header's right slot where it is already ellipsised
     // against the title rather than over the rows.
     let sub = subtitle(lib, dir);
-    let y0 = crate::chrome::header(
-        c, t, f, title(lib, dir),
-        (!sub.is_empty()).then_some(sub),
-    );
+    let y0 = crate::chrome::header(c, t, f, title(lib, dir), (!sub.is_empty()).then_some(sub));
     c.set_clip_y(y0, LIST_BOTTOM);
 
     let all = rows(lib, dir);
@@ -158,13 +164,21 @@ pub fn render(
         let cy = y + ROW_H / 2;
         match row {
             Row::Dir(i) => {
-                let Some(fr) = lib.folders.get(*i) else { continue };
+                let Some(fr) = lib.folders.get(*i) else {
+                    continue;
+                };
                 // A folder glyph, so the two row kinds are distinguishable without reading — the
                 // chevron alone reads as "drill in" on a track row too.
                 icons::library(c, 34.0, cy as f32, 20.0, t.acc);
                 let ns = name_style(t, true);
-                text::draw(c, f, 62.0, (cy + 6) as f32,
-                           &crate::widgets::fit(f, &fr.name, &ns, 300.0), &ns);
+                text::draw(
+                    c,
+                    f,
+                    62.0,
+                    (cy + 6) as f32,
+                    &crate::widgets::fit(f, &fr.name, &ns, 300.0),
+                    &ns,
+                );
                 let cs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.12);
                 let cl = count_label(fr);
                 let w = text::measure(f, &cl, &cs);
@@ -172,16 +186,30 @@ pub fn render(
                 icons::chevron(c, 452.0, cy as f32, 9.0, t.faint);
             }
             Row::Track(i) => {
-                let Some(tr) = dir.and_then(|d| lib.folders.get(d)).and_then(|d| d.tracks.get(*i))
+                let Some(tr) = dir
+                    .and_then(|d| lib.folders.get(d))
+                    .and_then(|d| d.tracks.get(*i))
                 else {
                     continue;
                 };
                 let ns = name_style(t, false);
-                text::draw(c, f, 62.0, (cy + 1) as f32,
-                           &crate::widgets::fit(f, &tr.title, &ns, 300.0), &ns);
+                text::draw(
+                    c,
+                    f,
+                    62.0,
+                    (cy + 1) as f32,
+                    &crate::widgets::fit(f, &tr.title, &ns, 300.0),
+                    &ns,
+                );
                 let ss = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
-                text::draw(c, f, 62.0, (cy + 19) as f32,
-                           &crate::widgets::fit(f, &tr.artist, &ss, 300.0), &ss);
+                text::draw(
+                    c,
+                    f,
+                    62.0,
+                    (cy + 19) as f32,
+                    &crate::widgets::fit(f, &tr.artist, &ss, 300.0),
+                    &ss,
+                );
                 let ds = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06);
                 let w = text::measure(f, &tr.dur, &ds);
                 text::draw(c, f, 458.0 - w, (cy + 5) as f32, &tr.dur, &ds);
@@ -193,7 +221,15 @@ pub fn render(
         hline(c, y + ROW_H - 1, t.line);
     }
     c.clear_clip();
-    scrollbar(c, t, TOP, LIST_BOTTOM, scroll, content_h(lib, dir), sbar_active);
+    scrollbar(
+        c,
+        t,
+        TOP,
+        LIST_BOTTOM,
+        scroll,
+        content_h(lib, dir),
+        sbar_active,
+    );
     let _ = W;
 }
 
@@ -205,18 +241,34 @@ mod tests {
     /// Two roots, one with a nested album folder, so the ordering rule and the hit test have
     /// something with both kinds of row in it.
     fn lib() -> Library {
-        let track = |n: &str| SongRow { title: n.into(), dur: "3:00".into(), ..Default::default() };
+        let track = |n: &str| SongRow {
+            title: n.into(),
+            dur: "3:00".into(),
+            ..Default::default()
+        };
         let folders = vec![
             FolderRow {
-                path: "/contents".into(), name: "/contents".into(), parent: None,
-                subdirs: vec![1], tracks: vec![track("loose")], total: 3,
+                path: "/contents".into(),
+                name: "/contents".into(),
+                parent: None,
+                subdirs: vec![1],
+                tracks: vec![track("loose")],
+                total: 3,
             },
             FolderRow {
-                path: "/contents/Album".into(), name: "Album".into(), parent: Some(0),
-                subdirs: vec![], tracks: vec![track("a"), track("b")], total: 2,
+                path: "/contents/Album".into(),
+                name: "Album".into(),
+                parent: Some(0),
+                subdirs: vec![],
+                tracks: vec![track("a"), track("b")],
+                total: 2,
             },
         ];
-        Library { folders, folder_roots: vec![0], ..Default::default() }
+        Library {
+            folders,
+            folder_roots: vec![0],
+            ..Default::default()
+        }
     }
 
     /// Subdirectories come first, then the tracks that live directly here. A tap has to land on
@@ -231,8 +283,11 @@ mod tests {
             for scroll in [0, 7, ROW_H, ROW_H * 2 - 1] {
                 let y = row_top(r, scroll) + ROW_H / 2;
                 if (TOP..LIST_BOTTOM).contains(&y) {
-                    assert_eq!(row_at(&l, Some(0), y, scroll), Some(want),
-                               "row {r} at scroll {scroll}");
+                    assert_eq!(
+                        row_at(&l, Some(0), y, scroll),
+                        Some(want),
+                        "row {r} at scroll {scroll}"
+                    );
                 }
             }
         }
@@ -248,7 +303,10 @@ mod tests {
         let l = lib();
         assert_eq!(count_label(&l.folders[0]), "3 TRACKS");
         assert_eq!(count_label(&l.folders[1]), "2 TRACKS");
-        let one = FolderRow { total: 1, ..Default::default() };
+        let one = FolderRow {
+            total: 1,
+            ..Default::default()
+        };
         assert_eq!(count_label(&one), "1 TRACK");
     }
 

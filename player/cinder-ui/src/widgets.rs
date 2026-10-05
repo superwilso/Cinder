@@ -10,10 +10,13 @@ use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 
 pub fn fill_rect(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col: Rgb888) {
-    Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32))
-        .into_styled(PrimitiveStyle::with_fill(col))
-        .draw(c)
-        .ok();
+    Rectangle::new(
+        Point::new(x, y),
+        Size::new(w.max(0) as u32, h.max(0) as u32),
+    )
+    .into_styled(PrimitiveStyle::with_fill(col))
+    .draw(c)
+    .ok();
 }
 
 /// Full-width 1px hairline at row `y`.
@@ -23,10 +26,13 @@ pub fn hline(c: &mut Canvas, y: i32, col: Rgb888) {
 
 /// Stroked (outline) rectangle.
 pub fn stroke_rect(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col: Rgb888, weight: u32) {
-    Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32))
-        .into_styled(PrimitiveStyle::with_stroke(col, weight))
-        .draw(c)
-        .ok();
+    Rectangle::new(
+        Point::new(x, y),
+        Size::new(w.max(0) as u32, h.max(0) as u32),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(col, weight))
+    .draw(c)
+    .ok();
 }
 
 /// Filled circle of diameter `d` centred on (`cx`, `cy`) — the EQ, Tone and DAC EQ knobs.
@@ -38,7 +44,13 @@ pub fn disc(c: &mut Canvas, cx: i32, cy: i32, d: u32, col: Rgb888) {
 }
 
 pub fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32) -> TextStyle {
-    TextStyle { fam, weight, size, color, tracking }
+    TextStyle {
+        fam,
+        weight,
+        size,
+        color,
+        tracking,
+    }
 }
 
 /// Draw text right-aligned so it ends at `xr`.
@@ -64,8 +76,15 @@ pub fn right(c: &mut Canvas, f: &FontSet, xr: f32, baseline: f32, s: &str, st: &
 /// string are fixed but the glyphs grow with the UI-scale slider — so at 140% a caption laid out
 /// to look comfortable at 100% runs off the panel and the tail is silently discarded. Returns the
 /// end x, like `text::draw`.
-pub fn draw_fit(c: &mut Canvas, f: &FontSet, x: f32, baseline: f32, s: &str, st: &TextStyle,
-                right: f32) -> f32 {
+pub fn draw_fit(
+    c: &mut Canvas,
+    f: &FontSet,
+    x: f32,
+    baseline: f32,
+    s: &str,
+    st: &TextStyle,
+    right: f32,
+) -> f32 {
     let s = fit(f, s, st, (right - x).max(0.0));
     text::draw(c, f, x, baseline, &s, st)
 }
@@ -78,7 +97,9 @@ pub fn draw_fit(c: &mut Canvas, f: &FontSet, x: f32, baseline: f32, s: &str, st:
 /// being a layout constant, so they are exactly where a text-scale change turns into overflow.
 pub fn center(c: &mut Canvas, f: &FontSet, cx: f32, baseline: f32, s: &str, st: &TextStyle) {
     // Symmetric about cx, so the fitted run stays centred on the anchor rather than drifting.
-    let half = (cx - EDGE).min(crate::canvas::W as f32 - EDGE - cx).max(0.0);
+    let half = (cx - EDGE)
+        .min(crate::canvas::W as f32 - EDGE - cx)
+        .max(0.0);
     let s = fit(f, s, st, half * 2.0);
     let w = text::measure(f, &s, st);
     text::draw(c, f, cx - w / 2.0, baseline, &s, st);
@@ -109,9 +130,20 @@ pub fn row_pair(
     right_st: &TextStyle,
     gap: f32,
 ) {
-    let rw = if right.is_empty() { 0.0 } else { text::measure(f, right, right_st) };
+    let rw = if right.is_empty() {
+        0.0
+    } else {
+        text::measure(f, right, right_st)
+    };
     let avail = (right_x - rw - gap - left_x).max(0.0);
-    text::draw(c, f, left_x, baseline, &fit(f, left, left_st, avail), left_st);
+    text::draw(
+        c,
+        f,
+        left_x,
+        baseline,
+        &fit(f, left, left_st, avail),
+        left_st,
+    );
     if !right.is_empty() {
         self::right(c, f, right_x, baseline, right, right_st);
     }
@@ -168,8 +200,15 @@ const MARQUEE_PX_PER_S: f32 = 32.0;
 ///
 /// Returns the width actually occupied. A string that fits is drawn exactly as `text::draw` would
 /// draw it, with no clip band and no repaint request — the fitting case has to stay free.
-pub fn marquee(c: &mut Canvas, f: &FontSet, x: f32, baseline: f32, s: &str, st: &TextStyle,
-               max_w: f32) -> f32 {
+pub fn marquee(
+    c: &mut Canvas,
+    f: &FontSet,
+    x: f32,
+    baseline: f32,
+    s: &str,
+    st: &TextStyle,
+    max_w: f32,
+) -> f32 {
     // No room at all: draw NOTHING. The early version folded this into the "it fits" branch and
     // drew the whole string unclipped, which at 140% (where the codec eats the artist's entire
     // share of the baseline) put 3,187px of text across the panel and off the right edge.
@@ -233,7 +272,18 @@ pub fn toggle(c: &mut Canvas, t: &Theme, x: i32, y: i32, w: i32, h: i32, knob: i
 
 /// Static visualiser bar strip (`FBars`): deterministic heights, every 4th bar
 /// accent. Bars are bottom-aligned within the (x,y,w,h) box.
-pub fn bars(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, n: i32, gap: i32, seed: f32, acc: Rgb888, dim: Rgb888) {
+pub fn bars(
+    c: &mut Canvas,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    n: i32,
+    gap: i32,
+    seed: f32,
+    acc: Rgb888,
+    dim: Rgb888,
+) {
     let bw = ((w - gap * (n - 1)) / n).max(1);
     for i in 0..n {
         let v = 0.18 + 0.82 * (i as f32 * 1.93 + seed * 2.7).sin().abs();
@@ -245,8 +295,23 @@ pub fn bars(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, n: i32, gap: i32, se
 }
 
 /// A mono-caption "pill": bordered box, accent fill when `on`. Returns its width.
-pub fn pill(c: &mut Canvas, f: &FontSet, t: &Theme, x: i32, y: i32, h: i32, label: &str, on: bool) -> i32 {
-    let st = sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc_ink } else { t.dim }, 0.08);
+pub fn pill(
+    c: &mut Canvas,
+    f: &FontSet,
+    t: &Theme,
+    x: i32,
+    y: i32,
+    h: i32,
+    label: &str,
+    on: bool,
+) -> i32 {
+    let st = sty(
+        Family::Mono,
+        Weight::Regular,
+        12.0,
+        if on { t.acc_ink } else { t.dim },
+        0.08,
+    );
     let tw = text::measure(f, label, &st);
     let w = tw as i32 + 24;
     if on {
@@ -301,7 +366,13 @@ mod marquee_tests {
         FontSet::load()
     }
     fn style() -> TextStyle {
-        sty(Family::Sans, Weight::Bold, 29.0, Rgb888::new(255, 255, 255), 0.0)
+        sty(
+            Family::Sans,
+            Weight::Bold,
+            29.0,
+            Rgb888::new(255, 255, 255),
+            0.0,
+        )
     }
 
     /// A short line is drawn exactly as before and asks for NOTHING: no clip band, no repaint.
@@ -315,8 +386,14 @@ mod marquee_tests {
         marquee_scrolled(); // clear anything a neighbouring test left
         set_marquee_ms(0);
         let w = marquee(&mut c, &f, 24.0, 100.0, "Atlas Hands", &style(), 372.0);
-        assert!(w > 0.0 && w <= 372.0, "a fitting line reports its real width");
-        assert!(!marquee_scrolled(), "a line that fits must not request repaints");
+        assert!(
+            w > 0.0 && w <= 372.0,
+            "a fitting line reports its real width"
+        );
+        assert!(
+            !marquee_scrolled(),
+            "a line that fits must not request repaints"
+        );
     }
 
     /// A long line scrolls, and asks for the next frame while it does.
@@ -329,7 +406,10 @@ mod marquee_tests {
         marquee_scrolled();
         set_marquee_ms(0);
         marquee(&mut c, &f, 24.0, 100.0, long, &style(), 372.0);
-        assert!(marquee_scrolled(), "an overflowing line drives its own animation");
+        assert!(
+            marquee_scrolled(),
+            "an overflowing line drives its own animation"
+        );
     }
 
     /// The scrolled run is CUT OFF at the box, not drawn across the panel.
@@ -395,8 +475,19 @@ mod marquee_tests {
         let f = fonts();
         let mut c = Canvas::new();
         c.fill(Rgb888::new(0, 0, 0));
-        let w = marquee(&mut c, &f, 24.0, 100.0, "A Very Long Guest Artist Name", &style(), 0.0);
+        let w = marquee(
+            &mut c,
+            &f,
+            24.0,
+            100.0,
+            "A Very Long Guest Artist Name",
+            &style(),
+            0.0,
+        );
         assert_eq!(w, 0.0);
-        assert!(c.buf.iter().all(|&p| p == 0), "nothing may be drawn into a zero-width box");
+        assert!(
+            c.buf.iter().all(|&p| p == 0),
+            "nothing may be drawn into a zero-width box"
+        );
     }
 }

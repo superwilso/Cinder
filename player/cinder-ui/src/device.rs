@@ -148,12 +148,23 @@ pub struct DeviceView<'a> {
 /// empty — the charger without its helper.
 pub enum Item {
     Section(&'static str),
-    Row { label: String, value: String, toggle: bool },
-    Note { title: &'static str, sub: &'static str },
+    Row {
+        label: String,
+        value: String,
+        toggle: bool,
+    },
+    Note {
+        title: &'static str,
+        sub: &'static str,
+    },
 }
 
 fn row(label: &str, value: String) -> Item {
-    Item::Row { label: label.to_string(), value, toggle: false }
+    Item::Row {
+        label: label.to_string(),
+        value,
+        toggle: false,
+    }
 }
 
 /// THE layout. Both `render` and `care_row_y` walk this, so the drawn position of the toggle and
@@ -161,39 +172,47 @@ fn row(label: &str, value: String) -> Item {
 pub fn items(v: &DeviceView) -> Vec<Item> {
     vec![
         Item::Section("BATTERY"),
-        Item::Row { label: "Battery care".into(), value: String::new(), toggle: true },
+        Item::Row {
+            label: "Battery care".into(),
+            value: String::new(),
+            toggle: true,
+        },
         row("Voltage", volts_label(v.millivolts)),
         row("Health", text_or_dash(v.health, true)),
-
         Item::Section("CHARGER"),
         // The charger IC is only read by the helper. Without it this row would be a dash that
         // looks like a reading failed, when nothing was ever asked.
         if helper(v) {
             row("Charger", charger_label(v.chg_state, v.chg_fault))
         } else {
-            Item::Note { title: "Needs the battery helper", sub: "Reinstall with the battery component on" }
+            Item::Note {
+                title: "Needs the battery helper",
+                sub: "Reinstall with the battery component on",
+            }
         },
-
         Item::Section("TEMPERATURE"),
         row("CPU", temp_label(v.temp_cpu)),
         row("Power IC", temp_label(v.temp_pmic)),
         row("Analog block", temp_label(v.temp_abb)),
-
         Item::Section("PROCESSOR"),
         row("Clock", clock_label(v.cpu_khz)),
         row("Maximum", clock_label(v.cpu_max_khz)),
         row("Cores online", cores_label(v.cores_online, v.cores_total)),
         row("Governor", text_or_dash(v.governor, true)),
-
         Item::Section("MEMORY"),
         row("RAM", mem_label(v.mem_total_kb, v.mem_avail_kb)),
-        row("Free", if v.mem_avail_kb <= 0 { "—".into() } else { format!("{} MB", v.mem_avail_kb / 1024) }),
-
+        row(
+            "Free",
+            if v.mem_avail_kb <= 0 {
+                "—".into()
+            } else {
+                format!("{} MB", v.mem_avail_kb / 1024)
+            },
+        ),
         Item::Section("STORAGE"),
         row("Music", size_pair(v.music_total_mb, v.music_free_mb)),
         row("Music free", mb_label(v.music_free_mb)),
         row("App data free", mb_label(v.data_free_mb)),
-
         Item::Section("SYSTEM"),
         row("Uptime", uptime_label(v.uptime_s)),
         row("Kernel", text_or_dash(v.kernel, false)),
@@ -269,7 +288,11 @@ pub fn temp_label(mdeg: i32) -> String {
     if mdeg == UNKNOWN {
         return "—".into();
     }
-    let tenths = if mdeg >= 0 { (mdeg + 50) / 100 } else { -((-mdeg + 50) / 100) };
+    let tenths = if mdeg >= 0 {
+        (mdeg + 50) / 100
+    } else {
+        -((-mdeg + 50) / 100)
+    };
     format!("{}.{} °C", tenths / 10, (tenths % 10).abs())
 }
 
@@ -379,7 +402,11 @@ pub fn text_or_dash(s: &str, upper: bool) -> String {
     if s.trim().is_empty() {
         return "—".into();
     }
-    if upper { s.to_uppercase() } else { s.to_string() }
+    if upper {
+        s.to_uppercase()
+    } else {
+        s.to_string()
+    }
 }
 
 pub fn percent_label(pct: u8) -> String {
@@ -407,18 +434,35 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
     let charging = is_charging(v.status);
     let strip_y = head_bottom - scroll;
     let word = text_or_dash(v.status, true);
-    let line = if v.care { format!("{word} \u{b7} BATTERY CARE ON") } else { word };
+    let line = if v.care {
+        format!("{word} \u{b7} BATTERY CARE ON")
+    } else {
+        word
+    };
     kit::strip(c, t, f, strip_y, &line);
 
     // ── hero: one big number and its bar ──────────────────────────────────────────────────────
     let hy = strip_y + kit::STRIP_H;
-    text::draw(c, f, kit::LEFT as f32, (hy + 70) as f32, &percent_label(v.percent),
-               &sty(Family::Sans, Weight::Bold, 64.0, t.ink, -0.02));
+    text::draw(
+        c,
+        f,
+        kit::LEFT as f32,
+        (hy + 70) as f32,
+        &percent_label(v.percent),
+        &sty(Family::Sans, Weight::Bold, 64.0, t.ink, -0.02),
+    );
     let (bx, bw) = (kit::LEFT, kit::RIGHT - kit::LEFT);
     stroke_rect(c, bx, hy + 84, bw, 14, t.ctrl(), 1);
     let fillw = (bw - 4) * (v.percent.min(100) as i32) / 100;
     if fillw > 0 {
-        fill_rect(c, bx + 2, hy + 86, fillw, 10, if charging { t.acc } else { t.dim });
+        fill_rect(
+            c,
+            bx + 2,
+            hy + 86,
+            fillw,
+            10,
+            if charging { t.acc } else { t.dim },
+        );
     }
 
     // ── the list ──────────────────────────────────────────────────────────────────────────────
@@ -428,9 +472,21 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
             Item::Section(name) => {
                 kit::section_label(c, t, f, y, name, None);
             }
-            Item::Row { label, value, toggle: is_toggle } => {
-                let trail = if *is_toggle { Trail::Switch(v.care) } else { Trail::Value(value) };
-                let sub = if *is_toggle { "Stops the charge near 4.09 V" } else { "" };
+            Item::Row {
+                label,
+                value,
+                toggle: is_toggle,
+            } => {
+                let trail = if *is_toggle {
+                    Trail::Switch(v.care)
+                } else {
+                    Trail::Value(value)
+                };
+                let sub = if *is_toggle {
+                    "Stops the charge near 4.09 V"
+                } else {
+                    ""
+                };
                 kit::row(c, t, f, y, ROW_H, &Row::new(label).sub(sub).trail(trail));
             }
             Item::Note { title, sub } => {
@@ -446,22 +502,56 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
     // The honest small print, and it scrolls with the content rather than floating: this device has
     // no fuel gauge, so there is no current reading and no cycle count, and saying so is more useful
     // than leaving the reader to wonder why a battery section omits them.
-    let foot = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.1);
+    let foot = sty(
+        Family::Mono,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.faint,
+        0.1,
+    );
     let foot_w = (kit::RIGHT - kit::LEFT) as f32;
     let x = kit::LEFT as f32;
     y += 26;
-    text::draw(c, f, x, y as f32,
-               &crate::widgets::fit(f, "NO FUEL GAUGE — NO CURRENT, NO CYCLE COUNT.", &foot, foot_w), &foot);
+    text::draw(
+        c,
+        f,
+        x,
+        y as f32,
+        &crate::widgets::fit(
+            f,
+            "NO FUEL GAUGE — NO CURRENT, NO CYCLE COUNT.",
+            &foot,
+            foot_w,
+        ),
+        &foot,
+    );
     if !v.charger_raw.is_empty() {
         y += 22;
         let raw = format!("BQ24262 RAW {}", v.charger_raw);
-        text::draw(c, f, x, y as f32, &crate::widgets::fit(f, &raw, &foot, foot_w), &foot);
+        text::draw(
+            c,
+            f,
+            x,
+            y as f32,
+            &crate::widgets::fit(f, &raw, &foot, foot_w),
+            &foot,
+        );
     }
     if v.care {
         y += 22;
-        text::draw(c, f, x, y as f32,
-                   &crate::widgets::fit(f, "CARE ON: 100% HERE IS ~4.09 V, NOT 4.2 V.", &foot, foot_w),
-                   &foot);
+        text::draw(
+            c,
+            f,
+            x,
+            y as f32,
+            &crate::widgets::fit(
+                f,
+                "CARE ON: 100% HERE IS ~4.09 V, NOT 4.2 V.",
+                &foot,
+                foot_w,
+            ),
+            &foot,
+        );
     }
     c.clear_clip();
 }
@@ -472,14 +562,30 @@ mod tests {
 
     fn sample() -> DeviceView<'static> {
         DeviceView {
-            percent: 99, status: "Charging", health: "Good", millivolts: 4093, care: true,
-            chg_state: 1, chg_fault: 0, charger_raw: "10 AC 78",
-            temp_cpu: 34400, temp_pmic: 39365, temp_abb: 34400,
-            cpu_khz: 1300000, cpu_max_khz: 1300000, cores_online: 1, cores_total: 2,
+            percent: 99,
+            status: "Charging",
+            health: "Good",
+            millivolts: 4093,
+            care: true,
+            chg_state: 1,
+            chg_fault: 0,
+            charger_raw: "10 AC 78",
+            temp_cpu: 34400,
+            temp_pmic: 39365,
+            temp_abb: 34400,
+            cpu_khz: 1300000,
+            cpu_max_khz: 1300000,
+            cores_online: 1,
+            cores_total: 2,
             governor: "hotplug",
-            mem_total_kb: 467512, mem_avail_kb: 159772,
-            music_total_mb: 56320, music_free_mb: 1024, data_free_mb: 13,
-            uptime_s: 711, kernel: "3.10.26", firmware: "CINDER DEV · RUST",
+            mem_total_kb: 467512,
+            mem_avail_kb: 159772,
+            music_total_mb: 56320,
+            music_free_mb: 1024,
+            data_free_mb: 13,
+            uptime_s: 711,
+            kernel: "3.10.26",
+            firmware: "CINDER DEV · RUST",
             base_fw: "WALKMAN ONE",
         }
     }
@@ -591,17 +697,23 @@ mod tests {
     #[test]
     fn exactly_one_row_is_a_control() {
         let v = sample();
-        let toggles = items(&v).iter()
+        let toggles = items(&v)
+            .iter()
             .filter(|it| matches!(it, Item::Row { toggle: true, .. }))
             .count();
-        assert_eq!(toggles, 1, "the care switch is the only thing on this screen that acts");
+        assert_eq!(
+            toggles, 1,
+            "the care switch is the only thing on this screen that acts"
+        );
     }
 
     #[test]
     fn the_content_is_taller_than_the_panel_so_the_screen_must_scroll() {
         let v = sample();
-        assert!(content_height(&v) > crate::canvas::H as i32,
-                "if this ever fits, drop the scrolling rather than leaving dead code");
+        assert!(
+            content_height(&v) > crate::canvas::H as i32,
+            "if this ever fits, drop the scrolling rather than leaving dead code"
+        );
         assert!(max_scroll_px(&v) > 0);
     }
 
@@ -619,15 +731,31 @@ mod tests {
         // string, because a blank value column looks like a rendering fault rather than a
         // missing reading.
         let v = DeviceView {
-            status: "", health: "", millivolts: UNKNOWN, charger_raw: "",
-            chg_state: -1, chg_fault: -1,
-            temp_cpu: UNKNOWN, temp_pmic: UNKNOWN, temp_abb: UNKNOWN,
-            cpu_khz: UNKNOWN, cpu_max_khz: UNKNOWN, governor: "",
-            uptime_s: UNKNOWN, kernel: "", firmware: "", base_fw: "",
+            status: "",
+            health: "",
+            millivolts: UNKNOWN,
+            charger_raw: "",
+            chg_state: -1,
+            chg_fault: -1,
+            temp_cpu: UNKNOWN,
+            temp_pmic: UNKNOWN,
+            temp_abb: UNKNOWN,
+            cpu_khz: UNKNOWN,
+            cpu_max_khz: UNKNOWN,
+            governor: "",
+            uptime_s: UNKNOWN,
+            kernel: "",
+            firmware: "",
+            base_fw: "",
             ..DeviceView::default()
         };
         for it in items(&v) {
-            if let Item::Row { label, value, toggle } = it {
+            if let Item::Row {
+                label,
+                value,
+                toggle,
+            } = it
+            {
                 if toggle {
                     continue; // the switch draws itself
                 }

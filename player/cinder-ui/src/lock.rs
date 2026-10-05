@@ -10,8 +10,8 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, sty};
 
 pub struct Lock<'a> {
-    pub clock: &'a str,      // status-bar clock
-    pub big_clock: &'a str,  // large centred clock
+    pub clock: &'a str,     // status-bar clock
+    pub big_clock: &'a str, // large centred clock
     pub title: &'a str,
     pub artist: &'a str,
     pub badge: &'a str,
@@ -38,14 +38,39 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, l: &Lock) {
     c.fill(t.bg);
 
     // big clock, centred in the body
-    centered(c, f, 366.0, l.big_clock, &sty(Family::Mono, Weight::Light, 88.0, t.ink, -0.02));
-    centered(c, f, 408.0, l.title, &sty(Family::Sans, Weight::Regular, 17.0, t.ink, 0.0));
-    centered(c, f, 428.0, l.artist, &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0));
+    centered(
+        c,
+        f,
+        366.0,
+        l.big_clock,
+        &sty(Family::Mono, Weight::Light, 88.0, t.ink, -0.02),
+    );
+    centered(
+        c,
+        f,
+        408.0,
+        l.title,
+        &sty(Family::Sans, Weight::Regular, 17.0, t.ink, 0.0),
+    );
+    centered(
+        c,
+        f,
+        428.0,
+        l.artist,
+        &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0),
+    );
 
     // thin progress bar, 240px wide, centred
     let (px, pw, py) = (120, 240, 454);
     fill_rect(c, px, py, pw, 2, t.line);
-    fill_rect(c, px, py, (pw as f32 * l.progress.clamp(0.0, 1.0)) as i32, 2, t.dim);
+    fill_rect(
+        c,
+        px,
+        py,
+        (pw as f32 * l.progress.clamp(0.0, 1.0)) as i32,
+        2,
+        t.dim,
+    );
 
     // bottom hint: lock glyph + caption. The Hold switch unlocks (touch is disabled); the side
     // transport keys stay live; Power just wakes the screen.

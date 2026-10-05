@@ -60,7 +60,11 @@ pub fn selected(comps: &[Comp], owner: &str) -> bool {
     if owner.is_empty() {
         return true;
     }
-    comps.iter().find(|c| c.id == owner).map(Comp::is_on).unwrap_or(true)
+    comps
+        .iter()
+        .find(|c| c.id == owner)
+        .map(Comp::is_on)
+        .unwrap_or(true)
 }
 
 /// What an action will write, resolved before a single byte is copied.
@@ -92,7 +96,10 @@ pub fn plan(action: Action, comps: &[Comp], channel: &str) -> Result<Plan, Strin
              when it was compiled)"
                 .to_string()
         })?;
-        return Ok(Plan { files: vec![(UPG_NAME.to_string(), bytes.len())], conf: None });
+        return Ok(Plan {
+            files: vec![(UPG_NAME.to_string(), bytes.len())],
+            conf: None,
+        });
     }
 
     let files = crate::payload::PAYLOAD
@@ -100,7 +107,10 @@ pub fn plan(action: Action, comps: &[Comp], channel: &str) -> Result<Plan, Strin
         .filter(|(_, owner, _)| selected(comps, owner))
         .map(|(name, _, bytes)| ((*name).to_string(), bytes.len()))
         .collect();
-    Ok(Plan { files, conf: Some(crate::catalogue::conf_text(comps, channel)) })
+    Ok(Plan {
+        files,
+        conf: Some(crate::catalogue::conf_text(comps, channel)),
+    })
 }
 
 /// Copy the plan onto the player. `progress` is called after each file with (name, bytes).
@@ -118,8 +128,9 @@ pub fn write_payload(
     mut progress: impl FnMut(&str, usize),
 ) -> io::Result<()> {
     if action.is_removal() {
-        let bytes = crate::payload::UNINSTALL_UPG
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no uninstall package embedded"))?;
+        let bytes = crate::payload::UNINSTALL_UPG.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "no uninstall package embedded")
+        })?;
         if !dry {
             write_verified(&target.join(UPG_NAME), bytes)?;
         }
@@ -324,7 +335,10 @@ fn volume_device_path(target: &Path) -> io::Result<Vec<u16>> {
     if !letter.is_ascii_alphabetic() || chars.next() != Some(':') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{} is not a drive letter, so it has no volume to send the command to", text),
+            format!(
+                "{} is not a drive letter, so it has no volume to send the command to",
+                text
+            ),
         ));
     }
     let path = format!(r"\\.\{}:", letter.to_ascii_uppercase());
@@ -462,7 +476,9 @@ pub fn trigger_fw_upgrade(target: &Path, mut log: impl FnMut(&str)) -> io::Resul
     match send_fw_upgrade(vol.0, 0x80) {
         Ok(()) => Ok(()),
         Err(first) => {
-            log(&format!("newer-style command refused: {first} — trying the older one"));
+            log(&format!(
+                "newer-style command refused: {first} — trying the older one"
+            ));
             send_fw_upgrade(vol.0, 0x00)
         }
     }
@@ -612,7 +628,13 @@ fn send_fw_upgrade(dev: &Path, flag: u8) -> io::Result<()> {
 
     // SAFETY: h outlives the call; every pointer in it addresses a live local buffer whose
     // declared length matches the field beside it.
-    let rc = unsafe { sg::ioctl(f.as_raw_fd(), sg::SG_IO, (&mut h as *mut sg::SgIoHdr).cast()) };
+    let rc = unsafe {
+        sg::ioctl(
+            f.as_raw_fd(),
+            sg::SG_IO,
+            (&mut h as *mut sg::SgIoHdr).cast(),
+        )
+    };
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -639,7 +661,10 @@ pub fn trigger_fw_upgrade(target: &Path, mut log: impl FnMut(&str)) -> io::Resul
     let dev = block_device_for(target).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            format!("could not find the block device behind {}", target.display()),
+            format!(
+                "could not find the block device behind {}",
+                target.display()
+            ),
         )
     })?;
 
@@ -651,11 +676,16 @@ pub fn trigger_fw_upgrade(target: &Path, mut log: impl FnMut(&str)) -> io::Resul
     // SAFETY: c is NUL-terminated and lives across the call.
     unsafe { sg::umount(c.as_ptr()) };
 
-    log(&format!("telling the player to reboot into its own updater ({})", dev.display()));
+    log(&format!(
+        "telling the player to reboot into its own updater ({})",
+        dev.display()
+    ));
     match send_fw_upgrade(&dev, 0x80) {
         Ok(()) => Ok(()),
         Err(first) => {
-            log(&format!("newer-style command refused: {first} — trying the older one"));
+            log(&format!(
+                "newer-style command refused: {first} — trying the older one"
+            ));
             send_fw_upgrade(&dev, 0x00)
         }
     }
@@ -727,7 +757,10 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
             Ok(p) => {
                 assert_eq!(p.files.len(), 1);
                 assert_eq!(p.files[0].0, UPG_NAME);
-                assert!(p.conf.is_none(), "an uninstall must not rewrite the component conf");
+                assert!(
+                    p.conf.is_none(),
+                    "an uninstall must not rewrite the component conf"
+                );
             }
             // A dist-less checkout has no uninstall package embedded; the error is the contract.
             Err(e) => assert!(e.contains("uninstall package"), "{e}"),
@@ -737,7 +770,10 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
     #[test]
     fn install_and_update_stage_the_same_things() {
         let c = parse_catalogue(SAMPLE).unwrap();
-        let (a, b) = (plan(Action::Install, &c, "stable"), plan(Action::Update, &c, "stable"));
+        let (a, b) = (
+            plan(Action::Install, &c, "stable"),
+            plan(Action::Update, &c, "stable"),
+        );
         let (a, b) = (a.unwrap(), b.unwrap());
         assert_eq!(a.files.len(), b.files.len());
         assert_eq!(a.conf, b.conf);
@@ -762,9 +798,16 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
         let mut seen = 0usize;
         write_payload(Action::Install, &c, "stable", &dir, true, |_, _| seen += 1).unwrap();
 
-        assert!(seen > 0, "a dry run still reports every file it would write");
+        assert!(
+            seen > 0,
+            "a dry run still reports every file it would write"
+        );
         let left: Vec<_> = fs::read_dir(&dir).unwrap().flatten().collect();
-        assert!(left.is_empty(), "a dry run left {} file(s) behind", left.len());
+        assert!(
+            left.is_empty(),
+            "a dry run left {} file(s) behind",
+            left.len()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -846,13 +889,19 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
     #[cfg(target_os = "linux")]
     fn ignores_sources_that_are_not_block_devices() {
         assert_eq!(block_device_in(MOUNTINFO, Path::new("/proc")), None);
-        assert_eq!(block_device_in(MOUNTINFO, Path::new("/run/user/1000/doc")), None);
+        assert_eq!(
+            block_device_in(MOUNTINFO, Path::new("/run/user/1000/doc")),
+            None
+        );
     }
 
     #[test]
     #[cfg(target_os = "linux")]
     fn unknown_mount_point_is_not_a_guess() {
-        assert_eq!(block_device_in(MOUNTINFO, Path::new("/media/me/NOPE")), None);
+        assert_eq!(
+            block_device_in(MOUNTINFO, Path::new("/media/me/NOPE")),
+            None
+        );
     }
 
     /// The exact bytes Rockbox's scsitool sends (`try_fw_upgrade`): opcode 0xfc, subcommand 0x04,
@@ -861,7 +910,10 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
     #[test]
     #[cfg(target_os = "linux")]
     fn the_upgrade_cdb_matches_the_documented_command() {
-        assert_eq!(FW_UPGRADE_CDB, [0xfc, 0, 0x04, b'd', b'b', b'm', b'n', 0, 0, 0, 0, 0]);
+        assert_eq!(
+            FW_UPGRADE_CDB,
+            [0xfc, 0, 0x04, b'd', b'b', b'm', b'n', 0, 0, 0, 0, 0]
+        );
         let mut with_flag = FW_UPGRADE_CDB;
         with_flag[8] = 0x80;
         assert_eq!(with_flag[8], 0x80, "the flag byte is index 8");

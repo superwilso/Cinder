@@ -43,23 +43,58 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     // cinder-battery READS the bq24262 charger's registers for the battery screen. Deliberately
     // read-only — unlike cinder-fm it never widens permissions, because writing this chip
     // reprograms a lithium charger. See cinder-home/src/cinder-battery.c.
-    ("dist/{ch}/cinder-battery", "cinder-battery", "battery", true),
-    ("dist/{ch}/cinder-signature.sh", "cinder-signature.sh", "", true),
+    (
+        "dist/{ch}/cinder-battery",
+        "cinder-battery",
+        "battery",
+        true,
+    ),
+    (
+        "dist/{ch}/cinder-signature.sh",
+        "cinder-signature.sh",
+        "",
+        true,
+    ),
     // The mono shim (cinder-home/src/cinder-mono.c). Staged only when `mono` is selected; the
     // device installer then puts it in place of Wampy's preloaded library, or skips it when Wampy
     // is not installed.
-    ("dist/{ch}/libcinder_mono.so", "libcinder_mono.so", "mono", true),
+    (
+        "dist/{ch}/libcinder_mono.so",
+        "libcinder_mono.so",
+        "mono",
+        true,
+    ),
     // The `preload` component: the hagodaemon wrapper, the boot guard it is never installed
     // without, and the script that puts both on and takes both off (deploy/cinder-preload.sh).
     // Staged only when `preload` is selected. NOT `required` yet: dist/stable is rebuilt at a
     // release and the one committed today (0.3.14) predates all three, so a build from `main`
     // must not fail on them — tools/release.sh is what refuses to cut a release without them.
-    ("dist/{ch}/cinder-hagowrap", "cinder-hagowrap", "preload", false),
-    ("dist/{ch}/cinder-guard.sh", "cinder-guard.sh", "preload", false),
-    ("dist/{ch}/cinder-preload.sh", "cinder-preload.sh", "preload", false),
+    (
+        "dist/{ch}/cinder-hagowrap",
+        "cinder-hagowrap",
+        "preload",
+        false,
+    ),
+    (
+        "dist/{ch}/cinder-guard.sh",
+        "cinder-guard.sh",
+        "preload",
+        false,
+    ),
+    (
+        "dist/{ch}/cinder-preload.sh",
+        "cinder-preload.sh",
+        "preload",
+        false,
+    ),
     // The .UPG the Sony updater actually runs. It MUST land on the player as NW_WM_FW.UPG —
     // that filename is what the device's own "update firmware" flow looks for.
-    ("dist/{ch}/cinder_home_install.upg", "NW_WM_FW.UPG", "", true),
+    (
+        "dist/{ch}/cinder_home_install.upg",
+        "NW_WM_FW.UPG",
+        "",
+        true,
+    ),
 ];
 
 // The uninstall package. Deliberately NOT in FILES: it lands under the same name as the install
@@ -170,7 +205,8 @@ fn main() {
 /// The GNU target is used for local `cargo check` only — every published Windows build is MSVC —
 /// so a check-only build losing its theming costs nothing.
 fn embed_manifest() {
-    let mut manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("cinder-installer.manifest");
+    let mut manifest =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("cinder-installer.manifest");
     println!("cargo:rerun-if-changed={}", manifest.display());
     println!("cargo:rerun-if-env-changed=CINDER_INSTALLER_AS_INVOKER");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
@@ -181,11 +217,17 @@ fn embed_manifest() {
     // prompt to show, so CreateProcess just fails. This embeds a copy of the manifest that asks for
     // nothing, for a build that only ever runs --screenshots. Nothing in release.yml sets it, and
     // without elevation such a build could not send the upgrade command anyway.
-    if env::var_os("CINDER_INSTALLER_AS_INVOKER").is_some_and(|v| !v.is_empty()) && manifest.is_file() {
+    if env::var_os("CINDER_INSTALLER_AS_INVOKER").is_some_and(|v| !v.is_empty())
+        && manifest.is_file()
+    {
         let text = fs::read_to_string(&manifest).unwrap();
         let swapped = text.replace("level=\"requireAdministrator\"", "level=\"asInvoker\"");
-        assert_ne!(swapped, text, "CINDER_INSTALLER_AS_INVOKER: the manifest no longer says requireAdministrator");
-        let copy = PathBuf::from(env::var("OUT_DIR").unwrap()).join("cinder-installer.as-invoker.manifest");
+        assert_ne!(
+            swapped, text,
+            "CINDER_INSTALLER_AS_INVOKER: the manifest no longer says requireAdministrator"
+        );
+        let copy = PathBuf::from(env::var("OUT_DIR").unwrap())
+            .join("cinder-installer.as-invoker.manifest");
         fs::write(&copy, swapped).unwrap();
         manifest = copy;
     }
@@ -206,12 +248,18 @@ fn embed_manifest() {
     // committed" into a broken release build whose message points at the linker rather than at
     // the file. Unthemed controls are a cosmetic loss; a failed release build is not.
     if !manifest.is_file() {
-        println!("cargo:warning=cinder-installer: {} is missing — building without an application \
-                  manifest, so the GUI will use unthemed controls.", manifest.display());
+        println!(
+            "cargo:warning=cinder-installer: {} is missing — building without an application \
+                  manifest, so the GUI will use unthemed controls.",
+            manifest.display()
+        );
         return;
     }
     println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
-    println!("cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}", manifest.display());
+    println!(
+        "cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}",
+        manifest.display()
+    );
     println!("cargo:rustc-link-arg-bins=/MANIFESTUAC:NO");
 }
 
@@ -246,8 +294,10 @@ fn gnu_manifest(manifest: &Path) {
             return;
         }
     }
-    println!("cargo:warning=cinder-installer: windres not found — the GUI will use unthemed \
-              controls in this build. Published builds are MSVC and are unaffected.");
+    println!(
+        "cargo:warning=cinder-installer: windres not found — the GUI will use unthemed \
+              controls in this build. Published builds are MSVC and are unaffected."
+    );
 }
 
 fn abs(p: &Path) -> String {

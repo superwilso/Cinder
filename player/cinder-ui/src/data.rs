@@ -9,14 +9,54 @@ pub struct Song {
 }
 
 pub const SONGS: &[Song] = &[
-    Song { t: "Atlas Hands", a: "Benjamin Francis Leftwich", d: "4:32", art: "kind" },
-    Song { t: "Box of Stones", a: "Benjamin Francis Leftwich", d: "3:58", art: "kind" },
-    Song { t: "Harvest Moon", a: "Cold Stone & Sea", d: "5:03", art: "harvest" },
-    Song { t: "Midnight Arcade", a: "Neon Cartography", d: "4:11", art: "midnight" },
-    Song { t: "Ferns", a: "Hollow Pines", d: "3:24", art: "ferns" },
-    Song { t: "Halcyon Days", a: "Vesper Lane", d: "4:47", art: "halcyon" },
-    Song { t: "Bloom", a: "Petal & Wire", d: "3:36", art: "bloom" },
-    Song { t: "Prism Break", a: "Glass Atlas", d: "4:02", art: "prism" },
+    Song {
+        t: "Atlas Hands",
+        a: "Benjamin Francis Leftwich",
+        d: "4:32",
+        art: "kind",
+    },
+    Song {
+        t: "Box of Stones",
+        a: "Benjamin Francis Leftwich",
+        d: "3:58",
+        art: "kind",
+    },
+    Song {
+        t: "Harvest Moon",
+        a: "Cold Stone & Sea",
+        d: "5:03",
+        art: "harvest",
+    },
+    Song {
+        t: "Midnight Arcade",
+        a: "Neon Cartography",
+        d: "4:11",
+        art: "midnight",
+    },
+    Song {
+        t: "Ferns",
+        a: "Hollow Pines",
+        d: "3:24",
+        art: "ferns",
+    },
+    Song {
+        t: "Halcyon Days",
+        a: "Vesper Lane",
+        d: "4:47",
+        art: "halcyon",
+    },
+    Song {
+        t: "Bloom",
+        a: "Petal & Wire",
+        d: "3:36",
+        art: "bloom",
+    },
+    Song {
+        t: "Prism Break",
+        a: "Glass Atlas",
+        d: "4:02",
+        art: "prism",
+    },
 ];
 
 pub struct Album {
@@ -35,24 +75,54 @@ pub const ALBUM_GROUPS: &[AlbumGroup] = &[
     AlbumGroup {
         artist: "Benjamin Francis Leftwich",
         albums: &[
-            Album { n: "Last Smoke Before the Snowstorm", k: 12, y: "2011", art: "kind" },
-            Album { n: "After the Rain", k: 10, y: "2016", art: "atlas" },
+            Album {
+                n: "Last Smoke Before the Snowstorm",
+                k: 12,
+                y: "2011",
+                art: "kind",
+            },
+            Album {
+                n: "After the Rain",
+                k: 10,
+                y: "2016",
+                art: "atlas",
+            },
         ],
     },
     AlbumGroup {
         artist: "Cold Stone & Sea",
         albums: &[
-            Album { n: "Harvest Moon", k: 10, y: "2019", art: "harvest" },
-            Album { n: "Static Lines", k: 9, y: "2022", art: "static" },
+            Album {
+                n: "Harvest Moon",
+                k: 10,
+                y: "2019",
+                art: "harvest",
+            },
+            Album {
+                n: "Static Lines",
+                k: 9,
+                y: "2022",
+                art: "static",
+            },
         ],
     },
     AlbumGroup {
         artist: "Glass Atlas",
-        albums: &[Album { n: "Prism Break", k: 10, y: "2021", art: "prism" }],
+        albums: &[Album {
+            n: "Prism Break",
+            k: 10,
+            y: "2021",
+            art: "prism",
+        }],
     },
     AlbumGroup {
         artist: "Neon Cartography",
-        albums: &[Album { n: "Midnight Arcade", k: 11, y: "2020", art: "midnight" }],
+        albums: &[Album {
+            n: "Midnight Arcade",
+            k: 11,
+            y: "2020",
+            art: "midnight",
+        }],
     },
 ];
 
@@ -64,13 +134,48 @@ pub struct Artist {
 }
 
 pub const ARTISTS: &[Artist] = &[
-    Artist { n: "Benjamin Francis Leftwich", al: 3, tr: 34, arts: &["kind", "atlas"] },
-    Artist { n: "Cold Stone & Sea", al: 2, tr: 21, arts: &["harvest", "static"] },
-    Artist { n: "Glass Atlas", al: 1, tr: 10, arts: &["prism"] },
-    Artist { n: "Hollow Pines", al: 2, tr: 19, arts: &["ferns", "cassette"] },
-    Artist { n: "Neon Cartography", al: 4, tr: 46, arts: &["midnight", "prism"] },
-    Artist { n: "Petal & Wire", al: 1, tr: 8, arts: &["bloom"] },
-    Artist { n: "Vesper Lane", al: 2, tr: 26, arts: &["halcyon", "bloom"] },
+    Artist {
+        n: "Benjamin Francis Leftwich",
+        al: 3,
+        tr: 34,
+        arts: &["kind", "atlas"],
+    },
+    Artist {
+        n: "Cold Stone & Sea",
+        al: 2,
+        tr: 21,
+        arts: &["harvest", "static"],
+    },
+    Artist {
+        n: "Glass Atlas",
+        al: 1,
+        tr: 10,
+        arts: &["prism"],
+    },
+    Artist {
+        n: "Hollow Pines",
+        al: 2,
+        tr: 19,
+        arts: &["ferns", "cassette"],
+    },
+    Artist {
+        n: "Neon Cartography",
+        al: 4,
+        tr: 46,
+        arts: &["midnight", "prism"],
+    },
+    Artist {
+        n: "Petal & Wire",
+        al: 1,
+        tr: 8,
+        arts: &["bloom"],
+    },
+    Artist {
+        n: "Vesper Lane",
+        al: 2,
+        tr: 26,
+        arts: &["halcyon", "bloom"],
+    },
 ];
 
 pub struct Playlist {
@@ -80,14 +185,32 @@ pub struct Playlist {
 }
 
 pub const PLAYLISTS: &[Playlist] = &[
-    Playlist { n: "Liked Songs", k: 214, art: "bloom" },
-    Playlist { n: "Night Drives", k: 32, art: "midnight" },
-    Playlist { n: "Acoustic Mornings", k: 48, art: "ferns" },
-    Playlist { n: "Hi-Res Showcase", k: 26, art: "prism" },
+    Playlist {
+        n: "Liked Songs",
+        k: 214,
+        art: "bloom",
+    },
+    Playlist {
+        n: "Night Drives",
+        k: 32,
+        art: "midnight",
+    },
+    Playlist {
+        n: "Acoustic Mornings",
+        k: 48,
+        art: "ferns",
+    },
+    Playlist {
+        n: "Hi-Res Showcase",
+        k: 26,
+        art: "prism",
+    },
 ];
 
 // EQ — 10 bands, presets (dB per band)
-pub const EQ_BANDS: [&str; 10] = ["32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
+pub const EQ_BANDS: [&str; 10] = [
+    "32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k",
+];
 // RAW half-dB units (see eq::BAND_MAX): the curves below were authored as decibels, so each value
 // is doubled. ROCK's first band is +8 raw = +4 dB — which is what it always claimed to be and,
 // until the units were measured on device, never was.

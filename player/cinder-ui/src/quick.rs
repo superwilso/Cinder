@@ -114,7 +114,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
     fill_rect(c, 0, TOP, W as i32, BOTTOM - TOP, t.bg);
 
     kit::section_label(c, t, f, TOP, "BRIGHTNESS", None);
-    let level = (1..=5).contains(&v.brightness).then(|| v.brightness as usize - 1);
+    let level = (1..=5)
+        .contains(&v.brightness)
+        .then(|| v.brightness as usize - 1);
     kit::chips(c, t, f, BRIGHT_CHIPS, &LEVELS, level);
 
     let bt_sub = match (v.bt_on, v.bt_device) {
@@ -122,12 +124,36 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
         (true, Some(name)) => name,
         (true, None) => "Not connected",
     };
-    kit::row(c, t, f, ROW_BT, kit::ROW_H, &Row::new("Bluetooth").sub(bt_sub).trail(Trail::Switch(v.bt_on)));
-    kit::row(c, t, f, ROW_NIGHT, kit::ROW_H,
-             &Row::new("Night").sub("Dims everything after dark").trail(Trail::Switch(v.night)));
+    kit::row(
+        c,
+        t,
+        f,
+        ROW_BT,
+        kit::ROW_H,
+        &Row::new("Bluetooth")
+            .sub(bt_sub)
+            .trail(Trail::Switch(v.bt_on)),
+    );
+    kit::row(
+        c,
+        t,
+        f,
+        ROW_NIGHT,
+        kit::ROW_H,
+        &Row::new("Night")
+            .sub("Dims everything after dark")
+            .trail(Trail::Switch(v.night)),
+    );
 
     kit::section_label(c, t, f, SLEEP_LABEL, "SLEEP TIMER", None);
-    kit::chips(c, t, f, SLEEP_CHIPS, &SLEEP_LABELS, Some(v.sleep_idx.min(SLEEP_LABELS.len() - 1)));
+    kit::chips(
+        c,
+        t,
+        f,
+        SLEEP_CHIPS,
+        &SLEEP_LABELS,
+        Some(v.sleep_idx.min(SLEEP_LABELS.len() - 1)),
+    );
 
     // The grab bar says the sheet came from the top and goes back there; the hairline is its edge.
     fill_rect(c, W as i32 / 2 - 20, BOTTOM - 12, 40, 4, t.ctrl());
@@ -143,15 +169,25 @@ mod tests {
     fn every_control_answers_where_it_is_drawn() {
         for i in 0..5 {
             let (x, w) = kit::chip_span(i, 5);
-            assert_eq!(hit(x + w / 2, BRIGHT_CHIPS + kit::CHIP_H / 2), QuickHit::Brightness(i as u8 + 1));
+            assert_eq!(
+                hit(x + w / 2, BRIGHT_CHIPS + kit::CHIP_H / 2),
+                QuickHit::Brightness(i as u8 + 1)
+            );
         }
         for i in 0..SLEEP_PRESETS.len() {
             let (x, w) = kit::chip_span(i, SLEEP_PRESETS.len());
-            assert_eq!(hit(x + w / 2, SLEEP_CHIPS + kit::CHIP_H / 2), QuickHit::Sleep(i));
+            assert_eq!(
+                hit(x + w / 2, SLEEP_CHIPS + kit::CHIP_H / 2),
+                QuickHit::Sleep(i)
+            );
         }
         assert_eq!(hit(240, ROW_BT + 30), QuickHit::Bluetooth);
         assert_eq!(hit(240, ROW_NIGHT + 30), QuickHit::Night);
-        assert_eq!(hit(240, TOP + 10), QuickHit::Sheet, "the section label is not a control");
+        assert_eq!(
+            hit(240, TOP + 10),
+            QuickHit::Sheet,
+            "the section label is not a control"
+        );
         assert_eq!(hit(240, BOTTOM), QuickHit::Outside);
         assert_eq!(hit(240, H as i32 - 1), QuickHit::Outside);
     }

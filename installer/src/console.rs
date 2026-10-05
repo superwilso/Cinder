@@ -23,17 +23,30 @@ fn prompt(msg: &str) -> String {
 
 fn show(comps: &[Comp], target: &Path, action: Action) {
     println!();
-    println!("  Cinder {}  (channel: {})", action.verb().to_lowercase(), crate::CHANNEL);
+    println!(
+        "  Cinder {}  (channel: {})",
+        action.verb().to_lowercase(),
+        crate::CHANNEL
+    );
     println!("  player: {}", target.display());
     println!("  ------------------------------------------------------------");
     for (i, c) in comps.iter().enumerate() {
         match c.kind {
-            Kind::Bool => println!("   {:>2}  [{}]  {}", i + 1, if c.is_on() { 'x' } else { ' ' }, c.title),
+            Kind::Bool => println!(
+                "   {:>2}  [{}]  {}",
+                i + 1,
+                if c.is_on() { 'x' } else { ' ' },
+                c.title
+            ),
             Kind::Enum(_) => println!("   {:>2}       {}: {}", i + 1, c.title, c.shown()),
         }
     }
     println!("  ------------------------------------------------------------");
-    let go = if action == Action::Update { "u update" } else { "i install" };
+    let go = if action == Action::Update {
+        "u update"
+    } else {
+        "i install"
+    };
     println!("\n   <number> switch on/off or change   ?<number> read about it   {go}   q quit");
 }
 
@@ -81,7 +94,13 @@ fn wrap(text: &str, width: usize, indent: &str) -> String {
 }
 
 /// Pick components, then carry the action out. Returns the process exit code.
-pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bool, dry: bool) -> i32 {
+pub fn run(
+    mut comps: Vec<Comp>,
+    target: PathBuf,
+    action: Action,
+    assume_yes: bool,
+    dry: bool,
+) -> i32 {
     let state = device::read_installed(&target, &stage::payload_names());
     println!("\n  {}", state.summary());
     if let Some(a) = state.advisory() {
@@ -153,8 +172,11 @@ pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bo
         for c in &comps {
             println!("    {}: {}", c.title, c.shown());
         }
-        println!("\n  {} files ({} KB) will be copied to the player's storage root.",
-                 plan.count(), plan.total_bytes() / 1024);
+        println!(
+            "\n  {} files ({} KB) will be copied to the player's storage root.",
+            plan.count(),
+            plan.total_bytes() / 1024
+        );
         println!("  Nothing is flashed by this program — the player does that itself, later.");
         if prompt("\n  Proceed? [y/N] ").to_lowercase() != "y" {
             println!("  nothing written.");
@@ -173,8 +195,10 @@ fn uninstall(target: &Path, state: &Installed, assume_yes: bool, dry: bool) -> i
     println!("  not touched.");
     if !state.present() {
         println!();
-        println!("  NOTE: this player does not look like it has Cinder on it ({}).",
-                 state.summary().to_lowercase());
+        println!(
+            "  NOTE: this player does not look like it has Cinder on it ({}).",
+            state.summary().to_lowercase()
+        );
         println!("  Running the uninstall anyway is harmless — it is a no-op on a stock device.");
     }
     if !assume_yes && prompt("\n  Uninstall Cinder? [y/N] ").to_lowercase() != "y" {
@@ -188,7 +212,11 @@ fn carry_out(action: Action, comps: &[Comp], target: &Path, dry: bool) -> i32 {
     if dry {
         println!("\n  DRY RUN — nothing will be written and the player will not be told to flash.");
     }
-    println!("\n  {} {} ...", if dry { "would write to" } else { "writing to" }, target.display());
+    println!(
+        "\n  {} {} ...",
+        if dry { "would write to" } else { "writing to" },
+        target.display()
+    );
     let r = stage::write_payload(action, comps, crate::CHANNEL, target, dry, |name, n| {
         println!("    {name:<22} {n:>9} bytes");
     });
@@ -219,7 +247,11 @@ fn carry_out(action: Action, comps: &[Comp], target: &Path, dry: bool) -> i32 {
 
 /// The command went out and the player is rebooting into the updater on its own.
 fn print_upgrade_sent(action: Action) {
-    let landing = if action.is_removal() { "the stock player" } else { "Cinder" };
+    let landing = if action.is_removal() {
+        "the stock player"
+    } else {
+        "Cinder"
+    };
     println!("\n  Upgrade command accepted. The player is rebooting into its own updater.");
     println!();
     println!("    * The screen shows the updater, then it reboots into {landing} by itself.");
@@ -247,7 +279,12 @@ fn print_trigger_failed(e: &io::Error) {
         } else {
             println!("  That is a permissions error. Sending a raw SCSI command needs root:");
             println!();
-            println!("      sudo {}", std::env::args().next().unwrap_or_else(|| "cinder-installer".into()));
+            println!(
+                "      sudo {}",
+                std::env::args()
+                    .next()
+                    .unwrap_or_else(|| "cinder-installer".into())
+            );
             println!();
             println!("  Re-running it is safe — it stages the same files again, then fires.");
         }
@@ -260,7 +297,9 @@ fn print_trigger_failed(e: &io::Error) {
         println!("  the player into one and run the installer there; it will re-stage and fire.");
     } else {
         println!("  The player is still holding a valid payload, so nothing is broken. Re-running");
-        println!("  this installer is safe. If it keeps failing, a file manager may be holding the");
+        println!(
+            "  this installer is safe. If it keeps failing, a file manager may be holding the"
+        );
         println!("  mount open — eject the player in your desktop, plug it back in, and retry.");
     }
     println!();
@@ -270,9 +309,13 @@ fn print_trigger_failed(e: &io::Error) {
 }
 
 fn recovery_note() {
-    println!("\n  A cable at power-on starts the stock player (the recovery escape), except on the");
+    println!(
+        "\n  A cable at power-on starts the stock player (the recovery escape), except on the"
+    );
     println!("  first start after an install, which ignores it so Cinder comes up with the cable");
-    println!("  still in. Unplug before restarting it. If a boot ever goes wrong, see RECOVERY.md.");
+    println!(
+        "  still in. Unplug before restarting it. If a boot ever goes wrong, see RECOVERY.md."
+    );
 }
 
 /// Ask which player to use when more than one is plugged in.
@@ -327,7 +370,10 @@ pub fn clean(target: &Path) -> i32 {
 
 /// Confirm a target that does not look like a Walkman.
 pub fn confirm_odd_target(p: &Path) -> bool {
-    eprintln!("WARNING: {} does not look like a Walkman's storage", p.display());
+    eprintln!(
+        "WARNING: {} does not look like a Walkman's storage",
+        p.display()
+    );
     eprintln!("         (no DevIcon.fil, no MUSIC + PC_Application).");
     prompt("         Use it anyway? [y/N] ").to_lowercase() == "y"
 }
@@ -339,9 +385,15 @@ mod tests {
     #[test]
     fn wrap_keeps_paragraphs_and_hangs_choices() {
         let w = wrap("one two three four\n\n(*) Label — five six seven", 12, "  ");
-        assert_eq!(w, "  one two\n  three four\n\n  (*) Label —\n      five six\n      seven\n");
+        assert_eq!(
+            w,
+            "  one two\n  three four\n\n  (*) Label —\n      five six\n      seven\n"
+        );
         for line in w.lines() {
-            assert!(line.chars().count() <= 2 + 12, "{line:?} is wider than asked");
+            assert!(
+                line.chars().count() <= 2 + 12,
+                "{line:?} is wider than asked"
+            );
         }
     }
 }

@@ -216,13 +216,25 @@ fn fallback_covers_script(i: usize, ch: char) -> bool {
     let c = ch as u32;
     match i {
         // SST-Roman: Latin-1/Extended, Greek, Cyrillic — Sony's own proportional corporate face.
-        0 => (0x0080..=0x024F).contains(&c) || (0x0370..=0x03FF).contains(&c) || (0x0400..=0x052F).contains(&c),
+        0 => {
+            (0x0080..=0x024F).contains(&c)
+                || (0x0370..=0x03FF).contains(&c)
+                || (0x0400..=0x052F).contains(&c)
+        }
         // SSTJpPro: Japanese — kana, CJK punctuation, unified ideographs, compatibility, fullwidth.
-        1 => (0x3000..=0x30FF).contains(&c) || (0x3400..=0x9FFF).contains(&c)
-            || (0xF900..=0xFAFF).contains(&c) || (0xFF00..=0xFFEF).contains(&c),
+        1 => {
+            (0x3000..=0x30FF).contains(&c)
+                || (0x3400..=0x9FFF).contains(&c)
+                || (0xF900..=0xFAFF).contains(&c)
+                || (0xFF00..=0xFFEF).contains(&c)
+        }
         // NotoSansKR: Hangul jamo, compatibility jamo, extended-A/B, syllables.
-        2 => (0x1100..=0x11FF).contains(&c) || (0x3130..=0x318F).contains(&c)
-            || (0xA960..=0xA97F).contains(&c) || (0xAC00..=0xD7FF).contains(&c),
+        2 => {
+            (0x1100..=0x11FF).contains(&c)
+                || (0x3130..=0x318F).contains(&c)
+                || (0xA960..=0xA97F).contains(&c)
+                || (0xAC00..=0xD7FF).contains(&c)
+        }
         // DFPGothic: Traditional Chinese — only reached for ideographs SSTJpPro did not have.
         3 => (0x3400..=0x9FFF).contains(&c) || (0xF900..=0xFAFF).contains(&c),
         // NotoSansThai.
@@ -280,7 +292,9 @@ impl FontSet {
             sans_regular: f(include_bytes!("../assets/fonts/HankenGrotesk-Regular.ttf")),
             sans_semibold: f(include_bytes!("../assets/fonts/HankenGrotesk-SemiBold.ttf")),
             sans_bold: f(include_bytes!("../assets/fonts/HankenGrotesk-Bold.ttf")),
-            sans_extrabold: f(include_bytes!("../assets/fonts/HankenGrotesk-ExtraBold.ttf")),
+            sans_extrabold: f(include_bytes!(
+                "../assets/fonts/HankenGrotesk-ExtraBold.ttf"
+            )),
             mono_light: f(include_bytes!("../assets/fonts/JetBrainsMono-Light.ttf")),
             mono_regular: f(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
             mono_bold: f(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf")),
@@ -311,7 +325,9 @@ impl FontSet {
         if CJK_FALLBACKS.contains(&i) {
             let taken = {
                 let slots = self.fallbacks.borrow();
-                CJK_FALLBACKS.iter().any(|&j| j != i && matches!(slots[j], Slot::Ready(_)))
+                CJK_FALLBACKS
+                    .iter()
+                    .any(|&j| j != i && matches!(slots[j], Slot::Ready(_)))
             };
             if taken {
                 self.fallbacks.borrow_mut()[i] = Slot::Absent;
@@ -449,9 +465,19 @@ impl FontSet {
 
     /// Cached rasterisation: returns the glyph metrics + an Rc to its coverage bitmap. Misses
     /// rasterise once and insert; hits are a hashmap lookup (no allocation/raster work).
-    fn glyph(&self, fam: Family, w: Weight, ch: char, size: f32) -> (Metrics, std::sync::Arc<Vec<u8>>) {
+    fn glyph(
+        &self,
+        fam: Family,
+        w: Weight,
+        ch: char,
+        size: f32,
+    ) -> (Metrics, std::sync::Arc<Vec<u8>>) {
         let (font_id, font) = self.resolve(fam, w, ch);
-        let key = GlyphKey { font: font_id, ch, size_q: size.to_bits() };
+        let key = GlyphKey {
+            font: font_id,
+            ch,
+            size_q: size.to_bits(),
+        };
         if let Some(hit) = self.glyph_cache.borrow().get(&key) {
             return (hit.0, hit.1.clone());
         }
@@ -486,7 +512,11 @@ pub fn probe_glyph(fonts: &FontSet, ch: char) -> u8 {
     let (id, font) = fonts.resolve(Family::Sans, Weight::Regular, ch);
     let covered = font.lookup_glyph_index(ch) != 0;
     let _ = font.rasterize(ch, 16.0);
-    if covered { id } else { u8::MAX }
+    if covered {
+        id
+    } else {
+        u8::MAX
+    }
 }
 
 pub struct TextStyle {
@@ -513,7 +543,14 @@ pub fn measure(fonts: &FontSet, s: &str, st: &TextStyle) -> f32 {
 }
 
 /// Draw `s` with its baseline at (`x`, `baseline`). Returns the pen x after.
-pub fn draw(canvas: &mut Canvas, fonts: &FontSet, x: f32, baseline: f32, s: &str, st: &TextStyle) -> f32 {
+pub fn draw(
+    canvas: &mut Canvas,
+    fonts: &FontSet,
+    x: f32,
+    baseline: f32,
+    s: &str,
+    st: &TextStyle,
+) -> f32 {
     let size = scaled(st.size);
     let track = st.tracking * size;
     let mut pen = x;

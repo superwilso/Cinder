@@ -86,7 +86,11 @@ mod tests {
             assert_eq!(Style::from_token(s.token()), Some(s));
             assert_eq!(Style::from_index(s.index()), s);
         }
-        assert_eq!(Style::from_token("vaporwave"), None, "an unknown style is not a reset");
+        assert_eq!(
+            Style::from_token("vaporwave"),
+            None,
+            "an unknown style is not a reset"
+        );
         assert_eq!(Style::from_index(99), Style::Cinder);
     }
 }

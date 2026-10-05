@@ -143,7 +143,13 @@ pub fn fields_from_epoch(epoch: i64) -> Fields {
     let days = epoch.div_euclid(86400);
     let secs = epoch.rem_euclid(86400);
     let (y, m, d) = civil_from_days(days);
-    [y.clamp(YEAR_MIN, YEAR_MAX), m, d, (secs / 3600) as i32, ((secs / 60) % 60) as i32]
+    [
+        y.clamp(YEAR_MIN, YEAR_MAX),
+        m,
+        d,
+        (secs / 3600) as i32,
+        ((secs / 60) % 60) as i32,
+    ]
 }
 
 /// UTC epoch for the editor's fields. Seconds are dropped to zero: the editor has no seconds field,
@@ -152,7 +158,8 @@ pub fn epoch_from_fields(f: &Fields) -> i64 {
     let y = f[F_YEAR].clamp(YEAR_MIN, YEAR_MAX);
     let m = f[F_MONTH].clamp(1, 12);
     let d = f[F_DAY].clamp(1, days_in_month(y, m));
-    days_from_civil(y, m, d) * 86400 + f[F_HOUR].clamp(0, 23) as i64 * 3600
+    days_from_civil(y, m, d) * 86400
+        + f[F_HOUR].clamp(0, 23) as i64 * 3600
         + f[F_MIN].clamp(0, 59) as i64 * 60
 }
 
@@ -181,11 +188,29 @@ fn wrap(v: i32, n: i32) -> i32 {
     ((v % n) + n) % n
 }
 
-pub const MONTHS: [&str; 12] =
-    ["January", "February", "March", "April", "May", "June",
-     "July", "August", "September", "October", "November", "December"];
-const WEEKDAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
-                             "Saturday", "Sunday"];
+pub const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+const WEEKDAYS: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
 
 /// Weekday name for a civil date. 1970-01-01 was a Thursday, index 3 in a Monday-first table.
 pub fn weekday(y: i32, m: i32, d: i32) -> &'static str {
@@ -224,13 +249,37 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
         let y = fields[F_YEAR];
         let m = fields[F_MONTH].clamp(1, 12);
         let d = fields[F_DAY];
-        let s = format!("{} {} {} {} · {:02}:{:02}",
-                        weekday(y, m, d), d, MONTHS[(m - 1) as usize], y,
-                        fields[F_HOUR], fields[F_MIN]);
-        center(c, f, 240.0, (TOP + 36) as f32, &s,
-               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.acc, 0.0));
-        center(c, f, 240.0, (TOP + 54) as f32, "UTC — THE DEVICE KEEPS NO TIME ZONE",
-               &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16));
+        let s = format!(
+            "{} {} {} {} · {:02}:{:02}",
+            weekday(y, m, d),
+            d,
+            MONTHS[(m - 1) as usize],
+            y,
+            fields[F_HOUR],
+            fields[F_MIN]
+        );
+        center(
+            c,
+            f,
+            240.0,
+            (TOP + 36) as f32,
+            &s,
+            &sty(
+                Family::Sans,
+                Weight::SemiBold,
+                crate::scale::ROW,
+                t.acc,
+                0.0,
+            ),
+        );
+        center(
+            c,
+            f,
+            240.0,
+            (TOP + 54) as f32,
+            "UTC — THE DEVICE KEEPS NO TIME ZONE",
+            &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16),
+        );
     }
 
     let ft = fields_top();
@@ -242,27 +291,56 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
             fill_rect(c, 0, ry, crate::canvas::W as i32, ROW_H, t.row_sel);
         }
         let lc = if i == sel { t.acc } else { t.ink };
-        text::draw(c, f, 22.0, (cy + 6) as f32, label_of(i),
-                   &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
+        text::draw(
+            c,
+            f,
+            22.0,
+            (cy + 6) as f32,
+            label_of(i),
+            &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0),
+        );
         // The value sits left of the buttons, right-aligned, so the digits line up down the column.
-        right(c, f, (MINUS_X - 16) as f32, (cy + 7) as f32, &value_of(fields, i),
-              &sty(Family::Mono, Weight::Bold, 20.0, t.ink, 0.04));
+        right(
+            c,
+            f,
+            (MINUS_X - 16) as f32,
+            (cy + 7) as f32,
+            &value_of(fields, i),
+            &sty(Family::Mono, Weight::Bold, 20.0, t.ink, 0.04),
+        );
         for (which, glyph) in [(0usize, "−"), (1, "+")] {
             let (bx, by, bw, bh) = btn_rect(i, which);
             stroke_rect(c, bx, by, bw, bh, t.line, 1);
-            center(c, f, (bx + bw / 2) as f32, (by + bh / 2 + 8) as f32, glyph,
-                   &sty(Family::Sans, Weight::Bold, 24.0, t.acc, 0.0));
+            center(
+                c,
+                f,
+                (bx + bw / 2) as f32,
+                (by + bh / 2 + 8) as f32,
+                glyph,
+                &sty(Family::Sans, Weight::Bold, 24.0, t.acc, 0.0),
+            );
         }
         crate::widgets::hline(c, ry + ROW_H, t.line);
     }
 
     let (sx, sy, sw, sh) = set_rect();
     fill_rect(c, sx, sy, sw, sh, t.acc);
-    center(c, f, (sx + sw / 2) as f32, (sy + sh / 2 + 7) as f32, "SET CLOCK",
-           &sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc_ink, 0.06));
-    center(c, f, 240.0, (sy + sh + 26) as f32,
-           "Written to the hardware clock, so it survives a power cycle.",
-           &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
+    center(
+        c,
+        f,
+        (sx + sw / 2) as f32,
+        (sy + sh / 2 + 7) as f32,
+        "SET CLOCK",
+        &sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc_ink, 0.06),
+    );
+    center(
+        c,
+        f,
+        240.0,
+        (sy + sh + 26) as f32,
+        "Written to the hardware clock, so it survives a power cycle.",
+        &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0),
+    );
 }
 
 #[cfg(test)]
@@ -278,7 +356,11 @@ mod tests {
             for m in 1..=12 {
                 for d in 1..=days_in_month(y, m) {
                     let z = days_from_civil(y, m, d);
-                    assert_eq!(civil_from_days(z), (y, m, d), "{y}-{m}-{d} did not round trip");
+                    assert_eq!(
+                        civil_from_days(z),
+                        (y, m, d),
+                        "{y}-{m}-{d} did not round trip"
+                    );
                 }
             }
         }
@@ -296,7 +378,11 @@ mod tests {
         // Minute resolution: seconds are deliberately dropped, so compare on a whole minute.
         for &e in &[978307200i64, 1786957260, 1234567800, 2145916800 - 60] {
             let f = fields_from_epoch(e);
-            assert_eq!(epoch_from_fields(&f), e, "epoch {e} did not survive the editor");
+            assert_eq!(
+                epoch_from_fields(&f),
+                e,
+                "epoch {e} did not survive the editor"
+            );
         }
     }
 
@@ -306,7 +392,10 @@ mod tests {
     fn stepping_never_produces_an_impossible_date() {
         let mut f: Fields = [2024, 1, 31, 23, 59];
         step(&mut f, F_MONTH, 1);
-        assert_eq!(f[F_DAY], 29, "31 Jan -> Feb should land on the 29th in a leap year");
+        assert_eq!(
+            f[F_DAY], 29,
+            "31 Jan -> Feb should land on the 29th in a leap year"
+        );
         let mut f: Fields = [2023, 1, 31, 0, 0];
         step(&mut f, F_MONTH, 1);
         assert_eq!(f[F_DAY], 28, "and the 28th in a common year");
@@ -322,7 +411,10 @@ mod tests {
         step(&mut f, F_MIN, 1);
         assert_eq!(f[F_MIN], 0, "minute did not wrap");
         step(&mut f, F_YEAR, 1);
-        assert_eq!(f[F_YEAR], YEAR_MAX, "year must clamp, not wrap past the 2038 bound");
+        assert_eq!(
+            f[F_YEAR], YEAR_MAX,
+            "year must clamp, not wrap past the 2038 bound"
+        );
         let mut f: Fields = [YEAR_MIN, 1, 1, 0, 0];
         step(&mut f, F_YEAR, -1);
         assert_eq!(f[F_YEAR], YEAR_MIN);
@@ -338,7 +430,10 @@ mod tests {
         const HELPER_MAX: i64 = 2145916800;
         for &f in &[[YEAR_MIN, 1, 1, 0, 0], [YEAR_MAX, 12, 31, 23, 59]] {
             let e = epoch_from_fields(&f);
-            assert!((HELPER_MIN..=HELPER_MAX).contains(&e), "{f:?} -> {e} is outside the helper's range");
+            assert!(
+                (HELPER_MIN..=HELPER_MAX).contains(&e),
+                "{f:?} -> {e} is outside the helper's range"
+            );
         }
     }
 
@@ -359,9 +454,15 @@ mod tests {
             assert_eq!(hit_btn(30, my + mh / 2), None);
         }
         // Set is clear of the last field row.
-        assert!(SET_Y >= fields_bottom(), "the Set button overlaps the fields");
+        assert!(
+            SET_Y >= fields_bottom(),
+            "the Set button overlaps the fields"
+        );
         assert!(hit_set(240, SET_Y + SET_H / 2));
         assert!(!hit_set(240, fields_bottom() - 1));
-        assert!(SET_Y + SET_H <= crate::canvas::H as i32, "Set runs off the bottom");
+        assert!(
+            SET_Y + SET_H <= crate::canvas::H as i32,
+            "Set runs off the bottom"
+        );
     }
 }

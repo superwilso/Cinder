@@ -31,7 +31,10 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     let (un, upre) = split_tag(current);
     let len = cn.len().max(un.len());
     for i in 0..len {
-        let (a, b) = (cn.get(i).copied().unwrap_or(0), un.get(i).copied().unwrap_or(0));
+        let (a, b) = (
+            cn.get(i).copied().unwrap_or(0),
+            un.get(i).copied().unwrap_or(0),
+        );
         if a != b {
             return a > b;
         }
@@ -52,7 +55,12 @@ fn split_tag(tag: &str) -> (Vec<u64>, String) {
         Some((a, b)) => (a, b.to_string()),
         None => (t, String::new()),
     };
-    (nums.split('.').map(|p| p.trim().parse().unwrap_or(0)).collect(), pre)
+    (
+        nums.split('.')
+            .map(|p| p.trim().parse().unwrap_or(0))
+            .collect(),
+        pre,
+    )
 }
 
 /// Pull one string field out of a flat JSON object.
@@ -209,15 +217,27 @@ fn fetch(url: &str) -> Result<String, String> {
 
     // Order matters only in that curl is the likelier of the two to be present.
     let attempts: [(&str, Vec<&str>); 2] = [
-        ("curl", vec!["-sSfL", "--max-time", "20", "-A", "cinder-installer", url]),
-        ("wget", vec!["-qO-", "--timeout=20", "-U", "cinder-installer", url]),
+        (
+            "curl",
+            vec!["-sSfL", "--max-time", "20", "-A", "cinder-installer", url],
+        ),
+        (
+            "wget",
+            vec!["-qO-", "--timeout=20", "-U", "cinder-installer", url],
+        ),
     ];
     let mut why = String::new();
     for (bin, args) in attempts {
         match Command::new(bin).args(&args).output() {
-            Ok(o) if o.status.success() => return Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+            Ok(o) if o.status.success() => {
+                return Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+            }
             Ok(o) => {
-                why = format!("{bin} exited with {}: {}", o.status, String::from_utf8_lossy(&o.stderr).trim());
+                why = format!(
+                    "{bin} exited with {}: {}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
             }
             Err(e) => why = format!("{bin}: {e}"),
         }
@@ -274,7 +294,8 @@ mod tests {
 
     #[test]
     fn reads_the_fields_it_needs() {
-        let body = r#"{"url":"x","tag_name":"v0.3.0","name":"Cinder 0.3.0","html_url":"https://e/1"}"#;
+        let body =
+            r#"{"url":"x","tag_name":"v0.3.0","name":"Cinder 0.3.0","html_url":"https://e/1"}"#;
         let r = parse_release(body).unwrap();
         assert_eq!(r.tag, "v0.3.0");
         assert_eq!(r.name, "Cinder 0.3.0");
@@ -286,7 +307,10 @@ mod tests {
     #[test]
     fn escapes_inside_a_string_do_not_end_it() {
         let body = r#"{"tag_name":"v1.0.0","name":"the \"big\" one \\ back to back"}"#;
-        assert_eq!(json_string(body, "name").as_deref(), Some(r#"the "big" one \ back to back"#));
+        assert_eq!(
+            json_string(body, "name").as_deref(),
+            Some(r#"the "big" one \ back to back"#)
+        );
     }
 
     #[test]

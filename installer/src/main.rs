@@ -33,8 +33,8 @@ mod gui;
 
 pub use payload::{CATALOGUE, CHANNEL, MISSING};
 
-use std::path::PathBuf;
 use stage::Action;
+use std::path::PathBuf;
 
 /// This installer's own version, for the stamp it leaves on the player and the release check.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -55,7 +55,9 @@ fn help() {
     if cfg!(windows) {
         println!("  --gui            force the window (default when double-clicked)");
         println!();
-        println!("  To try the window WITHOUT touching a player:  cinder-installer --gui --dry-run");
+        println!(
+            "  To try the window WITHOUT touching a player:  cinder-installer --gui --dry-run"
+        );
     }
     println!("  -h, --help       this help");
     println!();
@@ -124,7 +126,9 @@ fn main() {
     // tools/render_installer_screenshots.sh. It reads no drive and writes only the PNGs.
     #[cfg(windows)]
     if let Some(i) = args.iter().position(|a| a == "--screenshots") {
-        let dir = args.get(i + 1).map_or_else(|| PathBuf::from("."), PathBuf::from);
+        let dir = args
+            .get(i + 1)
+            .map_or_else(|| PathBuf::from("."), PathBuf::from);
         std::process::exit(gui::screenshots(&dir));
     }
     let mut explicit: Option<PathBuf> = None;
@@ -167,8 +171,8 @@ fn main() {
     // and the wrong one for every scripted or remote use. `owns_its_console` is what tells those
     // apart: a double-click gets a console created for it and nothing else in it.
     #[cfg(windows)]
-    let want_gui =
-        force_gui || (!force_console && !assume_yes && !clean && action.is_none() && gui::owns_its_console());
+    let want_gui = force_gui
+        || (!force_console && !assume_yes && !clean && action.is_none() && gui::owns_its_console());
     // Both only steer the Windows front-end choice; off Windows there is one front end.
     #[cfg(not(windows))]
     let _ = (force_console, force_gui);
@@ -205,7 +209,9 @@ fn main() {
                 0 => {
                     eprintln!("\nERROR: no Walkman found.");
                     eprintln!("  Connect the player by USB and set it to mass-storage mode, then");
-                    eprintln!("  run this again. If it is mounted somewhere unusual, pass the path:");
+                    eprintln!(
+                        "  run this again. If it is mounted somewhere unusual, pass the path:"
+                    );
                     if cfg!(windows) {
                         eprintln!("      cinder-installer D:\\");
                     } else {

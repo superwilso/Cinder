@@ -55,28 +55,47 @@ fn every_ui_char_exists_in_the_family_that_draws_it() {
     for name in MONO {
         let f = load(name);
         for &c in UI_CHARS {
-            assert!(f.lookup_glyph_index(c) != 0, "{name} lacks U+{:04X} {c:?}", c as u32);
+            assert!(
+                f.lookup_glyph_index(c) != 0,
+                "{name} lacks U+{:04X} {c:?}",
+                c as u32
+            );
         }
     }
     for name in SANS {
         let f = load(name);
         for &c in UI_CHARS.iter().filter(|c| !MONO_ONLY.contains(c)) {
-            assert!(f.lookup_glyph_index(c) != 0, "{name} lacks U+{:04X} {c:?}", c as u32);
+            assert!(
+                f.lookup_glyph_index(c) != 0,
+                "{name} lacks U+{:04X} {c:?}",
+                c as u32
+            );
         }
     }
     // Pin the exception itself, so deleting the `▶` literal (or gaining Hanken coverage) shows up
     // here as a stale rule rather than quietly widening what's allowed.
     for name in SANS {
-        assert_eq!(load(name).lookup_glyph_index('\u{25B6}'), 0, "{name} gained U+25B6 — drop MONO_ONLY");
+        assert_eq!(
+            load(name).lookup_glyph_index('\u{25B6}'),
+            0,
+            "{name} gained U+25B6 — drop MONO_ONLY"
+        );
     }
 }
 
 fn sty(size: f32) -> TextStyle {
-    TextStyle { fam: Family::Sans, weight: Weight::Regular, size, color: Rgb888::new(0, 0, 0), tracking: 0.0 }
+    TextStyle {
+        fam: Family::Sans,
+        weight: Weight::Regular,
+        size,
+        color: Rgb888::new(0, 0, 0),
+        tracking: 0.0,
+    }
 }
 
 /// The extracted stock rootfs stands in for the device's `/system`.
-const ROOTFS_FONTS: &str = "../../analysis/binwalk/6.bin/_6.bin.extracted/ext-root/vendor/sony/lib/fonts";
+const ROOTFS_FONTS: &str =
+    "../../analysis/binwalk/6.bin/_6.bin.extracted/ext-root/vendor/sony/lib/fonts";
 
 /// Both halves live in ONE test on purpose: `CINDER_FONT_DIR` is process-global, and cargo runs
 /// tests in parallel threads, so splitting them lets one test's `set_var` land in the middle of
@@ -90,9 +109,15 @@ fn device_font_fallback() {
     // advances stay non-zero — but the glyphs are wrong, which is the bug.
     std::env::set_var("CINDER_FONT_DIR", "/nonexistent-font-dir");
     let bare = FontSet::load();
-    let bare_widths: Vec<f32> = samples.iter().map(|s| measure(&bare, s, &sty(16.0))).collect();
+    let bare_widths: Vec<f32> = samples
+        .iter()
+        .map(|s| measure(&bare, s, &sty(16.0)))
+        .collect();
     for (s, w) in samples.iter().zip(&bare_widths) {
-        assert!(*w > 0.0, "{s}: zero width would break every truncation/centring calc");
+        assert!(
+            *w > 0.0,
+            "{s}: zero width would break every truncation/centring calc"
+        );
     }
 
     // ASCII must never touch the chain — measured here while it is provably unavailable.
@@ -143,7 +168,7 @@ fn device_font_fallback() {
     );
 
     let full = FontSet::load();
-    let _ = measure(&full, samples[3], &sty(16.0));   // Cyrillic -> SST-Roman, the cheap face
+    let _ = measure(&full, samples[3], &sty(16.0)); // Cyrillic -> SST-Roman, the cheap face
     assert!(
         full.chain_walks() > 0,
         "the device chain was never consulted for {:?} — the script gate in \

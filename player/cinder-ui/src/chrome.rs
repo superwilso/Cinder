@@ -4,10 +4,10 @@
 
 use crate::canvas::Canvas;
 use crate::icons;
-use core::sync::atomic::{AtomicBool, Ordering};
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
 use crate::widgets::{fill_rect, sty};
+use core::sync::atomic::{AtomicBool, Ordering};
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
@@ -76,13 +76,15 @@ pub fn status_hit(x: i32, y: i32) -> Option<StatusTap> {
     if y >= STATUS_H - STATUS_DEAD_H {
         return None;
     }
-    Some(if (SHELF_CX - SHELF_HALF_W..=SHELF_CX + SHELF_HALF_W).contains(&x) {
-        StatusTap::Shelf
-    } else if x < NP_ZONE_W {
-        StatusTap::NowPlaying
-    } else {
-        StatusTap::Menu
-    })
+    Some(
+        if (SHELF_CX - SHELF_HALF_W..=SHELF_CX + SHELF_HALF_W).contains(&x) {
+            StatusTap::Shelf
+        } else if x < NP_ZONE_W {
+            StatusTap::NowPlaying
+        } else {
+            StatusTap::Menu
+        },
+    )
 }
 
 // ── "Sony IPC is dead for this boot" ────────────────────────────────────────────────────────────
@@ -147,7 +149,14 @@ fn zone_slab(wx: f32, text_w: f32) -> (i32, i32) {
 
 pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &str, battery: u8) {
     // left: clock + codec badge + (NIGHT)
-    let cx = text::draw(c, f, 18.0, 27.0, clock, &sty(Family::Mono, Weight::Regular, 15.0, t.dim, 0.06));
+    let cx = text::draw(
+        c,
+        f,
+        18.0,
+        27.0,
+        clock,
+        &sty(Family::Mono, Weight::Regular, 15.0, t.dim, 0.06),
+    );
     // Skip the whole badge when there is no codec string. Drawing it unconditionally left a bare
     // 12px accent-stroked rectangle floating next to the clock whenever nothing was loaded —
     // caught on a live device screenshot; the host harness never renders that state.
@@ -237,7 +246,14 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
         .draw(c)
         .ok();
     fill_rect(c, 470, 19, 2, 5, t.faint); // nub
-    fill_rect(c, 454, 17, (14.0 * battery as f32 / 100.0) as i32, 9, t.faint); // charge
+    fill_rect(
+        c,
+        454,
+        17,
+        (14.0 * battery as f32 / 100.0) as i32,
+        9,
+        t.faint,
+    ); // charge
 }
 
 // ── Now Playing return bar ──────────────────────────────────────────────────────────────────
@@ -310,7 +326,14 @@ pub fn np_bar(
 
     let cap = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16);
     let cap_w = text::measure(f, "NOW PLAYING", &cap);
-    text::draw(c, f, (crate::W as f32) - 34.0 - cap_w, (y + 26) as f32, "NOW PLAYING", &cap);
+    text::draw(
+        c,
+        f,
+        (crate::W as f32) - 34.0 - cap_w,
+        (y + 26) as f32,
+        "NOW PLAYING",
+        &cap,
+    );
     // Chevron pointing UP, under the caption: says "this opens something" rather than leaving the
     // bar looking like a passive label. Without it the strip reads as status, not as a target.
     icons::chevron_up(c, (crate::W as f32) - 20.0, (y + 46) as f32, 12.0, t.faint);
@@ -318,7 +341,11 @@ pub fn np_bar(
     // Title + artist, clamped so they never run under the caption.
     let avail = (crate::W as f32) - 88.0 - cap_w - 34.0;
     let ts = sty(Family::Sans, Weight::Bold, 17.0, t.ink, -0.01);
-    let title = if title.is_empty() { "Nothing playing" } else { title };
+    let title = if title.is_empty() {
+        "Nothing playing"
+    } else {
+        title
+    };
     let title = crate::widgets::fit(f, title, &ts, avail);
     text::draw(c, f, 90.0, (y + 28) as f32, &title, &ts);
     if !artist.is_empty() {
@@ -438,7 +465,17 @@ pub fn header_chip(
     controls_x0: f32,
     controls_x1: f32,
 ) -> i32 {
-    header_impl(c, t, f, title, Some(chip), controls_x0, controls_x1, Some(short), false)
+    header_impl(
+        c,
+        t,
+        f,
+        title,
+        Some(chip),
+        controls_x0,
+        controls_x1,
+        Some(short),
+        false,
+    )
 }
 
 fn header_impl(
@@ -462,10 +499,26 @@ fn header_impl(
     // zero-width space to draw "…" into, on top of it (`tests/ui_overflow.rs`, hostile library).
     // It keeps room for a caption of up to 140 px and never reaches past a control at `min_x`;
     // the caption is then fitted into whatever the title left, as before.
-    let rs = if chip { sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1) } else { rs };
-    let rs = if action { sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.14) } else { rs };
+    let rs = if chip {
+        sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1)
+    } else {
+        rs
+    };
+    let rs = if action {
+        sty(
+            Family::Mono,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.acc,
+            0.14,
+        )
+    } else {
+        rs
+    };
     let pad = if chip { CHIP_PAD } else { 0.0 };
-    let cap_room = right.map_or(0.0, |r| text::measure(f, r, &rs).min(140.0) + 16.0 + 2.0 * pad);
+    let cap_room = right.map_or(0.0, |r| {
+        text::measure(f, r, &rs).min(140.0) + 16.0 + 2.0 * pad
+    });
     let mut title_right = 458.0 - cap_room;
     if min_x > 0.0 {
         title_right = title_right.min(min_x - 16.0);
@@ -500,14 +553,22 @@ fn header_impl(
 fn chip_box(text_w: f32) -> (i32, i32, i32, i32) {
     let h = CHIP_H * text::touch_scale();
     let x = CHIP_RIGHT - text_w - 2.0 * CHIP_PAD;
-    (x.round() as i32, (CHIP_CY - h / 2.0).round() as i32, (CHIP_RIGHT - x).round() as i32, h.round() as i32)
+    (
+        x.round() as i32,
+        (CHIP_CY - h / 2.0).round() as i32,
+        (CHIP_RIGHT - x).round() as i32,
+        h.round() as i32,
+    )
 }
 
 fn stroke_rect(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col: Rgb888) {
-    Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32))
-        .into_styled(PrimitiveStyle::with_stroke(col, 1))
-        .draw(c)
-        .ok();
+    Rectangle::new(
+        Point::new(x, y),
+        Size::new(w.max(0) as u32, h.max(0) as u32),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(col, 1))
+    .draw(c)
+    .ok();
 }
 
 #[cfg(test)]
@@ -563,7 +624,10 @@ mod degraded_tests {
         let normal = ink(&shot(false, 88), 425, CW as i32, 10, 34, bg);
         let warned = ink(&shot(true, 88), 425, CW as i32, 10, 34, bg);
         set_ipc_dead(false);
-        assert!(normal > 0, "sanity: the battery is drawn in the normal state");
+        assert!(
+            normal > 0,
+            "sanity: the battery is drawn in the normal state"
+        );
         assert_eq!(
             warned, normal,
             "the degraded banner must not disturb the battery indicator \
@@ -580,15 +644,21 @@ mod degraded_tests {
         let band = |dead| {
             let c = shot(dead, 50);
             (
-                ink(&c, 320, 356, 6, 38, bg),                                  // menu glyph
-                ink(&c, SHELF_CX - 16, SHELF_CX + 16, 6, 38, bg),              // bookmark glyph
+                ink(&c, 320, 356, 6, 38, bg),                     // menu glyph
+                ink(&c, SHELF_CX - 16, SHELF_CX + 16, 6, 38, bg), // bookmark glyph
             )
         };
         let normal = band(false);
         let warned = band(true);
         set_ipc_dead(false);
-        assert!(normal.0 > 0 && normal.1 > 0, "sanity: both glyphs draw normally");
-        assert_eq!(warned, normal, "menu and shelf glyphs must be untouched by the banner");
+        assert!(
+            normal.0 > 0 && normal.1 > 0,
+            "sanity: both glyphs draw normally"
+        );
+        assert_eq!(
+            warned, normal,
+            "menu and shelf glyphs must be untouched by the banner"
+        );
     }
 
     /// The banner slab CANNOT reach the menu glyph, whatever the text measures.
@@ -622,7 +692,10 @@ mod degraded_tests {
         for wx in [20.0_f32, 67.5, 120.0] {
             let (x, w) = zone_slab(wx, zone_text_w(wx));
             assert!(w > 0, "these all have room");
-            assert!(x + w <= BAND, "a text fitted to banner_text_w must still fit the band");
+            assert!(
+                x + w <= BAND,
+                "a text fitted to banner_text_w must still fit the band"
+            );
         }
         // Past the limit there is no room at all, and that must be 0 rather than a negative.
         assert_eq!(zone_text_w(10_000.0), 0.0);
@@ -646,9 +719,9 @@ mod degraded_tests {
             status_bar(&mut c, t, &f, "14:32", badge, 50);
             let bg = crate::canvas::to_u32(t.bg);
             (
-                ink(&c, 320, 356, 6, 38, bg),                      // menu glyph
-                ink(&c, SHELF_CX - 16, SHELF_CX + 16, 6, 38, bg),  // bookmark glyph
-                ink(&c, 425, CW as i32, 10, 34, bg),               // battery
+                ink(&c, 320, 356, 6, 38, bg),                     // menu glyph
+                ink(&c, SHELF_CX - 16, SHELF_CX + 16, 6, 38, bg), // bookmark glyph
+                ink(&c, 425, CW as i32, 10, 34, bg),              // battery
             )
         };
         for t in [Theme::day(), Theme::night()] {

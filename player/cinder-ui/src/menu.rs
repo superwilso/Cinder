@@ -77,7 +77,14 @@ pub fn home_chip_at(x: i32, y: i32) -> Option<usize> {
 }
 
 /// `strip` is the Now Playing line; `home` the chosen [`HOMES`] index.
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, strip: &str, items: &[MenuItem], home: usize) {
+pub fn render(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    strip: &str,
+    items: &[MenuItem],
+    home: usize,
+) {
     c.fill(t.bg);
     let y0 = crate::chrome::header(c, t, f, "Menu", None);
     debug_assert_eq!(y0, STRIP_TOP, "menu strip drifted from the hit test");
@@ -85,9 +92,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, strip: &str, items: &[Menu
     debug_assert_eq!(y, TOP);
     let rh = row_h(items.len());
     for (i, m) in items.iter().enumerate() {
-        let trail = if m.home { Trail::Tag("HOME") } else { Trail::Open("") };
+        let trail = if m.home {
+            Trail::Tag("HOME")
+        } else {
+            Trail::Open("")
+        };
         let yt = TOP + i as i32 * rh;
-        kit::row(c, t, f, yt, rh, &Row::new(m.label).sub(m.sub).trail(trail).sel(m.active));
+        kit::row(
+            c,
+            t,
+            f,
+            yt,
+            rh,
+            &Row::new(m.label).sub(m.sub).trail(trail).sel(m.active),
+        );
     }
     kit::section_label(c, t, f, LABEL_TOP, "START ON", None);
     kit::chips(c, t, f, CHIPS_TOP, &HOMES, Some(home.min(HOMES.len() - 1)));
@@ -104,11 +122,21 @@ mod fit_tests {
         for rows in 1..=11 {
             let rh = row_h(rows);
             let last_bottom = TOP + rows as i32 * rh;
-            assert!(last_bottom <= LABEL_TOP, "{rows} rows run to {last_bottom}, into START ON");
-            assert_eq!(row_at(TOP + (rows as i32 - 1) * rh + rh / 2, rows), Some(rows - 1));
+            assert!(
+                last_bottom <= LABEL_TOP,
+                "{rows} rows run to {last_bottom}, into START ON"
+            );
+            assert_eq!(
+                row_at(TOP + (rows as i32 - 1) * rh + rh / 2, rows),
+                Some(rows - 1)
+            );
             assert!(rh >= 52, "{rows} rows squeeze the pitch to {rh}");
         }
-        assert_eq!(row_h(8), ROW_H, "the designed eight rows keep the kit's pitch");
+        assert_eq!(
+            row_h(8),
+            ROW_H,
+            "the designed eight rows keep the kit's pitch"
+        );
     }
 
     /// The strip, the rows and the chips do not overlap as targets.
@@ -117,7 +145,11 @@ mod fit_tests {
         assert!(strip_hit(STRIP_TOP) && strip_hit(TOP - 1) && !strip_hit(TOP));
         assert_eq!(row_at(TOP - 1, 10), None);
         assert!(home_chip_at(240, CHIPS_TOP + 5).is_some());
-        assert_eq!(home_chip_at(240, LABEL_TOP + 5), None, "the label is not a chip");
+        assert_eq!(
+            home_chip_at(240, LABEL_TOP + 5),
+            None,
+            "the label is not a chip"
+        );
         assert!(CHIPS_TOP + kit::CHIP_H <= crate::H as i32);
     }
 }

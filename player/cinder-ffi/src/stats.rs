@@ -71,12 +71,25 @@ pub fn parse(body: &str) -> BTreeMap<String, TrackStat> {
             continue;
         }
         let mut f = line.split('\t');
-        let (Some(path), Some(rating), Some(plays)) = (f.next(), f.next(), f.next()) else { continue };
-        let (Ok(rating), Ok(plays)) = (rating.trim().parse::<u8>(), plays.trim().parse::<u32>()) else { continue };
+        let (Some(path), Some(rating), Some(plays)) = (f.next(), f.next(), f.next()) else {
+            continue;
+        };
+        let (Ok(rating), Ok(plays)) = (rating.trim().parse::<u8>(), plays.trim().parse::<u32>())
+        else {
+            continue;
+        };
         // A fourth column missing is "never" rather than a bad line: a hand-made file of ratings
         // need not invent a date.
-        let last_played = f.next().and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(0).max(0);
-        let st = TrackStat { rating: rating.min(5), plays, last_played };
+        let last_played = f
+            .next()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .unwrap_or(0)
+            .max(0);
+        let st = TrackStat {
+            rating: rating.min(5),
+            plays,
+            last_played,
+        };
         if !path.is_empty() && st != TrackStat::default() {
             out.insert(path.to_string(), st);
         }
@@ -90,8 +103,14 @@ pub fn serialize(stats: &BTreeMap<String, TrackStat>) -> String {
     for (path, st) in stats {
         // A path cannot hold a tab or a newline on this volume; strip them anyway, because the
         // format is delimited by exactly those two.
-        let path: String = path.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
-        s.push_str(&format!("{path}\t{}\t{}\t{}\n", st.rating, st.plays, st.last_played));
+        let path: String = path
+            .chars()
+            .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+            .collect();
+        s.push_str(&format!(
+            "{path}\t{}\t{}\t{}\n",
+            st.rating, st.plays, st.last_played
+        ));
     }
     s
 }
@@ -102,7 +121,10 @@ impl Store {
     pub fn open(path: impl AsRef<Path>) -> Store {
         let path = path.as_ref().to_path_buf();
         let body = std::fs::read(&path).ok();
-        let by_path = body.as_ref().map(|b| parse(&String::from_utf8_lossy(b))).unwrap_or_default();
+        let by_path = body
+            .as_ref()
+            .map(|b| parse(&String::from_utf8_lossy(b)))
+            .unwrap_or_default();
         Store {
             path,
             by_path,
@@ -136,7 +158,10 @@ impl Store {
 
     /// Set a rating, 0..=5 (0 clears it). Returns the track's stats after the change.
     pub fn rate(&mut self, path: &str, stars: u8) -> TrackStat {
-        let st = TrackStat { rating: stars.min(5), ..self.get(path) };
+        let st = TrackStat {
+            rating: stars.min(5),
+            ..self.get(path)
+        };
         if self.get(path) != st {
             self.rated.insert(path.to_string());
         }
@@ -147,7 +172,11 @@ impl Store {
     /// Count one listen at `now` (unix seconds). Returns the track's stats after the change.
     pub fn count_play(&mut self, path: &str, now: i64) -> TrackStat {
         let old = self.get(path);
-        let st = TrackStat { plays: old.plays.saturating_add(1), last_played: now.max(0), ..old };
+        let st = TrackStat {
+            plays: old.plays.saturating_add(1),
+            last_played: now.max(0),
+            ..old
+        };
         self.put(path, st);
         st
     }
@@ -177,7 +206,11 @@ impl Store {
                     let mine = self.get(path);
                     let theirs = merged.get(path).copied().unwrap_or_default();
                     let st = TrackStat {
-                        rating: if self.rated.contains(path) { mine.rating } else { theirs.rating },
+                        rating: if self.rated.contains(path) {
+                            mine.rating
+                        } else {
+                            theirs.rating
+                        },
                         plays: mine.plays.max(theirs.plays),
                         last_played: mine.last_played.max(theirs.last_played),
                     };
@@ -209,7 +242,9 @@ impl Store {
         if self.by_path.is_empty() {
             return Default::default();
         }
-        tracks.filter_map(|(id, path)| self.by_path.get(path).map(|st| (id, *st))).collect()
+        tracks
+            .filter_map(|(id, path)| self.by_path.get(path).map(|st| (id, *st)))
+            .collect()
     }
 }
 
@@ -274,7 +309,14 @@ mod tests {
         assert!(!s.is_dirty());
 
         let r = Store::open(&p);
-        assert_eq!(r.get("/contents/MUSIC/a.flac"), TrackStat { rating: 4, plays: 2, last_played: 1_790_000_300 });
+        assert_eq!(
+            r.get("/contents/MUSIC/a.flac"),
+            TrackStat {
+                rating: 4,
+                plays: 2,
+                last_played: 1_790_000_300
+            }
+        );
         assert_eq!(r.get("/contents/MUSIC/b.mp3").last_played, 5_000_000_000);
         assert_eq!(r.get("/contents/MUSIC/never.flac"), TrackStat::default());
         // The temporary file is gone: the rename is the write.
@@ -302,8 +344,23 @@ mod tests {
         let body = "#CINDER-STATS/1\n/a.flac\t5\t3\t100\nnot a row\n/b.flac\tfive\t1\t1\n/c.flac\t9\t2\n\r\n/d.flac\t0\t0\t0\n";
         let m = parse(body);
         assert_eq!(m.len(), 2, "{m:?}");
-        assert_eq!(m["/a.flac"], TrackStat { rating: 5, plays: 3, last_played: 100 });
-        assert_eq!(m["/c.flac"], TrackStat { rating: 5, plays: 2, last_played: 0 }, "clamped, and no date is never");
+        assert_eq!(
+            m["/a.flac"],
+            TrackStat {
+                rating: 5,
+                plays: 3,
+                last_played: 100
+            }
+        );
+        assert_eq!(
+            m["/c.flac"],
+            TrackStat {
+                rating: 5,
+                plays: 2,
+                last_played: 0
+            },
+            "clamped, and no date is never"
+        );
         assert_eq!(parse(&serialize(&m)), m, "round trip");
     }
 
@@ -314,18 +371,45 @@ mod tests {
     fn a_file_that_changed_underneath_is_merged_not_overwritten() {
         let p = tmp("merge");
         let mut s = Store::open(&p); // nothing readable yet
-        std::fs::write(&p, "#CINDER-STATS/1\n/a.flac\t5\t10\t100\n/b.flac\t2\t7\t900\n").unwrap();
+        std::fs::write(
+            &p,
+            "#CINDER-STATS/1\n/a.flac\t5\t10\t100\n/b.flac\t2\t7\t900\n",
+        )
+        .unwrap();
         s.count_play("/b.flac", 500); // plays here: 1, there: 7
         s.rate("/c.flac", 3);
         s.flush().unwrap();
         let r = Store::open(&p);
-        assert_eq!(r.get("/a.flac"), TrackStat { rating: 5, plays: 10, last_played: 100 }, "untouched: kept");
-        assert_eq!(r.get("/b.flac"), TrackStat { rating: 2, plays: 7, last_played: 900 }, "the larger count and the later date");
+        assert_eq!(
+            r.get("/a.flac"),
+            TrackStat {
+                rating: 5,
+                plays: 10,
+                last_played: 100
+            },
+            "untouched: kept"
+        );
+        assert_eq!(
+            r.get("/b.flac"),
+            TrackStat {
+                rating: 2,
+                plays: 7,
+                last_played: 900
+            },
+            "the larger count and the later date"
+        );
         assert_eq!(r.get("/c.flac").rating, 3);
         // A second write with nothing changed underneath merges nothing and loses nothing.
         s.rate("/a.flac", 1);
         s.flush().unwrap();
-        assert_eq!(Store::open(&p).get("/a.flac"), TrackStat { rating: 1, plays: 10, last_played: 100 });
+        assert_eq!(
+            Store::open(&p).get("/a.flac"),
+            TrackStat {
+                rating: 1,
+                plays: 10,
+                last_played: 100
+            }
+        );
     }
 
     #[test]
@@ -333,7 +417,10 @@ mod tests {
         let p = tmp("ids");
         let mut s = Store::open(&p);
         s.rate("/contents/MUSIC/A/01 Intro.flac", 5);
-        let tracks = [(7i64, "/contents/MUSIC/A/01 Intro.flac"), (8, "/contents/MUSIC/B/01 Intro.flac")];
+        let tracks = [
+            (7i64, "/contents/MUSIC/A/01 Intro.flac"),
+            (8, "/contents/MUSIC/B/01 Intro.flac"),
+        ];
         let m = s.by_object_id(tracks.iter().map(|(id, p)| (*id, *p)));
         assert_eq!(m.len(), 1);
         assert_eq!(m[&7].rating, 5);
@@ -346,7 +433,11 @@ mod tests {
         for _ in 0..29 {
             assert_eq!(l.tick_ms(true, 1000), None);
         }
-        assert_eq!(l.tick_ms(false, 60_000), None, "paused time is not listening");
+        assert_eq!(
+            l.tick_ms(false, 60_000),
+            None,
+            "paused time is not listening"
+        );
         assert_eq!(l.tick_ms(true, 1000), Some("/a.flac"));
         assert_eq!(l.tick_ms(true, 1000), None, "once per play");
         // A re-set of the same track (a re-poll) does not start a second listen.

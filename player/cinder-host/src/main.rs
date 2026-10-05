@@ -20,19 +20,24 @@ use cinder_ui::library::Tab;
 use cinder_ui::menu::MenuItem;
 use cinder_ui::sound::Sound;
 use cinder_ui::{
-    bluetooth, clockset, eq, fm, library, lock, menu, now_playing, pairing, receiver, settings, shelf, sound,
-    up_next, usbdac, Canvas, FontSet, Library, H, W,
+    bluetooth, clockset, eq, fm, library, lock, menu, now_playing, pairing, receiver, settings,
+    shelf, sound, up_next, usbdac, Canvas, FontSet, Library, H, W,
 };
 
 /// Paired devices for the Bluetooth preview — the list is the body of that screen now.
 fn preview_paired() -> Vec<cinder_ui::pairing::PairedDevice> {
-    [("WH-1000XM5", "HEADPHONES", true), ("CMF Buds Pro 2", "EARBUDS", false),
-     ("WONDERBOOM", "SPEAKER", false)]
-        .into_iter()
-        .map(|(name, kind, connected)| cinder_ui::pairing::PairedDevice {
-            name: name.to_string(), kind: kind.to_string(), connected,
-        })
-        .collect()
+    [
+        ("WH-1000XM5", "HEADPHONES", true),
+        ("CMF Buds Pro 2", "EARBUDS", false),
+        ("WONDERBOOM", "SPEAKER", false),
+    ]
+    .into_iter()
+    .map(|(name, kind, connected)| cinder_ui::pairing::PairedDevice {
+        name: name.to_string(),
+        kind: kind.to_string(),
+        connected,
+    })
+    .collect()
 }
 
 fn save_png(c: &Canvas, name: &str) {
@@ -57,7 +62,11 @@ struct Opts {
 fn preview_thumb(var: &str, edge: usize) -> Option<cinder_ui::art::Image> {
     let path = std::env::var(var).ok()?;
     let rgb = std::fs::read(path).ok()?;
-    (rgb.len() == edge * edge * 3).then(|| cinder_ui::art::Image { w: edge, h: edge, rgb })
+    (rgb.len() == edge * edge * 3).then(|| cinder_ui::art::Image {
+        w: edge,
+        h: edge,
+        rgb,
+    })
 }
 
 /// Render every preview, handing each finished frame to `out` under its name. One list, used by
@@ -72,16 +81,19 @@ fn r4_playlists(lib: &Library) -> Library {
         first.edited = true;
     }
     let members: Vec<cinder_ui::model::SongRow> = l.songs.iter().take(5).cloned().collect();
-    l.playlists.insert(0, cinder_ui::model::PlaylistRow {
-        id: cinder_ui::views::smart_id("Late favourites"),
-        name: "Late favourites".into(),
-        tracks: members.len() as u32,
-        art: "Late favourites".into(),
-        smart: true,
-        rules: "4+ stars \u{b7} Recent \u{b7} FLAC".into(),
-        track_list: members,
-        ..Default::default()
-    });
+    l.playlists.insert(
+        0,
+        cinder_ui::model::PlaylistRow {
+            id: cinder_ui::views::smart_id("Late favourites"),
+            name: "Late favourites".into(),
+            tracks: members.len() as u32,
+            art: "Late favourites".into(),
+            smart: true,
+            rules: "4+ stars \u{b7} Recent \u{b7} FLAC".into(),
+            track_list: members,
+            ..Default::default()
+        },
+    );
     l
 }
 
@@ -90,10 +102,16 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     let fonts = FontSet::load();
     // Every theme below comes from these tokens, so `--palette` repaints the whole set, and the
     // default run is Cinder byte for byte (CINDER.theme is what Theme::day_with/night_with return).
-    let tokens = opts.palette.as_ref().map_or(cinder_ui::theme::CINDER, |p| p.tokens);
+    let tokens = opts
+        .palette
+        .as_ref()
+        .map_or(cinder_ui::theme::CINDER, |p| p.tokens);
     let th = move |night: bool, a: cinder_ui::Accent| tokens.theme(night, a);
     let amber = cinder_ui::Accent::Amber;
-    let pal_name = opts.palette.as_ref().map_or(cinder_ui::palette::BUILTIN_NAME, |p| p.name.as_str());
+    let pal_name = opts
+        .palette
+        .as_ref()
+        .map_or(cinder_ui::palette::BUILTIN_NAME, |p| p.name.as_str());
     let pal_locked = tokens.accent.is_some();
     let new_app = || {
         let mut a = cinder_ui::nav::App::unlocked();
@@ -105,12 +123,36 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     };
     // Six devices — one and a half pages. Named so the page turn is obvious at a glance.
     let preview_many_paired = vec![
-        pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: true },
-        pairing::PairedDevice { name: "CMF Buds Pro 2".into(), kind: "Headphones".into(), connected: false },
-        pairing::PairedDevice { name: "WONDERBOOM".into(), kind: "Speaker".into(), connected: false },
-        pairing::PairedDevice { name: "Car audio".into(), kind: "Car".into(), connected: false },
-        pairing::PairedDevice { name: "Kitchen speaker".into(), kind: "Speaker".into(), connected: false },
-        pairing::PairedDevice { name: "(unnamed)".into(), kind: String::new(), connected: false },
+        pairing::PairedDevice {
+            name: "WH-1000XM4".into(),
+            kind: "Headphones".into(),
+            connected: true,
+        },
+        pairing::PairedDevice {
+            name: "CMF Buds Pro 2".into(),
+            kind: "Headphones".into(),
+            connected: false,
+        },
+        pairing::PairedDevice {
+            name: "WONDERBOOM".into(),
+            kind: "Speaker".into(),
+            connected: false,
+        },
+        pairing::PairedDevice {
+            name: "Car audio".into(),
+            kind: "Car".into(),
+            connected: false,
+        },
+        pairing::PairedDevice {
+            name: "Kitchen speaker".into(),
+            kind: "Speaker".into(),
+            connected: false,
+        },
+        pairing::PairedDevice {
+            name: "(unnamed)".into(),
+            kind: String::new(),
+            connected: false,
+        },
     ];
     let preview_paired_list = preview_paired();
 
@@ -133,11 +175,13 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         repeat: 1,
         viz_seed: 2.0,
         viz_kind: 0,
-        viz_size: 1, page: 0,
+        viz_size: 1,
+        page: 0,
         viz_levels: None,
         viz_peaks: None,
         viz_sig: None,
-        scrubbing: false, lyrics: false,
+        scrubbing: false,
+        lyrics: false,
     };
     let lk = lock::Lock {
         clock: "14:32",
@@ -152,21 +196,69 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     // The Menu as the device draws it with SensMe installed: ten rows, in `nav::MENU` order,
     // Library tagged HOME (the default home screen).
     let menu_items = [
-        MenuItem { label: "Library", sub: "6 albums · 8 tracks", home: true, active: false },
-        MenuItem { label: "Folders", sub: "6 folders", home: false, active: false },
-        MenuItem { label: "SensMe", sub: "12 channels · 8 tracks", home: false, active: false },
-        MenuItem { label: "FM radio", sub: "Needs wired headphones as the aerial", home: false, active: false },
-        MenuItem { label: "Sound", sub: "DSEE HX · VPT", home: false, active: false },
-        MenuItem { label: "Bluetooth", sub: "LDAC", home: false, active: false },
-        MenuItem { label: "USB-DAC", sub: "Off", home: false, active: false },
-        MenuItem { label: "Settings", sub: "Display · playback · system", home: false, active: false },
-        MenuItem { label: "Help & controls", sub: "Buttons, swipes, the way back", home: false, active: false },
+        MenuItem {
+            label: "Library",
+            sub: "6 albums · 8 tracks",
+            home: true,
+            active: false,
+        },
+        MenuItem {
+            label: "Folders",
+            sub: "6 folders",
+            home: false,
+            active: false,
+        },
+        MenuItem {
+            label: "SensMe",
+            sub: "12 channels · 8 tracks",
+            home: false,
+            active: false,
+        },
+        MenuItem {
+            label: "FM radio",
+            sub: "Needs wired headphones as the aerial",
+            home: false,
+            active: false,
+        },
+        MenuItem {
+            label: "Sound",
+            sub: "DSEE HX · VPT",
+            home: false,
+            active: false,
+        },
+        MenuItem {
+            label: "Bluetooth",
+            sub: "LDAC",
+            home: false,
+            active: false,
+        },
+        MenuItem {
+            label: "USB-DAC",
+            sub: "Off",
+            home: false,
+            active: false,
+        },
+        MenuItem {
+            label: "Settings",
+            sub: "Display · playback · system",
+            home: false,
+            active: false,
+        },
+        MenuItem {
+            label: "Help & controls",
+            sub: "Buttons, swipes, the way back",
+            home: false,
+            active: false,
+        },
     ];
 
     let snd = Sound {
         dsee: true,
-        balance: cinder_ui::sound::BALANCE_CENTRE, balance_drag: false, bt_route: false,
-        mono: false, mono_live: false,
+        balance: cinder_ui::sound::BALANCE_CENTRE,
+        balance_drag: false,
+        bt_route: false,
+        mono: false,
+        mono_live: false,
         vinyl: false,
         vpt: "Studio",
         dcphase: "Low A",
@@ -182,12 +274,30 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     };
     // The Balance row and Advanced are below the fold since the ENHANCE / SPACE / LEVEL grouping.
     let snd_end = sound::max_scroll();
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02), paired: &preview_paired_list, fine_volume: "OFF", debug_log: false, profile: "B" };
+    let bt = Bt {
+        on: true,
+        connected: Some("WH-1000XM5"),
+        link_known: true,
+        codec_sel: 0,
+        ldac_quality: 0,
+        enhanced: true,
+        enhanced_supported: true,
+        connecting: false,
+        busy_phase: 0.0,
+        link_codec: Some(0x02),
+        paired: &preview_paired_list,
+        fine_volume: "OFF",
+        debug_log: false,
+        profile: "B",
+    };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
     // enough to check placement, scaling and the day/night dim against a real cover.
-    if let Some(t48) = (!opts.golden).then(|| preview_thumb("CINDER_PREVIEW_T48", 48)).flatten() {
+    if let Some(t48) = (!opts.golden)
+        .then(|| preview_thumb("CINDER_PREVIEW_T48", 48))
+        .flatten()
+    {
         for id in 0..8 {
             lib.thumbs.insert(id, t48.clone());
         }
@@ -210,111 +320,298 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
 
     for (name, theme) in [("day", th(false, amber)), ("night", th(true, amber))] {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
-            ("now_playing", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts, &np)),
-            ("now_playing_sleep", &|c: &mut Canvas| { now_playing::render(c, &theme, &fonts, &np); now_playing::sleep_badge(c, &theme, &fonts, 23, false); }),
+            ("now_playing", &|c: &mut Canvas| {
+                now_playing::render(c, &theme, &fonts, &np)
+            }),
+            ("now_playing_sleep", &|c: &mut Canvas| {
+                now_playing::render(c, &theme, &fonts, &np);
+                now_playing::sleep_badge(c, &theme, &fonts, 23, false);
+            }),
             // The Lyrics chip (community B2), beside the sleep badge so both corners are checked.
             ("now_playing_lyrics", &|c: &mut Canvas| {
-                now_playing::render(c, &theme, &fonts, &now_playing::NowPlaying { lyrics: true, ..np });
+                now_playing::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &now_playing::NowPlaying { lyrics: true, ..np },
+                );
                 now_playing::sleep_badge(c, &theme, &fonts, 23, false);
             }),
             // Nothing loaded — the state the device actually boots into. Never rendered here
             // before, which is how an empty codec badge shipped as a bare stroked box.
-            ("now_playing_idle", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts,
-                &now_playing::NowPlaying { title: "", artist: "", codec: "", badge: "", elapsed: "",
-                                           remaining: "", progress: 0.0, playing: false, liked: false,
-                                           art: "", viz_size: 0, page: 0, ..np })),
+            ("now_playing_idle", &|c: &mut Canvas| {
+                now_playing::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &now_playing::NowPlaying {
+                        title: "",
+                        artist: "",
+                        codec: "",
+                        badge: "",
+                        elapsed: "",
+                        remaining: "",
+                        progress: 0.0,
+                        playing: false,
+                        liked: false,
+                        art: "",
+                        viz_size: 0,
+                        page: 0,
+                        ..np
+                    },
+                )
+            }),
             // The design styles (`cinder_ui::style`): each one playing, with the Lyrics chip and the
             // sleep badge in its corners, on the spectrum page, and with nothing loaded.
             ("now_playing_nocturne", &|c: &mut Canvas| {
-                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Nocturne, ..theme };
+                let t = cinder_ui::Theme {
+                    style: cinder_ui::style::Style::Nocturne,
+                    ..theme
+                };
                 now_playing::render(c, &t, &fonts, &np);
             }),
             ("now_playing_nocturne_lyrics", &|c: &mut Canvas| {
-                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Nocturne, ..theme };
-                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { lyrics: true, liked: true, repeat: 3, ..np });
+                let t = cinder_ui::Theme {
+                    style: cinder_ui::style::Style::Nocturne,
+                    ..theme
+                };
+                now_playing::render(
+                    c,
+                    &t,
+                    &fonts,
+                    &now_playing::NowPlaying {
+                        lyrics: true,
+                        liked: true,
+                        repeat: 3,
+                        ..np
+                    },
+                );
                 now_playing::sleep_badge(c, &t, &fonts, 23, false);
             }),
             ("now_playing_nocturne_spectrum", &|c: &mut Canvas| {
-                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Nocturne, ..theme };
+                let t = cinder_ui::Theme {
+                    style: cinder_ui::style::Style::Nocturne,
+                    ..theme
+                };
                 now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { page: 1, ..np });
             }),
             ("now_playing_nocturne_idle", &|c: &mut Canvas| {
-                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Nocturne, ..theme };
-                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { title: "", artist: "", codec: "",
-                    badge: "", elapsed: "", remaining: "", progress: 0.0, playing: false, liked: false, art: "",
-                    viz_size: 0, page: 0, ..np });
+                let t = cinder_ui::Theme {
+                    style: cinder_ui::style::Style::Nocturne,
+                    ..theme
+                };
+                now_playing::render(
+                    c,
+                    &t,
+                    &fonts,
+                    &now_playing::NowPlaying {
+                        title: "",
+                        artist: "",
+                        codec: "",
+                        badge: "",
+                        elapsed: "",
+                        remaining: "",
+                        progress: 0.0,
+                        playing: false,
+                        liked: false,
+                        art: "",
+                        viz_size: 0,
+                        page: 0,
+                        ..np
+                    },
+                );
             }),
             ("now_playing_terminal", &|c: &mut Canvas| {
-                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Terminal, ..theme };
+                let t = cinder_ui::Theme {
+                    style: cinder_ui::style::Style::Terminal,
+                    ..theme
+                };
                 now_playing::render(c, &t, &fonts, &np);
             }),
             ("now_playing_terminal_lyrics", &|c: &mut Canvas| {
-                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Terminal, ..theme };
-                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { lyrics: true, liked: true, shuffle: true, repeat: 1, ..np });
+                let t = cinder_ui::Theme {
+                    style: cinder_ui::style::Style::Terminal,
+                    ..theme
+                };
+                now_playing::render(
+                    c,
+                    &t,
+                    &fonts,
+                    &now_playing::NowPlaying {
+                        lyrics: true,
+                        liked: true,
+                        shuffle: true,
+                        repeat: 1,
+                        ..np
+                    },
+                );
                 now_playing::sleep_badge(c, &t, &fonts, 23, false);
             }),
             ("now_playing_terminal_level", &|c: &mut Canvas| {
-                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Terminal, ..theme };
+                let t = cinder_ui::Theme {
+                    style: cinder_ui::style::Style::Terminal,
+                    ..theme
+                };
                 now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { page: 2, ..np });
             }),
             ("now_playing_terminal_idle", &|c: &mut Canvas| {
-                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Terminal, ..theme };
-                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { title: "", artist: "", codec: "",
-                    badge: "", elapsed: "", remaining: "", progress: 0.0, playing: false, liked: false, art: "",
-                    viz_size: 0, page: 0, ..np });
+                let t = cinder_ui::Theme {
+                    style: cinder_ui::style::Style::Terminal,
+                    ..theme
+                };
+                now_playing::render(
+                    c,
+                    &t,
+                    &fonts,
+                    &now_playing::NowPlaying {
+                        title: "",
+                        artist: "",
+                        codec: "",
+                        badge: "",
+                        elapsed: "",
+                        remaining: "",
+                        progress: 0.0,
+                        playing: false,
+                        liked: false,
+                        art: "",
+                        viz_size: 0,
+                        page: 0,
+                        ..np
+                    },
+                );
             }),
             // One entry per page, and the NAMES track the pages. These were hand-numbered and went
             // stale the moment a page was inserted: "onboard_2_features" was rendering the new
             // Gestures page under the old name, so the preview said the sweep was fine.
-            ("onboard_0_welcome", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 0)),
-            ("onboard_1_getting_around", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 1)),
-            ("onboard_2_buttons", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 2)),
-            ("onboard_3_playing", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 3)),
-            ("onboard_4_gestures", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 4)),
-            ("onboard_5_features", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 5)),
-            ("onboard_6_done", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 6)),
+            ("onboard_0_welcome", &|c: &mut Canvas| {
+                cinder_ui::onboarding::render(c, &theme, &fonts, 0)
+            }),
+            ("onboard_1_getting_around", &|c: &mut Canvas| {
+                cinder_ui::onboarding::render(c, &theme, &fonts, 1)
+            }),
+            ("onboard_2_buttons", &|c: &mut Canvas| {
+                cinder_ui::onboarding::render(c, &theme, &fonts, 2)
+            }),
+            ("onboard_3_playing", &|c: &mut Canvas| {
+                cinder_ui::onboarding::render(c, &theme, &fonts, 3)
+            }),
+            ("onboard_4_gestures", &|c: &mut Canvas| {
+                cinder_ui::onboarding::render(c, &theme, &fonts, 4)
+            }),
+            ("onboard_5_features", &|c: &mut Canvas| {
+                cinder_ui::onboarding::render(c, &theme, &fonts, 5)
+            }),
+            ("onboard_6_done", &|c: &mut Canvas| {
+                cinder_ui::onboarding::render(c, &theme, &fonts, 6)
+            }),
             ("shelf", &|c: &mut Canvas| {
                 now_playing::render(c, &theme, &fonts, &np);
-                shelf::render(c, &theme, &fonts, "Now Playing · Atlas Hands", "1:47 / 4:32",
+                shelf::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    "Now Playing · Atlas Hands",
+                    "1:47 / 4:32",
                     &std::array::from_fn(|i| match i {
-                        0 => Some(shelf::Pin { title: "Library · Albums", sub: "Saved 2 min ago" }),
-                        1 => Some(shelf::Pin { title: "Nick Drake · Pink Moon", sub: "Saved yesterday" }),
+                        0 => Some(shelf::Pin {
+                            title: "Library · Albums",
+                            sub: "Saved 2 min ago",
+                        }),
+                        1 => Some(shelf::Pin {
+                            title: "Nick Drake · Pink Moon",
+                            sub: "Saved yesterday",
+                        }),
                         _ => None,
-                    }));
+                    }),
+                );
             }),
             // The pull-down panel (Settings ▸ Pull-down panel), over the Library it was pulled from.
             ("quick_panel", &|c: &mut Canvas| {
-                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib, None, false, 0, false);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Songs,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                );
                 cinder_ui::chrome::status_bar(c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
-                cinder_ui::quick::render(c, &theme, &fonts, &cinder_ui::quick::QuickView {
-                    brightness: 4, bt_on: true, bt_device: Some("WH-1000XM5"), night: false, sleep_idx: 2,
-                });
+                cinder_ui::quick::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &cinder_ui::quick::QuickView {
+                        brightness: 4,
+                        bt_on: true,
+                        bt_device: Some("WH-1000XM5"),
+                        night: false,
+                        sleep_idx: 2,
+                    },
+                );
             }),
-            ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
-            ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts,
-                "NOW › Atlas Hands · Benjamin Francis Leftwich · 1:47", &menu_items, 0)),
+            ("lock", &|c: &mut Canvas| {
+                lock::render(c, &theme, &fonts, &lk)
+            }),
+            ("menu", &|c: &mut Canvas| {
+                menu::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    "NOW › Atlas Hands · Benjamin Francis Leftwich · 1:47",
+                    &menu_items,
+                    0,
+                )
+            }),
             // Up Next: history above the playing track, then the rest of the album. The history
             // is its OWN list, so the preview passes one explicitly.
             ("up_next", &|c: &mut Canvas| {
                 let tracks = &album_tracks[..];
-                up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
-                    album: &album_name, tracks,
-                    current: (!tracks.is_empty()).then(|| 2.min(tracks.len() - 1)),
-                    history: &tracks[..2.min(tracks.len())],
-                    lib: &lib, scroll_px: 0,
-                    drag: None, swipe: None, sbar_active: false,
-                });
+                up_next::render_view(
+                    c,
+                    &theme,
+                    &fonts,
+                    &up_next::QueueView {
+                        album: &album_name,
+                        tracks,
+                        current: (!tracks.is_empty()).then(|| 2.min(tracks.len() - 1)),
+                        history: &tracks[..2.min(tracks.len())],
+                        lib: &lib,
+                        scroll_px: 0,
+                        drag: None,
+                        swipe: None,
+                        sbar_active: false,
+                    },
+                );
             }),
             // The same list after queueing more after the album: ONE list, headed NEXT UP, in the
             // order it will play. Scrolled so the join between the two is on screen.
             ("up_next_queue", &|c: &mut Canvas| {
                 let cur = album_tracks.len().saturating_sub(2);
                 let l = up_next::layout(0, queued.len(), (!queued.is_empty()).then_some(cur));
-                up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
-                    album: "", tracks: &queued, current: (!queued.is_empty()).then_some(cur),
-                    history: &[], lib: &lib, scroll_px: l.follow_scroll(),
-                    drag: None, swipe: None, sbar_active: false,
-                });
+                up_next::render_view(
+                    c,
+                    &theme,
+                    &fonts,
+                    &up_next::QueueView {
+                        album: "",
+                        tracks: &queued,
+                        current: (!queued.is_empty()).then_some(cur),
+                        history: &[],
+                        lib: &lib,
+                        scroll_px: l.follow_scroll(),
+                        drag: None,
+                        swipe: None,
+                        sbar_active: false,
+                    },
+                );
             }),
             // Mid-reorder: the gesture the device can't be screenshotted through — the row is
             // lifted under a finger that isn't there.
@@ -325,10 +622,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let grab_off = up_next::RH / 2;
                 // The row's screen y comes from the layout — the same rule nav's reorder_begin
                 // follows.
-                let row_top = cinder_ui::chrome::HEADER_BOTTOM
-                    + l.movable_top(from).unwrap_or(0);
+                let row_top = cinder_ui::chrome::HEADER_BOTTOM + l.movable_top(from).unwrap_or(0);
                 let start_y = row_top + grab_off;
-                let y = start_y + 2 * up_next::RH + 14;   // dragged down past two rows
+                let y = start_y + 2 * up_next::RH + 14; // dragged down past two rows
                 let d = up_next::RowDrag {
                     from,
                     to: l.movable_slot_for(from, y - grab_off, 0),
@@ -336,34 +632,67 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     y,
                     grab_off,
                 };
-                up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
-                    album: "", tracks: &queued, current: cur,
-                    history: &[], lib: &lib, scroll_px: 0,
-                    drag: Some(d), swipe: None, sbar_active: false,
-                });
+                up_next::render_view(
+                    c,
+                    &theme,
+                    &fonts,
+                    &up_next::QueueView {
+                        album: "",
+                        tracks: &queued,
+                        current: cur,
+                        history: &[],
+                        lib: &lib,
+                        scroll_px: 0,
+                        drag: Some(d),
+                        swipe: None,
+                        sbar_active: false,
+                    },
+                );
             }),
-            ("playlist_page", &|c: &mut Canvas| {
-                match lib.playlists.first() {
-                    Some(pl) => library::playlist_view(c, &theme, &fonts, &lib, pl, 0, 0, None, false, None),
+            (
+                "playlist_page",
+                &|c: &mut Canvas| match lib.playlists.first() {
+                    Some(pl) => {
+                        library::playlist_view(c, &theme, &fonts, &lib, pl, 0, 0, None, false, None)
+                    }
                     None => {}
-                }
-            }),
+                },
+            ),
             // The playlists you MADE: the same page, plus its edit bar and a row armed for
             // removal — the state that is easiest to get wrong and hardest to see in a test.
             ("sound_source_direct", &|c: &mut Canvas| {
-                let s = Sound { source_direct: true, ..snd };
+                let s = Sound {
+                    source_direct: true,
+                    ..snd
+                };
                 sound::render(c, &theme, &fonts, &s, 0, 0, 0);
             }),
             ("sound_tone_control", &|c: &mut Canvas| {
-                let s = Sound { tone_control: true, ..snd };
+                let s = Sound {
+                    tone_control: true,
+                    ..snd
+                };
                 sound::render(c, &theme, &fonts, &s, 0, 0, 0);
             }),
             ("playlist_page_own", &|c: &mut Canvas| {
                 if let Some(pl) = lib.playlists.first() {
                     let mine = cinder_ui::model::PlaylistRow {
-                        user: true, name: "Late Night On The Bus".into(), ..pl.clone()
+                        user: true,
+                        name: "Late Night On The Bus".into(),
+                        ..pl.clone()
                     };
-                    library::playlist_view(c, &theme, &fonts, &lib, &mine, 0, 1, None, false, Some(1));
+                    library::playlist_view(
+                        c,
+                        &theme,
+                        &fonts,
+                        &lib,
+                        &mine,
+                        0,
+                        1,
+                        None,
+                        false,
+                        Some(1),
+                    );
                 }
             }),
             // The Playlists tab, which is where a playlist gets made.
@@ -372,87 +701,337 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 if let Some(first) = mine.playlists.first_mut() {
                     first.user = true;
                 }
-                library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &mine, None, false, 0, false);
-                cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands",
-                                          "Benjamin Francis Leftwich", true, 0.39);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Playlists,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &mine,
+                    None,
+                    false,
+                    0,
+                    false,
+                );
+                cinder_ui::chrome::np_bar(
+                    c,
+                    &theme,
+                    &fonts,
+                    "Atlas Hands",
+                    "Benjamin Francis Leftwich",
+                    true,
+                    0.39,
+                );
             }),
             ("keyboard", &|c: &mut Canvas| {
-                cinder_ui::keyboard::render(c, &theme, &fonts, "New playlist",
-                                            "Late night on the bus", "Playlist name", 0, true);
+                cinder_ui::keyboard::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    "New playlist",
+                    "Late night on the bus",
+                    "Playlist name",
+                    0,
+                    true,
+                );
             }),
             ("keyboard_symbols", &|c: &mut Canvas| {
-                cinder_ui::keyboard::render(c, &theme, &fonts, "Rename playlist",
-                                            "2 a.m. mix #3", "Playlist name", 1, false);
+                cinder_ui::keyboard::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    "Rename playlist",
+                    "2 a.m. mix #3",
+                    "Playlist name",
+                    1,
+                    false,
+                );
             }),
             ("playlist_pick", &|c: &mut Canvas| {
                 let targets = [
-                    cinder_ui::playlist_pick::Target { name: "Late Night On The Bus", tracks: 42 },
-                    cinder_ui::playlist_pick::Target { name: "Sunday", tracks: 9 },
+                    cinder_ui::playlist_pick::Target {
+                        name: "Late Night On The Bus",
+                        tracks: 42,
+                    },
+                    cinder_ui::playlist_pick::Target {
+                        name: "Sunday",
+                        tracks: 9,
+                    },
                 ];
-                cinder_ui::playlist_pick::render_targets(c, &theme, &fonts, "Add to playlist",
-                                                         "Atlas Hands", &targets, 3, 0, false);
+                cinder_ui::playlist_pick::render_targets(
+                    c,
+                    &theme,
+                    &fonts,
+                    "Add to playlist",
+                    "Atlas Hands",
+                    &targets,
+                    3,
+                    0,
+                    false,
+                );
             }),
             ("track_pick", &|c: &mut Canvas| {
                 let songs: Vec<&cinder_ui::model::SongRow> = lib.songs.iter().collect();
                 let n = songs.len();
-                cinder_ui::playlist_pick::render_tracks(c, &theme, &fonts, "Late Night On The Bus",
-                                                        &songs, &|i| i % 3 == 0, 0, 4, "", n, false);
+                cinder_ui::playlist_pick::render_tracks(
+                    c,
+                    &theme,
+                    &fonts,
+                    "Late Night On The Bus",
+                    &songs,
+                    &|i| i % 3 == 0,
+                    0,
+                    4,
+                    "",
+                    n,
+                    false,
+                );
             }),
             // The same screen with a search running — the state that makes it usable on a library
             // of thousands, and the one worth eyeballing.
             ("track_pick_search", &|c: &mut Canvas| {
-                let songs: Vec<&cinder_ui::model::SongRow> =
-                    lib.songs.iter().filter(|s| s.title.to_lowercase().contains('a')).collect();
-                cinder_ui::playlist_pick::render_tracks(c, &theme, &fonts, "Late Night On The Bus",
-                                                        &songs, &|i| i % 3 == 0, 0, 4, "a",
-                                                        lib.songs.len(), false);
+                let songs: Vec<&cinder_ui::model::SongRow> = lib
+                    .songs
+                    .iter()
+                    .filter(|s| s.title.to_lowercase().contains('a'))
+                    .collect();
+                cinder_ui::playlist_pick::render_tracks(
+                    c,
+                    &theme,
+                    &fonts,
+                    "Late Night On The Bus",
+                    &songs,
+                    &|i| i % 3 == 0,
+                    0,
+                    4,
+                    "a",
+                    lib.songs.len(),
+                    false,
+                );
             }),
             ("up_next_remove", &|c: &mut Canvas| {
                 let cur = (!queued.is_empty()).then_some(0);
                 let l = up_next::layout(0, queued.len(), cur);
                 let row_y = cinder_ui::chrome::HEADER_BOTTOM
-                    + l.top_of(up_next::Slot::Upcoming(3)).unwrap_or(0) + up_next::RH / 2;
-                up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
-                    album: "", tracks: &queued, current: cur,
-                    history: &[], lib: &lib, scroll_px: 0,
-                    drag: None,
-                    swipe: Some(cinder_ui::library::SwipeRow { y: row_y, dx: 110 }),
-                    sbar_active: false,
-                });
+                    + l.top_of(up_next::Slot::Upcoming(3)).unwrap_or(0)
+                    + up_next::RH / 2;
+                up_next::render_view(
+                    c,
+                    &theme,
+                    &fonts,
+                    &up_next::QueueView {
+                        album: "",
+                        tracks: &queued,
+                        current: cur,
+                        history: &[],
+                        lib: &lib,
+                        scroll_px: 0,
+                        drag: None,
+                        swipe: Some(cinder_ui::library::SwipeRow { y: row_y, dx: 110 }),
+                        sbar_active: false,
+                    },
+                );
             }),
             ("library_songs", &|c: &mut Canvas| {
-                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib, None, false, 0, false);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Songs,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                );
                 // nav draws the Now Playing return bar over the library screens; mirror that here
                 // so the preview shows the real bottom of the screen, not a list running to the edge.
-                cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
+                cinder_ui::chrome::np_bar(
+                    c,
+                    &theme,
+                    &fonts,
+                    "Atlas Hands",
+                    "Benjamin Francis Leftwich",
+                    true,
+                    0.39,
+                );
             }),
             // Songs sorted by ADDED (sort chip index 4) — shows the SORT chip label + reorder.
-            ("library_songs_added", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 4, 0, None, &lib, None, false, 0, false)),
+            ("library_songs_added", &|c: &mut Canvas| {
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Songs,
+                    0,
+                    0,
+                    4,
+                    0,
+                    None,
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
+            }),
             // The shuffle band mid-slide and fully away (library::band_slide) — for looking at the
             // seam against the tab strip, which no test can judge.
             ("library_songs_band_half", &|c: &mut Canvas| {
                 let mut big = lib.clone();
                 let base = big.songs.clone();
                 for n in 1..20 {
-                    big.songs.extend(base.iter().map(|s| cinder_ui::model::SongRow { object_id: s.object_id + n * 100_000, ..s.clone() }));
+                    big.songs
+                        .extend(base.iter().map(|s| cinder_ui::model::SongRow {
+                            object_id: s.object_id + n * 100_000,
+                            ..s.clone()
+                        }));
                 }
-                library::render(c, &theme, &fonts, Tab::Songs, 0, 300, 0, 0, None, &big, None, false, 36, false);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Songs,
+                    0,
+                    300,
+                    0,
+                    0,
+                    None,
+                    &big,
+                    None,
+                    false,
+                    36,
+                    false,
+                );
             }),
             ("library_songs_band_hidden", &|c: &mut Canvas| {
                 let mut big = lib.clone();
                 let base = big.songs.clone();
                 for n in 1..20 {
-                    big.songs.extend(base.iter().map(|s| cinder_ui::model::SongRow { object_id: s.object_id + n * 100_000, ..s.clone() }));
+                    big.songs
+                        .extend(base.iter().map(|s| cinder_ui::model::SongRow {
+                            object_id: s.object_id + n * 100_000,
+                            ..s.clone()
+                        }));
                 }
-                library::render(c, &theme, &fonts, Tab::Songs, 0, 300, 0, 0, None, &big, None, false, 999, false);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Songs,
+                    0,
+                    300,
+                    0,
+                    0,
+                    None,
+                    &big,
+                    None,
+                    false,
+                    999,
+                    false,
+                );
             }),
-            ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, None, &lib, None, false, 0, false)),
+            ("library_albums", &|c: &mut Canvas| {
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
+            }),
             // Albums with the first album's accordion expanded (tracks listed inline).
-            ("library_albums_expanded", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, Some(0), &lib, None, false, 0, false)),
+            ("library_albums_expanded", &|c: &mut Canvas| {
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    0,
+                    0,
+                    0,
+                    0,
+                    Some(0),
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
+            }),
             // Albums flat-ordered A-Z (ORDER chip index 1 — no artist headers).
-            ("library_albums_az", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 1, None, &lib, None, false, 0, false)),
-            ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &lib, None, false, 0, false)),
-            ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &lib, None, false, 0, false)),
+            ("library_albums_az", &|c: &mut Canvas| {
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    0,
+                    0,
+                    0,
+                    1,
+                    None,
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
+            }),
+            ("library_artists", &|c: &mut Canvas| {
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Artists,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
+            }),
+            ("library_playlists", &|c: &mut Canvas| {
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Playlists,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
+            }),
             // NEW PLAYLIST gone with the band (library::band_slide(Playlists)): the rows meet the tabs.
             ("library_playlists_band_hidden", &|c: &mut Canvas| {
                 let mut big = lib.clone();
@@ -460,7 +1039,22 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 for _ in 0..8 {
                     big.playlists.extend(base.iter().cloned());
                 }
-                library::render(c, &theme, &fonts, Tab::Playlists, 0, 300, 0, 0, None, &big, None, false, 999, false);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Playlists,
+                    0,
+                    300,
+                    0,
+                    0,
+                    None,
+                    &big,
+                    None,
+                    false,
+                    999,
+                    false,
+                );
             }),
             // The artist drill-in, built from the SAMPLE LIBRARY like every other list preview —
             // it used to render three hard-coded albums from `data::ARTIST_*` regardless of who
@@ -469,7 +1063,15 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let name = lib.artists.first().map(|a| a.name.as_str()).unwrap_or("");
                 let page = library::artist_page(&lib, name, false);
                 library::artist_view(c, &theme, &fonts, &lib, &page, 0, 0, None, false);
-                cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
+                cinder_ui::chrome::np_bar(
+                    c,
+                    &theme,
+                    &fonts,
+                    "Atlas Hands",
+                    "Benjamin Francis Leftwich",
+                    true,
+                    0.39,
+                );
             }),
             // …and with SONGS opened from its header (2026-10-04: folded away until asked for).
             ("artist_songs_open", &|c: &mut Canvas| {
@@ -489,27 +1091,73 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("artist_played", &|c: &mut Canvas| {
                 let mut l = lib.clone();
                 for (id, rating, plays) in [(0i64, 5u8, 14u32), (1, 4, 9), (2, 0, 3), (3, 3, 1)] {
-                    l.stats.insert(id, cinder_ui::model::TrackStat { rating, plays, last_played: 1_790_000_000 + id });
+                    l.stats.insert(
+                        id,
+                        cinder_ui::model::TrackStat {
+                            rating,
+                            plays,
+                            last_played: 1_790_000_000 + id,
+                        },
+                    );
                 }
-                let name = l.artists.first().map(|a| a.name.clone()).unwrap_or_default();
+                let name = l
+                    .artists
+                    .first()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
                 let page = library::artist_page(&l, &name, false);
                 library::artist_view(c, &theme, &fonts, &l, &page, 0, 0, None, false);
             }),
             // The Playlists tab with a smart playlist above the others and an EDITED tag (5g).
             ("library_playlists_smart", &|c: &mut Canvas| {
                 let l = r4_playlists(&lib);
-                library::render(c, &theme, &fonts, Tab::Playlists, 1, 0, 0, 0, None, &l, None, false, 0, false);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Playlists,
+                    1,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    false,
+                );
             }),
             ("playlist_page_smart", &|c: &mut Canvas| {
                 let l = r4_playlists(&lib);
-                library::playlist_view(c, &theme, &fonts, &l, &l.playlists[0], 0, 0, None, false, None);
+                library::playlist_view(
+                    c,
+                    &theme,
+                    &fonts,
+                    &l,
+                    &l.playlists[0],
+                    0,
+                    0,
+                    None,
+                    false,
+                    None,
+                );
             }),
             // The playlist editor (5b): at rest with something to undo, and mid-drag.
             ("playlist_edit", &|c: &mut Canvas| {
-                cinder_ui::playlist_edit::render(c, &theme, &fonts, &cinder_ui::playlist_edit::EditView {
-                    name: "Late Night On The Bus", rows: lib.songs.iter().collect(), scroll_px: 0,
-                    drag: None, can_undo: true, sbar_active: false,
-                });
+                cinder_ui::playlist_edit::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &cinder_ui::playlist_edit::EditView {
+                        name: "Late Night On The Bus",
+                        rows: lib.songs.iter().collect(),
+                        scroll_px: 0,
+                        drag: None,
+                        can_undo: true,
+                        sbar_active: false,
+                    },
+                );
             }),
             ("playlist_edit_drag", &|c: &mut Canvas| {
                 use cinder_ui::playlist_edit as pe;
@@ -517,39 +1165,92 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let (from, grab_off) = (1usize, pe::RH / 2);
                 let start_y = pe::row_top(from, 0) + grab_off;
                 let y = start_y + 2 * pe::RH + 10;
-                let d = up_next::RowDrag { from, to: pe::slot_for(n, y - grab_off, 0), start_y, y, grab_off };
-                pe::render(c, &theme, &fonts, &pe::EditView {
-                    name: "Late Night On The Bus", rows: lib.songs.iter().collect(), scroll_px: 0,
-                    drag: Some(d), can_undo: false, sbar_active: false,
-                });
+                let d = up_next::RowDrag {
+                    from,
+                    to: pe::slot_for(n, y - grab_off, 0),
+                    start_y,
+                    y,
+                    grab_off,
+                };
+                pe::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &pe::EditView {
+                        name: "Late Night On The Bus",
+                        rows: lib.songs.iter().collect(),
+                        scroll_px: 0,
+                        drag: Some(d),
+                        can_undo: false,
+                        sbar_active: false,
+                    },
+                );
             }),
             // The saved-view editor (5c): one that exists, and a new one with nothing set.
             ("view_edit", &|c: &mut Canvas| {
                 let v = cinder_ui::views::SavedView {
-                    name: "Late favourites".into(), min_rating: 4,
-                    played: cinder_ui::views::Played::Recent, format: cinder_ui::views::FormatRule::Flac,
+                    name: "Late favourites".into(),
+                    min_rating: 4,
+                    played: cinder_ui::views::Played::Recent,
+                    format: cinder_ui::views::FormatRule::Flac,
                     sort: cinder_ui::views::ViewSort::Plays,
                     shuffle: Some(cinder_ui::shuffle::ShuffleBy::Albums),
                 };
-                cinder_ui::view_edit::render(c, &theme, &fonts,
-                    &cinder_ui::view_edit::ViewEditView { draft: &v, matches: 38, existing: true });
+                cinder_ui::view_edit::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &cinder_ui::view_edit::ViewEditView {
+                        draft: &v,
+                        matches: 38,
+                        existing: true,
+                    },
+                );
             }),
             ("view_edit_new", &|c: &mut Canvas| {
                 let v = cinder_ui::views::SavedView::default();
-                cinder_ui::view_edit::render(c, &theme, &fonts,
-                    &cinder_ui::view_edit::ViewEditView { draft: &v, matches: lib.songs.len(), existing: false });
+                cinder_ui::view_edit::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &cinder_ui::view_edit::ViewEditView {
+                        draft: &v,
+                        matches: lib.songs.len(),
+                        existing: false,
+                    },
+                );
             }),
-            ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4, None)),
-            ("eq_off", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4, Some("Off: Tone Control is on"))),
-            ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, 0, 0)),
-            ("sound_setup_b", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, 1, 0)),
+            ("eq", &|c: &mut Canvas| {
+                eq::render(c, &theme, &fonts, &eq_bands, "A1", 4, None)
+            }),
+            ("eq_off", &|c: &mut Canvas| {
+                eq::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &eq_bands,
+                    "A1",
+                    4,
+                    Some("Off: Tone Control is on"),
+                )
+            }),
+            ("sound", &|c: &mut Canvas| {
+                sound::render(c, &theme, &fonts, &snd, 0, 0, 0)
+            }),
+            ("sound_setup_b", &|c: &mut Canvas| {
+                sound::render(c, &theme, &fonts, &snd, 5, 1, 0)
+            }),
             // The balance slider off-centre and mid-drag: the two states the static preview above
             // never shows, and the ones where the knob can drift off its hit band.
             ("clockset", &|c: &mut Canvas| {
                 clockset::render(c, &theme, &fonts, &[2026, 8, 17, 9, 1], clockset::F_MONTH)
             }),
             ("sound_balance", &|c: &mut Canvas| {
-                let s = Sound { balance: 14, balance_drag: true, ..snd };
+                let s = Sound {
+                    balance: 14,
+                    balance_drag: true,
+                    ..snd
+                };
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0, snd_end)
             }),
             // MONO, in both the states it has — and this is the LONGEST subtitle on the screen,
@@ -559,20 +1260,68 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("sound_mono", &|c: &mut Canvas| {
                 // Off the live path: the honest case for ordinary playback on this device, and the
                 // one whose subtitle has to fit. See analysis/RE_mono_audio.md.
-                let s = Sound { balance: 14, mono: true, mono_live: false, ..snd };
+                let s = Sound {
+                    balance: 14,
+                    mono: true,
+                    mono_live: false,
+                    ..snd
+                };
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0, snd_end)
             }),
             ("sound_mono_live", &|c: &mut Canvas| {
-                let s = Sound { mono: true, mono_live: true, ..snd };
+                let s = Sound {
+                    mono: true,
+                    mono_live: true,
+                    ..snd
+                };
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0, snd_end)
             }),
-            ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { more: false, shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
-                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" })),
+            ("settings", &|c: &mut Canvas| {
+                settings::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    1,
+                    0,
+                    &settings::SettingsView {
+                        more: false,
+                        shuffle_by: "SONGS",
+                        ignore_the: false,
+                        quick: false,
+                        volume_limit: false,
+                        usb_dac: false,
+                        battery_care: true,
+                        device: "99% · 34.4 °C",
+                        database: "3,424 tracks",
+                        storage: "12.4 / 58 GB",
+                        sleep: "30 MIN",
+                        brightness: "4 / 5",
+                        screen_off: "OFF",
+                        auto_off: "OFF",
+                        bt_idle_off: false,
+                        boot_stock: "SONY",
+                        clock: "17 Aug · 09:01",
+                    },
+                )
+            }),
             // Settings ▸ Display (handoff 5k): palette, accent, night, the volume readout, size.
-            ("display", &|c: &mut Canvas| cinder_ui::display::render(c, &theme, &fonts, 1,
-                &cinder_ui::display::DisplayView { palette: pal_name, accent_locked: pal_locked,
-                    accent: cinder_ui::Accent::Amber, night: theme.night, volume_hud: 1, viz: "BARS · VEIL", style: cinder_ui::style::Style::Cinder })),
+            ("display", &|c: &mut Canvas| {
+                cinder_ui::display::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    1,
+                    &cinder_ui::display::DisplayView {
+                        palette: pal_name,
+                        accent_locked: pal_locked,
+                        accent: cinder_ui::Accent::Amber,
+                        night: theme.night,
+                        volume_hud: 1,
+                        viz: "BARS · VEIL",
+                        style: cinder_ui::style::Style::Cinder,
+                    },
+                )
+            }),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
             // The shuffle band's caption has to follow the filter — shuffling a filtered list
             // shuffles what is on screen, so it must not still promise the whole library.
@@ -582,7 +1331,22 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("library_songs_filtered", &|c: &mut Canvas| {
                 let mut l = lib.clone();
                 l.filter_genre = l.genres.first().map(|g| g.id);
-                library::render(c, &theme, &fonts, library::Tab::Songs, 0, 0, 0, 0, None, &l, None, false, 0, false);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    library::Tab::Songs,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    false,
+                );
                 let az = library::az_present(library::Tab::Songs, &l, 0, 0);
                 library::az_render(c, &theme, &fonts, library::Tab::Songs, &az, 0, 0);
             }),
@@ -600,24 +1364,70 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // different geometry — the channel page gives its first 80 px to the PLAY | SHUFFLE
             // band — and the golden gate is the only thing that watches that.
             ("sensme_channels", &|c: &mut Canvas| {
-                cinder_ui::sensme::render(c, &theme, &fonts, &lib, None, 0, false, Default::default())
+                cinder_ui::sensme::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &lib,
+                    None,
+                    0,
+                    false,
+                    Default::default(),
+                )
             }),
             // The whole grid (handoff 5d): all thirteen channels populated, following the time of
             // day at 19:00 (Night), so the NOW tile and the "Play Night" button are drawn.
             ("sensme_grid_follow", &|c: &mut Canvas| {
-                const NAMES: [&str; 13] = ["Active", "Emotional", "Lounge", "Dance", "Extreme", "Upbeat",
-                    "Relax", "Mellow", "Morning", "Daytime", "Evening", "Night", "Midnight"];
+                const NAMES: [&str; 13] = [
+                    "Active",
+                    "Emotional",
+                    "Lounge",
+                    "Dance",
+                    "Extreme",
+                    "Upbeat",
+                    "Relax",
+                    "Mellow",
+                    "Morning",
+                    "Daytime",
+                    "Evening",
+                    "Night",
+                    "Midnight",
+                ];
                 let mut l = lib.clone();
-                l.channels = NAMES.iter().enumerate().map(|(id, name)| cinder_ui::model::ChannelRow {
-                    id: id as u8,
-                    name,
-                    tracks: (0..(40 + (id as u32 * 37) % 120)).collect(),
-                }).collect();
-                cinder_ui::sensme::render(c, &theme, &fonts, &l, None, 0, false,
-                    cinder_ui::sensme::Foot { follow: true, hour: Some(19) })
+                l.channels = NAMES
+                    .iter()
+                    .enumerate()
+                    .map(|(id, name)| cinder_ui::model::ChannelRow {
+                        id: id as u8,
+                        name,
+                        tracks: (0..(40 + (id as u32 * 37) % 120)).collect(),
+                    })
+                    .collect();
+                cinder_ui::sensme::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &l,
+                    None,
+                    0,
+                    false,
+                    cinder_ui::sensme::Foot {
+                        follow: true,
+                        hour: Some(19),
+                    },
+                )
             }),
             ("sensme_channel", &|c: &mut Canvas| {
-                cinder_ui::sensme::render(c, &theme, &fonts, &lib, Some(0), 0, false, Default::default())
+                cinder_ui::sensme::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &lib,
+                    Some(0),
+                    0,
+                    false,
+                    Default::default(),
+                )
             }),
             // …and the state every library starts in: nothing analysed, which is a screen that has
             // to explain itself rather than be blank.
@@ -664,7 +1474,10 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     lines: words
                         .iter()
                         .enumerate()
-                        .map(|(i, w)| Line { at_ms: Some(i as u32 * 4000), text: w.to_string() })
+                        .map(|(i, w)| Line {
+                            at_ms: Some(i as u32 * 4000),
+                            text: w.to_string(),
+                        })
                         .collect(),
                 };
                 cinder_ui::lyrics::render(c, &theme, &fonts, Some(&lyr), Some(4), 0, false)
@@ -674,15 +1487,36 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let songs: Vec<&cinder_ui::model::SongRow> = lib
                     .songs
                     .iter()
-                    .filter(|s| s.title.to_lowercase().contains(q) || s.artist.to_lowercase().contains(q))
+                    .filter(|s| {
+                        s.title.to_lowercase().contains(q) || s.artist.to_lowercase().contains(q)
+                    })
                     .collect();
                 cinder_ui::search::render(c, &theme, &fonts, &songs, q, lib.songs.len(), 0, false)
             }),
             ("library_search_button", &|c: &mut Canvas| {
-                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib, None, false, 0, true)
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Songs,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    true,
+                )
             }),
-            ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
-            ("bluetooth_codec", &|c: &mut Canvas| bluetooth::render_codec(c, &theme, &fonts, &bt)),
+            ("bluetooth", &|c: &mut Canvas| {
+                bluetooth::render(c, &theme, &fonts, &bt)
+            }),
+            ("bluetooth_codec", &|c: &mut Canvas| {
+                bluetooth::render_codec(c, &theme, &fonts, &bt)
+            }),
             // The radio off: the page is inert, so every row is faint and nothing is marked chosen.
             ("bluetooth_codec_off", &|c: &mut Canvas| {
                 bluetooth::render_codec(c, &theme, &fonts, &bluetooth::Bt { on: false, ..bt })
@@ -691,24 +1525,63 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // begun from Devices left this card reading "No device connected" until the link
             // resolved, which is what a failure looks like.
             ("bluetooth_connecting", &|c: &mut Canvas| {
-                let b = Bt { paired: &preview_paired_list, on: true, connected: None, link_known: true, codec_sel: 0,
-                             ldac_quality: 0, enhanced: true, enhanced_supported: true,
-                             connecting: true, busy_phase: 0.35, link_codec: None,
-                             fine_volume: "OFF", debug_log: false, profile: "B" };
+                let b = Bt {
+                    paired: &preview_paired_list,
+                    on: true,
+                    connected: None,
+                    link_known: true,
+                    codec_sel: 0,
+                    ldac_quality: 0,
+                    enhanced: true,
+                    enhanced_supported: true,
+                    connecting: true,
+                    busy_phase: 0.35,
+                    link_codec: None,
+                    fine_volume: "OFF",
+                    debug_log: false,
+                    profile: "B",
+                };
                 bluetooth::render(c, &theme, &fonts, &b)
             }),
             // Two real pairings from the device (the same two the 07-29 GetPairedDeviceInfo pass
             // read back), one connected, one with FORGET armed — the preview covers both row states.
             ("pairing", &|c: &mut Canvas| {
                 let paired = vec![
-                    pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: true },
-                    pairing::PairedDevice { name: "CMF Buds Pro 2".into(), kind: "Headphones".into(), connected: false },
+                    pairing::PairedDevice {
+                        name: "WH-1000XM4".into(),
+                        kind: "Headphones".into(),
+                        connected: true,
+                    },
+                    pairing::PairedDevice {
+                        name: "CMF Buds Pro 2".into(),
+                        kind: "Headphones".into(),
+                        connected: false,
+                    },
                 ];
                 let found = vec![
-                    pairing::PairedDevice { name: "Pixel 8".into(), kind: "Phone".into(), connected: false },
-                    pairing::PairedDevice { name: "(unnamed)".into(), kind: String::new(), connected: false },
+                    pairing::PairedDevice {
+                        name: "Pixel 8".into(),
+                        kind: "Phone".into(),
+                        connected: false,
+                    },
+                    pairing::PairedDevice {
+                        name: "(unnamed)".into(),
+                        kind: String::new(),
+                        connected: false,
+                    },
                 ];
-                pairing::render(c, &theme, &fonts, &paired, &found, Some(1), None, true, 0.35, 0)
+                pairing::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &paired,
+                    &found,
+                    Some(1),
+                    None,
+                    true,
+                    0.35,
+                    0,
+                )
             }),
             // MORE PAIRED DEVICES THAN ONE PAGE HOLDS. Previewed because the truncation this
             // replaced was invisible in every other preview: four rows and a header saying six is
@@ -716,10 +1589,32 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // 1 below — the pair proves the window moves and that the last page is short, not
             // padded.
             ("pairing_page1", &|c: &mut Canvas| {
-                pairing::render(c, &theme, &fonts, &preview_many_paired, &[], None, None, false, 0.0, 0)
+                pairing::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &preview_many_paired,
+                    &[],
+                    None,
+                    None,
+                    false,
+                    0.0,
+                    0,
+                )
             }),
             ("pairing_page2", &|c: &mut Canvas| {
-                pairing::render(c, &theme, &fonts, &preview_many_paired, &[], None, None, false, 0.0, 1)
+                pairing::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &preview_many_paired,
+                    &[],
+                    None,
+                    None,
+                    false,
+                    0.0,
+                    1,
+                )
             }),
             // A connect attempt IN FLIGHT on the second paired row: "CONNECTING…" plus the moving
             // spinner. Previewed on its own because the state is transient on device — it is the
@@ -727,77 +1622,301 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // silent failure would otherwise look identical to success.
             ("pairing_connecting", &|c: &mut Canvas| {
                 let paired = vec![
-                    pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: false },
-                    pairing::PairedDevice { name: "CMF Buds Pro 2".into(), kind: "Headphones".into(), connected: false },
+                    pairing::PairedDevice {
+                        name: "WH-1000XM4".into(),
+                        kind: "Headphones".into(),
+                        connected: false,
+                    },
+                    pairing::PairedDevice {
+                        name: "CMF Buds Pro 2".into(),
+                        kind: "Headphones".into(),
+                        connected: false,
+                    },
                 ];
-                pairing::render(c, &theme, &fonts, &paired, &[], None, Some(1), false, 0.35, 0)
+                pairing::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &paired,
+                    &[],
+                    None,
+                    Some(1),
+                    false,
+                    0.35,
+                    0,
+                )
             }),
             // The modal pairing prompt over the list — the numeric-comparison case, which is what a
             // phone or a modern pair of headphones actually asks for.
             ("pairing_prompt", &|c: &mut Canvas| {
-                let paired = vec![
-                    pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: true },
-                ];
-                let found = vec![
-                    pairing::PairedDevice { name: "Pixel 8".into(), kind: "Phone".into(), connected: false },
-                ];
-                pairing::render(c, &theme, &fonts, &paired, &found, None, None, false, 0.0, 0);
-                pairing::render_prompt(c, &theme, &fonts,
-                    &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "Pixel 8".into(), code: 428913 });
+                let paired = vec![pairing::PairedDevice {
+                    name: "WH-1000XM4".into(),
+                    kind: "Headphones".into(),
+                    connected: true,
+                }];
+                let found = vec![pairing::PairedDevice {
+                    name: "Pixel 8".into(),
+                    kind: "Phone".into(),
+                    connected: false,
+                }];
+                pairing::render(
+                    c, &theme, &fonts, &paired, &found, None, None, false, 0.0, 0,
+                );
+                pairing::render_prompt(
+                    c,
+                    &theme,
+                    &fonts,
+                    &pairing::Prompt {
+                        kind: pairing::PROMPT_NUMERIC,
+                        name: "Pixel 8".into(),
+                        code: 428913,
+                    },
+                );
             }),
-            ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, &receiver::Rx {
-                on: false, phase: 0, peer: "", codec: 0, freq: 0, bitrate: 0, radio: true,
-            })),
-            ("receiver_waiting", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, &receiver::Rx {
-                on: true, phase: 1, peer: "", codec: 0, freq: 0, bitrate: 0, radio: true,
-            })),
-            ("receiver_playing", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, &receiver::Rx {
-                on: true, phase: 3, peer: "ARTHURS-PC", codec: 2, freq: 3, bitrate: 990, radio: true,
-            })),
+            ("receiver", &|c: &mut Canvas| {
+                receiver::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &receiver::Rx {
+                        on: false,
+                        phase: 0,
+                        peer: "",
+                        codec: 0,
+                        freq: 0,
+                        bitrate: 0,
+                        radio: true,
+                    },
+                )
+            }),
+            ("receiver_waiting", &|c: &mut Canvas| {
+                receiver::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &receiver::Rx {
+                        on: true,
+                        phase: 1,
+                        peer: "",
+                        codec: 0,
+                        freq: 0,
+                        bitrate: 0,
+                        radio: true,
+                    },
+                )
+            }),
+            ("receiver_playing", &|c: &mut Canvas| {
+                receiver::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &receiver::Rx {
+                        on: true,
+                        phase: 3,
+                        peer: "ARTHURS-PC",
+                        codec: 2,
+                        freq: 3,
+                        bitrate: 990,
+                        radio: true,
+                    },
+                )
+            }),
             ("receiver_code", &|c: &mut Canvas| {
-                receiver::render(c, &theme, &fonts, &receiver::Rx {
-                    on: true, phase: 1, peer: "", codec: 0, freq: 0, bitrate: 0, radio: true,
-                });
-                pairing::render_prompt(c, &theme, &fonts,
-                    &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "ARTHURS-PC".into(), code: 114363 });
+                receiver::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &receiver::Rx {
+                        on: true,
+                        phase: 1,
+                        peer: "",
+                        codec: 0,
+                        freq: 0,
+                        bitrate: 0,
+                        radio: true,
+                    },
+                );
+                pairing::render_prompt(
+                    c,
+                    &theme,
+                    &fonts,
+                    &pairing::Prompt {
+                        kind: pairing::PROMPT_NUMERIC,
+                        name: "ARTHURS-PC".into(),
+                        code: 114363,
+                    },
+                );
             }),
-            ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, &fm::Fm {
-                khz: 97300, playing: true,
-                stations: [97300, 100000, 107800, 0, 0, 0], n_stations: 3,
-                scanning: false, scan_pct: 0, antenna: true, bt_out: false,
-                // Preview at a real reading: 12 of a measured 15-count full scale, stereo locked.
-                signal: 12, hw: true, stereo: true,
-            })),
-            ("usbdac", &|c: &mut Canvas| usbdac::render(c, &theme, &fonts, true, true, "LDAC", Some("WH-1000XM5"), "A1", true, Some((44100, 32, 2)), None)),
+            ("fm", &|c: &mut Canvas| {
+                fm::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &fm::Fm {
+                        khz: 97300,
+                        playing: true,
+                        stations: [97300, 100000, 107800, 0, 0, 0],
+                        n_stations: 3,
+                        scanning: false,
+                        scan_pct: 0,
+                        antenna: true,
+                        bt_out: false,
+                        // Preview at a real reading: 12 of a measured 15-count full scale, stereo locked.
+                        signal: 12,
+                        hw: true,
+                        stereo: true,
+                    },
+                )
+            }),
+            ("usbdac", &|c: &mut Canvas| {
+                usbdac::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    true,
+                    true,
+                    "LDAC",
+                    Some("WH-1000XM5"),
+                    "A1",
+                    true,
+                    Some((44100, 32, 2)),
+                    None,
+                )
+            }),
             // Library views (the header's view button). Last in the set so the glyph cache order —
             // and so every preview above — is unchanged by their arrival.
             ("library_albums_grid", &|c: &mut Canvas| {
                 let l = with_view(&lib, Tab::Albums, library::LibView::Grid);
-                library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, None, &l, None, false, 0, false)
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
             }),
             ("library_albums_grid_az", &|c: &mut Canvas| {
                 let l = with_view(&lib, Tab::Albums, library::LibView::Grid);
-                library::render(c, &theme, &fonts, Tab::Albums, 99, 0, 0, 1, None, &l, None, false, 0, true)
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    99,
+                    0,
+                    0,
+                    1,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    true,
+                )
             }),
             ("library_albums_compact", &|c: &mut Canvas| {
                 let l = with_view(&lib, Tab::Albums, library::LibView::Compact);
-                library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 1, None, &l, None, false, 0, false)
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    0,
+                    0,
+                    0,
+                    1,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
             }),
             ("library_songs_compact", &|c: &mut Canvas| {
                 let l = with_view(&lib, Tab::Songs, library::LibView::Compact);
-                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &l, None, false, 0, false)
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Songs,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
             }),
             ("library_artists_grid", &|c: &mut Canvas| {
                 let l = with_view(&lib, Tab::Artists, library::LibView::Grid);
-                library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &l, None, false, 0, false)
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Artists,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
             }),
             ("library_artists_compact", &|c: &mut Canvas| {
                 let l = with_view(&lib, Tab::Artists, library::LibView::Compact);
-                library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &l, None, false, 0, false)
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Artists,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
             }),
             ("library_playlists_grid", &|c: &mut Canvas| {
                 let l = with_view(&lib, Tab::Playlists, library::LibView::Grid);
-                library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &l, None, false, 0, false)
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Playlists,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
             }),
         ];
         for (screen, draw) in render_set {
@@ -831,20 +1950,55 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         // How much room it takes: OFF / BELOW ART / VEIL / FULL, all drawn as Bars.
         for size in 0..cinder_ui::viz::SIZE_COUNT {
             let mut c = Canvas::new();
-            now_playing::render(&mut c, &theme, &fonts,
-                &now_playing::NowPlaying { viz_size: size, viz_kind: 0, viz_levels: Some(&levels), ..np });
+            now_playing::render(
+                &mut c,
+                &theme,
+                &fonts,
+                &now_playing::NowPlaying {
+                    viz_size: size,
+                    viz_kind: 0,
+                    viz_levels: Some(&levels),
+                    ..np
+                },
+            );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
-            let label = cinder_ui::viz::size_name(size).to_lowercase().replace(' ', "_");
+            let label = cinder_ui::viz::size_name(size)
+                .to_lowercase()
+                .replace(' ', "_");
             save(&c, &format!("viz_size_{size}_{label}"));
         }
         // The confirmation modal, over Settings — Restart and Power off both go through it.
-        for (ask, name) in [(cinder_ui::confirm::Ask::Restart, "restart"),
-                            (cinder_ui::confirm::Ask::PowerOff, "poweroff")] {
+        for (ask, name) in [
+            (cinder_ui::confirm::Ask::Restart, "restart"),
+            (cinder_ui::confirm::Ask::PowerOff, "poweroff"),
+        ] {
             let mut c = Canvas::new();
-            settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(true),
-                &settings::SettingsView { more: true, shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
-                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" });
+            settings::render(
+                &mut c,
+                &theme,
+                &fonts,
+                settings::ROW_RESTART,
+                settings::max_scroll_px(true),
+                &settings::SettingsView {
+                    more: true,
+                    shuffle_by: "SONGS",
+                    ignore_the: false,
+                    quick: false,
+                    volume_limit: false,
+                    usb_dac: false,
+                    battery_care: true,
+                    device: "99% · 34.4 °C",
+                    database: "3,424 tracks",
+                    storage: "12.4 / 58 GB",
+                    sleep: "30 MIN",
+                    brightness: "4 / 5",
+                    screen_off: "OFF",
+                    auto_off: "OFF",
+                    bt_idle_off: false,
+                    boot_stock: "SONY",
+                    clock: "17 Aug · 09:01",
+                },
+            );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
             save(&c, &format!("confirm_{name}"));
@@ -854,11 +2008,32 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         // must survive the scroll (device report, 2026-07-28).
         {
             let mut c = Canvas::new();
-            settings::render(&mut c, &theme, &fonts, settings::ROW_MORE,
+            settings::render(
+                &mut c,
+                &theme,
+                &fonts,
+                settings::ROW_MORE,
                 settings::row_top_px(settings::ROW_MORE),
-                &settings::SettingsView { more: true, shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
-                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" });
+                &settings::SettingsView {
+                    more: true,
+                    shuffle_by: "SONGS",
+                    ignore_the: false,
+                    quick: false,
+                    volume_limit: false,
+                    usb_dac: false,
+                    battery_care: true,
+                    device: "99% · 34.4 °C",
+                    database: "3,424 tracks",
+                    storage: "12.4 / 58 GB",
+                    sleep: "30 MIN",
+                    brightness: "4 / 5",
+                    screen_off: "OFF",
+                    auto_off: "OFF",
+                    bt_idle_off: false,
+                    boot_stock: "SONY",
+                    clock: "17 Aug · 09:01",
+                },
+            );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, "settings_scrolled");
         }
@@ -870,14 +2045,29 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         {
             let mut c = Canvas::new();
             let v = cinder_ui::device::DeviceView {
-                percent: 99, status: "Charging", health: "Good", millivolts: 4093, care: true,
-                chg_state: 1, chg_fault: 0, charger_raw: "10 AC 78 46 10 04 18",
-                temp_cpu: 34400, temp_pmic: 39365, temp_abb: 34400,
-                cpu_khz: 1300000, cpu_max_khz: 1300000, cores_online: 1, cores_total: 2,
+                percent: 99,
+                status: "Charging",
+                health: "Good",
+                millivolts: 4093,
+                care: true,
+                chg_state: 1,
+                chg_fault: 0,
+                charger_raw: "10 AC 78 46 10 04 18",
+                temp_cpu: 34400,
+                temp_pmic: 39365,
+                temp_abb: 34400,
+                cpu_khz: 1300000,
+                cpu_max_khz: 1300000,
+                cores_online: 1,
+                cores_total: 2,
                 governor: "hotplug",
-                mem_total_kb: 467512, mem_avail_kb: 159772,
-                music_total_mb: 56320, music_free_mb: 1024, data_free_mb: 13,
-                uptime_s: 15120, kernel: "3.10.26",
+                mem_total_kb: 467512,
+                mem_avail_kb: 159772,
+                music_total_mb: 56320,
+                music_free_mb: 1024,
+                data_free_mb: 13,
+                uptime_s: 15120,
+                kernel: "3.10.26",
                 firmware: cinder_ui::settings::FIRMWARE_LABEL,
                 base_fw: "SONY STOCK",
             };
@@ -890,14 +2080,29 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         {
             let mut c = Canvas::new();
             let v = cinder_ui::device::DeviceView {
-                percent: 99, status: "Charging", health: "Good", millivolts: 4093, care: true,
-                chg_state: 1, chg_fault: 0, charger_raw: "10 AC 78 46 10 04 18",
-                temp_cpu: 34400, temp_pmic: 39365, temp_abb: 34400,
-                cpu_khz: 1300000, cpu_max_khz: 1300000, cores_online: 1, cores_total: 2,
+                percent: 99,
+                status: "Charging",
+                health: "Good",
+                millivolts: 4093,
+                care: true,
+                chg_state: 1,
+                chg_fault: 0,
+                charger_raw: "10 AC 78 46 10 04 18",
+                temp_cpu: 34400,
+                temp_pmic: 39365,
+                temp_abb: 34400,
+                cpu_khz: 1300000,
+                cpu_max_khz: 1300000,
+                cores_online: 1,
+                cores_total: 2,
                 governor: "hotplug",
-                mem_total_kb: 467512, mem_avail_kb: 159772,
-                music_total_mb: 56320, music_free_mb: 1024, data_free_mb: 13,
-                uptime_s: 15120, kernel: "3.10.26",
+                mem_total_kb: 467512,
+                mem_avail_kb: 159772,
+                music_total_mb: 56320,
+                music_free_mb: 1024,
+                data_free_mb: 13,
+                uptime_s: 15120,
+                kernel: "3.10.26",
                 firmware: cinder_ui::settings::FIRMWARE_LABEL,
                 base_fw: "SONY STOCK",
             };
@@ -909,15 +2114,29 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         {
             let mut c = Canvas::new();
             let v = cinder_ui::device::DeviceView {
-                percent: 46, status: "Discharging", health: "", millivolts: 3781, care: false,
-                chg_state: -1, chg_fault: -1, charger_raw: "",
-                temp_cpu: 31200, temp_pmic: cinder_ui::device::UNKNOWN, temp_abb: 31000,
-                cpu_khz: 598000, cpu_max_khz: 1300000, cores_online: 1, cores_total: 2,
+                percent: 46,
+                status: "Discharging",
+                health: "",
+                millivolts: 3781,
+                care: false,
+                chg_state: -1,
+                chg_fault: -1,
+                charger_raw: "",
+                temp_cpu: 31200,
+                temp_pmic: cinder_ui::device::UNKNOWN,
+                temp_abb: 31000,
+                cpu_khz: 598000,
+                cpu_max_khz: 1300000,
+                cores_online: 1,
+                cores_total: 2,
                 governor: "",
-                mem_total_kb: 467512, mem_avail_kb: 251460,
-                music_total_mb: 56320, music_free_mb: 40960,
+                mem_total_kb: 467512,
+                mem_avail_kb: 251460,
+                music_total_mb: 56320,
+                music_free_mb: 40960,
                 data_free_mb: cinder_ui::device::UNKNOWN,
-                uptime_s: 273600, kernel: "",
+                uptime_s: 273600,
+                kernel: "",
                 firmware: cinder_ui::settings::FIRMWARE_LABEL,
                 base_fw: "SONY STOCK",
             };
@@ -930,8 +2149,18 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         // changes — same title, same progress, same transport on every one.
         for page in 0..now_playing::PAGES {
             let mut c = Canvas::new();
-            now_playing::render(&mut c, &theme, &fonts,
-                &now_playing::NowPlaying { page, viz_size: 1, viz_kind: 0, viz_levels: Some(&levels), ..np });
+            now_playing::render(
+                &mut c,
+                &theme,
+                &fonts,
+                &now_playing::NowPlaying {
+                    page,
+                    viz_size: 1,
+                    viz_kind: 0,
+                    viz_levels: Some(&levels),
+                    ..np
+                },
+            );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, &format!("np_page_{page}"));
         }
@@ -941,24 +2170,57 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         for page in 0..now_playing::PAGES {
             let nt = th(true, amber);
             let mut c = Canvas::new();
-            now_playing::render(&mut c, &nt, &fonts,
-                &now_playing::NowPlaying { page, viz_size: 1, viz_kind: 1, viz_levels: Some(&levels), ..np });
+            now_playing::render(
+                &mut c,
+                &nt,
+                &fonts,
+                &now_playing::NowPlaying {
+                    page,
+                    viz_size: 1,
+                    viz_kind: 1,
+                    viz_levels: Some(&levels),
+                    ..np
+                },
+            );
             cinder_ui::chrome::status_bar(&mut c, &nt, &fonts, "02:14", "FLAC 24/96", 41);
             save(&c, &format!("np_night_page_{page}"));
         }
         // The spectrum page in every style — this is where the style choice actually shows.
         for kind in 0..cinder_ui::viz::COUNT {
             let mut c = Canvas::new();
-            now_playing::render(&mut c, &theme, &fonts,
-                &now_playing::NowPlaying { page: 1, viz_kind: kind, viz_levels: Some(&levels), ..np });
+            now_playing::render(
+                &mut c,
+                &theme,
+                &fonts,
+                &now_playing::NowPlaying {
+                    page: 1,
+                    viz_kind: kind,
+                    viz_levels: Some(&levels),
+                    ..np
+                },
+            );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
-            save(&c, &format!("np_spectrum_{kind}_{}", cinder_ui::viz::name(kind).to_lowercase()));
+            save(
+                &c,
+                &format!(
+                    "np_spectrum_{kind}_{}",
+                    cinder_ui::viz::name(kind).to_lowercase()
+                ),
+            );
         }
         // And the spectrum page with nothing playing — it must say so, not show an empty graph.
         {
             let mut c = Canvas::new();
-            now_playing::render(&mut c, &theme, &fonts,
-                &now_playing::NowPlaying { page: 1, viz_levels: None, ..np });
+            now_playing::render(
+                &mut c,
+                &theme,
+                &fonts,
+                &now_playing::NowPlaying {
+                    page: 1,
+                    viz_levels: None,
+                    ..np
+                },
+            );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, "np_spectrum_no_signal");
         }
@@ -966,10 +2228,25 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         // they will actually be seen in.
         for kind in 0..cinder_ui::viz::COUNT {
             let mut c = Canvas::new();
-            now_playing::render(&mut c, &theme, &fonts,
-                &now_playing::NowPlaying { viz_size: 2, viz_kind: kind, viz_levels: Some(&levels), ..np });
+            now_playing::render(
+                &mut c,
+                &theme,
+                &fonts,
+                &now_playing::NowPlaying {
+                    viz_size: 2,
+                    viz_kind: kind,
+                    viz_levels: Some(&levels),
+                    ..np
+                },
+            );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
-            save(&c, &format!("viz_kind_{kind}_{}", cinder_ui::viz::name(kind).to_lowercase()));
+            save(
+                &c,
+                &format!(
+                    "viz_kind_{kind}_{}",
+                    cinder_ui::viz::name(kind).to_lowercase()
+                ),
+            );
         }
         // Settings ▸ Visualiser, the screen that owns all of the above. Three shots: the default
         // state, the same screen with peak markers and a fixed scale (the two settings that change
@@ -980,27 +2257,72 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             let levels64: Vec<f32> = (0..64).map(|i| levels[i * levels.len() / 64]).collect();
             let peaks64: Vec<f32> = levels64.iter().map(|v| (v + 0.18).min(1.0)).collect();
             let shots: [(&str, cinder_ui::vizset::VizSet, usize); 3] = [
-                ("vizset_default", cinder_ui::vizset::VizSet {
-                    style: "BARS", cover: "VEIL", scale: "DYNAMIC", range: "60 DB",
-                    response: "NORMAL", curve: "SMOOTH", peaks: false, window: "AUTO", rate: "20 HZ",
-                    bands: "36", columns: 36,
-                    levels: Some(&levels), peak_marks: None, sig: None, seed: 2.0,
-                    kind: cinder_ui::viz::VizKind::Bars,
-                }, cinder_ui::vizset::ROW_STYLE),
-                ("vizset_peaks_fixed", cinder_ui::vizset::VizSet {
-                    style: "SEGMENTS", cover: "FULL", scale: "FIXED", range: "48 DB",
-                    response: "FAST", curve: "LINEAR", peaks: true, window: "125 MS", rate: "45 HZ",
-                    bands: "64", columns: 64,
-                    levels: Some(&levels64), peak_marks: Some(&peaks64), sig: None, seed: 2.0,
-                    kind: cinder_ui::viz::VizKind::Segments,
-                }, cinder_ui::vizset::ROW_PEAKS),
-                ("vizset_no_signal", cinder_ui::vizset::VizSet {
-                    style: "RIBBON", cover: "OFF", scale: "DYNAMIC", range: "72 DB",
-                    response: "SMOOTH", curve: "SMOOTH", peaks: false, window: "60 MS", rate: "30 HZ",
-                    bands: "24", columns: 24,
-                    levels: None, peak_marks: None, sig: None, seed: 2.0,
-                    kind: cinder_ui::viz::VizKind::Ribbon,
-                }, cinder_ui::vizset::ROW_RATE),
+                (
+                    "vizset_default",
+                    cinder_ui::vizset::VizSet {
+                        style: "BARS",
+                        cover: "VEIL",
+                        scale: "DYNAMIC",
+                        range: "60 DB",
+                        response: "NORMAL",
+                        curve: "SMOOTH",
+                        peaks: false,
+                        window: "AUTO",
+                        rate: "20 HZ",
+                        bands: "36",
+                        columns: 36,
+                        levels: Some(&levels),
+                        peak_marks: None,
+                        sig: None,
+                        seed: 2.0,
+                        kind: cinder_ui::viz::VizKind::Bars,
+                    },
+                    cinder_ui::vizset::ROW_STYLE,
+                ),
+                (
+                    "vizset_peaks_fixed",
+                    cinder_ui::vizset::VizSet {
+                        style: "SEGMENTS",
+                        cover: "FULL",
+                        scale: "FIXED",
+                        range: "48 DB",
+                        response: "FAST",
+                        curve: "LINEAR",
+                        peaks: true,
+                        window: "125 MS",
+                        rate: "45 HZ",
+                        bands: "64",
+                        columns: 64,
+                        levels: Some(&levels64),
+                        peak_marks: Some(&peaks64),
+                        sig: None,
+                        seed: 2.0,
+                        kind: cinder_ui::viz::VizKind::Segments,
+                    },
+                    cinder_ui::vizset::ROW_PEAKS,
+                ),
+                (
+                    "vizset_no_signal",
+                    cinder_ui::vizset::VizSet {
+                        style: "RIBBON",
+                        cover: "OFF",
+                        scale: "DYNAMIC",
+                        range: "72 DB",
+                        response: "SMOOTH",
+                        curve: "SMOOTH",
+                        peaks: false,
+                        window: "60 MS",
+                        rate: "30 HZ",
+                        bands: "24",
+                        columns: 24,
+                        levels: None,
+                        peak_marks: None,
+                        sig: None,
+                        seed: 2.0,
+                        kind: cinder_ui::viz::VizKind::Ribbon,
+                    },
+                    cinder_ui::vizset::ROW_RATE,
+                ),
             ];
             for (name, vs, sel) in shots {
                 let mut c = Canvas::new();
@@ -1013,10 +2335,22 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         // needs height to read would fall apart there and that has to be visible, not assumed.
         for kind in [1u8, 2, 7] {
             let mut c = Canvas::new();
-            now_playing::render(&mut c, &theme, &fonts,
-                &now_playing::NowPlaying { viz_size: 1, viz_kind: kind, viz_levels: Some(&levels), ..np });
+            now_playing::render(
+                &mut c,
+                &theme,
+                &fonts,
+                &now_playing::NowPlaying {
+                    viz_size: 1,
+                    viz_kind: kind,
+                    viz_levels: Some(&levels),
+                    ..np
+                },
+            );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
-            save(&c, &format!("viz_below_{}", cinder_ui::viz::name(kind).to_lowercase()));
+            save(
+                &c,
+                &format!("viz_below_{}", cinder_ui::viz::name(kind).to_lowercase()),
+            );
         }
     }
 
@@ -1034,9 +2368,21 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         save(&c, &format!("accent_{lower}_now_playing"));
 
         let mut c = Canvas::new();
-        cinder_ui::display::render(&mut c, &theme, &fonts, cinder_ui::display::ROW_ACCENT,
-            &cinder_ui::display::DisplayView { palette: pal_name, accent_locked: pal_locked, accent: a,
-                night: false, volume_hud: 0, viz: "BARS · VEIL", style: cinder_ui::style::Style::Cinder });
+        cinder_ui::display::render(
+            &mut c,
+            &theme,
+            &fonts,
+            cinder_ui::display::ROW_ACCENT,
+            &cinder_ui::display::DisplayView {
+                palette: pal_name,
+                accent_locked: pal_locked,
+                accent: a,
+                night: false,
+                volume_hud: 0,
+                viz: "BARS · VEIL",
+                style: cinder_ui::style::Style::Cinder,
+            },
+        );
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
         save(&c, &format!("accent_{lower}_display"));
     }
@@ -1047,9 +2393,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     let mut app = new_app();
     let steps: &[(&str, Option<Button>)] = &[
         ("nav_0_now_playing", None),
-        ("nav_1_menu", Some(Button::Up)),       // NowPlaying -> Menu
-        ("nav_2_menu_library", None), // the cursor already rests on "Library", the first row
-        ("nav_3_library", Some(Button::Select)),    // enter Library
+        ("nav_1_menu", Some(Button::Up)), // NowPlaying -> Menu
+        ("nav_2_menu_library", None),     // the cursor already rests on "Library", the first row
+        ("nav_3_library", Some(Button::Select)), // enter Library
         ("nav_4_library_artists", Some(Button::Right)), // Albums -> Artists (then Right again)
     ];
     for (label, btn) in steps {
@@ -1065,13 +2411,25 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     // to confirm list windowing + the scrollbar (real libraries are thousands of rows).
     {
         use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, Library, SongRow};
-        let artists_n = ["Hollow Pines", "Vesper Lane", "Glass Atlas", "Petal & Wire",
-                         "Cold Stone & Sea", "Neon Cartography", "Aurora Bay", "Slow Tide"];
+        let artists_n = [
+            "Hollow Pines",
+            "Vesper Lane",
+            "Glass Atlas",
+            "Petal & Wire",
+            "Cold Stone & Sea",
+            "Neon Cartography",
+            "Aurora Bay",
+            "Slow Tide",
+        ];
         let mut songs = Vec::new();
         for i in 0..240 {
             let a = artists_n[i % artists_n.len()];
             songs.push(SongRow {
-                title: format!("Track {:03} — {}", i + 1, ["Drift", "Ember", "Lantern", "Quartz"][i % 4]),
+                title: format!(
+                    "Track {:03} — {}",
+                    i + 1,
+                    ["Drift", "Ember", "Lantern", "Quartz"][i % 4]
+                ),
                 artist: a.to_string(),
                 dur: format!("{}:{:02}", 2 + i % 5, i * 7 % 60),
                 art: format!("album {}", i / 4),
@@ -1095,7 +2453,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 .map(|k| {
                     let n = 8 + (k as u32 % 5);
                     AlbumRow {
-                        name: format!("{} — Vol. {}", ["Nightfall", "Driftwood", "Halo", "Cinder"][k % 4], k + 1),
+                        name: format!(
+                            "{} — Vol. {}",
+                            ["Nightfall", "Driftwood", "Halo", "Cinder"][k % 4],
+                            k + 1
+                        ),
                         artist: a.to_string(),
                         year: format!("{}", 2010 + (gi + k) % 14),
                         tracks: n,
@@ -1104,7 +2466,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         added: (2010 + (gi + k) % 14) as i64,
                         track_list: (0..n)
                             .map(|i| SongRow {
-                                title: format!("{} {}", ["Drift", "Ember", "Lantern", "Quartz"][i as usize % 4], i + 1),
+                                title: format!(
+                                    "{} {}",
+                                    ["Drift", "Ember", "Lantern", "Quartz"][i as usize % 4],
+                                    i + 1
+                                ),
                                 artist: a.to_string(),
                                 dur: format!("{}:{:02}", 3 + i % 3, (i * 17) % 60),
                                 art: format!("album {}{}", a, k),
@@ -1119,13 +2485,30 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     }
                 })
                 .collect();
-            album_groups.push(ArtistGroup { artist: a.to_string(), albums });
+            album_groups.push(ArtistGroup {
+                artist: a.to_string(),
+                albums,
+            });
         }
         let artists = artists_n
             .iter()
-            .map(|a| ArtistRow { name: a.to_string(), albums: 7, tracks: 56, arts: vec![format!("{a}0"), format!("{a}1")], album_ids: Vec::new() })
+            .map(|a| ArtistRow {
+                name: a.to_string(),
+                albums: 7,
+                tracks: 56,
+                arts: vec![format!("{a}0"), format!("{a}1")],
+                album_ids: Vec::new(),
+            })
             .collect();
-        let big = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
+        let big = Library {
+            songs,
+            album_groups,
+            artists,
+            playlists: Vec::new(),
+            thumbs: Default::default(),
+            genres: Vec::new(),
+            ..Default::default()
+        };
 
         let mut app = new_app();
         app.press(Button::Up); // Menu — the cursor starts on Library, the first row
@@ -1203,19 +2586,37 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             .collect();
         let artists = rows
             .iter()
-            .map(|(_, a, _)| ArtistRow { name: a.to_string(), albums: 1, tracks: 8, arts: vec![a.to_string()] , album_ids: Vec::new() })
+            .map(|(_, a, _)| ArtistRow {
+                name: a.to_string(),
+                albums: 1,
+                tracks: 8,
+                arts: vec![a.to_string()],
+                album_ids: Vec::new(),
+            })
             .collect();
 
         let mut app = new_app();
         app.press(Button::Up); // Menu — the cursor starts on Library
         app.press(Button::Select);
-        app.set_library(Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() });
+        app.set_library(Library {
+            songs,
+            album_groups,
+            artists,
+            playlists: Vec::new(),
+            thumbs: Default::default(),
+            genres: Vec::new(),
+            ..Default::default()
+        });
         app.press(Button::Left); // -> Songs
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "i18n_library_songs");
 
-        let np_jp = now_playing::NowPlaying { title: "夜に駆ける", artist: "YOASOBI", ..np };
+        let np_jp = now_playing::NowPlaying {
+            title: "夜に駆ける",
+            artist: "YOASOBI",
+            ..np
+        };
         let mut c2 = Canvas::new();
         now_playing::render(&mut c2, &th(true, amber), &fonts, &np_jp);
         save(&c2, "i18n_now_playing");
@@ -1293,12 +2694,37 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             for (dir, tag) in [(1, "queue"), (-1, "play_next")] {
                 let dx = library::swipe_offset(raw * dir);
                 let mut c = Canvas::new();
-                library::render(&mut c, &theme, &fonts, Tab::Songs, 99, 0, 0, 0, None, &lib,
-                    Some(cinder_ui::library::SwipeRow { y: row_y, dx }), false, 0, false);
+                library::render(
+                    &mut c,
+                    &theme,
+                    &fonts,
+                    Tab::Songs,
+                    99,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &lib,
+                    Some(cinder_ui::library::SwipeRow { y: row_y, dx }),
+                    false,
+                    0,
+                    false,
+                );
                 cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
-                cinder_ui::chrome::np_bar(&mut c, &theme, &fonts, "Atlas Hands",
-                    "Benjamin Francis Leftwich", true, 0.39);
-                let armed = if library::swipe_armed(dx) { "armed" } else { "held" };
+                cinder_ui::chrome::np_bar(
+                    &mut c,
+                    &theme,
+                    &fonts,
+                    "Atlas Hands",
+                    "Benjamin Francis Leftwich",
+                    true,
+                    0.39,
+                );
+                let armed = if library::swipe_armed(dx) {
+                    "armed"
+                } else {
+                    "held"
+                };
                 save(&c, &format!("swipe_{tag}_{i}_{}px_{armed}", dx.abs()));
             }
         }
@@ -1359,7 +2785,10 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         // by name; a real folder does not hold it.
         files.retain(|(n, _)| n != "cinder.palette");
         files.sort_by(|a, b| a.0.cmp(&b.0));
-        files.push(("neon.palette".to_string(), Ok("name = Neon\nday.ink = #0e0d0c\n".to_string())));
+        files.push((
+            "neon.palette".to_string(),
+            Ok("name = Neon\nday.ink = #0e0d0c\n".to_string()),
+        ));
         let (list, skipped) = cinder_ui::palette::load_files(files);
         for pct in [100u32, 140] {
             cinder_ui::text::set_scale_pct(pct);
@@ -1375,10 +2804,17 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
 
     // Visualiser TYPES: render Now Playing with each viz kind (mid-animation) so they can be diffed.
     for k in 0..cinder_ui::viz::COUNT {
-        let np_k = now_playing::NowPlaying { viz_seed: 1.7, viz_kind: k, ..np };
+        let np_k = now_playing::NowPlaying {
+            viz_seed: 1.7,
+            viz_kind: k,
+            ..np
+        };
         let mut c = Canvas::new();
         now_playing::render(&mut c, &th(false, amber), &fonts, &np_k);
-        save(&c, &format!("viz_{}_{}", k, cinder_ui::viz::name(k).to_lowercase()));
+        save(
+            &c,
+            &format!("viz_{}_{}", k, cinder_ui::viz::name(k).to_lowercase()),
+        );
     }
 
     // Sleep ▸ End of song ("stop after current"): the badge says so instead of a countdown.
@@ -1392,8 +2828,15 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     // Repeat album: the loop glyph with an A in it.
     {
         let mut c = Canvas::new();
-        now_playing::render(&mut c, &th(false, amber), &fonts,
-                            &now_playing::NowPlaying { repeat: now_playing::REPEAT_ALBUM, ..np });
+        now_playing::render(
+            &mut c,
+            &th(false, amber),
+            &fonts,
+            &now_playing::NowPlaying {
+                repeat: now_playing::REPEAT_ALBUM,
+                ..np
+            },
+        );
         save(&c, "now_playing_repeat_album");
     }
 
@@ -1470,7 +2913,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let wave: Vec<f32> = (0..480)
             .map(|i| {
                 let t = i as f32 / 480.0;
-                0.55 * (tau * 3.0 * t).sin() + 0.22 * (tau * 9.0 * t + 0.4).sin() + 0.1 * (tau * 23.0 * t + 1.1).sin()
+                0.55 * (tau * 3.0 * t).sin()
+                    + 0.22 * (tau * 9.0 * t + 0.4).sin()
+                    + 0.1 * (tau * 23.0 * t + 1.1).sin()
             })
             .collect();
         let mut seed = 12345u32;
@@ -1496,30 +2941,58 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             let beat = if r % 12 < 2 { 0.35 } else { 0.0 };
             for b in 0..cols {
                 let f = b as f32 / cols as f32;
-                let melody = (-((f - 0.35 - 0.12 * (r as f32 * 0.09).sin()).powi(2)) / 0.004).exp() * 0.6;
-                let v = (0.75 - 0.6 * f) * (0.55 + 0.25 * (r as f32 * 0.21 + b as f32 * 0.5).sin()) + melody
+                let melody =
+                    (-((f - 0.35 - 0.12 * (r as f32 * 0.09).sin()).powi(2)) / 0.004).exp() * 0.6;
+                let v = (0.75 - 0.6 * f) * (0.55 + 0.25 * (r as f32 * 0.21 + b as f32 * 0.5).sin())
+                    + melody
                     + if f < 0.15 { beat } else { 0.0 };
                 hist[slot * cols + b] = (v * 0.8 - 0.1).clamp(0.0, 1.0);
             }
         }
         let sig = Signal {
-            wave: &wave, left: &left, right: &right,
-            meter: [0.86, 0.83, 0.71, 0.68], hold: [0.91, 0.88],
-            hist: &hist, hist_cols: cols, hist_rows: rows, hist_head: 37,
+            wave: &wave,
+            left: &left,
+            right: &right,
+            meter: [0.86, 0.83, 0.71, 0.68],
+            hold: [0.91, 0.88],
+            hist: &hist,
+            hist_cols: cols,
+            hist_rows: rows,
+            hist_head: 37,
         };
-        let levels48: Vec<f32> = (0..48).map(|b| hist[((37 + rows - 1) % rows) * cols + b]).collect();
+        let levels48: Vec<f32> = (0..48)
+            .map(|b| hist[((37 + rows - 1) % rows) * cols + b])
+            .collect();
         for (kind, slug) in [
-            (VizKind::Scope, "scope"), (VizKind::Stereo, "stereo"), (VizKind::Spectrogram, "spectrogram"),
-            (VizKind::Meters, "meters"), (VizKind::Radial, "radial"),
+            (VizKind::Scope, "scope"),
+            (VizKind::Stereo, "stereo"),
+            (VizKind::Spectrogram, "spectrogram"),
+            (VizKind::Meters, "meters"),
+            (VizKind::Radial, "radial"),
         ] {
-            let k = (0..cinder_ui::viz::COUNT).find(|&i| cinder_ui::viz::from_index(i) == kind).unwrap();
+            let k = (0..cinder_ui::viz::COUNT)
+                .find(|&i| cinder_ui::viz::from_index(i) == kind)
+                .unwrap();
             for night in [false, true] {
                 let t = th(night, amber);
                 let mut c = Canvas::new();
-                now_playing::render(&mut c, &t, &fonts, &now_playing::NowPlaying {
-                    page: 1, viz_kind: k, viz_levels: Some(&levels48), viz_sig: Some(&sig), ..np });
+                now_playing::render(
+                    &mut c,
+                    &t,
+                    &fonts,
+                    &now_playing::NowPlaying {
+                        page: 1,
+                        viz_kind: k,
+                        viz_levels: Some(&levels48),
+                        viz_sig: Some(&sig),
+                        ..np
+                    },
+                );
                 cinder_ui::chrome::status_bar(&mut c, &t, &fonts, "14:32", "FLAC 24/96", 78);
-                save(&c, &format!("viz_signal_{slug}{}", if night { "_night" } else { "" }));
+                save(
+                    &c,
+                    &format!("viz_signal_{slug}{}", if night { "_night" } else { "" }),
+                );
             }
         }
     }
@@ -1531,8 +3004,22 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         use cinder_ui::soundscape::Route;
         for (name, on, sound, route, hook, night) in [
             ("soundscape_off", false, 4u8, Route::Off, false, false),
-            ("soundscape_rain_alone", true, 4, Route::AloneJack, false, false),
-            ("soundscape_beach_music_night", true, 6, Route::OverMusic, true, true),
+            (
+                "soundscape_rain_alone",
+                true,
+                4,
+                Route::AloneJack,
+                false,
+                false,
+            ),
+            (
+                "soundscape_beach_music_night",
+                true,
+                6,
+                Route::OverMusic,
+                true,
+                true,
+            ),
         ] {
             let mut app = new_app();
             app.night = night;
@@ -1574,7 +3061,10 @@ fn hashes() -> Vec<(String, u64)> {
     let mut got = Vec::new();
     render_all(
         &mut |name, c| got.push((name.to_string(), pixel_hash(c))),
-        &Opts { golden: true, palette: None },
+        &Opts {
+            golden: true,
+            palette: None,
+        },
     );
     got
 }
@@ -1619,7 +3109,9 @@ fn compare(want: &[(String, u64)], got: &[(String, u64)]) -> Vec<String> {
     let recorded: HashMap<&str, u64> = want.iter().map(|(n, h)| (n.as_str(), *h)).collect();
     for (name, h) in want {
         match seen.get(name.as_str()) {
-            None => out.push(format!("missing   {name} (in golden.txt, no longer rendered)")),
+            None => out.push(format!(
+                "missing   {name} (in golden.txt, no longer rendered)"
+            )),
             Some(g) if g != h => out.push(format!("changed   {name}")),
             _ => {}
         }
@@ -1643,16 +3135,24 @@ fn audit() -> Vec<String> {
     render_all(
         &mut |name, c| {
             if c.oob_x() > 0 {
-                bad.push(format!("{name}: {} px past the left or right edge", c.oob_x()));
+                bad.push(format!(
+                    "{name}: {} px past the left or right edge",
+                    c.oob_x()
+                ));
             }
             for (a, b, n) in c.text_collisions() {
                 bad.push(format!("{name}: {a:?} runs into {b:?} ({n} px)"));
             }
             for (a, n) in c.text_hidden() {
-                bad.push(format!("{name}: {a:?} is covered by something drawn over it ({n} px)"));
+                bad.push(format!(
+                    "{name}: {a:?} is covered by something drawn over it ({n} px)"
+                ));
             }
         },
-        &Opts { golden: true, palette: None },
+        &Opts {
+            golden: true,
+            palette: None,
+        },
     );
     cinder_ui::canvas::audit_new_canvases(false);
     bad
@@ -1671,7 +3171,13 @@ fn main() {
         }
         None => {
             std::fs::create_dir_all("out").ok();
-            render_all(&mut |name, c| save_png(c, name), &Opts { golden: false, palette: None });
+            render_all(
+                &mut |name, c| save_png(c, name),
+                &Opts {
+                    golden: false,
+                    palette: None,
+                },
+            );
         }
         Some("--palette") => {
             let Some(path) = std::env::args().nth(2) else {
@@ -1694,7 +3200,10 @@ fn main() {
             });
             match cinder_ui::palette::Palette::parse(&id, &body) {
                 Err(problems) => {
-                    eprintln!("{path} would be skipped by the player:\n  {}", problems.join("\n  "));
+                    eprintln!(
+                        "{path} would be skipped by the player:\n  {}",
+                        problems.join("\n  ")
+                    );
                     std::process::exit(1);
                 }
                 Ok(p) => {
@@ -1706,7 +3215,10 @@ fn main() {
                             save_png(c, &format!("{dir}/{name}"));
                             n += 1;
                         },
-                        &Opts { golden: false, palette: Some(p) },
+                        &Opts {
+                            golden: false,
+                            palette: Some(p),
+                        },
                     );
                     println!("{path}: loads — {n} previews in out/{dir}/");
                 }
@@ -1722,7 +3234,11 @@ fn main() {
             if diff.is_empty() {
                 println!("golden.txt: every preview matches");
             } else {
-                eprintln!("{} preview(s) differ from golden.txt:\n  {}", diff.len(), diff.join("\n  "));
+                eprintln!(
+                    "{} preview(s) differ from golden.txt:\n  {}",
+                    diff.len(),
+                    diff.join("\n  ")
+                );
                 std::process::exit(1);
             }
         }
@@ -1751,7 +3267,12 @@ mod tests {
     fn every_preview_keeps_its_text_on_the_glass_and_apart() {
         let _turn = render_turn();
         let bad = audit();
-        assert!(bad.is_empty(), "\n{} problem(s):\n  {}\n", bad.len(), bad.join("\n  "));
+        assert!(
+            bad.is_empty(),
+            "\n{} problem(s):\n  {}\n",
+            bad.len(),
+            bad.join("\n  ")
+        );
     }
 
     /// Every screen the preview harness can draw, pixel for pixel, against what was last blessed.
@@ -1759,7 +3280,10 @@ mod tests {
     fn every_preview_matches_its_golden_hash() {
         let _turn = render_turn();
         let want = read_golden();
-        assert!(!want.is_empty(), "golden.txt is missing or empty — run: cargo run -p cinder-host -- --bless");
+        assert!(
+            !want.is_empty(),
+            "golden.txt is missing or empty — run: cargo run -p cinder-host -- --bless"
+        );
         let diff = compare(&want, &hashes());
         assert!(
             diff.is_empty(),
@@ -1781,19 +3305,51 @@ mod tests {
 
     #[test]
     fn compare_names_every_kind_of_difference() {
-        let want = vec![("a".to_string(), 1), ("b".to_string(), 2), ("gone".to_string(), 3)];
-        let got = vec![("a".to_string(), 1), ("b".to_string(), 9), ("fresh".to_string(), 4), ("a".to_string(), 1)];
+        let want = vec![
+            ("a".to_string(), 1),
+            ("b".to_string(), 2),
+            ("gone".to_string(), 3),
+        ];
+        let got = vec![
+            ("a".to_string(), 1),
+            ("b".to_string(), 9),
+            ("fresh".to_string(), 4),
+            ("a".to_string(), 1),
+        ];
         let d = compare(&want, &got);
-        assert!(d.iter().any(|l| l.starts_with("changed") && l.contains(" b")), "{d:?}");
-        assert!(d.iter().any(|l| l.starts_with("missing") && l.contains("gone")), "{d:?}");
-        assert!(d.iter().any(|l| l.starts_with("new") && l.contains("fresh")), "{d:?}");
-        assert!(d.iter().any(|l| l.starts_with("duplicate") && l.contains(" a")), "{d:?}");
-        assert!(compare(&want[..2], &got[..2]).len() == 1, "only b differs there");
+        assert!(
+            d.iter()
+                .any(|l| l.starts_with("changed") && l.contains(" b")),
+            "{d:?}"
+        );
+        assert!(
+            d.iter()
+                .any(|l| l.starts_with("missing") && l.contains("gone")),
+            "{d:?}"
+        );
+        assert!(
+            d.iter()
+                .any(|l| l.starts_with("new") && l.contains("fresh")),
+            "{d:?}"
+        );
+        assert!(
+            d.iter()
+                .any(|l| l.starts_with("duplicate") && l.contains(" a")),
+            "{d:?}"
+        );
+        assert!(
+            compare(&want[..2], &got[..2]).len() == 1,
+            "only b differs there"
+        );
     }
 }
 
 /// `lib` with one tab switched to `view`, for the Library view previews.
-fn with_view(lib: &cinder_ui::Library, tab: library::Tab, view: library::LibView) -> cinder_ui::Library {
+fn with_view(
+    lib: &cinder_ui::Library,
+    tab: library::Tab,
+    view: library::LibView,
+) -> cinder_ui::Library {
     let mut l = lib.clone();
     l.views[tab as usize] = view;
     l

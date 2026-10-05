@@ -34,9 +34,11 @@ fn np<'a>(page: u8, viz_size: u8, viz_kind: u8, levels: &'a [f32]) -> NowPlaying
         viz_kind,
         viz_size,
         viz_levels: Some(levels),
-        viz_peaks: None, viz_sig: None,
+        viz_peaks: None,
+        viz_sig: None,
         page,
-        scrubbing: false, lyrics: false,
+        scrubbing: false,
+        lyrics: false,
     }
 }
 
@@ -55,42 +57,89 @@ fn time_it(label: &str, iters: u32, mut f: impl FnMut()) {
 fn bench_pages() {
     let t = Theme::day();
     let f = FontSet::load();
-    let levels: Vec<f32> = (0..36).map(|i| 0.2 + 0.7 * ((i as f32 * 0.5).sin().abs())).collect();
+    let levels: Vec<f32> = (0..36)
+        .map(|i| 0.2 + 0.7 * ((i as f32 * 0.5).sin().abs()))
+        .collect();
     let n = 200;
 
     let mut c = Canvas::new();
-    time_it("cover, viz OFF", n, || now_playing::render(&mut c, &t, &f, &np(0, 0, 0, &levels)));
-    time_it("cover, VEIL bars", n, || now_playing::render(&mut c, &t, &f, &np(0, 1, 0, &levels)));
-    time_it("cover, FULL bars", n, || now_playing::render(&mut c, &t, &f, &np(0, 2, 0, &levels)));
+    time_it("cover, viz OFF", n, || {
+        now_playing::render(&mut c, &t, &f, &np(0, 0, 0, &levels))
+    });
+    time_it("cover, VEIL bars", n, || {
+        now_playing::render(&mut c, &t, &f, &np(0, 1, 0, &levels))
+    });
+    time_it("cover, FULL bars", n, || {
+        now_playing::render(&mut c, &t, &f, &np(0, 2, 0, &levels))
+    });
     for (k, name) in [(0u8, "bars"), (1, "ribbon"), (2, "line"), (7, "pulse")] {
         time_it(&format!("spectrum page, {name}"), n, || {
             now_playing::render(&mut c, &t, &f, &np(1, 0, k, &levels))
         });
     }
-    time_it("level page", n, || now_playing::render(&mut c, &t, &f, &np(2, 0, 0, &levels)));
+    time_it("level page", n, || {
+        now_playing::render(&mut c, &t, &f, &np(2, 0, 0, &levels))
+    });
 
     // What does the visualiser alone cost, with no screen around it?
     time_it("just canvas fill", n, || c.fill(t.bg));
     for (k, name) in [(0u8, "bars"), (1, "ribbon"), (2, "line")] {
         time_it(&format!("viz alone 432x348 {name}"), n, || {
-            cinder_ui::viz::draw(&mut c, 24, 154, 432, 348, 36, 3, 2.0,
-                                 cinder_ui::viz::from_index(k), t.acc, t.line, Some(&levels), 255, 255);
+            cinder_ui::viz::draw(
+                &mut c,
+                24,
+                154,
+                432,
+                348,
+                36,
+                3,
+                2.0,
+                cinder_ui::viz::from_index(k),
+                t.acc,
+                t.line,
+                Some(&levels),
+                255,
+                255,
+            );
         });
     }
     // The real device path: a decoded 480x480 cover blitted 1:1.
-    let img = cinder_ui::art::Image { w: 480, h: 480, rgb: vec![90u8; 480 * 480 * 3] };
+    let img = cinder_ui::art::Image {
+        w: 480,
+        h: 480,
+        rgb: vec![90u8; 480 * 480 * 3],
+    };
     time_it("art::draw_image 480x480", n, || {
         cinder_ui::art::draw_image(&mut c, &t, 0, 34, &img, 1.0)
     });
     time_it("art::block gradient 480x480", n, || {
         cinder_ui::art::block(&mut c, &t, 0, 34, 480, 480, "atlas hands", 1.0)
     });
-    let npi = NowPlaying { art_full: Some(&img), ..np(0, 1, 0, &levels) };
-    time_it("cover w/ real image, VEIL", n, || now_playing::render(&mut c, &t, &f, &npi));
+    let npi = NowPlaying {
+        art_full: Some(&img),
+        ..np(0, 1, 0, &levels)
+    };
+    time_it("cover w/ real image, VEIL", n, || {
+        now_playing::render(&mut c, &t, &f, &npi)
+    });
 
     time_it("viz alone 432x64 VEIL bars", n, || {
-        cinder_ui::viz::draw(&mut c, 24, 444, 432, 64, 36, 3, 2.0,
-                             cinder_ui::viz::from_index(0), t.acc, t.line, Some(&levels), 0, 180);
+        cinder_ui::viz::draw(
+            &mut c,
+            24,
+            444,
+            432,
+            64,
+            36,
+            3,
+            2.0,
+            cinder_ui::viz::from_index(0),
+            t.acc,
+            t.line,
+            Some(&levels),
+            0,
+            180,
+        );
     });
 }
 
@@ -115,29 +164,56 @@ fn bench_library_tabs() {
             let an = format!("Album {aid:03}");
             let track_list: Vec<SongRow> = (0..10)
                 .map(|i| SongRow {
-                    title: format!("{an} track {i}"), artist: name.clone(), dur: "3:20".into(),
-                    art: an.clone(), object_id: aid * 100 + i, album_id: aid,
+                    title: format!("{an} track {i}"),
+                    artist: name.clone(),
+                    dur: "3:20".into(),
+                    art: an.clone(),
+                    object_id: aid * 100 + i,
+                    album_id: aid,
                     ..Default::default()
                 })
                 .collect();
             songs.extend(track_list.iter().cloned());
             albums.push(AlbumRow {
-                name: an.clone(), artist: name.clone(), year: "2019".into(), tracks: 10,
-                art: an, album_id: aid, added: aid, track_list,
+                name: an.clone(),
+                artist: name.clone(),
+                year: "2019".into(),
+                tracks: 10,
+                art: an,
+                album_id: aid,
+                added: aid,
+                track_list,
             });
             let _ = k;
         }
         artists.push(ArtistRow {
-            name: name.clone(), albums: 2, tracks: 20,
+            name: name.clone(),
+            albums: 2,
+            tracks: 20,
             arts: albums.iter().map(|x| x.name.clone()).collect(),
             album_ids: albums.iter().map(|x| x.album_id).collect(),
         });
-        album_groups.push(ArtistGroup { artist: name, albums });
+        album_groups.push(ArtistGroup {
+            artist: name,
+            albums,
+        });
     }
-    let mut lib = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
+    let mut lib = Library {
+        songs,
+        album_groups,
+        artists,
+        playlists: Vec::new(),
+        thumbs: Default::default(),
+        genres: Vec::new(),
+        ..Default::default()
+    };
     lib.prepare_order(); // what App::set_library does on the device
-    println!("library: {} songs, {} albums, {} artists",
-        lib.songs.len(), lib.album_count(), lib.artists.len());
+    println!(
+        "library: {} songs, {} albums, {} artists",
+        lib.songs.len(),
+        lib.album_count(),
+        lib.artists.len()
+    );
 
     let t = Theme::day();
     let f = FontSet::load();
@@ -145,26 +221,50 @@ fn bench_library_tabs() {
     let n = 100;
 
     // Gradients only — the state a fresh device is in before the art cache fills.
-    for (tab, name) in [(Tab::Songs, "songs"), (Tab::Albums, "albums"),
-                        (Tab::Artists, "artists"), (Tab::Playlists, "playlists")] {
+    for (tab, name) in [
+        (Tab::Songs, "songs"),
+        (Tab::Albums, "albums"),
+        (Tab::Artists, "artists"),
+        (Tab::Playlists, "playlists"),
+    ] {
         time_it(&format!("library {name} (gradients)"), n, || {
-            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false, 0, false)
+            library::render(
+                &mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false, 0, false,
+            )
         });
     }
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Artists, "artists")] {
         time_it(&format!("az_render {name}"), n, || {
-            library::az_render(&mut c, &t, &f, tab, &library::az_present(tab, &lib, 0, 0), 0, 0)
+            library::az_render(
+                &mut c,
+                &t,
+                &f,
+                tab,
+                &library::az_present(tab, &lib, 0, 0),
+                0,
+                0,
+            )
         });
     }
 
     // With the art cache populated — what the device looks like once the builder has run.
-    let img = cinder_ui::art::Image { w: 48, h: 48, rgb: vec![90u8; 48 * 48 * 3] };
+    let img = cinder_ui::art::Image {
+        w: 48,
+        h: 48,
+        rgb: vec![90u8; 48 * 48 * 3],
+    };
     for id in 1..=aid {
         lib.thumbs.insert(id, img.clone());
     }
-    for (tab, name) in [(Tab::Songs, "songs"), (Tab::Albums, "albums"), (Tab::Artists, "artists")] {
+    for (tab, name) in [
+        (Tab::Songs, "songs"),
+        (Tab::Albums, "albums"),
+        (Tab::Artists, "artists"),
+    ] {
         time_it(&format!("library {name} (real covers)"), n, || {
-            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false, 0, false)
+            library::render(
+                &mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false, 0, false,
+            )
         });
     }
 
@@ -217,9 +317,17 @@ fn bench_derived_state() {
             let an = format!("Album {aid:03}");
             let track_list: Vec<SongRow> = (0..12)
                 .map(|i| SongRow {
-                    title: format!("{an} track {i:02}"), artist: name.clone(), dur: "3:20".into(),
-                    art: an.clone(), object_id: aid * 100 + i, album_id: aid,
-                    disc: 1, track: i as i32, added: aid, year: 2019, genre_id: (i % 3) + 1,
+                    title: format!("{an} track {i:02}"),
+                    artist: name.clone(),
+                    dur: "3:20".into(),
+                    art: an.clone(),
+                    object_id: aid * 100 + i,
+                    album_id: aid,
+                    disc: 1,
+                    track: i as i32,
+                    added: aid,
+                    year: 2019,
+                    genre_id: (i % 3) + 1,
                     is_hires: i % 7 == 0,
                     // Bit 0 is Sony's always-set one; the rest spread the bench library over five
                     // channels, so a SensMe list drawn against it is realistically long.
@@ -229,16 +337,36 @@ fn bench_derived_state() {
                 .collect();
             songs.extend(track_list.iter().cloned());
             albums.push(AlbumRow {
-                name: an.clone(), artist: name.clone(), year: "2019".into(), tracks: 12,
-                art: an, album_id: aid, added: aid, track_list,
+                name: an.clone(),
+                artist: name.clone(),
+                year: "2019".into(),
+                tracks: 12,
+                art: an,
+                album_id: aid,
+                added: aid,
+                track_list,
             });
         }
-        album_groups.push(ArtistGroup { artist: name, albums });
+        album_groups.push(ArtistGroup {
+            artist: name,
+            albums,
+        });
     }
-    let mut lib = Library { songs, album_groups, artists: Vec::new(), playlists: Vec::new(),
-                        thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
+    let mut lib = Library {
+        songs,
+        album_groups,
+        artists: Vec::new(),
+        playlists: Vec::new(),
+        thumbs: Default::default(),
+        genres: Vec::new(),
+        ..Default::default()
+    };
     lib.prepare_order(); // what App::set_library does on the device
-    println!("library: {} songs, {} albums", lib.songs.len(), lib.album_count());
+    println!(
+        "library: {} songs, {} albums",
+        lib.songs.len(),
+        lib.album_count()
+    );
 
     let n = 200;
     // The three sorts a user can actually be sitting on.
@@ -252,8 +380,12 @@ fn bench_derived_state() {
             let _ = library::albums_build(&lib, s, None).rows.len();
         });
     }
-    time_it("albums_flat", n, || { let _ = lib.albums_flat().len(); });
-    time_it("az_present songs", n, || { let _ = library::az_present(Tab::Songs, &lib, 0, 0); });
+    time_it("albums_flat", n, || {
+        let _ = lib.albums_flat().len();
+    });
+    time_it("az_present songs", n, || {
+        let _ = library::az_present(Tab::Songs, &lib, 0, 0);
+    });
     time_it("max_scroll_px albums", n, || {
         let _ = library::max_scroll_px(Tab::Albums, &lib, 0, None);
     });
@@ -263,22 +395,29 @@ fn bench_derived_state() {
     let ctx: Vec<SongRow> = lib.songs.clone();
     // A FULL history, because that is the shape the device reaches after a long session and it is
     // the one that costs: every entry is a slot in the layout the render walks.
-    let hist: Vec<SongRow> =
-        ctx[..cinder_ui::nav::HISTORY_MAX.min(ctx.len())].to_vec();
-    time_it("context clone (shuffle-all)", n, || { let _ = ctx.clone().len(); });
+    let hist: Vec<SongRow> = ctx[..cinder_ui::nav::HISTORY_MAX.min(ctx.len())].to_vec();
+    time_it("context clone (shuffle-all)", n, || {
+        let _ = ctx.clone().len();
+    });
     time_it("up_next::layout (shuffle-all)", n, || {
-        let _ = cinder_ui::up_next::layout(
-            hist.len(), ctx.len(), Some(ctx.len() / 2),
-        ).slots.len();
+        let _ = cinder_ui::up_next::layout(hist.len(), ctx.len(), Some(ctx.len() / 2))
+            .slots
+            .len();
     });
 
     let t = Theme::day();
     let f = FontSet::load();
     let mut c = Canvas::new();
     let view = cinder_ui::up_next::QueueView {
-        album: "Album 001", tracks: &ctx, current: Some(ctx.len() / 2),
+        album: "Album 001",
+        tracks: &ctx,
+        current: Some(ctx.len() / 2),
         history: &hist,
-        lib: &lib, scroll_px: 0, drag: None, swipe: None, sbar_active: false,
+        lib: &lib,
+        scroll_px: 0,
+        drag: None,
+        swipe: None,
+        sbar_active: false,
     };
     time_it("up_next::render_view", n, || {
         let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view);
@@ -288,9 +427,11 @@ fn bench_derived_state() {
     // (the window is already at the top, so there is nothing to skip); in normal use the auto-follow
     // parks NOW PLAYING a third of the way down, which after a shuffle-all is ~1800 slots in.
     let follow =
-        cinder_ui::up_next::metrics(hist.len(), ctx.len(), Some(ctx.len() / 2))
-            .follow_scroll();
-    let view_followed = cinder_ui::up_next::QueueView { scroll_px: follow, ..view };
+        cinder_ui::up_next::metrics(hist.len(), ctx.len(), Some(ctx.len() / 2)).follow_scroll();
+    let view_followed = cinder_ui::up_next::QueueView {
+        scroll_px: follow,
+        ..view
+    };
     time_it("up_next::render_view (followed)", n, || {
         let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view_followed);
     });
@@ -299,9 +440,15 @@ fn bench_derived_state() {
     // scales with how long the sequence is".
     let small: Vec<SongRow> = ctx[..12].to_vec();
     let view_small = cinder_ui::up_next::QueueView {
-        album: "Album 001", tracks: &small, current: Some(6),
+        album: "Album 001",
+        tracks: &small,
+        current: Some(6),
         history: &hist[..6.min(hist.len())],
-        lib: &lib, scroll_px: 0, drag: None, swipe: None, sbar_active: false,
+        lib: &lib,
+        scroll_px: 0,
+        drag: None,
+        swipe: None,
+        sbar_active: false,
     };
     time_it("up_next::render_view (album)", n, || {
         let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view_small);
@@ -309,5 +456,7 @@ fn bench_derived_state() {
     time_it("up_next::layout (album)", n, || {
         let _ = cinder_ui::up_next::layout(6, 12, Some(6)).slots.len();
     });
-    time_it("context clone (album)", n, || { let _ = small.clone().len(); });
+    time_it("context clone (album)", n, || {
+        let _ = small.clone().len();
+    });
 }

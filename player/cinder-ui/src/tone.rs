@@ -112,15 +112,32 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
     let (msg, col) = if let Some(who) = tc.overridden_by {
         (format!("{who} is on — nothing here is in the path"), t.acc)
     } else if !tc.on {
-        ("Tone Control is off — switch it on in Advanced".to_string(), t.dim)
+        (
+            "Tone Control is off — switch it on in Advanced".to_string(),
+            t.dim,
+        )
     } else {
-        ("In the path, in place of the Equalizer".to_string(), t.faint)
+        (
+            "In the path, in place of the Equalizer".to_string(),
+            t.faint,
+        )
     };
-    text::draw(c, f, 22.0, (y0 + 26) as f32, &msg,
-               &sty(Family::Sans, Weight::Regular, 13.0, col, 0.0));
-    text::draw(c, f, 22.0, (y0 + 46) as f32,
-               "Sony saves the two separately; only one is ever applied.",
-               &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0));
+    text::draw(
+        c,
+        f,
+        22.0,
+        (y0 + 26) as f32,
+        &msg,
+        &sty(Family::Sans, Weight::Regular, 13.0, col, 0.0),
+    );
+    text::draw(
+        c,
+        f,
+        22.0,
+        (y0 + 46) as f32,
+        "Sony saves the two separately; only one is ever applied.",
+        &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+    );
 
     // ── the slider field ────────────────────────────────────────────────────────────────────
     let (sy, by) = (FIELD_TOP, FIELD_BOTTOM);
@@ -141,7 +158,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
         let db = tc.bands[i] as i32;
         let knob_y = mid - db * span / BAND_MAX as i32;
         fill_rect(c, bx - 1, sy, 2, by - sy, t.line);
-        let (fy, fh) = if knob_y < mid { (knob_y, mid - knob_y) } else { (mid, knob_y - mid) };
+        let (fy, fh) = if knob_y < mid {
+            (knob_y, mid - knob_y)
+        } else {
+            (mid, knob_y - mid)
+        };
         fill_rect(c, bx - 1, fy, 2, fh, ink_fill);
         let on = i == sel;
         if on {
@@ -157,23 +178,65 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
             v if v.fract() == 0.0 => format!("{v:+.0}"),
             v => format!("{v:+.1}"),
         };
-        let dbcol = if on { t.ink } else if db != 0 { ink_fill } else { t.faint };
-        center(c, f, bx as f32, (sy - 10) as f32, &dbl,
-               &sty(Family::Mono, Weight::Regular, if on { 14.0 } else { 13.0 }, dbcol, 0.0));
-        center(c, f, bx as f32, (by + 26) as f32, BAND_NAMES[i],
-               &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.0));
+        let dbcol = if on {
+            t.ink
+        } else if db != 0 {
+            ink_fill
+        } else {
+            t.faint
+        };
+        center(
+            c,
+            f,
+            bx as f32,
+            (sy - 10) as f32,
+            &dbl,
+            &sty(
+                Family::Mono,
+                Weight::Regular,
+                if on { 14.0 } else { 13.0 },
+                dbcol,
+                0.0,
+            ),
+        );
+        center(
+            c,
+            f,
+            bx as f32,
+            (by + 26) as f32,
+            BAND_NAMES[i],
+            &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.0),
+        );
     }
-    center(c, f, (W / 2) as f32, (by + 52) as f32, "dB   ·   tap above or below the line",
-           &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0));
+    center(
+        c,
+        f,
+        (W / 2) as f32,
+        (by + 52) as f32,
+        "dB   ·   tap above or below the line",
+        &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+    );
 
     // ── footer ──────────────────────────────────────────────────────────────────────────────
     let fy = FOOTER_TOP;
     hline(c, fy, t.line);
     let fcy = (fy + FOOTER_H / 2) as f32;
-    text::draw(c, f, 22.0, fcy + 4.0, "Reset",
-               &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0));
-    right(c, f, 458.0, fcy + 4.0, "Saved automatically",
-          &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0));
+    text::draw(
+        c,
+        f,
+        22.0,
+        fcy + 4.0,
+        "Reset",
+        &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0),
+    );
+    right(
+        c,
+        f,
+        458.0,
+        fcy + 4.0,
+        "Saved automatically",
+        &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0),
+    );
 }
 
 #[cfg(test)]
@@ -188,10 +251,18 @@ mod tests {
             let left = BAND_X0 + BAND_SLOT * b as i32;
             assert_eq!(band_at(left), Some(b), "left edge of band {b}");
             assert_eq!(band_at(left + BAND_SLOT / 2), Some(b), "middle of band {b}");
-            assert_eq!(band_at(left + BAND_SLOT - 1), Some(b), "right edge of band {b}");
+            assert_eq!(
+                band_at(left + BAND_SLOT - 1),
+                Some(b),
+                "right edge of band {b}"
+            );
         }
         assert_eq!(band_at(BAND_X0 - 1), None, "left gutter");
-        assert_eq!(band_at(BAND_X0 + BAND_SLOT * BANDS as i32), None, "right gutter");
+        assert_eq!(
+            band_at(BAND_X0 + BAND_SLOT * BANDS as i32),
+            None,
+            "right gutter"
+        );
     }
 
     /// The drawn knob for the maximum value must stay inside the field. The dB label sits above
@@ -201,8 +272,14 @@ mod tests {
         let span = (FIELD_BOTTOM - FIELD_TOP) / 2 - 10;
         for &v in &[BAND_MAX, -BAND_MAX] {
             let knob_y = FIELD_MID - v as i32 * span / BAND_MAX as i32;
-            assert!(knob_y > FIELD_TOP, "knob at {v} rides over the top of the field");
-            assert!(knob_y < FIELD_BOTTOM, "knob at {v} rides under the bottom of the field");
+            assert!(
+                knob_y > FIELD_TOP,
+                "knob at {v} rides over the top of the field"
+            );
+            assert!(
+                knob_y < FIELD_BOTTOM,
+                "knob at {v} rides under the bottom of the field"
+            );
         }
     }
 

@@ -40,7 +40,10 @@ pub fn db01(a: f32) -> f32 {
 /// 0 when there is none — the trace then free-runs, as a scope does without a trigger.
 pub fn trigger(s: &[f32]) -> usize {
     let limit = s.len() / 2;
-    let peak = s.iter().take(limit.max(1)).fold(0.0f32, |m, v| m.max(v.abs()));
+    let peak = s
+        .iter()
+        .take(limit.max(1))
+        .fold(0.0f32, |m, v| m.max(v.abs()));
     let arm = -(peak * 0.1).max(1e-3);
     let mut armed = false;
     for i in 1..limit {
@@ -91,12 +94,21 @@ impl SigState {
         let n = left.len().min(right.len());
         let step = (n / XY_POINTS).max(1);
         self.left = left.iter().step_by(step).take(XY_POINTS).copied().collect();
-        self.right = right.iter().step_by(step).take(XY_POINTS).copied().collect();
+        self.right = right
+            .iter()
+            .step_by(step)
+            .take(XY_POINTS)
+            .copied()
+            .collect();
         let fall = METER_FALL_DB_S / -METER_FLOOR_DB * dt_ms / 1000.0;
         for (ch, src) in [left, right].iter().enumerate() {
             let src = &src[..n];
             let peak = src.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-            let rms = if n > 0 { (src.iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt() } else { 0.0 };
+            let rms = if n > 0 {
+                (src.iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt()
+            } else {
+                0.0
+            };
             // Instant attack, steady fall: what a peak meter does.
             self.meter[ch] = db01(peak).max(self.meter[ch] - fall);
             self.meter[2 + ch] = db01(rms).max(self.meter[2 + ch] - fall);
@@ -115,7 +127,8 @@ impl SigState {
 
     /// The tap has stopped (or never started): the sample styles have nothing true to draw.
     pub fn live(&self) -> bool {
-        self.live_at.is_some_and(|t| t.elapsed().as_millis() <= LIVE_MS)
+        self.live_at
+            .is_some_and(|t| t.elapsed().as_millis() <= LIVE_MS)
     }
 
     /// One frame of the bars into the spectrogram. A change of band count starts it afresh.
@@ -160,7 +173,9 @@ mod tests {
     use super::*;
 
     fn sine(n: usize, period: f32, phase: f32, amp: f32) -> Vec<f32> {
-        (0..n).map(|i| ((i as f32 / period + phase) * std::f32::consts::TAU).sin() * amp).collect()
+        (0..n)
+            .map(|i| ((i as f32 / period + phase) * std::f32::consts::TAU).sin() * amp)
+            .collect()
     }
 
     /// A steady tone starts at the same phase every frame, whatever phase the window caught it at.
@@ -174,8 +189,12 @@ mod tests {
             assert!(s[t] >= 0.0 && s[t - 1] < 0.0, "a rising crossing");
             starts.push(scope(&s, t, 16, 1)[3]);
         }
-        let spread = starts.iter().cloned().fold(f32::MIN, f32::max) - starts.iter().cloned().fold(f32::MAX, f32::min);
-        assert!(spread < 0.05, "the trace starts at one phase (spread {spread})");
+        let spread = starts.iter().cloned().fold(f32::MIN, f32::max)
+            - starts.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(
+            spread < 0.05,
+            "the trace starts at one phase (spread {spread})"
+        );
         assert_eq!(trigger(&vec![0.0; 2048]), 0, "silence free-runs");
     }
 
@@ -185,7 +204,10 @@ mod tests {
         let w = scope(&s, 10, SCOPE_POINTS, SCOPE_DECIMATE);
         assert_eq!(w.len(), SCOPE_POINTS);
         assert!(w.iter().all(|v| v.abs() <= 0.9));
-        assert!(scope(&s, 2040, 100, 2).len() == 4, "stops at the end of the window");
+        assert!(
+            scope(&s, 2040, 100, 2).len() == 4,
+            "stops at the end of the window"
+        );
     }
 
     /// Full scale reads 0 dBFS (1.0), -20 dBFS reads two thirds of the way up, silence reads nothing;
@@ -199,10 +221,17 @@ mod tests {
         let loud = sine(2048, 50.0, 0.0, 1.0);
         let quiet = sine(2048, 50.0, 0.0, 0.01);
         st.update(&loud, &loud, &quiet, 50.0);
-        assert!(st.meter[0] > 0.99 && st.meter[1] < 0.4, "left full, right quiet");
+        assert!(
+            st.meter[0] > 0.99 && st.meter[1] < 0.4,
+            "left full, right quiet"
+        );
         let held = st.hold[0];
         st.update(&quiet, &quiet, &quiet, 50.0);
-        assert!(st.meter[0] < held && st.meter[0] > 0.9, "falls, but by one step: {}", st.meter[0]);
+        assert!(
+            st.meter[0] < held && st.meter[0] > 0.9,
+            "falls, but by one step: {}",
+            st.meter[0]
+        );
         assert_eq!(st.hold[0], held, "the held peak stays");
         for _ in 0..40 {
             st.update(&quiet, &quiet, &quiet, 50.0);

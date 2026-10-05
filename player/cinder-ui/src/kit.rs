@@ -39,11 +39,30 @@ pub const CHIP_GAP: i32 = 8;
 
 /// A section label ("START ON", "THIS DEVICE"), with an optional action on the right in the accent
 /// ("UNDO", "PAIR NEW"). Returns the y below it.
-pub fn section_label(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str, action: Option<&str>) -> i32 {
+pub fn section_label(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    label: &str,
+    action: Option<&str>,
+) -> i32 {
     let base = (y + SECTION_H - 8) as f32;
-    let st = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.16);
+    let st = sty(
+        Family::Mono,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.faint,
+        0.16,
+    );
     let aw = action.map(|a| {
-        let ast = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.14);
+        let ast = sty(
+            Family::Mono,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.acc,
+            0.14,
+        );
         let w = text::measure(f, a, &ast);
         text::draw(c, f, RIGHT as f32 - w, base, a, &ast);
         w + 16.0
@@ -64,7 +83,13 @@ pub fn strip(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, line: &str) -> i32 
     fill_rect(c, 0, y, W as i32, STRIP_H, t.panel);
     hline(c, y, t.line);
     hline(c, y + STRIP_H - 1, t.line);
-    let st = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.dim, 0.06);
+    let st = sty(
+        Family::Mono,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.dim,
+        0.06,
+    );
     let s = fit(f, line, &st, (RIGHT - LEFT) as f32);
     text::draw(c, f, LEFT as f32, (y + STRIP_H / 2 + 5) as f32, &s, &st);
     y + STRIP_H
@@ -79,7 +104,14 @@ pub fn switch(c: &mut Canvas, t: &Theme, x: i32, y: i32, on: bool) {
     let inset = (SWITCH_H - KNOB) / 2;
     if on {
         fill_rect(c, x, y, SWITCH_W, SWITCH_H, t.acc);
-        fill_rect(c, x + SWITCH_W - inset - KNOB, y + inset, KNOB, KNOB, t.acc_ink);
+        fill_rect(
+            c,
+            x + SWITCH_W - inset - KNOB,
+            y + inset,
+            KNOB,
+            KNOB,
+            t.acc_ink,
+        );
     } else {
         stroke_rect(c, x, y, SWITCH_W, SWITCH_H, t.ctrl(), 1);
         fill_rect(c, x + inset, y + inset, KNOB, KNOB, t.dim);
@@ -120,7 +152,13 @@ pub struct Row<'a> {
 
 impl<'a> Row<'a> {
     pub const fn new(title: &'a str) -> Self {
-        Row { title, sub: "", lead: "", trail: Trail::None, sel: false }
+        Row {
+            title,
+            sub: "",
+            lead: "",
+            trail: Trail::None,
+            sel: false,
+        }
     }
     pub const fn sub(mut self, s: &'a str) -> Self {
         self.sub = s;
@@ -149,23 +187,45 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
     let cy = y + h / 2;
     let mut x = LEFT as f32;
     if !r.lead.is_empty() {
-        let lst = sty(Family::Mono, Weight::Regular, 14.0, if r.sel { t.acc } else { t.faint }, 0.0);
+        let lst = sty(
+            Family::Mono,
+            Weight::Regular,
+            14.0,
+            if r.sel { t.acc } else { t.faint },
+            0.0,
+        );
         text::draw(c, f, x, (cy + 5) as f32, r.lead, &lst);
         x += 26.0 + 14.0;
     }
 
     // The right-hand side first: it keeps its width and the title is fitted into what is left.
-    let vst = |col| sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, col, 0.1);
+    let vst = |col| {
+        sty(
+            Family::Mono,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            col,
+            0.1,
+        )
+    };
     let mut right_edge = RIGHT as f32;
     match r.trail {
         Trail::None => {}
         Trail::Value(v) | Trail::Tag(v) | Trail::Open(v) => {
             let chevron = matches!(r.trail, Trail::Open(_) | Trail::Tag(_));
-            let vx = if chevron { RIGHT as f32 - 20.0 } else { RIGHT as f32 };
+            let vx = if chevron {
+                RIGHT as f32 - 20.0
+            } else {
+                RIGHT as f32
+            };
             if chevron {
                 icons::chevron(c, RIGHT as f32 - 2.0, cy as f32, 14.0, t.faint);
             }
-            let col = if matches!(r.trail, Trail::Tag(_)) { t.acc } else { t.faint };
+            let col = if matches!(r.trail, Trail::Tag(_)) {
+                t.acc
+            } else {
+                t.faint
+            };
             if !v.is_empty() {
                 let st = vst(col);
                 // A value never takes more than half the row: it is the answer, the title is the
@@ -184,13 +244,39 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
         Trail::Reserve(w) => right_edge = (RIGHT - w - 14) as f32,
     }
 
-    let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, if r.sel { t.acc } else { t.ink }, 0.0);
+    let tst = sty(
+        Family::Sans,
+        Weight::SemiBold,
+        crate::scale::ROW,
+        if r.sel { t.acc } else { t.ink },
+        0.0,
+    );
     let avail = (right_edge - x).max(0.0);
     if r.sub.is_empty() {
-        text::draw(c, f, x, (cy + 7) as f32, &fit(f, r.title, &tst, avail), &tst);
+        text::draw(
+            c,
+            f,
+            x,
+            (cy + 7) as f32,
+            &fit(f, r.title, &tst, avail),
+            &tst,
+        );
     } else {
-        text::draw(c, f, x, (cy - 3) as f32, &fit(f, r.title, &tst, avail), &tst);
-        let sst = sty(Family::Sans, Weight::Regular, crate::scale::SECONDARY, t.dim, 0.0);
+        text::draw(
+            c,
+            f,
+            x,
+            (cy - 3) as f32,
+            &fit(f, r.title, &tst, avail),
+            &tst,
+        );
+        let sst = sty(
+            Family::Sans,
+            Weight::Regular,
+            crate::scale::SECONDARY,
+            t.dim,
+            0.0,
+        );
         text::draw(c, f, x, (cy + 18) as f32, &fit(f, r.sub, &sst, avail), &sst);
     }
     hline(c, y + h - 1, t.line);
@@ -201,11 +287,28 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
 /// rest outlined. `live` draws a CONTROL — filled stars in the accent — and otherwise a readout,
 /// filled in `dim`; the empty ones are `faint` either way. Returns the x after the last star.
 #[allow(clippy::too_many_arguments)]
-pub fn stars(c: &mut Canvas, t: &Theme, x0: i32, cy: i32, size: i32, pitch: i32, rating: u8, live: bool) -> i32 {
+pub fn stars(
+    c: &mut Canvas,
+    t: &Theme,
+    x0: i32,
+    cy: i32,
+    size: i32,
+    pitch: i32,
+    rating: u8,
+    live: bool,
+) -> i32 {
     for i in 0..5 {
         let cx = (x0 + i * pitch + pitch / 2) as f32;
         let on = (i as u8) < rating;
-        let col = if on { if live { t.acc } else { t.dim } } else { t.faint };
+        let col = if on {
+            if live {
+                t.acc
+            } else {
+                t.dim
+            }
+        } else {
+            t.faint
+        };
         icons::star(c, cx, cy as f32, size as f32, col, on);
     }
     x0 + 5 * pitch
@@ -238,7 +341,14 @@ pub fn chip_at(n: usize, y: i32, x: i32, py: i32) -> Option<usize> {
 }
 
 /// A row of equal chips at `y`, `sel` filled in the accent. Returns the y below the chips.
-pub fn chips(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, labels: &[&str], sel: Option<usize>) -> i32 {
+pub fn chips(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    labels: &[&str],
+    sel: Option<usize>,
+) -> i32 {
     for (i, l) in labels.iter().enumerate() {
         let (x, w) = chip_span(i, labels.len());
         let on = sel == Some(i);
@@ -247,10 +357,23 @@ pub fn chips(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, labels: &[&str], se
         } else {
             stroke_rect(c, x, y, w, CHIP_H, t.ctrl(), 1);
         }
-        let st = sty(Family::Sans, Weight::SemiBold, crate::scale::SECONDARY, if on { t.acc_ink } else { t.ink }, 0.0);
+        let st = sty(
+            Family::Sans,
+            Weight::SemiBold,
+            crate::scale::SECONDARY,
+            if on { t.acc_ink } else { t.ink },
+            0.0,
+        );
         let s = fit(f, l, &st, (w - 16) as f32);
         let tw = text::measure(f, &s, &st);
-        text::draw(c, f, x as f32 + (w as f32 - tw) / 2.0, (y + CHIP_H / 2 + 6) as f32, &s, &st);
+        text::draw(
+            c,
+            f,
+            x as f32 + (w as f32 - tw) / 2.0,
+            (y + CHIP_H / 2 + 6) as f32,
+            &s,
+            &st,
+        );
     }
     y + CHIP_H
 }
@@ -258,10 +381,23 @@ pub fn chips(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, labels: &[&str], se
 /// The one orange thing on a screen. Returns the y below it.
 pub fn primary_button(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str) -> i32 {
     fill_rect(c, LEFT, y, RIGHT - LEFT, BUTTON_H, t.acc);
-    let st = sty(Family::Sans, Weight::Bold, crate::scale::ROW, t.acc_ink, 0.0);
+    let st = sty(
+        Family::Sans,
+        Weight::Bold,
+        crate::scale::ROW,
+        t.acc_ink,
+        0.0,
+    );
     let s = fit(f, label, &st, (RIGHT - LEFT - 24) as f32);
     let tw = text::measure(f, &s, &st);
-    text::draw(c, f, (W as f32 - tw) / 2.0, (y + BUTTON_H / 2 + 7) as f32, &s, &st);
+    text::draw(
+        c,
+        f,
+        (W as f32 - tw) / 2.0,
+        (y + BUTTON_H / 2 + 7) as f32,
+        &s,
+        &st,
+    );
     y + BUTTON_H
 }
 
@@ -282,9 +418,16 @@ mod tests {
             let (x0, _) = chip_span(0, n);
             let (xl, wl) = chip_span(n - 1, n);
             assert_eq!(x0, LEFT);
-            assert!(xl + wl <= RIGHT && xl + wl > RIGHT - n as i32, "{n} chips end at {}", xl + wl);
+            assert!(
+                xl + wl <= RIGHT && xl + wl > RIGHT - n as i32,
+                "{n} chips end at {}",
+                xl + wl
+            );
             for x in LEFT..RIGHT {
-                assert!(chip_at(n, 100, x, 100 + CHIP_H / 2).is_some(), "{n} chips: x {x} hits nothing");
+                assert!(
+                    chip_at(n, 100, x, 100 + CHIP_H / 2).is_some(),
+                    "{n} chips: x {x} hits nothing"
+                );
             }
             assert_eq!(chip_at(n, 100, 240, 99), None, "above the band");
             assert_eq!(chip_at(n, 100, 240, 100 + CHIP_H), None, "below the band");
@@ -313,7 +456,8 @@ mod tests {
             let bg = crate::canvas::to_u32(t.bg);
             for y in 0..crate::canvas::H as i32 {
                 for x in 0..W as i32 {
-                    let inside = (100..100 + SWITCH_W).contains(&x) && (100..100 + SWITCH_H).contains(&y);
+                    let inside =
+                        (100..100 + SWITCH_W).contains(&x) && (100..100 + SWITCH_H).contains(&y);
                     let px = c.buf[y as usize * W + x as usize];
                     assert!(inside || px == bg, "switch({on}) painted ({x},{y})");
                 }
@@ -328,7 +472,9 @@ mod tests {
         use embedded_graphics::pixelcolor::RgbColor;
         for a in crate::theme::Accent::ALL {
             for t in [Theme::day_with(a), Theme::night_with(a)] {
-                let sum = |c: embedded_graphics::pixelcolor::Rgb888| c.r() as u32 + c.g() as u32 + c.b() as u32;
+                let sum = |c: embedded_graphics::pixelcolor::Rgb888| {
+                    c.r() as u32 + c.g() as u32 + c.b() as u32
+                };
                 assert!(sum(t.ctrl()) > sum(t.line) && sum(t.ctrl()) < sum(t.faint));
             }
         }

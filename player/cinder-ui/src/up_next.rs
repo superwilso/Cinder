@@ -67,7 +67,8 @@ pub fn hit_history_clear(l: &Layout, x: i32, y: i32, scroll_px: i32) -> bool {
 /// the same reasoning — it belongs to what is playing and coming, so it sits on that section's
 /// heading rather than among the header's chips, which are already full at large text sizes.
 pub fn hit_now_save(l: &Layout, x: i32, y: i32, scroll_px: i32) -> bool {
-    (HIST_CLEAR_X0..HIST_CLEAR_X1).contains(&x) && matches!(l.at(y, scroll_px), Some(Slot::Head(Section::Now)))
+    (HIST_CLEAR_X0..HIST_CLEAR_X1).contains(&x)
+        && matches!(l.at(y, scroll_px), Some(Slot::Head(Section::Now)))
 }
 
 // ── THE MOVABLE SPAN ────────────────────────────────────────────────────────────────────────────
@@ -236,7 +237,10 @@ pub fn metrics(hist: usize, len: usize, current: Option<usize>) -> Metrics {
             y += HDR_H + (len - cur - 1) as i32 * RH;
         }
     }
-    Metrics { current_top, content_h: y }
+    Metrics {
+        current_top,
+        content_h: y,
+    }
 }
 
 impl Metrics {
@@ -327,7 +331,10 @@ impl Layout {
     /// How many upcoming rows there are, their content-space top, and the sequence index of the
     /// first one.
     pub fn upcoming_len(&self) -> usize {
-        self.slots.iter().filter(|(s, _)| matches!(s, Slot::Upcoming(_))).count()
+        self.slots
+            .iter()
+            .filter(|(s, _)| matches!(s, Slot::Upcoming(_)))
+            .count()
     }
     pub fn upcoming_top(&self) -> Option<i32> {
         self.upcoming_top_px
@@ -338,7 +345,10 @@ impl Layout {
 
     /// How many rows the history section holds.
     pub fn history_len(&self) -> usize {
-        self.slots.iter().filter(|(s, _)| matches!(s, Slot::History(_))).count()
+        self.slots
+            .iter()
+            .filter(|(s, _)| matches!(s, Slot::History(_)))
+            .count()
     }
     pub fn history_top(&self) -> Option<i32> {
         self.history_top_px
@@ -472,10 +482,28 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
 
     if l.slots.is_empty() {
         let _ = crate::chrome::header(c, t, f, "Up Next", None);
-        text::draw(c, f, 22.0, 360.0, "Up Next is empty.",
-                   &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
-        text::draw(c, f, 22.0, 386.0, "Play or queue a track and it appears here.",
-                   &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0));
+        text::draw(
+            c,
+            f,
+            22.0,
+            360.0,
+            "Up Next is empty.",
+            &sty(
+                Family::Sans,
+                Weight::SemiBold,
+                crate::scale::ROW,
+                t.ink,
+                0.0,
+            ),
+        );
+        text::draw(
+            c,
+            f,
+            22.0,
+            386.0,
+            "Play or queue a track and it appears here.",
+            &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0),
+        );
         return l;
     }
 
@@ -492,20 +520,39 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
         let (sx, sy, sw, sh) = SHUFFLE_CHIP;
         crate::widgets::stroke_rect(c, sx, sy, sw, sh, t.line, 1);
         crate::icons::shuffle(c, (sx + 17) as f32, (sy + sh / 2) as f32, 13.0, t.dim);
-        crate::widgets::center(c, f, (sx + 46) as f32, (sy + sh / 2 + 4) as f32, "MIX",
-                               &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14));
+        crate::widgets::center(
+            c,
+            f,
+            (sx + 46) as f32,
+            (sy + sh / 2 + 4) as f32,
+            "MIX",
+            &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14),
+        );
     }
     // The caption goes between the title and whichever chip is furthest left, so it can never run
     // under either. At a large UI scale the long form does not fit — measured on the device at the
     // owner's scale, "7 TRACKS LEFT" ran into the title — so it falls back to "7 LEFT", and to
     // nothing rather than an overlap.
-    let cap_right = if can_shuffle { SHUFFLE_CHIP.0 } else if can_clear { CLEAR_CHIP.0 } else { 458 };
+    let cap_right = if can_shuffle {
+        SHUFFLE_CHIP.0
+    } else if can_clear {
+        CLEAR_CHIP.0
+    } else {
+        458
+    };
     if v.current.is_some() {
         let cs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
         let room = (cap_right - 12) as f32 - (crate::chrome::header_title_end(f, "Up Next") + 12.0);
         let long = caption(left, v.drag.is_some());
-        let short = if v.drag.is_some() { String::from("DRAG") } else { format!("{left} LEFT") };
-        if let Some(cap) = [long, short].into_iter().find(|s| text::measure(f, s, &cs) <= room) {
+        let short = if v.drag.is_some() {
+            String::from("DRAG")
+        } else {
+            format!("{left} LEFT")
+        };
+        if let Some(cap) = [long, short]
+            .into_iter()
+            .find(|s| text::measure(f, s, &cs) <= room)
+        {
             right(c, f, (cap_right - 12) as f32, 65.0, &cap, &cs);
         }
     }
@@ -566,8 +613,14 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                     Section::Next => None,
                 };
                 if let Some(a) = action {
-                    right(c, f, HIST_CLEAR_X1 as f32, (y + HDR_H - 11) as f32, a,
-                          &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14));
+                    right(
+                        c,
+                        f,
+                        HIST_CLEAR_X1 as f32,
+                        (y + HDR_H - 11) as f32,
+                        a,
+                        &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14),
+                    );
                 }
                 hline(c, y + HDR_H - 1, t.line);
             }
@@ -604,8 +657,15 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                             .filter(|s| (y..y + RH).contains(&s.y) && s.dx != 0)
                             .map(|s| s.dx);
                         if let Some(dx) = sw {
-                            crate::library::swipe_reveal(c, t, f, y, RH, dx,
-                                                         crate::library::SwipeIntent::Remove);
+                            crate::library::swipe_reveal(
+                                c,
+                                t,
+                                f,
+                                y,
+                                RH,
+                                dx,
+                                crate::library::SwipeIntent::Remove,
+                            );
                         }
                         track_row(c, t, f, song, v.lib, y, n, false, false, true);
                         if sw.is_some() {
@@ -632,7 +692,18 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
             fill_rect(c, 0, ft, 4, RH, t.acc);
             hline(c, ft, t.line);
             hline(c, ft + RH, t.line);
-            track_row(c, t, f, song, v.lib, ft, d.to.saturating_sub(hlen) + 1, false, false, true);
+            track_row(
+                c,
+                t,
+                f,
+                song,
+                v.lib,
+                ft,
+                d.to.saturating_sub(hlen) + 1,
+                false,
+                false,
+                true,
+            );
             grip(c, t, ft, true);
             c.clear_clip();
         }
@@ -648,8 +719,14 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
 fn chip(c: &mut Canvas, t: &Theme, f: &FontSet, r: (i32, i32, i32, i32), label: &str) {
     let (x, y, w, h) = r;
     crate::widgets::stroke_rect(c, x, y, w, h, t.line, 1);
-    crate::widgets::center(c, f, (x + w / 2) as f32, (y + h / 2 + 4) as f32, label,
-                           &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14));
+    crate::widgets::center(
+        c,
+        f,
+        (x + w / 2) as f32,
+        (y + h / 2 + 4) as f32,
+        label,
+        &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14),
+    );
 }
 
 /// One row of the list: a played track, the playing one, or one still to come. `past` dims it;
@@ -657,26 +734,107 @@ fn chip(c: &mut Canvas, t: &Theme, f: &FontSet, r: (i32, i32, i32, i32), label: 
 ///
 /// `grippy` draws the reorder handle and gives up the width it needs. Every row that moves asks for
 /// it; the playing row does not, because a handle there would be a control that does nothing.
-fn track_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow,
-             lib: &crate::model::Library, y: i32, n: usize, past: bool, now: bool, grippy: bool) {
+fn track_row(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    song: &SongRow,
+    lib: &crate::model::Library,
+    y: i32,
+    n: usize,
+    past: bool,
+    now: bool,
+    grippy: bool,
+) {
     let cy = (y + RH / 2) as f32;
     let idx_col = if now { t.acc } else { t.faint };
-    let idx = if now { Some("\u{25b6}".to_string()) } else if n > 0 { Some(format!("{n:02}")) } else { None };
+    let idx = if now {
+        Some("\u{25b6}".to_string())
+    } else if n > 0 {
+        Some(format!("{n:02}"))
+    } else {
+        None
+    };
     if let Some(idx) = idx {
-        text::draw(c, f, 22.0, cy + 4.0, &idx, &sty(Family::Mono, Weight::Regular, 12.0, idx_col, 0.0));
+        text::draw(
+            c,
+            f,
+            22.0,
+            cy + 4.0,
+            &idx,
+            &sty(Family::Mono, Weight::Regular, 12.0, idx_col, 0.0),
+        );
     }
     // Played rows fade their art too, so the eye finds the current row without reading a word.
-    let dim = if past { 0.34 } else if t.night { 0.30 } else { 1.0 };
-    crate::library::thumb(c, t, lib, song.album_id, &song.art, 46, y + (RH - 48) / 2, 48, dim);
-    let title_col = if now { t.acc } else if past { t.dim } else { t.ink };
-    let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, title_col, 0.0);
+    let dim = if past {
+        0.34
+    } else if t.night {
+        0.30
+    } else {
+        1.0
+    };
+    crate::library::thumb(
+        c,
+        t,
+        lib,
+        song.album_id,
+        &song.art,
+        46,
+        y + (RH - 48) / 2,
+        48,
+        dim,
+    );
+    let title_col = if now {
+        t.acc
+    } else if past {
+        t.dim
+    } else {
+        t.ink
+    };
+    let tst = sty(
+        Family::Sans,
+        Weight::SemiBold,
+        crate::scale::ROW,
+        title_col,
+        0.0,
+    );
     // The text budget and the duration column both shift in when the handle is there.
-    let (tw, aw, dx) = if grippy { (262.0, 276.0, 410.0) } else { (306.0, 320.0, 458.0) };
-    text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, tw), &tst);
-    let ast = sty(Family::Sans, Weight::Regular, 15.0, if past { t.faint } else { t.dim }, 0.0);
-    text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, aw), &ast);
-    right(c, f, dx, cy + 4.0, &song.dur,
-          &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
+    let (tw, aw, dx) = if grippy {
+        (262.0, 276.0, 410.0)
+    } else {
+        (306.0, 320.0, 458.0)
+    };
+    text::draw(
+        c,
+        f,
+        100.0,
+        cy - 2.0,
+        &crate::widgets::fit(f, &song.title, &tst, tw),
+        &tst,
+    );
+    let ast = sty(
+        Family::Sans,
+        Weight::Regular,
+        15.0,
+        if past { t.faint } else { t.dim },
+        0.0,
+    );
+    text::draw(
+        c,
+        f,
+        100.0,
+        cy + 16.0,
+        &crate::widgets::fit(f, &song.artist, &ast, aw),
+        &ast,
+    );
+    right(
+        c,
+        f,
+        dx,
+        cy + 4.0,
+        &song.dur,
+        &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0),
+    );
     if grippy {
         grip(c, t, y, false);
     }
@@ -719,9 +877,16 @@ mod tests {
                         None
                     } else {
                         let cy = y - LIST_TOP + scroll.max(0);
-                        l.slots.iter().find(|(s, top)| cy >= *top && cy < *top + s.h()).map(|(s, _)| *s)
+                        l.slots
+                            .iter()
+                            .find(|(s, top)| cy >= *top && cy < *top + s.h())
+                            .map(|(s, _)| *s)
                     };
-                    assert_eq!(l.at(y, scroll), want, "y={y} scroll={scroll} hist={hist} len={len} cur={cur:?}");
+                    assert_eq!(
+                        l.at(y, scroll),
+                        want,
+                        "y={y} scroll={scroll} hist={hist} len={len} cur={cur:?}"
+                    );
                 }
             }
         }
@@ -737,8 +902,14 @@ mod tests {
                 for cur in currents {
                     let l = layout(hist, len, cur);
                     let m = metrics(hist, len, cur);
-                    assert_eq!(m.content_h, l.content_h, "content_h at hist={hist} len={len} cur={cur:?}");
-                    assert_eq!(m.current_top, l.current_top, "current_top at hist={hist} len={len} cur={cur:?}");
+                    assert_eq!(
+                        m.content_h, l.content_h,
+                        "content_h at hist={hist} len={len} cur={cur:?}"
+                    );
+                    assert_eq!(
+                        m.current_top, l.current_top,
+                        "current_top at hist={hist} len={len} cur={cur:?}"
+                    );
                     assert_eq!(m.follow_scroll(), l.follow_scroll());
                     assert_eq!(m.max_scroll_px(), l.max_scroll_px());
                     // The slot list is in ascending top order and its heights add up to content_h —
@@ -761,7 +932,11 @@ mod tests {
                     assert_eq!(l.movable_slot(l.movable_len()), None);
                     for (slot, _) in &l.slots {
                         let movable = matches!(slot, Slot::History(_) | Slot::Upcoming(_));
-                        assert_eq!(l.movable_index(*slot).is_some(), movable, "{slot:?} disagrees about being movable");
+                        assert_eq!(
+                            l.movable_index(*slot).is_some(),
+                            movable,
+                            "{slot:?} disagrees about being movable"
+                        );
                     }
                 }
             }
@@ -781,7 +956,12 @@ mod tests {
             })
             .collect();
         assert_eq!(heads, vec![Section::History, Section::Now, Section::Next]);
-        let up: Vec<Slot> = l.slots.iter().map(|(s, _)| *s).filter(|s| matches!(s, Slot::Upcoming(_))).collect();
+        let up: Vec<Slot> = l
+            .slots
+            .iter()
+            .map(|(s, _)| *s)
+            .filter(|s| matches!(s, Slot::Upcoming(_)))
+            .collect();
         assert_eq!(up, (2..6).map(Slot::Upcoming).collect::<Vec<_>>());
         // The last track playing: no NEXT section at all.
         let l = layout(0, 6, Some(5));
@@ -793,7 +973,11 @@ mod tests {
     /// division from one origin would report the wrong index past the boundary.
     #[test]
     fn a_float_over_a_row_lands_on_that_row_across_the_section_boundary() {
-        for (hist, len, cur) in [(3usize, 20usize, Some(4usize)), (0, 9, Some(0)), (5, 6, Some(2))] {
+        for (hist, len, cur) in [
+            (3usize, 20usize, Some(4usize)),
+            (0, 9, Some(0)),
+            (5, 6, Some(2)),
+        ] {
             let l = layout(hist, len, cur);
             for i in 0..l.movable_len() {
                 let slot = l.movable_slot(i).unwrap();
@@ -803,11 +987,17 @@ mod tests {
                 // index, which is one lower when the row came out of the history.
                 let floor = l.drop_first() - usize::from(i < l.drop_first());
                 let want = i.max(floor);
-                assert_eq!(l.movable_slot_for(i, float_top, 0), want,
-                           "float over {slot:?} resolved elsewhere (hist={hist} len={len} cur={cur:?})");
+                assert_eq!(
+                    l.movable_slot_for(i, float_top, 0),
+                    want,
+                    "float over {slot:?} resolved elsewhere (hist={hist} len={len} cur={cur:?})"
+                );
             }
             // Above the list pins to the first droppable slot — "play this next".
-            assert_eq!(l.movable_slot_for(l.movable_len(), LIST_TOP - 400, 0), l.drop_first());
+            assert_eq!(
+                l.movable_slot_for(l.movable_len(), LIST_TOP - 400, 0),
+                l.drop_first()
+            );
             if l.drop_first() > 0 {
                 assert_eq!(l.movable_slot_for(0, LIST_TOP - 400, 0), l.drop_first() - 1);
             }
@@ -821,7 +1011,11 @@ mod tests {
         let l = layout(100, 200, Some(100));
         let max = l.max_scroll_px();
         for scroll in [0, 1, RH - 1, RH, RH + 1, HDR_H, 500, 1234, max / 2, max] {
-            let want = l.slots.iter().position(|(s, top)| top + s.h() > scroll).unwrap_or(l.slots.len());
+            let want = l
+                .slots
+                .iter()
+                .position(|(s, top)| top + s.h() > scroll)
+                .unwrap_or(l.slots.len());
             let got = l.slots.partition_point(|(s, top)| top + s.h() <= scroll);
             assert_eq!(got, want, "first visible slot disagrees at scroll={scroll}");
         }
@@ -838,7 +1032,9 @@ mod tests {
                 let counted = l
                     .slots
                     .iter()
-                    .filter(|(s, top)| matches!(s, Slot::History(_) | Slot::Upcoming(_)) && top + s.h() <= scroll)
+                    .filter(|(s, top)| {
+                        matches!(s, Slot::History(_) | Slot::Upcoming(_)) && top + s.h() <= scroll
+                    })
                     .count();
                 // Exactly the expression the draw loop uses.
                 let computed = match l.history_top() {
@@ -862,13 +1058,19 @@ mod tests {
             l.slots.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
             vec![
                 Slot::Head(Section::History),
-                Slot::History(0), Slot::History(1), Slot::History(2), Slot::History(3),
+                Slot::History(0),
+                Slot::History(1),
+                Slot::History(2),
+                Slot::History(3),
             ],
         );
         // …and a sequence playing with nothing played before it draws no history section at all,
         // even though `current` is well past 0.
         let l = layout(0, 8, Some(4));
-        assert!(!l.slots.iter().any(|(s, _)| matches!(s, Slot::History(_) | Slot::Head(Section::History))));
+        assert!(!l
+            .slots
+            .iter()
+            .any(|(s, _)| matches!(s, Slot::History(_) | Slot::Head(Section::History))));
     }
 
     #[test]

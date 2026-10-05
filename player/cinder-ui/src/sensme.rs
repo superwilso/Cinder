@@ -75,7 +75,12 @@ pub const BUTTON_Y: i32 = GRID_BOTTOM + crate::kit::ROW_H;
 /// Tile `i`'s rectangle on screen at `scroll`: `(x, y, w, h)`.
 pub fn tile_rect(i: usize, scroll: i32) -> (i32, i32, i32, i32) {
     let (col, row) = ((i % 2) as i32, (i / 2) as i32);
-    (crate::kit::LEFT + col * (TILE_W + TILE_GAP), GRID_TOP + row * PITCH - scroll, TILE_W, TILE_H)
+    (
+        crate::kit::LEFT + col * (TILE_W + TILE_GAP),
+        GRID_TOP + row * PITCH - scroll,
+        TILE_W,
+        TILE_H,
+    )
 }
 
 /// Which of `n` tiles is under `(x, y)`. The gaps belong to no tile, and nothing outside the grid's
@@ -158,7 +163,11 @@ pub fn content_h(lib: &Library, channel: Option<usize>) -> i32 {
 
 /// The bottom of the scrolling area: the list runs to the Now Playing bar, the grid to its foot.
 pub fn list_bottom(channel: Option<usize>) -> i32 {
-    if channel.is_none() { GRID_BOTTOM } else { LIST_BOTTOM }
+    if channel.is_none() {
+        GRID_BOTTOM
+    } else {
+        LIST_BOTTOM
+    }
 }
 
 pub fn max_scroll_px(lib: &Library, channel: Option<usize>) -> i32 {
@@ -243,7 +252,14 @@ fn band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
     let lst = sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0);
     let sst = sty(Family::Mono, Weight::Regular, 11.0, t.acc_ink, 0.06);
     icons::play(c, (px + 30) as f32, cy as f32, 17.0, t.acc_ink);
-    text::draw(c, f, (px + 52) as f32, (cy - 3) as f32, "Play channel", &lst);
+    text::draw(
+        c,
+        f,
+        (px + 52) as f32,
+        (cy - 3) as f32,
+        "Play channel",
+        &lst,
+    );
     let cl = count_label(tracks);
     text::draw(c, f, (px + 52) as f32, (cy + 15) as f32, &cl, &sst);
 
@@ -252,7 +268,17 @@ fn band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
 }
 
 fn name_style(t: &Theme, strong: bool) -> TextStyle {
-    sty(Family::Sans, if strong { Weight::SemiBold } else { Weight::Regular }, 18.0, t.ink, 0.0)
+    sty(
+        Family::Sans,
+        if strong {
+            Weight::SemiBold
+        } else {
+            Weight::Regular
+        },
+        18.0,
+        t.ink,
+        0.0,
+    )
 }
 
 /// What the screen says when there is no analysis at all.
@@ -302,11 +328,19 @@ pub fn render(
     let scroll = scroll_px.clamp(0, max_scroll_px(lib, channel));
     c.fill(t.bg);
     let sub = subtitle(lib, channel);
-    let y0 = crate::chrome::header(c, t, f, title(lib, channel), (!sub.is_empty()).then_some(&sub));
+    let y0 = crate::chrome::header(
+        c,
+        t,
+        f,
+        title(lib, channel),
+        (!sub.is_empty()).then_some(&sub),
+    );
 
     let all = rows(lib, channel);
     if channel.is_some() {
-        let n = channel.and_then(|i| lib.channels.get(i)).map_or(0, |ch| ch.tracks.len());
+        let n = channel
+            .and_then(|i| lib.channels.get(i))
+            .map_or(0, |ch| ch.tracks.len());
         band(c, t, f, n);
     }
 
@@ -322,7 +356,15 @@ pub fn render(
 
     if channel.is_none() {
         grid(c, t, f, lib, scroll, foot);
-        scrollbar(c, t, top, GRID_BOTTOM, scroll, content_h(lib, None), sbar_active);
+        scrollbar(
+            c,
+            t,
+            top,
+            GRID_BOTTOM,
+            scroll,
+            content_h(lib, None),
+            sbar_active,
+        );
         return;
     }
 
@@ -337,7 +379,9 @@ pub fn render(
         let cy = y + ROW_H / 2;
         match row {
             Row::Channel(i) => {
-                let Some(ch) = lib.channels.get(*i) else { continue };
+                let Some(ch) = lib.channels.get(*i) else {
+                    continue;
+                };
                 // A gradient tile keyed by the channel's name, the way a coverless album row is
                 // drawn — cached, so a screenful costs a blit each rather than a gradient each.
                 art::block_cached(c, t, 22, y + (ROW_H - 40) / 2, 40, 40, ch.name, 1.0);
@@ -358,11 +402,23 @@ pub fn render(
                     continue;
                 };
                 let ns = name_style(t, false);
-                text::draw(c, f, 34.0, (cy + 1) as f32,
-                           &crate::widgets::fit(f, &s.title, &ns, 320.0), &ns);
+                text::draw(
+                    c,
+                    f,
+                    34.0,
+                    (cy + 1) as f32,
+                    &crate::widgets::fit(f, &s.title, &ns, 320.0),
+                    &ns,
+                );
                 let ss = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
-                text::draw(c, f, 34.0, (cy + 19) as f32,
-                           &crate::widgets::fit(f, &s.artist, &ss, 320.0), &ss);
+                text::draw(
+                    c,
+                    f,
+                    34.0,
+                    (cy + 19) as f32,
+                    &crate::widgets::fit(f, &s.artist, &ss, 320.0),
+                    &ss,
+                );
                 let ds = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06);
                 let w = text::measure(f, &s.dur, &ds);
                 text::draw(c, f, 458.0 - w, (cy + 5) as f32, &s.dur, &ds);
@@ -371,7 +427,15 @@ pub fn render(
         hline(c, y + ROW_H - 1, t.line);
     }
     c.clear_clip();
-    scrollbar(c, t, top, LIST_BOTTOM, scroll, content_h(lib, channel), sbar_active);
+    scrollbar(
+        c,
+        t,
+        top,
+        LIST_BOTTOM,
+        scroll,
+        content_h(lib, channel),
+        sbar_active,
+    );
     let _ = W;
 }
 
@@ -379,7 +443,13 @@ pub fn render(
 fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot: Foot) {
     use crate::kit;
     kit::section_label(c, t, f, TOP, "CHANNELS", None);
-    let biggest = lib.channels.iter().map(|ch| ch.tracks.len()).max().unwrap_or(1).max(1);
+    let biggest = lib
+        .channels
+        .iter()
+        .map(|ch| ch.tracks.len())
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let now = foot_channel(lib, foot);
     c.set_clip_y(GRID_TOP, GRID_BOTTOM);
     for (i, ch) in lib.channels.iter().enumerate() {
@@ -388,12 +458,38 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
             continue;
         }
         fill_rect(c, x, y, w, h, t.panel);
-        crate::widgets::stroke_rect(c, x, y, w, h, if now == Some(i) { t.acc } else { t.line }, 1);
-        let ns = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0);
-        let cs = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.1);
+        crate::widgets::stroke_rect(
+            c,
+            x,
+            y,
+            w,
+            h,
+            if now == Some(i) { t.acc } else { t.line },
+            1,
+        );
+        let ns = sty(
+            Family::Sans,
+            Weight::SemiBold,
+            crate::scale::ROW,
+            t.ink,
+            0.0,
+        );
+        let cs = sty(
+            Family::Mono,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.faint,
+            0.1,
+        );
         // NOW marks the channel the button will play; it takes its width from the name.
         let tag_w = if now == Some(i) {
-            let tst = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.14);
+            let tst = sty(
+                Family::Mono,
+                Weight::Regular,
+                crate::scale::CAPTION,
+                t.acc,
+                0.14,
+            );
             let tw = text::measure(f, "NOW", &tst);
             text::draw(c, f, (x + w - 12) as f32 - tw, (y + 26) as f32, "NOW", &tst);
             tw + 8.0
@@ -403,7 +499,14 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
         let name = crate::widgets::fit(f, ch.name, &ns, (w - 24) as f32 - tag_w);
         text::draw(c, f, (x + 12) as f32, (y + 28) as f32, &name, &ns);
         let cl = count_label(ch.tracks.len());
-        text::draw(c, f, (x + 12) as f32, (y + 50) as f32, &crate::widgets::fit(f, &cl, &cs, (w - 24) as f32), &cs);
+        text::draw(
+            c,
+            f,
+            (x + 12) as f32,
+            (y + 50) as f32,
+            &crate::widgets::fit(f, &cl, &cs, (w - 24) as f32),
+            &cs,
+        );
         // The count bar: how big this channel is next to the biggest one.
         let bw = w - 24;
         fill_rect(c, x + 12, y + h - 10, bw, 4, t.line);
@@ -428,8 +531,16 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
             }
         }
     };
-    kit::row(c, t, f, FOLLOW_Y, kit::ROW_H,
-             &crate::kit::Row::new("Follow the time of day").sub(&sub).trail(crate::kit::Trail::Switch(foot.follow)));
+    kit::row(
+        c,
+        t,
+        f,
+        FOLLOW_Y,
+        kit::ROW_H,
+        &crate::kit::Row::new("Follow the time of day")
+            .sub(&sub)
+            .trail(crate::kit::Trail::Switch(foot.follow)),
+    );
     let label = match now.and_then(|i| lib.channels.get(i)) {
         Some(ch) => format!("Play {}", ch.name),
         None => "Shuffle all analysed".to_string(),
@@ -443,12 +554,24 @@ mod tests {
     use crate::model::{ChannelRow, SongRow};
 
     fn lib() -> Library {
-        let song = |n: &str| SongRow { title: n.into(), dur: "3:00".into(), ..Default::default() };
+        let song = |n: &str| SongRow {
+            title: n.into(),
+            dur: "3:00".into(),
+            ..Default::default()
+        };
         Library {
             songs: vec![song("a"), song("b"), song("c")],
             channels: vec![
-                ChannelRow { id: 0, name: "Active", tracks: vec![0, 2] },
-                ChannelRow { id: 8, name: "Morning", tracks: vec![1] },
+                ChannelRow {
+                    id: 0,
+                    name: "Active",
+                    tracks: vec![0, 2],
+                },
+                ChannelRow {
+                    id: 8,
+                    name: "Morning",
+                    tracks: vec![1],
+                },
             ],
             sensme_tracks: 3,
             ..Default::default()
@@ -466,7 +589,11 @@ mod tests {
             for scroll in [0, 9, ROW_H, ROW_H * 2 - 1] {
                 let y = row_top(r, channel, scroll) + ROW_H / 2;
                 if (list_top(channel)..LIST_BOTTOM).contains(&y) {
-                    assert_eq!(row_at(&l, channel, y, scroll), Some(*want), "row {r} at scroll {scroll}");
+                    assert_eq!(
+                        row_at(&l, channel, y, scroll),
+                        Some(*want),
+                        "row {r} at scroll {scroll}"
+                    );
                 }
             }
         }
@@ -482,13 +609,25 @@ mod tests {
                     let (x, y, w, h) = tile_rect(i, scroll);
                     let (cx, cy) = (x + w / 2, y + h / 2);
                     let want = (GRID_TOP..GRID_BOTTOM).contains(&cy).then_some(i);
-                    assert_eq!(tile_at(n, cx, cy, scroll), want, "tile {i} of {n} at scroll {scroll}");
+                    assert_eq!(
+                        tile_at(n, cx, cy, scroll),
+                        want,
+                        "tile {i} of {n} at scroll {scroll}"
+                    );
                 }
             }
         }
         let (x0, _, w0, _) = tile_rect(0, 0);
-        assert_eq!(tile_at(2, x0 + w0 + 4, GRID_TOP + 30, 0), None, "the gap between columns");
-        assert_eq!(row_at(&l, None, GRID_TOP + 10, 0), None, "the grid needs an x: ask tile_at");
+        assert_eq!(
+            tile_at(2, x0 + w0 + 4, GRID_TOP + 30, 0),
+            None,
+            "the gap between columns"
+        );
+        assert_eq!(
+            row_at(&l, None, GRID_TOP + 10, 0),
+            None,
+            "the grid needs an x: ask tile_at"
+        );
     }
 
     /// The grid is the channels; a channel opens onto its members only.
@@ -512,14 +651,63 @@ mod tests {
     #[test]
     fn the_foot_follows_the_clock_when_asked() {
         let l = lib(); // Active (id 0) and Morning (id 8)
-        assert_eq!(foot_channel(&l, Foot { follow: false, hour: Some(7) }), None, "not following");
-        assert_eq!(foot_channel(&l, Foot { follow: true, hour: Some(7) }), Some(1), "07:00 is Morning");
-        assert_eq!(foot_channel(&l, Foot { follow: true, hour: Some(21) }), None, "Night has nothing");
-        assert_eq!(foot_channel(&l, Foot { follow: true, hour: None }), None, "no clock yet");
+        assert_eq!(
+            foot_channel(
+                &l,
+                Foot {
+                    follow: false,
+                    hour: Some(7)
+                }
+            ),
+            None,
+            "not following"
+        );
+        assert_eq!(
+            foot_channel(
+                &l,
+                Foot {
+                    follow: true,
+                    hour: Some(7)
+                }
+            ),
+            Some(1),
+            "07:00 is Morning"
+        );
+        assert_eq!(
+            foot_channel(
+                &l,
+                Foot {
+                    follow: true,
+                    hour: Some(21)
+                }
+            ),
+            None,
+            "Night has nothing"
+        );
+        assert_eq!(
+            foot_channel(
+                &l,
+                Foot {
+                    follow: true,
+                    hour: None
+                }
+            ),
+            None,
+            "no clock yet"
+        );
         let ids: Vec<u8> = (0..24).map(time_channel_id).collect();
         assert!(ids.iter().all(|id| (8..=12).contains(id)));
-        assert_eq!((time_channel_id(4), time_channel_id(5), time_channel_id(12), time_channel_id(17),
-                    time_channel_id(20), time_channel_id(23)), (12, 8, 9, 10, 11, 12));
+        assert_eq!(
+            (
+                time_channel_id(4),
+                time_channel_id(5),
+                time_channel_id(12),
+                time_channel_id(17),
+                time_channel_id(20),
+                time_channel_id(23)
+            ),
+            (12, 8, 9, 10, 11, 12)
+        );
         // The foot sits below the grid and above the Now Playing bar.
         assert!(BUTTON_Y + crate::kit::BUTTON_H <= LIST_BOTTOM);
         assert!(follow_hit(FOLLOW_Y + 10) && !follow_hit(GRID_BOTTOM - 1));

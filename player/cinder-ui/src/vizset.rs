@@ -96,14 +96,36 @@ pub struct VizSet<'a> {
     pub columns: usize,
 }
 
-fn vrow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, value: &str) -> i32 {
+fn vrow(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    sel: bool,
+    label: &str,
+    value: &str,
+) -> i32 {
     let cy = y + ROW_H / 2;
     if sel {
         fill_rect(c, 0, y, crate::canvas::W as i32, ROW_H, t.row_sel);
     }
     let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
-    right(c, f, 458.0, (cy + 4) as f32, value, &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04));
+    text::draw(
+        c,
+        f,
+        22.0,
+        (cy + 5) as f32,
+        label,
+        &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0),
+    );
+    right(
+        c,
+        f,
+        458.0,
+        (cy + 4) as f32,
+        value,
+        &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04),
+    );
     hline(c, y + ROW_H, t.line);
     y + ROW_H
 }
@@ -124,11 +146,40 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
     // `columns` is the Bands setting; with no live levels the preview shows that many synthetic
     // columns, so the setting is visible before any music plays.
     if v.levels.is_none() && !crate::viz::is_signal_style(v.kind) {
-        crate::viz::draw_with_peaks(c, px + 4, py + 4, pw - 8, ph - 8, v.columns as i32, crate::viz::gap_for(v.columns),
-                                    v.seed, v.kind, t.acc, t.line, None, v.peak_marks, 255, 255);
+        crate::viz::draw_with_peaks(
+            c,
+            px + 4,
+            py + 4,
+            pw - 8,
+            ph - 8,
+            v.columns as i32,
+            crate::viz::gap_for(v.columns),
+            v.seed,
+            v.kind,
+            t.acc,
+            t.line,
+            None,
+            v.peak_marks,
+            255,
+            255,
+        );
     } else {
-        crate::viz::draw_any(c, px + 4, py + 4, pw - 8, ph - 8, v.seed, v.kind, t.acc, t.line, v.levels, v.peak_marks,
-                             v.sig, 255, 255);
+        crate::viz::draw_any(
+            c,
+            px + 4,
+            py + 4,
+            pw - 8,
+            ph - 8,
+            v.seed,
+            v.kind,
+            t.acc,
+            t.line,
+            v.levels,
+            v.peak_marks,
+            v.sig,
+            255,
+            255,
+        );
     }
     // One caption, and it earns its line: with no analyzer running the bars are synthetic, and a
     // preview that silently shows made-up motion is the exact kind of thing this project keeps
@@ -142,8 +193,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
     } else {
         "NO SIGNAL — DEMO MOTION"
     };
-    text::draw(c, f, px as f32, (py + ph + 15) as f32, cap,
-               &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06));
+    text::draw(
+        c,
+        f,
+        px as f32,
+        (py + ph + 15) as f32,
+        cap,
+        &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06),
+    );
 
     // ── the rows ─────────────────────────────────────────────────────────────────────────────
     let mut y = TOP;
@@ -160,8 +217,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
             fill_rect(c, 0, y, crate::canvas::W as i32, ROW_H, t.row_sel);
         }
         let lc = if sel == ROW_PEAKS { t.acc } else { t.ink };
-        text::draw(c, f, 22.0, (cy + 5) as f32, "Peak markers",
-                   &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
+        text::draw(
+            c,
+            f,
+            22.0,
+            (cy + 5) as f32,
+            "Peak markers",
+            &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0),
+        );
         toggle(c, t, 418, cy - 11, 40, 22, 14, v.peaks);
         hline(c, y + ROW_H, t.line);
         y += ROW_H;
@@ -178,13 +241,20 @@ mod tests {
     #[test]
     fn the_screen_fits_the_panel() {
         // No scroll offset exists on this screen, so the last row must land on the panel.
-        assert!(TOP + ROWS as i32 * ROW_H <= crate::canvas::H as i32,
-                "rows run past the panel: {}", TOP + ROWS as i32 * ROW_H);
+        assert!(
+            TOP + ROWS as i32 * ROW_H <= crate::canvas::H as i32,
+            "rows run past the panel: {}",
+            TOP + ROWS as i32 * ROW_H
+        );
     }
 
     #[test]
     fn every_row_is_hittable_and_the_preview_is_not() {
-        assert_eq!(row_at(crate::chrome::HEADER_BOTTOM + 4), None, "preview must not select a row");
+        assert_eq!(
+            row_at(crate::chrome::HEADER_BOTTOM + 4),
+            None,
+            "preview must not select a row"
+        );
         for r in 0..ROWS {
             let mid = TOP + r as i32 * ROW_H + ROW_H / 2;
             assert_eq!(row_at(mid), Some(r));

@@ -58,8 +58,15 @@ pub enum Ask {
 /// Every question the modal can ask. Exists so the overflow audit can render all of them without
 /// a list that silently stops being complete when a new one is added.
 pub const ALL: &[Ask] = &[
-    Ask::Restart, Ask::PowerOff, Ask::PowerMenu, Ask::QueueOnPlay, Ask::ResetSettings,
-    Ask::DeletePlaylist, Ask::ClearQueue, Ask::SonyReceiver, Ask::DeleteView,
+    Ask::Restart,
+    Ask::PowerOff,
+    Ask::PowerMenu,
+    Ask::QueueOnPlay,
+    Ask::ResetSettings,
+    Ask::DeletePlaylist,
+    Ask::ClearQueue,
+    Ask::SonyReceiver,
+    Ask::DeleteView,
 ];
 
 impl Ask {
@@ -143,7 +150,11 @@ impl Ask {
 
     /// Card height. The menu needs room for three stacked rows; the yes/no card does not.
     fn card_h(self) -> i32 {
-        if self.is_menu() { MENU_HEAD_H + MENU_ROW_H * self.rows().len() as i32 } else { CARD_H }
+        if self.is_menu() {
+            MENU_HEAD_H + MENU_ROW_H * self.rows().len() as i32
+        } else {
+            CARD_H
+        }
     }
 
     /// Card top, derived from the shared optical centre so both cards sit in the same place.
@@ -237,16 +248,34 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, ask: Ask) {
     fill_rect(c, CARD_X, CARD_Y, CARD_W, CARD_H, t.panel);
     stroke_rect(c, CARD_X, CARD_Y, CARD_W, CARD_H, t.line, 1);
 
-    center(c, f, 240.0, (CARD_Y + 58) as f32, title,
-           &sty(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0));
+    center(
+        c,
+        f,
+        240.0,
+        (CARD_Y + 58) as f32,
+        title,
+        &sty(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0),
+    );
     // The body wraps by hand at a word boundary rather than mid-word: these strings are short and
     // known, so a real wrapper would be machinery for two sentences.
     let (l1, l2) = split_body(body);
-    center(c, f, 240.0, (CARD_Y + 96) as f32, l1,
-           &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0));
+    center(
+        c,
+        f,
+        240.0,
+        (CARD_Y + 96) as f32,
+        l1,
+        &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0),
+    );
     if !l2.is_empty() {
-        center(c, f, 240.0, (CARD_Y + 118) as f32, l2,
-               &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0));
+        center(
+            c,
+            f,
+            240.0,
+            (CARD_Y + 118) as f32,
+            l2,
+            &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0),
+        );
     }
 
     // Footer rule + the split between the two buttons.
@@ -256,13 +285,32 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, ask: Ask) {
     let by = (BTN_Y + BTN_H / 2 + 6) as f32;
     // CANCEL on the left, in ink: the safe answer is the one your thumb reaches first and it is not
     // dressed up as the primary action.
-    center(c, f, (CARD_X + CARD_W / 4) as f32, by, "Cancel",
-           &sty(Family::Sans, Weight::SemiBold, 18.0, t.dim, 0.0));
+    center(
+        c,
+        f,
+        (CARD_X + CARD_W / 4) as f32,
+        by,
+        "Cancel",
+        &sty(Family::Sans, Weight::SemiBold, 18.0, t.dim, 0.0),
+    );
     // CONFIRM on the right, filled with the accent — deliberately the more emphatic target, but it
     // is still one tap away from a dismissal on either side of it.
-    fill_rect(c, BTN_SPLIT + 1, BTN_Y + 1, CARD_X + CARD_W - BTN_SPLIT - 1, BTN_H - 1, t.acc);
-    center(c, f, ((BTN_SPLIT + CARD_X + CARD_W) / 2) as f32, by, confirm,
-           &sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0));
+    fill_rect(
+        c,
+        BTN_SPLIT + 1,
+        BTN_Y + 1,
+        CARD_X + CARD_W - BTN_SPLIT - 1,
+        BTN_H - 1,
+        t.acc,
+    );
+    center(
+        c,
+        f,
+        ((BTN_SPLIT + CARD_X + CARD_W) / 2) as f32,
+        by,
+        confirm,
+        &sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0),
+    );
 }
 
 /// The Power-hold menu: a title band over three stacked rows. Deliberately plain — no accent fill
@@ -281,18 +329,30 @@ fn render_menu(c: &mut Canvas, t: &Theme, f: &FontSet, ask: Ask) {
     fill_rect(c, CARD_X, cy, CARD_W, ch, t.panel);
     stroke_rect(c, CARD_X, cy, CARD_W, ch, t.line, 1);
 
-    center(c, f, 240.0, (cy + 48) as f32, title,
-           &sty(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0));
+    center(
+        c,
+        f,
+        240.0,
+        (cy + 48) as f32,
+        title,
+        &sty(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0),
+    );
 
     let top = cy + MENU_HEAD_H;
     for (i, (label, what)) in ask.rows().iter().enumerate() {
         let ry = top + MENU_ROW_H * i as i32;
-        fill_rect(c, CARD_X, ry, CARD_W, 1, t.line);   // separator above every row, incl. the first
-        // Cancel is dimmed, the two actions are in ink: the row that does nothing should not read
-        // as equal in weight to the two that take the device away.
+        fill_rect(c, CARD_X, ry, CARD_W, 1, t.line); // separator above every row, incl. the first
+                                                     // Cancel is dimmed, the two actions are in ink: the row that does nothing should not read
+                                                     // as equal in weight to the two that take the device away.
         let col = if *what == Hit::Cancel { t.dim } else { t.ink };
-        center(c, f, 240.0, (ry + MENU_ROW_H / 2 + 7) as f32, label,
-               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, col, 0.0));
+        center(
+            c,
+            f,
+            240.0,
+            (ry + MENU_ROW_H / 2 + 7) as f32,
+            label,
+            &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, col, 0.0),
+        );
     }
 }
 
@@ -385,7 +445,12 @@ mod tests {
             let ry = top + MENU_ROW_H * i as i32;
             for dy in [1, MENU_ROW_H / 2, MENU_ROW_H - 1] {
                 for x in [CARD_X + 2, 240, CARD_X + CARD_W - 2] {
-                    assert_eq!(hit(a, x, ry + dy), *want, "{label} row missed at ({x},{})", ry + dy);
+                    assert_eq!(
+                        hit(a, x, ry + dy),
+                        *want,
+                        "{label} row missed at ({x},{})",
+                        ry + dy
+                    );
                 }
             }
         }
@@ -411,7 +476,11 @@ mod tests {
         let a = Ask::PowerMenu;
         let (cy, ch) = (a.card_y(), a.card_h());
         let top = cy + MENU_HEAD_H;
-        assert_eq!(top + MENU_ROW_H * a.rows().len() as i32, cy + ch, "rows must fill the card exactly");
+        assert_eq!(
+            top + MENU_ROW_H * a.rows().len() as i32,
+            cy + ch,
+            "rows must fill the card exactly"
+        );
         for y in 0..crate::canvas::H as i32 {
             for x in (0..crate::canvas::W as i32).step_by(3) {
                 if hit(a, x, y) != Hit::Cancel {
@@ -429,14 +498,22 @@ mod tests {
     #[test]
     fn both_cards_share_a_centre() {
         for ask in [Ask::Restart, Ask::PowerOff, Ask::PowerMenu] {
-            assert_eq!(ask.card_y() + ask.card_h() / 2, CARD_MID, "{ask:?} is off-centre");
+            assert_eq!(
+                ask.card_y() + ask.card_h() / 2,
+                CARD_MID,
+                "{ask:?} is off-centre"
+            );
         }
     }
 
     /// The menu must offer exactly one way out and it must be distinct from both actions.
     #[test]
     fn menu_offers_one_escape() {
-        let cancels = Ask::PowerMenu.rows().iter().filter(|r| r.1 == Hit::Cancel).count();
+        let cancels = Ask::PowerMenu
+            .rows()
+            .iter()
+            .filter(|r| r.1 == Hit::Cancel)
+            .count();
         assert_eq!(cancels, 1, "the Power menu needs exactly one Cancel row");
         assert!(Ask::PowerMenu.rows().iter().any(|r| r.1 == Hit::PowerOff));
         assert!(Ask::PowerMenu.rows().iter().any(|r| r.1 == Hit::Restart));

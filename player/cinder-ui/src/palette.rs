@@ -76,7 +76,12 @@ pub struct Palette {
 impl Palette {
     /// Cinder's own palette, as a `Palette`.
     pub fn builtin() -> Palette {
-        Palette { id: BUILTIN_ID.to_string(), name: BUILTIN_NAME.to_string(), tokens: CINDER, added: 0 }
+        Palette {
+            id: BUILTIN_ID.to_string(),
+            name: BUILTIN_NAME.to_string(),
+            tokens: CINDER,
+            added: 0,
+        }
     }
 
     /// Parse and check one palette file. `id` is the file name without its extension.
@@ -90,7 +95,9 @@ impl Palette {
                 "`{id}` cannot be a palette name: use lowercase letters, digits, - and _ (at most {MAX_ID})"
             ));
         } else if id == BUILTIN_ID {
-            errs.push(format!("`{BUILTIN_ID}` is the built-in palette — rename the file"));
+            errs.push(format!(
+                "`{BUILTIN_ID}` is the built-in palette — rename the file"
+            ));
         }
         let mut tokens = CINDER;
         let mut name = None;
@@ -115,7 +122,9 @@ impl Palette {
             if k == "name" {
                 let len = v.chars().count();
                 if len == 0 || len > MAX_NAME || v.chars().any(char::is_control) {
-                    errs.push(format!("line {n}: `name` must be 1 to {MAX_NAME} characters"));
+                    errs.push(format!(
+                        "line {n}: `name` must be 1 to {MAX_NAME} characters"
+                    ));
                 } else {
                     name = Some(v.to_string());
                 }
@@ -126,12 +135,18 @@ impl Palette {
                 continue;
             };
             let Some(colour) = parse_colour(v) else {
-                errs.push(format!("line {n}: `{k}` wants a colour like #1a2b3c, got `{v}`"));
+                errs.push(format!(
+                    "line {n}: `{k}` wants a colour like #1a2b3c, got `{v}`"
+                ));
                 continue;
             };
             match slot {
                 Slot::Neutral { night, field } => {
-                    let set = if night { &mut tokens.night } else { &mut tokens.day };
+                    let set = if night {
+                        &mut tokens.night
+                    } else {
+                        &mut tokens.day
+                    };
                     *neutral_mut(set, field) = colour;
                 }
                 Slot::Accent(i) => accent[i] = Some(colour),
@@ -140,8 +155,16 @@ impl Palette {
         match accent {
             [Some(da), Some(di), Some(ds), Some(na), Some(ni), Some(ns)] => {
                 tokens.accent = Some((
-                    AccentTokens { acc: da, acc_ink: di, row_sel: ds },
-                    AccentTokens { acc: na, acc_ink: ni, row_sel: ns },
+                    AccentTokens {
+                        acc: da,
+                        acc_ink: di,
+                        row_sel: ds,
+                    },
+                    AccentTokens {
+                        acc: na,
+                        acc_ink: ni,
+                        row_sel: ns,
+                    },
                 ));
             }
             [None, None, None, None, None, None] => {}
@@ -165,7 +188,12 @@ impl Palette {
         if !problems.is_empty() {
             return Err(problems);
         }
-        Ok(Palette { id: id.to_string(), name: name.unwrap_or_else(|| id.to_string()), tokens, added: 0 })
+        Ok(Palette {
+            id: id.to_string(),
+            name: name.unwrap_or_else(|| id.to_string()),
+            tokens,
+            added: 0,
+        })
     }
 }
 
@@ -184,7 +212,10 @@ fn key_slot(k: &str) -> Option<Slot> {
         "night" => true,
         _ => return None,
     };
-    NEUTRAL_KEYS.iter().position(|f| *f == field).map(|field| Slot::Neutral { night, field })
+    NEUTRAL_KEYS
+        .iter()
+        .position(|f| *f == field)
+        .map(|field| Slot::Neutral { night, field })
 }
 
 fn neutral_mut(n: &mut Neutrals, field: usize) -> &mut u32 {
@@ -211,7 +242,9 @@ fn parse_colour(v: &str) -> Option<u32> {
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_ID
-        && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 // ── Readability ─────────────────────────────────────────────────────────────────────────────
@@ -231,12 +264,22 @@ pub struct Floors {
 
 /// Day. Ink and dim are WCAG AA (4.5 for text, 3.0 for large text and controls). Cinder measures
 /// 15.9 / 6.2 / 2.9, and its weakest accent (crimson) 4.2 against its own row wash.
-pub const DAY: Floors = Floors { ink: 4.5, dim: 3.0, faint: 1.8, accent: 3.0 };
+pub const DAY: Floors = Floors {
+    ink: 4.5,
+    dim: 3.0,
+    faint: 1.8,
+    accent: 3.0,
+};
 /// Night. WCAG's numbers do not apply here: night exists to emit as little light as a readable
 /// screen can, and Cinder's own night measures 2.26 / 1.54 / 1.25, with accents down to 1.28. These
 /// floors sit a margin under that, so any night at least as legible as Cinder's passes and one that
 /// is not is refused.
-pub const NIGHT: Floors = Floors { ink: 1.9, dim: 1.35, faint: 1.12, accent: 1.2 };
+pub const NIGHT: Floors = Floors {
+    ink: 1.9,
+    dim: 1.35,
+    faint: 1.12,
+    accent: 1.2,
+};
 /// The brightest a night background may be, as relative luminance — about `#272727`. Night mode is
 /// for a dark room.
 pub const NIGHT_BG_MAX: f32 = 0.02;
@@ -257,15 +300,27 @@ pub fn problems(t: &Tokens) -> Vec<String> {
         let faint = contrast(th.faint, th.bg);
         floor(&mut out, format!("{mode}.ink on {mode}.bg"), ink, f.ink);
         floor(&mut out, format!("{mode}.dim on {mode}.bg"), dim, f.dim);
-        floor(&mut out, format!("{mode}.faint on {mode}.bg"), faint, f.faint);
-        floor(&mut out, format!("{mode}.ink on {mode}.panel"), contrast(th.ink, th.panel), f.ink);
+        floor(
+            &mut out,
+            format!("{mode}.faint on {mode}.bg"),
+            faint,
+            f.faint,
+        );
+        floor(
+            &mut out,
+            format!("{mode}.ink on {mode}.panel"),
+            contrast(th.ink, th.panel),
+            f.ink,
+        );
         if dim >= ink {
             out.push(format!(
                 "{mode}.dim stands out as much as {mode}.ink ({dim:.2} vs {ink:.2}) — dim is for secondary text"
             ));
         }
         if faint >= dim {
-            out.push(format!("{mode}.faint stands out as much as {mode}.dim ({faint:.2} vs {dim:.2})"));
+            out.push(format!(
+                "{mode}.faint stands out as much as {mode}.dim ({faint:.2} vs {dim:.2})"
+            ));
         }
         if night && luminance(th.bg) > NIGHT_BG_MAX {
             out.push(format!(
@@ -275,7 +330,11 @@ pub fn problems(t: &Tokens) -> Vec<String> {
         }
 
         let pinned = t.accent.is_some();
-        let accents: &[Accent] = if pinned { &[Accent::Amber] } else { &Accent::ALL };
+        let accents: &[Accent] = if pinned {
+            &[Accent::Amber]
+        } else {
+            &Accent::ALL
+        };
         type Measure = fn(&Theme) -> f32;
         let checks: [(&str, &str, Measure); 3] = [
             ("accent", "bg", |th| contrast(th.acc, th.bg)),
@@ -312,7 +371,9 @@ pub fn problems(t: &Tokens) -> Vec<String> {
 
 fn floor(out: &mut Vec<String>, what: String, got: f32, need: f32) {
     if got < need {
-        out.push(format!("{what}: contrast {got:.2}, needs at least {need:.2}"));
+        out.push(format!(
+            "{what}: contrast {got:.2}, needs at least {need:.2}"
+        ));
     }
 }
 
@@ -342,7 +403,8 @@ pub fn contrast(a: Rgb888, b: Rgb888) -> f32 {
 /// beside every file it copies onto a FAT volume, and that is metadata, not a second palette.
 pub fn palette_stem(file: &str) -> Option<&str> {
     let (stem, ext) = file.rsplit_once('.')?;
-    (ext.eq_ignore_ascii_case(EXTENSION) && !stem.is_empty() && !stem.starts_with('.')).then_some(stem)
+    (ext.eq_ignore_ascii_case(EXTENSION) && !stem.is_empty() && !stem.starts_with('.'))
+        .then_some(stem)
 }
 
 /// Turn what a palette folder holds into the loaded set, in cycle order, plus one line per file
@@ -369,7 +431,9 @@ pub fn load_files(files: Vec<(String, Result<String, String>)>) -> (Vec<Palette>
             continue;
         }
         if list.len() == MAX_FILES {
-            skipped.push(format!("{file}: only the first {MAX_FILES} palettes are loaded"));
+            skipped.push(format!(
+                "{file}: only the first {MAX_FILES} palettes are loaded"
+            ));
             continue;
         }
         match body {
@@ -392,7 +456,8 @@ mod tests {
     const PAPER: &str = include_str!("../palettes/paper.palette");
 
     fn ok(id: &str, body: &str) -> Palette {
-        Palette::parse(id, body).unwrap_or_else(|e| panic!("{id} should load:\n  {}", e.join("\n  ")))
+        Palette::parse(id, body)
+            .unwrap_or_else(|e| panic!("{id} should load:\n  {}", e.join("\n  ")))
     }
 
     fn refused(id: &str, body: &str) -> Vec<String> {
@@ -410,7 +475,10 @@ mod tests {
     #[test]
     fn every_shipped_palette_loads() {
         ok("slate", SLATE);
-        assert!(ok("paper", PAPER).tokens.accent.is_some(), "paper is light, so it must bring its own accent");
+        assert!(
+            ok("paper", PAPER).tokens.accent.is_some(),
+            "paper is light, so it must bring its own accent"
+        );
     }
 
     /// The floors are calibrated against Cinder: its own palette, with every accent the picker
@@ -434,7 +502,10 @@ mod tests {
     fn a_pinned_accent_ignores_the_picker() {
         let p = ok("paper", PAPER);
         for a in Accent::ALL {
-            assert_eq!(p.tokens.theme(false, a), p.tokens.theme(false, Accent::Amber));
+            assert_eq!(
+                p.tokens.theme(false, a),
+                p.tokens.theme(false, Accent::Amber)
+            );
             assert_eq!(p.tokens.theme(true, a), p.tokens.theme(true, Accent::Amber));
         }
     }
@@ -465,33 +536,50 @@ mod tests {
     fn accent_keys_are_all_or_nothing() {
         let e = refused("half", "day.accent = #ff0000\nday.accent_ink = #000000\n");
         let all = e.join("\n");
-        assert!(all.contains("missing day.row_select, night.accent, night.accent_ink, night.row_select"), "{all}");
+        assert!(
+            all.contains(
+                "missing day.row_select, night.accent, night.accent_ink, night.row_select"
+            ),
+            "{all}"
+        );
     }
 
     #[test]
     fn unreadable_text_is_refused() {
         let e = refused("murk", "day.ink = #141210\n");
-        assert!(e.iter().any(|l| l.starts_with("day.ink on day.bg")), "{e:?}");
+        assert!(
+            e.iter().any(|l| l.starts_with("day.ink on day.bg")),
+            "{e:?}"
+        );
     }
 
     #[test]
     fn dim_may_not_outshine_ink() {
         let e = refused("inverted", "day.ink = #95908a\nday.dim = #ece7df\n");
-        assert!(e.iter().any(|l| l.contains("day.dim stands out as much as day.ink")), "{e:?}");
+        assert!(
+            e.iter()
+                .any(|l| l.contains("day.dim stands out as much as day.ink")),
+            "{e:?}"
+        );
     }
 
     #[test]
     fn a_bright_night_is_refused() {
         let e = refused("glare", "night.bg = #808080\n");
-        assert!(e.iter().any(|l| l.starts_with("night.bg is too bright")), "{e:?}");
+        assert!(
+            e.iter().any(|l| l.starts_with("night.bg is too bright")),
+            "{e:?}"
+        );
     }
 
     /// A light background with the built-in accents — tuned against near-black — has to be told what
     /// to do about it, not merely refused.
     #[test]
     fn a_light_palette_without_an_accent_is_told_to_bring_one() {
-        let body: Vec<&str> =
-            PAPER.lines().filter(|l| !l.contains("accent") && !l.contains("row_select")).collect();
+        let body: Vec<&str> = PAPER
+            .lines()
+            .filter(|l| !l.contains("accent") && !l.contains("row_select"))
+            .collect();
         let e = refused("paperish", &body.join("\n"));
         assert!(e.iter().any(|l| l.contains("accent of its own")), "{e:?}");
     }
@@ -511,8 +599,14 @@ mod tests {
             ("Alpha.PALETTE".to_string(), Ok(String::new())),
             ("alpha.palette".to_string(), Ok(String::new())),
             ("notes.txt".to_string(), Ok("ignored".to_string())),
-            ("._alpha.palette".to_string(), Ok("macOS metadata".to_string())),
-            ("broken.palette".to_string(), Ok("day.ink = #0d0c0b\n".to_string())),
+            (
+                "._alpha.palette".to_string(),
+                Ok("macOS metadata".to_string()),
+            ),
+            (
+                "broken.palette".to_string(),
+                Ok("day.ink = #0d0c0b\n".to_string()),
+            ),
             ("gone.palette".to_string(), Err("I/O error".to_string())),
             ("cinder.palette".to_string(), Ok(REFERENCE.to_string())),
         ];
@@ -520,16 +614,27 @@ mod tests {
         let ids: Vec<&str> = list.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["alpha", "zeta"]);
         let all = skipped.join("\n");
-        assert!(all.contains("alpha.palette: another file already uses the name `alpha`"), "{all}");
+        assert!(
+            all.contains("alpha.palette: another file already uses the name `alpha`"),
+            "{all}"
+        );
         assert!(all.contains("broken.palette: day.ink on day.bg"), "{all}");
-        assert!(all.contains("gone.palette: could not be read (I/O error)"), "{all}");
-        assert!(all.contains("cinder.palette: `cinder` is the built-in palette"), "{all}");
+        assert!(
+            all.contains("gone.palette: could not be read (I/O error)"),
+            "{all}"
+        );
+        assert!(
+            all.contains("cinder.palette: `cinder` is the built-in palette"),
+            "{all}"
+        );
         assert_eq!(skipped.len(), 4, "{all}");
     }
 
     #[test]
     fn only_the_first_max_files_load() {
-        let files = (0..MAX_FILES + 3).map(|i| (format!("p{i:02}.palette"), Ok(String::new()))).collect();
+        let files = (0..MAX_FILES + 3)
+            .map(|i| (format!("p{i:02}.palette"), Ok(String::new())))
+            .collect();
         let (list, skipped) = load_files(files);
         assert_eq!(list.len(), MAX_FILES);
         assert_eq!(skipped.len(), 3);
