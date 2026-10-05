@@ -113,6 +113,17 @@ when its content moves. What is left needs the player:
 
 1. **A number** (5.5). Nothing above has a denominator without one; there is no fuel gauge.
 2. **Suspend to RAM when paused off the cable** (decision 4, §33) — the largest lever left.
+   **Run 2026-10-05 (checklist 33.1 PASS, 33.2 FAIL):** dev build, Walkman One, Bluetooth on
+   with no peer. It suspended 60 s into stage 1, Power woke it within about a second
+   (`resumed from RAM (r12=0x20)`), and USB was dead until a restart. `cinder-msc usb-resume`
+   ran all four steps: role `a_idle` -> `b_idle`, gadget state `DISCONNECTED` throughout, a
+   re-plug changed nothing. The lead, from `/contents/cinder_usb_resume_dmesg.txt`: on a normal
+   boot the charger driver logs `BQWMP: PHY on` on connect and again when the gadget is enabled;
+   after the resume it logs `Connect USB. bcdet=1(STD)` and the gadget is re-bound, and
+   `PHY on` never appears. So the charger driver's PHY switch is what does not come back; read
+   its state test in `bq24262_wmport` next (offline, `artifacts/walkmanone/re/kernel`).
+   Also by design and worth a decision: with headphones still linked it does not suspend until
+   Bluetooth auto off has fired, about 11 minutes after a pause.
 3. **The CPU cap under Bluetooth.** Stage 1 runs there now; the 1040 MHz cap does not, because LDAC
    encode at 1040 MHz is unmeasured. Measure, then extend `cpu_tune("cap")` to the BT route.
 4. **Sony's `icx_syslog`.** Stock starts it (`-n 32 -l 6 -d /emmc@var`, eMMC writes); Walkman One

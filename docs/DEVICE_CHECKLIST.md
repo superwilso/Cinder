@@ -875,8 +875,8 @@ player in hand:** if it does not wake, hold Power until it restarts. Keep `cable
 
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|
-| 33.1 | **It suspends and Power wakes it** | File present, boot, wait 4 minutes, nothing playing, Bluetooth not connected. Pull the cable, screen off, leave 3 minutes, press Power | Screen lights (it may take a second). Log: `suspend: idle and off the cable -> releasing the wakelock`, then `suspend: resumed from RAM`; `icx_pm_helper/resume_count` above 0 | No wake: hold Power to restart, delete the file over USB, report `/proc/last_kmsg` |
-| 33.2 | **USB comes back** | After 33.1, plug the cable in | The PC sees the player; charging starts | Dead until a restart = the 2026-09-04 `a_idle` fault is still there: stage 2 stays opt-in |
+| 33.1 | **It suspends and Power wakes it** — **RUN 2026-10-05, PASS** | File present, boot, wait 4 minutes, nothing playing, Bluetooth not connected. Pull the cable, screen off, leave 3 minutes, press Power | Screen lights (it may take a second). Log: `suspend: idle and off the cable -> releasing the wakelock`, then `suspend: resumed from RAM`; `icx_pm_helper/resume_count` above 0 | No wake: hold Power to restart, delete the file over USB, report `/proc/last_kmsg` |
+| 33.2 | **USB comes back** — **RUN 2026-10-05, FAIL** (`usb-resume` all four steps, `PHY on` never logged; NEXT §5) | After 33.1, plug the cable in | The PC sees the player; charging starts | Dead until a restart = the 2026-09-04 `a_idle` fault is still there: stage 2 stays opt-in |
 | 33.3 | **Plugging in wakes it** | Suspended, plug the cable in without pressing anything | The charge light / PC connection appears | Nothing until Power = a suspended player on a charger does not charge: a blocker for making it default |
 | 33.4 | **Never under music** | Play on the jack, screen off 3 minutes; the same over Bluetooth | Music never stops; no `releasing the wakelock` line | It stopped: delete the file, report the log |
 | 33.5 | **How often it wakes by itself** | Leave it suspended 30 minutes | `resume_count` rises by a handful at most | Dozens = something is waking it; `spm_r12` names the source |

@@ -1306,8 +1306,11 @@ static bool ram_unlocked(void) {
 static void s_ram_suspend_opt_in(void) {
     suspend_fixture();
     cinder_harness_fs_write("/contents/cinder_ram_suspend", "");
+    cinder_harness_fs_write("/sys/module/icx_pm_helper/parameters/icx_bid2", "0\n");
     cinder_harness_run();
     check(ram_unlocked(), "file present, idle, off the cable: the wakelock is released");
+    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-power usbid3"), 1,
+             "…after telling the kernel to resume the USB port as a device, once");
 }
 // The same switch as a line in the one settings file, and a longer key that must not match it.
 static void s_ram_suspend_conf(void) {
