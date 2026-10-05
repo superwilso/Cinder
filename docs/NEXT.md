@@ -122,6 +122,12 @@ when its content moves. What is left needs the player:
    after the resume it logs `Connect USB. bcdet=1(STD)` and the gadget is re-bound, and
    `PHY on` never appears. So the charger driver's PHY switch is what does not come back; read
    its state test in `bq24262_wmport` next (offline, `artifacts/walkmanone/re/kernel`).
+   **Fixed and re-run the same evening:** the cause is `musb_bus_resume` switching the port to
+   host unless `icx_bid2` is 3 (`analysis/RE_usb_after_resume.md`). Cinder now writes 3 for the
+   length of the suspend; with that the gadget was `CONFIGURED` five seconds after the plug and
+   mass storage worked, no restart. Left: dev-channel adb is offline after a resume (the gadget
+   comes back as `0B8B`, not the composite), 33.3 and 33.5 are not run, and the write back of
+   the ID was not observed.
    Also by design and worth a decision: with headphones still linked it does not suspend until
    Bluetooth auto off has fired, about 11 minutes after a pause.
 3. **The CPU cap under Bluetooth.** Stage 1 runs there now; the 1040 MHz cap does not, because LDAC
