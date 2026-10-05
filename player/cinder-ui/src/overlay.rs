@@ -58,16 +58,22 @@ pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
 /// press, which rounds to no movement at all, and a volume rocker that appears to miss three
 /// presses out of four is worse than a coarse one. So the bar keeps showing the sink's level and
 /// the trim says, exactly, how far below it the source is sitting.
-pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_half_db: i8,
-                      bt_route: bool) {
+pub fn volume_trimmed(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    level: u8,
+    trim_half_db: i8,
+    bt_route: bool,
+) {
     c.begin_layer(); // drawn over the screen on purpose (see `Canvas::begin_layer`)
-    // A slim pill just under the status bar, NOT a card in the middle of the screen.
-    //
-    // It used to be a 320x96 slab centred on the panel, parked over the focal point of the album
-    // art, and it said the same number three separate ways: "18", "/ 120" and "15%". Volume is a
-    // transient nudge — you already know what you pressed, you just want confirmation — so it needs
-    // to be readable at a glance and gone, not to take over the screen. One icon (what it is), one
-    // bar (where it is), one number (exactly where it is), out of the way of the artwork.
+                     // A slim pill just under the status bar, NOT a card in the middle of the screen.
+                     //
+                     // It used to be a 320x96 slab centred on the panel, parked over the focal point of the album
+                     // art, and it said the same number three separate ways: "18", "/ 120" and "15%". Volume is a
+                     // transient nudge — you already know what you pressed, you just want confirmation — so it needs
+                     // to be readable at a glance and gone, not to take over the screen. One icon (what it is), one
+                     // bar (where it is), one number (exactly where it is), out of the way of the artwork.
     let level = level.min(VOL_MAX);
     // ZERO IS NOT MUTE ON BLUETOOTH, and saying so was a defect.
     //
@@ -97,25 +103,63 @@ pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_ha
     fill_rect(c, x0, y0 + pill_h - 1, pill_w, 1, t.line);
 
     let mid = y0 + pill_h / 2;
-    icons::sound(c, (x0 + 26) as f32, mid as f32, 20.0, if at_floor { t.faint } else { t.acc });
+    icons::sound(
+        c,
+        (x0 + 26) as f32,
+        mid as f32,
+        20.0,
+        if at_floor { t.faint } else { t.acc },
+    );
 
     // Number on the right, so the bar between them gets the width.
-    let val = if at_floor { String::from(floor_word) } else { format!("{level}") };
-    let vst = sty(Family::Mono, Weight::Bold, 15.0, if at_floor { t.faint } else { t.ink }, 0.04);
+    let val = if at_floor {
+        String::from(floor_word)
+    } else {
+        format!("{level}")
+    };
+    let vst = sty(
+        Family::Mono,
+        Weight::Bold,
+        15.0,
+        if at_floor { t.faint } else { t.ink },
+        0.04,
+    );
     let vw = text::measure(f, &val, &vst);
-    text::draw(c, f, (x0 + pill_w - 20) as f32 - vw, (mid + 5) as f32, &val, &vst);
+    text::draw(
+        c,
+        f,
+        (x0 + pill_w - 20) as f32 - vw,
+        (mid + 5) as f32,
+        &val,
+        &vst,
+    );
 
     // The trim, when there is one: "-1.5" in the same mono face, dimmer, immediately left of the
     // level. Drawn before the bar is measured so the bar gives up the width rather than overlapping.
     let trim_txt = if trim_half_db < 0 {
-        format!("-{}.{} dB", -trim_half_db / 2, if trim_half_db % 2 == 0 { 0 } else { 5 })
+        format!(
+            "-{}.{} dB",
+            -trim_half_db / 2,
+            if trim_half_db % 2 == 0 { 0 } else { 5 }
+        )
     } else {
         String::new()
     };
     let tst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.04);
-    let tw2 = if trim_txt.is_empty() { 0.0 } else { text::measure(f, &trim_txt, &tst) + 10.0 };
+    let tw2 = if trim_txt.is_empty() {
+        0.0
+    } else {
+        text::measure(f, &trim_txt, &tst) + 10.0
+    };
     if !trim_txt.is_empty() {
-        text::draw(c, f, (x0 + pill_w - 20) as f32 - vw - tw2, (mid + 4) as f32, &trim_txt, &tst);
+        text::draw(
+            c,
+            f,
+            (x0 + pill_w - 20) as f32 - vw - tw2,
+            (mid + 4) as f32,
+            &trim_txt,
+            &tst,
+        );
     }
 
     // Level bar fills the space between the icon and the number.
@@ -127,7 +171,14 @@ pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_ha
         fill_rect(c, bx, by, bw, bh, t.line);
         let filled = (bw as f32 * (level as f32 / VOL_MAX as f32)).round() as i32;
         if filled > 0 {
-            fill_rect(c, bx, by, filled, bh, if at_floor { t.faint } else { t.acc });
+            fill_rect(
+                c,
+                bx,
+                by,
+                filled,
+                bh,
+                if at_floor { t.faint } else { t.acc },
+            );
         }
     }
 }
@@ -181,6 +232,12 @@ pub fn queue_chip(c: &mut Canvas, t: &Theme, f: &FontSet, row_y: i32, progress: 
     let x0 = 330 + (((1.0 - p) * (1.0 - p)) * (W as f32 - 330.0)) as i32;
     let y0 = (row_y - ph / 2).clamp(0, H as i32 - ph);
     fill_rect(c, x0, y0, pw, ph, t.acc);
-    text::draw(c, f, (x0 + 16) as f32, (y0 + 23) as f32, "+ QUEUED",
-        &sty(Family::Mono, Weight::Bold, 14.0, t.acc_ink, 0.12));
+    text::draw(
+        c,
+        f,
+        (x0 + 16) as f32,
+        (y0 + 23) as f32,
+        "+ QUEUED",
+        &sty(Family::Mono, Weight::Bold, 14.0, t.acc_ink, 0.12),
+    );
 }

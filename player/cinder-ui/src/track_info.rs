@@ -145,7 +145,9 @@ const LINK_MARK_W: f32 = 14.0;
 /// `content_h`. Same source, so the hit test cannot disagree with what was drawn.
 pub fn row_heights(f: &FontSet, t: &Theme, rows: &[(String, String)]) -> Vec<i32> {
     let st = value_style(t);
-    rows.iter().map(|(_, v)| row_h(wrap(f, v, &st, RIGHT - VALUE_X).len())).collect()
+    rows.iter()
+        .map(|(_, v)| row_h(wrap(f, v, &st, RIGHT - VALUE_X).len()))
+        .collect()
 }
 
 /// Which row is at screen-`y`, from the heights `render` last measured.
@@ -165,7 +167,9 @@ pub fn hit_row(heights: &[i32], scroll_px: i32, y: i32) -> Option<usize> {
 
 pub fn content_h(f: &FontSet, t: &Theme, rows: &[(String, String)]) -> i32 {
     let st = value_style(t);
-    rows.iter().map(|(_, v)| row_h(wrap(f, v, &st, RIGHT - VALUE_X).len())).sum()
+    rows.iter()
+        .map(|(_, v)| row_h(wrap(f, v, &st, RIGHT - VALUE_X).len()))
+        .sum()
 }
 
 pub fn max_scroll_px(f: &FontSet, t: &Theme, rows: &[(String, String)]) -> i32 {
@@ -193,13 +197,16 @@ pub fn render(
         let st = sty(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
         text::draw(c, f, LABEL_X, (TOP + 40) as f32, "Nothing is playing.", &st);
         c.clear_clip();
-        return;   // and NO action band: there is no track to add.
+        return; // and NO action band: there is no track to add.
     }
 
     let (ls, vs) = (label_style(t), value_style(t));
     // A link differs only in COLOUR and the chevron, never in metrics — the wrap below is measured
     // with the plain style on purpose, so a row is the same height whether or not it is a link.
-    let link_vs = TextStyle { color: t.acc, ..value_style(t) };
+    let link_vs = TextStyle {
+        color: t.acc,
+        ..value_style(t)
+    };
     let mut y = TOP - scroll;
     for (label, value) in rows {
         let lines = wrap(f, value, &vs, RIGHT - VALUE_X);
@@ -213,7 +220,16 @@ pub fn render(
             }
             text::draw(c, f, LABEL_X, (y + 27) as f32, &label.to_uppercase(), &ls);
             if is_rating(label) {
-                crate::kit::stars(c, t, VALUE_X as i32, y + ROW_H / 2, 24, STAR_PITCH, rating, true);
+                crate::kit::stars(
+                    c,
+                    t,
+                    VALUE_X as i32,
+                    y + ROW_H / 2,
+                    24,
+                    STAR_PITCH,
+                    rating,
+                    true,
+                );
             }
             let st = if link { &link_vs } else { &vs };
             for (i, line) in lines.iter().enumerate().filter(|_| !is_rating(label)) {
@@ -221,14 +237,29 @@ pub fn render(
             }
             if link {
                 // Right-aligned against the same edge the values wrap to, so it never lands on one.
-                crate::widgets::right(c, f, RIGHT + LINK_MARK_W, (y + 27) as f32, LINK_MARK, &link_vs);
+                crate::widgets::right(
+                    c,
+                    f,
+                    RIGHT + LINK_MARK_W,
+                    (y + 27) as f32,
+                    LINK_MARK,
+                    &link_vs,
+                );
             }
             hline(c, y + h - 1, t.line);
         }
         y += h;
     }
     c.clear_clip();
-    scrollbar(c, t, TOP, BOTTOM, scroll, content_h(f, t, rows), sbar_active);
+    scrollbar(
+        c,
+        t,
+        TOP,
+        BOTTOM,
+        scroll,
+        content_h(f, t, rows),
+        sbar_active,
+    );
     action_band(c, t, f);
 }
 
@@ -237,8 +268,14 @@ fn action_band(c: &mut Canvas, t: &Theme, f: &FontSet) {
     let w = crate::canvas::W as i32;
     fill_rect(c, 0, BOTTOM, w, ACTION_H, t.panel);
     hline(c, BOTTOM, t.line);
-    center(c, f, (w / 2) as f32, (BOTTOM + ACTION_H / 2 + 6) as f32, "+  ADD TO PLAYLIST",
-           &sty(Family::Mono, Weight::Bold, 13.0, t.acc, 0.14));
+    center(
+        c,
+        f,
+        (w / 2) as f32,
+        (BOTTOM + ACTION_H / 2 + 6) as f32,
+        "+  ADD TO PLAYLIST",
+        &sty(Family::Mono, Weight::Bold, 13.0, t.acc, 0.14),
+    );
 }
 
 #[cfg(test)]
@@ -266,7 +303,10 @@ mod tests {
         let lines = wrap(&f, path, &vs, w);
         assert!(lines.len() > 1, "a full path does not fit one line");
         for l in &lines {
-            assert!(text::measure(&f, l, &vs) <= w, "line ran past the column: {l:?}");
+            assert!(
+                text::measure(&f, l, &vs) <= w,
+                "line ran past the column: {l:?}"
+            );
         }
         // Nothing is lost: the pieces still spell the path.
         assert_eq!(lines.concat(), path);
@@ -299,7 +339,10 @@ mod tests {
         let t = Theme::day();
         let rows: Vec<(String, String)> = vec![
             ("Title".into(), "Short".into()),
-            ("Path".into(), "/contents/".to_string() + &"deep/".repeat(20) + "file.flac"),
+            (
+                "Path".into(),
+                "/contents/".to_string() + &"deep/".repeat(20) + "file.flac",
+            ),
         ];
         let vs = value_style(&t);
         let by_hand: i32 = rows

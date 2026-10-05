@@ -4,7 +4,9 @@
 use cinder_db::Db;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: schema_dump <MTPDB.dat>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: schema_dump <MTPDB.dat>");
     let db = Db::open(&path).expect("open");
     let conn = db.conn();
 
@@ -21,7 +23,9 @@ fn main() {
     for row in rows {
         let (name, sql) = row.unwrap();
         let count: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM \"{name}\""), [], |r| r.get(0))
+            .query_row(&format!("SELECT COUNT(*) FROM \"{name}\""), [], |r| {
+                r.get(0)
+            })
             .unwrap_or(-1);
         println!("\n-- {name}  ({count} rows)");
         if let Some(s) = sql {
@@ -57,7 +61,11 @@ fn dump_rows(conn: &rusqlite::Connection, table: &str, limit: usize) {
                 Ok(rusqlite::types::ValueRef::Real(v)) => v.to_string(),
                 Ok(rusqlite::types::ValueRef::Text(v)) => {
                     let s = String::from_utf8_lossy(v);
-                    if s.len() > 60 { format!("{}…", &s[..60.min(s.len())]) } else { s.into_owned() }
+                    if s.len() > 60 {
+                        format!("{}…", &s[..60.min(s.len())])
+                    } else {
+                        s.into_owned()
+                    }
                 }
                 Ok(rusqlite::types::ValueRef::Blob(b)) => format!("<blob {} B>", b.len()),
                 Err(_) => "?".into(),

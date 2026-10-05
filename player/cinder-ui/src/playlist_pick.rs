@@ -70,8 +70,17 @@ pub fn hit_row(rows: usize, scroll_px: i32, y: i32) -> Option<usize> {
 }
 
 /// "Add to playlist": row 0 is always NEW PLAYLIST, then the user's own lists.
-pub fn render_targets(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, track: &str,
-                      targets: &[Target], sony_count: usize, scroll_px: i32, sbar_active: bool) {
+pub fn render_targets(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    title: &str,
+    track: &str,
+    targets: &[Target],
+    sony_count: usize,
+    scroll_px: i32,
+    sbar_active: bool,
+) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, title, Some(&fit_caption(f, track, t)));
     let rows = targets.len() + 1;
@@ -85,17 +94,57 @@ pub fn render_targets(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, track
         let cy = y + ROW_H / 2;
         if index == 0 {
             fill_rect(c, 0, y, W as i32, ROW_H, t.acc);
-            text::draw(c, f, 26.0, (cy + 1) as f32, "+  NEW PLAYLIST",
-                       &sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc_ink, 0.04));
-            text::draw(c, f, 26.0, (cy + 19) as f32, "NAME IT, THEN ADD THIS TRACK",
-                       &sty(Family::Mono, Weight::Regular, 10.0, t.acc_ink, 0.14));
+            text::draw(
+                c,
+                f,
+                26.0,
+                (cy + 1) as f32,
+                "+  NEW PLAYLIST",
+                &sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc_ink, 0.04),
+            );
+            text::draw(
+                c,
+                f,
+                26.0,
+                (cy + 19) as f32,
+                "NAME IT, THEN ADD THIS TRACK",
+                &sty(Family::Mono, Weight::Regular, 10.0, t.acc_ink, 0.14),
+            );
         } else {
             let target = &targets[index - 1];
-            text::draw(c, f, 26.0, (cy - 2) as f32, &fit(f, target.name,
-                       &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0), 400.0),
-                       &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
-            text::draw(c, f, 26.0, (cy + 17) as f32, &format!("{} tracks", target.tracks),
-                       &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0));
+            text::draw(
+                c,
+                f,
+                26.0,
+                (cy - 2) as f32,
+                &fit(
+                    f,
+                    target.name,
+                    &sty(
+                        Family::Sans,
+                        Weight::SemiBold,
+                        crate::scale::ROW,
+                        t.ink,
+                        0.0,
+                    ),
+                    400.0,
+                ),
+                &sty(
+                    Family::Sans,
+                    Weight::SemiBold,
+                    crate::scale::ROW,
+                    t.ink,
+                    0.0,
+                ),
+            );
+            text::draw(
+                c,
+                f,
+                26.0,
+                (cy + 17) as f32,
+                &format!("{} tracks", target.tracks),
+                &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0),
+            );
             crate::icons::chevron(c, 452.0, cy as f32, 13.0, t.faint);
         }
         hline(c, y + ROW_H, t.line);
@@ -112,25 +161,53 @@ pub fn render_targets(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, track
 }
 
 /// "Add tracks": every song in the library, with the ones already in the playlist ticked.
-pub fn render_tracks(c: &mut Canvas, t: &Theme, f: &FontSet, playlist: &str, songs: &[&SongRow],
-                     is_in: &dyn Fn(usize) -> bool, scroll_px: i32, added: usize,
-                     query: &str, total: usize, sbar_active: bool) {
+pub fn render_tracks(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    playlist: &str,
+    songs: &[&SongRow],
+    is_in: &dyn Fn(usize) -> bool,
+    scroll_px: i32,
+    added: usize,
+    query: &str,
+    total: usize,
+    sbar_active: bool,
+) {
     c.fill(t.bg);
-    let caption = if added > 0 { format!("{added} ADDED") } else { "TAP TO ADD".to_string() };
+    let caption = if added > 0 {
+        format!("{added} ADDED")
+    } else {
+        "TAP TO ADD".to_string()
+    };
     crate::chrome::header(c, t, f, playlist, Some(&caption));
 
     // ── the search band ──────────────────────────────────────────────────────────────────────
     crate::widgets::fill_rect(c, 0, TOP, crate::canvas::W as i32, SEARCH_H, t.panel);
     crate::widgets::hline(c, TOP + SEARCH_H - 1, t.line);
     let has = !query.is_empty();
-    let qs = sty(Family::Sans, Weight::Regular, 17.0, if has { t.ink } else { t.faint }, 0.0);
-    let shown = if has { query } else { "Search titles, artists, albums" };
+    let qs = sty(
+        Family::Sans,
+        Weight::Regular,
+        17.0,
+        if has { t.ink } else { t.faint },
+        0.0,
+    );
+    let shown = if has {
+        query
+    } else {
+        "Search titles, artists, albums"
+    };
     let cy = (TOP + SEARCH_H / 2 + 5) as f32;
     text::draw(c, f, 26.0, cy, &fit(f, shown, &qs, 340.0), &qs);
     // The count is the useful feedback: it says whether the filter found anything BEFORE you
     // scroll, and it is the only place the size of the whole library is visible here.
     let ns = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06);
-    let n = if has { format!("{} / {}", songs.len(), total) } else { format!("{total}") };
+    let n = if has {
+        format!("{} / {}", songs.len(), total)
+    } else {
+        format!("{total}")
+    };
     crate::widgets::right(c, f, 454.0, cy, &n, &ns);
 
     c.set_clip_y(LIST_TOP, BOTTOM);
@@ -143,12 +220,34 @@ pub fn render_tracks(c: &mut Canvas, t: &Theme, f: &FontSet, playlist: &str, son
         let song = songs[index];
         let cy = y + ROW_H / 2;
         let inside = is_in(index);
-        let title_style = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW,
-                              if inside { t.dim } else { t.ink }, 0.0);
-        text::draw(c, f, 26.0, (cy - 2) as f32, &fit(f, &song.title, &title_style, 372.0), &title_style);
-        text::draw(c, f, 26.0, (cy + 17) as f32,
-                   &fit(f, &song.artist, &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0), 372.0),
-                   &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0));
+        let title_style = sty(
+            Family::Sans,
+            Weight::SemiBold,
+            crate::scale::ROW,
+            if inside { t.dim } else { t.ink },
+            0.0,
+        );
+        text::draw(
+            c,
+            f,
+            26.0,
+            (cy - 2) as f32,
+            &fit(f, &song.title, &title_style, 372.0),
+            &title_style,
+        );
+        text::draw(
+            c,
+            f,
+            26.0,
+            (cy + 17) as f32,
+            &fit(
+                f,
+                &song.artist,
+                &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0),
+                372.0,
+            ),
+            &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0),
+        );
         // ✓ for a track already in the list, + for one that is not. The tick is drawn dim, so the
         // list reads as "what is left to add" at a glance.
         if inside {
@@ -160,10 +259,23 @@ pub fn render_tracks(c: &mut Canvas, t: &Theme, f: &FontSet, playlist: &str, son
         y += ROW_H;
     }
     c.clear_clip();
-    crate::library::scrollbar(c, t, TOP, BOTTOM, scroll_px, content_h(songs.len()), sbar_active);
-    crate::widgets::center(c, f, 240.0, (BOTTOM + 26) as f32,
-                           "BACK WHEN YOU ARE DONE",
-                           &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16));
+    crate::library::scrollbar(
+        c,
+        t,
+        TOP,
+        BOTTOM,
+        scroll_px,
+        content_h(songs.len()),
+        sbar_active,
+    );
+    crate::widgets::center(
+        c,
+        f,
+        240.0,
+        (BOTTOM + 26) as f32,
+        "BACK WHEN YOU ARE DONE",
+        &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16),
+    );
 }
 
 fn footer(c: &mut Canvas, t: &Theme, f: &FontSet, sony_count: usize) {
@@ -173,8 +285,14 @@ fn footer(c: &mut Canvas, t: &Theme, f: &FontSet, sony_count: usize) {
     } else {
         "PLAYLISTS YOU MAKE ARE SAVED ON THE DEVICE".to_string()
     };
-    crate::widgets::center(c, f, 240.0, (BOTTOM + 26) as f32, &note,
-                           &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16));
+    crate::widgets::center(
+        c,
+        f,
+        240.0,
+        (BOTTOM + 26) as f32,
+        &note,
+        &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16),
+    );
 }
 
 /// A tick. `icons` has neither a tick nor a plus, and this is the only screen that wants them.
@@ -200,7 +318,12 @@ fn plus(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, r: f32) {
 }
 
 fn fit_caption(f: &FontSet, s: &str, t: &Theme) -> String {
-    fit(f, &s.to_uppercase(), &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1), 180.0)
+    fit(
+        f,
+        &s.to_uppercase(),
+        &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1),
+        180.0,
+    )
 }
 
 #[cfg(test)]
@@ -219,7 +342,15 @@ mod tests {
     fn taps_off_the_list_hit_nothing() {
         assert_eq!(hit_row(3, 0, TOP - 1), None);
         assert_eq!(hit_row(3, 0, BOTTOM), None);
-        assert_eq!(hit_row(3, 0, TOP + ROW_H * 3 + 2), None, "past the last row");
-        assert_eq!(hit_row(0, 0, TOP + 2), None, "an empty list has no rows to hit");
+        assert_eq!(
+            hit_row(3, 0, TOP + ROW_H * 3 + 2),
+            None,
+            "past the last row"
+        );
+        assert_eq!(
+            hit_row(0, 0, TOP + 2),
+            None,
+            "an empty list has no rows to hit"
+        );
     }
 }

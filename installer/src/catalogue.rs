@@ -156,7 +156,11 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
                 if f.len() < 3 || f.iter().any(|x| x.is_empty()) {
                     return Err(format!("malformed choice line under '{}': {t}", last.id));
                 }
-                last.choices.push(Choice { value: f[0].into(), label: f[1].into(), help: f[2].into() });
+                last.choices.push(Choice {
+                    value: f[0].into(),
+                    label: f[1].into(),
+                    help: f[2].into(),
+                });
                 continue;
             }
             if !last.desc.is_empty() {
@@ -324,11 +328,18 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
     #[test]
     fn lines_join_paragraphs_split_and_notes_vanish() {
         let c = parse_catalogue(SAMPLE).unwrap();
-        assert_eq!(c[0].desc, "Installs cinder-power. Second line.", "wrapped lines join with a space");
+        assert_eq!(
+            c[0].desc, "Installs cinder-power. Second line.",
+            "wrapped lines join with a space"
+        );
         assert_eq!(c[1].desc, "Patches three bytes.\n\nSecond paragraph.");
         assert!(!c[1].desc.contains("developer note"));
-        let b = parse_catalogue("a | A | bool | 1 | T\n    One.\n    - first\n    - second\n").unwrap();
-        assert_eq!(b[0].desc, "One.\n- first\n- second", "a bullet starts its own line");
+        let b =
+            parse_catalogue("a | A | bool | 1 | T\n    One.\n    - first\n    - second\n").unwrap();
+        assert_eq!(
+            b[0].desc, "One.\n- first\n- second",
+            "a bullet starts its own line"
+        );
     }
 
     #[test]
@@ -346,17 +357,33 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
              * Plus v2 — Walkman One's second.\n\n\
              Second paragraph."
         );
-        assert_eq!(c[0].explain("*", "-"), c[0].desc, "a bool has no choice list");
+        assert_eq!(
+            c[0].explain("*", "-"),
+            c[0].desc,
+            "a bool has no choice list"
+        );
     }
 
     #[test]
     fn every_enum_value_needs_exactly_one_choice_line() {
         let head = "s | S | enum:a,b | a | T\n    Text.\n";
-        assert!(parse_catalogue(&format!("{head}    = a | A | x\n")).is_err(), "b has no label");
-        assert!(parse_catalogue(&format!("{head}    = a | A | x\n    = c | C | x\n")).is_err(), "c is not a value");
-        assert!(parse_catalogue(&format!("{head}    = a | A\n    = b | B | x\n")).is_err(), "a has no help");
+        assert!(
+            parse_catalogue(&format!("{head}    = a | A | x\n")).is_err(),
+            "b has no label"
+        );
+        assert!(
+            parse_catalogue(&format!("{head}    = a | A | x\n    = c | C | x\n")).is_err(),
+            "c is not a value"
+        );
+        assert!(
+            parse_catalogue(&format!("{head}    = a | A\n    = b | B | x\n")).is_err(),
+            "a has no help"
+        );
         assert!(parse_catalogue(&format!("{head}    = a | A | x\n    = b | B | y\n")).is_ok());
-        assert!(parse_catalogue("p | P | bool | 1 | T\n    = 1 | On | x\n").is_err(), "not on a bool");
+        assert!(
+            parse_catalogue("p | P | bool | 1 | T\n    = 1 | On | x\n").is_err(),
+            "not on a bool"
+        );
     }
 
     /// The catalogue this installer actually embeds. Its text is written for the person
@@ -364,14 +391,35 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
     /// owner called them "terrible" and "overly complicated"). They belong in the `#` notes.
     #[test]
     fn the_real_catalogue_speaks_plainly() {
-        let comps = parse_catalogue(crate::CATALOGUE.expect("components.conf is embedded")).unwrap();
+        let comps =
+            parse_catalogue(crate::CATALOGUE.expect("components.conf is embedded")).unwrap();
         for c in &comps {
             let shown = format!("{} {}", c.title, c.explain("*", "-"));
-            for jargon in ["/proc", "/data/", "/system", "hw:0", "setuid", "SHA-256", "libaudiohal", ".so ", "I2C", "ALSA", "regmon"] {
-                assert!(!shown.contains(jargon), "'{}' shows '{jargon}' to the person installing", c.id);
+            for jargon in [
+                "/proc",
+                "/data/",
+                "/system",
+                "hw:0",
+                "setuid",
+                "SHA-256",
+                "libaudiohal",
+                ".so ",
+                "I2C",
+                "ALSA",
+                "regmon",
+            ] {
+                assert!(
+                    !shown.contains(jargon),
+                    "'{}' shows '{jargon}' to the person installing",
+                    c.id
+                );
             }
             let words = shown.split_whitespace().count();
-            assert!(words <= 180, "'{}' is {words} words — say less, put the rest in a # note", c.id);
+            assert!(
+                words <= 180,
+                "'{}' is {words} words — say less, put the rest in a # note",
+                c.id
+            );
         }
     }
 
@@ -381,10 +429,19 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
         let t = conf_text(&c, "stable");
         assert!(t.contains("CINDER_POWER=1"));
         assert!(t.contains("CINDER_SIGNATURE=stock"));
-        for line in t.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+        for line in t
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        {
             let (k, v) = line.split_once('=').expect("KEY=VALUE");
-            assert!(k.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_'), "{k}");
-            assert!(v.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'), "{v}");
+            assert!(
+                k.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_'),
+                "{k}"
+            );
+            assert!(
+                v.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'),
+                "{v}"
+            );
         }
     }
 
@@ -428,9 +485,16 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
     fn unknown_keys_and_stale_values_are_skipped_not_fatal() {
         let mut c = parse_catalogue(SAMPLE).unwrap();
         let saved = "CINDER_GONE=1\nCINDER_SIGNATURE=pv9\nCINDER_POWER=0\nrubbish\n";
-        assert_eq!(apply_saved(&mut c, saved), 1, "only CINDER_POWER is applicable");
+        assert_eq!(
+            apply_saved(&mut c, saved),
+            1,
+            "only CINDER_POWER is applicable"
+        );
         assert_eq!(c[0].value, "0");
-        assert_eq!(c[1].value, "stock", "an invalid value leaves the default alone");
+        assert_eq!(
+            c[1].value, "stock",
+            "an invalid value leaves the default alone"
+        );
     }
 
     #[test]
@@ -442,6 +506,9 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
 
         let (ch, ver) = saved_stamp("CINDER_POWER=1\n");
         assert_eq!(ch, None);
-        assert_eq!(ver, None, "an older conf has no installer stamp and that is not an error");
+        assert_eq!(
+            ver, None,
+            "an older conf has no installer stamp and that is not an error"
+        );
     }
 }

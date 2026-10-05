@@ -25,7 +25,11 @@ pub const ROW_MORE: usize = 9;
 
 /// How many rows are on the screen: all of them, or the everyday ones.
 pub fn rows(more: bool) -> usize {
-    if more { ROWS } else { EVERYDAY }
+    if more {
+        ROWS
+    } else {
+        EVERYDAY
+    }
 }
 /// Display ▸ — palette, accent, night, the volume readout, text size and the visualiser.
 pub const ROW_DISPLAY: usize = 0;
@@ -94,11 +98,20 @@ const RH: i32 = kit::ROW_H;
 /// Section labels and how many rows sit under each — the single source both `content_height` and
 /// `row_at` read, so a row added to one can't be missed by the other.
 /// The first group is the everyday list and has no label: a list that fits the screen needs none.
-const SECTIONS: [(&str, usize); 5] =
-    [("", EVERYDAY), ("LIBRARY", 2), ("POWER SAVING", 2), ("SYSTEM", 6), ("ABOUT", 2)];
+const SECTIONS: [(&str, usize); 5] = [
+    ("", EVERYDAY),
+    ("LIBRARY", 2),
+    ("POWER SAVING", 2),
+    ("SYSTEM", 6),
+    ("ABOUT", 2),
+];
 /// Height of a section's label; the unlabelled first group has none.
 fn label_h(label: &str) -> i32 {
-    if label.is_empty() { 0 } else { kit::SECTION_H }
+    if label.is_empty() {
+        0
+    } else {
+        kit::SECTION_H
+    }
 }
 
 /// The Display row's second line: what is behind it (handoff 2c).
@@ -172,7 +185,9 @@ pub struct SettingsView<'a> {
 /// Total height of the row content, from the top of the screen to the bottom of the last row.
 /// Exceeds the 800px panel, which is why this screen scrolls.
 pub fn content_height(more: bool) -> i32 {
-    row_span(0, more).last().map_or(LIST_TOP, |(_, top)| top + RH)
+    row_span(0, more)
+        .last()
+        .map_or(LIST_TOP, |(_, top)| top + RH)
 }
 
 /// How far this screen can scroll. 0 would mean everything fits (it doesn't).
@@ -184,7 +199,9 @@ pub fn max_scroll_px(more: bool) -> i32 {
 /// vertical layout exactly: header ends at 91, each section label is `kit::SECTION_H`, and every
 /// row is `RH` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow).
 pub fn row_at(y: i32, scroll: i32, more: bool) -> Option<usize> {
-    row_span(scroll, more).find(|(_, top)| y >= *top && y < *top + RH).map(|(r, _)| r)
+    row_span(scroll, more)
+        .find(|(_, top)| y >= *top && y < *top + RH)
+        .map(|(r, _)| r)
 }
 
 /// Every row as `(index, screen-y of its top)`, in order — the one place the vertical layout is
@@ -213,7 +230,10 @@ pub const LIST_TOP: i32 = 91;
 
 /// Content-space top y of row `r` (i.e. at scroll 0, measured from LIST_TOP).
 pub fn row_top_px(r: usize) -> i32 {
-    row_span(0, true).find(|(i, _)| *i == r).map(|(_, top)| top - 91).unwrap_or(0)
+    row_span(0, true)
+        .find(|(i, _)| *i == r)
+        .map(|(_, top)| top - 91)
+        .unwrap_or(0)
 }
 
 /// The trailing value of row `r`.
@@ -311,7 +331,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                 ROW_BT_IDLE_OFF => BT_IDLE_OFF_SUB,
                 _ => "",
             };
-            y = kit::row(c, t, f, y, RH, &Row::new(title(r)).sub(sub).trail(trail(r, v)).sel(sel == r));
+            y = kit::row(
+                c,
+                t,
+                f,
+                y,
+                RH,
+                &Row::new(title(r)).sub(sub).trail(trail(r, v)).sel(sel == r),
+            );
             r += 1;
         }
     }
@@ -329,13 +356,15 @@ mod tests {
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",
-            database: "3,424 tracks", storage: "12.4 / 58 GB",
+            database: "3,424 tracks",
+            storage: "12.4 / 58 GB",
             sleep: "30 MIN",
             brightness: "4 / 5",
             screen_off: "OFF",
             auto_off: "OFF",
             bt_idle_off: false,
-            boot_stock: "SONY", clock: "17 Aug · 09:01",
+            boot_stock: "SONY",
+            clock: "17 Aug · 09:01",
             ignore_the: false,
             quick: false,
             shuffle_by: "SONGS",
@@ -385,7 +414,11 @@ mod tests {
         render(&mut c, &t, &f, 0, max_scroll_px(true), &view());
         // A full-screen fill must reach row 0 again; if the clip leaked, the top band stays put.
         c.fill(t.acc);
-        assert_eq!(c.buf[0], crate::canvas::to_u32(t.acc), "clip band leaked out of settings::render");
+        assert_eq!(
+            c.buf[0],
+            crate::canvas::to_u32(t.acc),
+            "clip band leaked out of settings::render"
+        );
     }
 
     /// Scrolling still has to actually move the rows — otherwise the test above passes trivially.
@@ -403,7 +436,10 @@ mod tests {
             .flat_map(|y| (0..crate::canvas::W).map(move |x| y * crate::canvas::W + x))
             .filter(|&i| a.buf[i] != b.buf[i])
             .count();
-        assert!(differing > 5000, "scrolling barely changed the list ({differing} px)");
+        assert!(
+            differing > 5000,
+            "scrolling barely changed the list ({differing} px)"
+        );
     }
 }
 
@@ -416,8 +452,11 @@ mod volume_limit_tests {
     /// drops off the bottom of the screen or hands out a row index nothing renders.
     #[test]
     fn the_section_table_accounts_for_every_row() {
-        assert_eq!(SECTIONS.iter().map(|(_, n)| n).sum::<usize>(), ROWS,
-                   "SECTIONS {SECTIONS:?} does not add up to ROWS {ROWS}");
+        assert_eq!(
+            SECTIONS.iter().map(|(_, n)| n).sum::<usize>(),
+            ROWS,
+            "SECTIONS {SECTIONS:?} does not add up to ROWS {ROWS}"
+        );
     }
 
     /// Every row must be reachable by a tap at scroll 0 or at the bottom of the scroll range —
@@ -426,9 +465,14 @@ mod volume_limit_tests {
     fn every_row_including_the_new_one_is_hittable() {
         for r in 0..ROWS {
             let top = row_top_px(r) + LIST_TOP;
-            let scroll = (top + RH / 2 - (crate::canvas::H as i32 / 2)).clamp(0, max_scroll_px(true));
+            let scroll =
+                (top + RH / 2 - (crate::canvas::H as i32 / 2)).clamp(0, max_scroll_px(true));
             let y = top - scroll + RH / 2;
-            assert_eq!(row_at(y, scroll, true), Some(r), "row {r} not hittable at y={y} scroll={scroll}");
+            assert_eq!(
+                row_at(y, scroll, true),
+                Some(r),
+                "row {r} not hittable at y={y} scroll={scroll}"
+            );
         }
     }
 
@@ -441,7 +485,14 @@ mod volume_limit_tests {
         assert_eq!(max_scroll_px(false), 0, "the folded list must not scroll");
         let last = LIST_TOP + EVERYDAY as i32 * RH - RH / 2;
         assert_eq!(row_at(last, 0, false), Some(ROW_MORE));
-        assert_eq!(row_at(last + RH, 0, false), None, "nothing below More settings while folded");
-        assert_eq!(row_at(last + RH + kit::SECTION_H, 0, true), Some(ROW_IGNORE_THE));
+        assert_eq!(
+            row_at(last + RH, 0, false),
+            None,
+            "nothing below More settings while folded"
+        );
+        assert_eq!(
+            row_at(last + RH + kit::SECTION_H, 0, true),
+            Some(ROW_IGNORE_THE)
+        );
     }
 }

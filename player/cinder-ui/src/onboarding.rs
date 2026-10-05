@@ -39,33 +39,113 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, page: usize) {
 
 fn welcome(c: &mut Canvas, t: &Theme, f: &FontSet) {
     // accent wordmark + tagline
-    crate::widgets::draw_fit(c, f, 36.0, 300.0, "CINDER", &sty(Family::Sans, Weight::Bold, 52.0, t.acc, 0.02), 458.0);
-    crate::widgets::draw_fit(c, f, 38.0, 340.0, "Your music, clean and quiet.", &sty(Family::Sans, Weight::Regular, 18.0, t.ink, 0.0), 458.0);
-    crate::widgets::draw_fit(c, f, 38.0, 366.0, "A replacement player for the Walkman.", &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0), 458.0);
+    crate::widgets::draw_fit(
+        c,
+        f,
+        36.0,
+        300.0,
+        "CINDER",
+        &sty(Family::Sans, Weight::Bold, 52.0, t.acc, 0.02),
+        458.0,
+    );
+    crate::widgets::draw_fit(
+        c,
+        f,
+        38.0,
+        340.0,
+        "Your music, clean and quiet.",
+        &sty(Family::Sans, Weight::Regular, 18.0, t.ink, 0.0),
+        458.0,
+    );
+    crate::widgets::draw_fit(
+        c,
+        f,
+        38.0,
+        366.0,
+        "A replacement player for the Walkman.",
+        &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
+        458.0,
+    );
 }
 
 // One "key → action" row on the Controls page.
 fn ctl(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, key: &str, action: &str) {
-    crate::widgets::draw_fit(c, f, 38.0, y as f32, key, &sty(Family::Mono, Weight::Bold, 14.0, t.acc, 0.04), 458.0);
-    crate::widgets::draw_fit(c, f, 168.0, y as f32, action, &sty(Family::Sans, Weight::Regular, 16.0, t.ink, 0.0), 458.0);
+    crate::widgets::draw_fit(
+        c,
+        f,
+        38.0,
+        y as f32,
+        key,
+        &sty(Family::Mono, Weight::Bold, 14.0, t.acc, 0.04),
+        458.0,
+    );
+    crate::widgets::draw_fit(
+        c,
+        f,
+        168.0,
+        y as f32,
+        action,
+        &sty(Family::Sans, Weight::Regular, 16.0, t.ink, 0.0),
+        458.0,
+    );
 }
 
 fn title(c: &mut Canvas, t: &Theme, f: &FontSet, s: &str) {
-    crate::widgets::draw_fit(c, f, 36.0, 90.0, s, &sty(Family::Sans, Weight::Bold, 32.0, t.ink, 0.0), 458.0);
+    crate::widgets::draw_fit(
+        c,
+        f,
+        36.0,
+        90.0,
+        s,
+        &sty(Family::Sans, Weight::Bold, 32.0, t.ink, 0.0),
+        458.0,
+    );
 }
 
 fn section(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, s: &str) {
-    crate::widgets::draw_fit(c, f, 38.0, y as f32, s, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18), 458.0);
+    crate::widgets::draw_fit(
+        c,
+        f,
+        38.0,
+        y as f32,
+        s,
+        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+        458.0,
+    );
 }
 
 /// One row with a drawn ICON in the key column — the glyph the user will actually see.
 /// `None` leaves the icon column empty, so every key on the page still starts at one x.
-fn icon_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, draw: Option<fn(&mut Canvas, f32, f32, f32, embedded_graphics::pixelcolor::Rgb888)>, key: &str, action: &str) {
+fn icon_row(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    draw: Option<fn(&mut Canvas, f32, f32, f32, embedded_graphics::pixelcolor::Rgb888)>,
+    key: &str,
+    action: &str,
+) {
     if let Some(draw) = draw {
         draw(c, 50.0, (y - 5) as f32, 20.0, t.acc);
     }
-    crate::widgets::draw_fit(c, f, 72.0, y as f32, key, &sty(Family::Mono, Weight::Bold, 14.0, t.acc, 0.04), 160.0);
-    crate::widgets::draw_fit(c, f, 168.0, y as f32, action, &sty(Family::Sans, Weight::Regular, 16.0, t.ink, 0.0), 458.0);
+    crate::widgets::draw_fit(
+        c,
+        f,
+        72.0,
+        y as f32,
+        key,
+        &sty(Family::Mono, Weight::Bold, 14.0, t.acc, 0.04),
+        160.0,
+    );
+    crate::widgets::draw_fit(
+        c,
+        f,
+        168.0,
+        y as f32,
+        action,
+        &sty(Family::Sans, Weight::Regular, 16.0, t.ink, 0.0),
+        458.0,
+    );
 }
 
 /// HOW TO GET AROUND — the page the intro was missing. Every screen has the same furniture, and
@@ -77,12 +157,36 @@ fn getting_around(c: &mut Canvas, t: &Theme, f: &FontSet) {
     let mut y = 152;
     icon_row(c, t, f, y, None, "Clock", "Back to Now Playing");
     y += 46;
-    icon_row(c, t, f, y, Some(icons::menu), "Menu", "Every screen, one tap");
+    icon_row(
+        c,
+        t,
+        f,
+        y,
+        Some(icons::menu),
+        "Menu",
+        "Every screen, one tap",
+    );
     y += 46;
-    icon_row(c, t, f, y, Some(icons::bookmark), "Shelf", "Save your place, jump back");
+    icon_row(
+        c,
+        t,
+        f,
+        y,
+        Some(icons::bookmark),
+        "Shelf",
+        "Save your place, jump back",
+    );
     y += 64;
     section(c, t, f, y - 28, "GOING BACK");
-    icon_row(c, t, f, y, Some(icons::back), "Arrow", "Top left of every screen");
+    icon_row(
+        c,
+        t,
+        f,
+        y,
+        Some(icons::back),
+        "Arrow",
+        "Top left of every screen",
+    );
     y += 46;
     icon_row(c, t, f, y, None, "Swipe \u{2192}", "In from the left edge");
     y += 64;
@@ -102,10 +206,24 @@ fn getting_around(c: &mut Canvas, t: &Theme, f: &FontSet) {
         crate::widgets::center(c, f, x, (row + 36) as f32, labels[i], &lst);
     }
     y = row + 76;
-    crate::widgets::draw_fit(c, f, 38.0, y as f32, "Lists show a Now Playing strip at the bottom:",
-                             &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0), 458.0);
-    crate::widgets::draw_fit(c, f, 38.0, (y + 22) as f32, "tap it to go back to the song.",
-                             &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0), 458.0);
+    crate::widgets::draw_fit(
+        c,
+        f,
+        38.0,
+        y as f32,
+        "Lists show a Now Playing strip at the bottom:",
+        &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
+        458.0,
+    );
+    crate::widgets::draw_fit(
+        c,
+        f,
+        38.0,
+        (y + 22) as f32,
+        "tap it to go back to the song.",
+        &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
+        458.0,
+    );
 }
 
 /// PLAYING AND UP NEXT — the rules the queue follows since it became one list (2026-09-23).
@@ -136,9 +254,15 @@ fn playing(c: &mut Canvas, t: &Theme, f: &FontSet) {
         ctl(c, t, f, y, k, a);
         y += 46;
     }
-    crate::widgets::draw_fit(c, f, 38.0, (y + 4) as f32,
-                             "Shuffle off puts the list back in order.",
-                             &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0), 458.0);
+    crate::widgets::draw_fit(
+        c,
+        f,
+        38.0,
+        (y + 4) as f32,
+        "Shuffle off puts the list back in order.",
+        &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
+        458.0,
+    );
 }
 
 fn controls(c: &mut Canvas, t: &Theme, f: &FontSet) {
@@ -171,7 +295,6 @@ fn controls(c: &mut Canvas, t: &Theme, f: &FontSet) {
     }
 }
 
-
 /// The gesture vocabulary that is NOT obvious from looking at the screen, beyond the list swipes
 /// the Playing page teaches.
 ///   * Now Playing ↔   -> `nav::np_page` above `now_playing::PAGE_BOT`, skip below it
@@ -184,7 +307,10 @@ fn gestures(c: &mut Canvas, t: &Theme, f: &FontSet) {
     section(c, t, f, 124, "NOW PLAYING");
     let mut y = 152;
     let np: [(&str, &str); 3] = [
-        ("Swipe \u{2194} art", "Cover \u{00b7} spectrum \u{00b7} level"),
+        (
+            "Swipe \u{2194} art",
+            "Cover \u{00b7} spectrum \u{00b7} level",
+        ),
         ("Swipe \u{2194} below", "Previous / next track"),
         ("Tap the title", "Track info \u{00b7} add to a playlist"),
     ];
@@ -210,24 +336,69 @@ fn gestures(c: &mut Canvas, t: &Theme, f: &FontSet) {
 // One feature bullet.
 fn bullet(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, head: &str, sub: &str) {
     fill_rect(c, 38, y - 9, 4, 14, t.acc); // accent tick
-    crate::widgets::draw_fit(c, f, 54.0, y as f32, head, &sty(Family::Sans, Weight::SemiBold, 17.0, t.ink, 0.0), 458.0);
-    crate::widgets::draw_fit(c, f, 54.0, (y + 19) as f32, sub, &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0), 458.0);
+    crate::widgets::draw_fit(
+        c,
+        f,
+        54.0,
+        y as f32,
+        head,
+        &sty(Family::Sans, Weight::SemiBold, 17.0, t.ink, 0.0),
+        458.0,
+    );
+    crate::widgets::draw_fit(
+        c,
+        f,
+        54.0,
+        (y + 19) as f32,
+        sub,
+        &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0),
+        458.0,
+    );
 }
 
 fn features(c: &mut Canvas, t: &Theme, f: &FontSet) {
-    crate::widgets::draw_fit(c, f, 36.0, 92.0, "What's inside", &sty(Family::Sans, Weight::Bold, 32.0, t.ink, 0.0), 458.0);
+    crate::widgets::draw_fit(
+        c,
+        f,
+        36.0,
+        92.0,
+        "What's inside",
+        &sty(Family::Sans, Weight::Bold, 32.0, t.ink, 0.0),
+        458.0,
+    );
     let mut y = 150;
     // COUNTS COME FROM THE CODE. "Five real-time types" was written when there were five; there
     // are `viz::COUNT` = 13, and a help screen that miscounts the thing it is pointing at is worse
     // than one that stays vague.
     let items: [(&str, &str); 7] = [
-        ("Library", "Songs, albums, artists, folders \u{2014} thousands of tracks."),
-        ("Up Next", "One list in play order \u{2014} add, move, remove anything."),
-        ("Playlists", "Make them on the device \u{2014} rename, add and remove tracks."),
-        ("Sound", "10-band EQ + DSEE/VPT/Vinyl/ClearAudio+, A/B compare."),
-        ("Bluetooth & USB-DAC", "LDAC out, and a USB sound card that keeps Bluetooth."),
-        ("Visualiser", "Thirteen styles: scope, stereo field, spectrogram\u{2026}"),
-        ("Sleep timer & battery care", "In Settings \u{2014} pauses playback; caps charging at 90%."),
+        (
+            "Library",
+            "Songs, albums, artists, folders \u{2014} thousands of tracks.",
+        ),
+        (
+            "Up Next",
+            "One list in play order \u{2014} add, move, remove anything.",
+        ),
+        (
+            "Playlists",
+            "Make them on the device \u{2014} rename, add and remove tracks.",
+        ),
+        (
+            "Sound",
+            "10-band EQ + DSEE/VPT/Vinyl/ClearAudio+, A/B compare.",
+        ),
+        (
+            "Bluetooth & USB-DAC",
+            "LDAC out, and a USB sound card that keeps Bluetooth.",
+        ),
+        (
+            "Visualiser",
+            "Thirteen styles: scope, stereo field, spectrogram\u{2026}",
+        ),
+        (
+            "Sleep timer & battery care",
+            "In Settings \u{2014} pauses playback; caps charging at 90%.",
+        ),
     ];
     for (h, s) in items {
         bullet(c, t, f, y, h, s);
@@ -291,10 +462,18 @@ mod tests {
             crate::text::set_scale_idx(idx);
             for page in [0, PAGES - 1] {
                 let w = crate::text::measure(&f, footer_hint(page), &st);
-                assert!(w <= (W as f32) - 32.0,
-                        "page {page} hint is {w} px at {}%", crate::text::SCALE_STEPS[idx]);
+                assert!(
+                    w <= (W as f32) - 32.0,
+                    "page {page} hint is {w} px at {}%",
+                    crate::text::SCALE_STEPS[idx]
+                );
             }
         }
-        crate::text::set_scale_idx(crate::text::SCALE_STEPS.iter().position(|s| *s == 100).unwrap());
+        crate::text::set_scale_idx(
+            crate::text::SCALE_STEPS
+                .iter()
+                .position(|s| *s == 100)
+                .unwrap(),
+        );
     }
 }

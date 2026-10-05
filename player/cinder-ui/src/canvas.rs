@@ -110,7 +110,12 @@ impl Canvas {
             oob_y: 0,
             text_ink: AUDIT_NEW
                 .load(std::sync::atomic::Ordering::Relaxed)
-                .then(|| Box::new(TextInk { owner: vec![0; W * H], ..TextInk::default() })),
+                .then(|| {
+                    Box::new(TextInk {
+                        owner: vec![0; W * H],
+                        ..TextInk::default()
+                    })
+                }),
         }
     }
 
@@ -155,7 +160,10 @@ impl Canvas {
 
     /// Turn on the text-collision audit ([`TextInk`]), clearing anything it had recorded.
     pub fn track_text(&mut self) {
-        self.text_ink = Some(Box::new(TextInk { owner: vec![0; W * H], ..TextInk::default() }));
+        self.text_ink = Some(Box::new(TextInk {
+            owner: vec![0; W * H],
+            ..TextInk::default()
+        }));
     }
 
     /// Is the collision audit on? `text::draw` asks once per call, so the per-pixel cost at
@@ -192,14 +200,21 @@ impl Canvas {
 
     /// Every pair of text runs that inked the same pixels since `track_text`, with the count.
     pub fn text_collisions(&self) -> Vec<(String, String, u32)> {
-        let Some(ink) = self.text_ink.as_deref() else { return Vec::new() };
+        let Some(ink) = self.text_ink.as_deref() else {
+            return Vec::new();
+        };
         let name = |i: u16| ink.runs.get(i as usize - 1).cloned().unwrap_or_default();
-        ink.hits.iter().map(|(&(a, b), &n)| (name(a), name(b), n)).collect()
+        ink.hits
+            .iter()
+            .map(|(&(a, b), &n)| (name(a), name(b), n))
+            .collect()
     }
 
     /// Every text run whose ink something drawn later covered, with how many pixels.
     pub fn text_hidden(&self) -> Vec<(String, u32)> {
-        let Some(ink) = self.text_ink.as_deref() else { return Vec::new() };
+        let Some(ink) = self.text_ink.as_deref() else {
+            return Vec::new();
+        };
         let name = |i: u16| ink.runs.get(i as usize - 1).cloned().unwrap_or_default();
         ink.hidden.iter().map(|(&r, &n)| (name(r), n)).collect()
     }
@@ -302,7 +317,9 @@ impl Canvas {
     /// records who inked the pixel and whether another run had it already.
     #[inline]
     pub fn blend_text(&mut self, x: i32, y: i32, c: Rgb888, a: u8) {
-        let Some(idx) = self.blend_px(x, y, c, a) else { return };
+        let Some(idx) = self.blend_px(x, y, c, a) else {
+            return;
+        };
         if a < TEXT_INK_ALPHA {
             return;
         }
@@ -364,7 +381,9 @@ impl Canvas {
             self.oob_x = self.oob_x.saturating_add(over_x as u32);
         }
         if y < 0 || y >= H as i32 {
-            self.oob_y = self.oob_y.saturating_add((len as i32 - over_x).max(0) as u32);
+            self.oob_y = self
+                .oob_y
+                .saturating_add((len as i32 - over_x).max(0) as u32);
         }
         if x1 <= 0 || x >= W as i32 {
             return None;

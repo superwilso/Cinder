@@ -116,10 +116,16 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         ("In the DAC chip, after every other effect", t.faint)
     };
     line(26, msg, sty(Family::Sans, Weight::Regular, 13.0, col, 0.0));
-    line(46, "Wired headphones only. A boost lowers everything else.",
-         sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0));
-    line(66, "Experimental: not yet measured at the jack.",
-         sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0));
+    line(
+        46,
+        "Wired headphones only. A boost lowers everything else.",
+        sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+    );
+    line(
+        66,
+        "Experimental: not yet measured at the jack.",
+        sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+    );
 
     // ── the slider field ────────────────────────────────────────────────────────────────────
     let (sy, by) = (FIELD_TOP, FIELD_BOTTOM);
@@ -135,7 +141,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         let bx = band_center_x(i);
         let ky = knob_y(d.bands[i]);
         fill_rect(c, bx - 1, sy, 2, by - sy, t.line);
-        let (fy, fh) = if ky < mid { (ky, mid - ky) } else { (mid, ky - mid) };
+        let (fy, fh) = if ky < mid {
+            (ky, mid - ky)
+        } else {
+            (mid, ky - mid)
+        };
         fill_rect(c, bx - 1, fy, 2, fh, ink_fill);
         let on = i == sel;
         if on {
@@ -149,23 +159,65 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
             v if v.fract() == 0.0 => format!("{v:+.0}"),
             v => format!("{v:+.1}"),
         };
-        let dbcol = if on { t.ink } else if d.bands[i] != 0 { ink_fill } else { t.faint };
-        center(c, f, bx as f32, (sy - 10) as f32, &dbl,
-               &sty(Family::Mono, Weight::Regular, if on { 14.0 } else { 13.0 }, dbcol, 0.0));
-        center(c, f, bx as f32, (by + 26) as f32, BAND_NAMES[i],
-               &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.0));
+        let dbcol = if on {
+            t.ink
+        } else if d.bands[i] != 0 {
+            ink_fill
+        } else {
+            t.faint
+        };
+        center(
+            c,
+            f,
+            bx as f32,
+            (sy - 10) as f32,
+            &dbl,
+            &sty(
+                Family::Mono,
+                Weight::Regular,
+                if on { 14.0 } else { 13.0 },
+                dbcol,
+                0.0,
+            ),
+        );
+        center(
+            c,
+            f,
+            bx as f32,
+            (by + 26) as f32,
+            BAND_NAMES[i],
+            &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.0),
+        );
     }
-    center(c, f, (W / 2) as f32, (by + 52) as f32, "Bass 100 Hz · treble 10 kHz · +6 to −12 dB",
-           &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0));
+    center(
+        c,
+        f,
+        (W / 2) as f32,
+        (by + 52) as f32,
+        "Bass 100 Hz · treble 10 kHz · +6 to −12 dB",
+        &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+    );
 
     // ── footer ──────────────────────────────────────────────────────────────────────────────
     let fy = FOOTER_TOP;
     hline(c, fy, t.line);
     let fcy = (fy + FOOTER_H / 2) as f32;
-    text::draw(c, f, 22.0, fcy + 4.0, "Reset",
-               &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0));
-    right(c, f, 458.0, fcy + 4.0, "Saved automatically",
-          &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0));
+    text::draw(
+        c,
+        f,
+        22.0,
+        fcy + 4.0,
+        "Reset",
+        &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0),
+    );
+    right(
+        c,
+        f,
+        458.0,
+        fcy + 4.0,
+        "Saved automatically",
+        &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0),
+    );
 }
 
 #[cfg(test)]
@@ -177,11 +229,22 @@ mod tests {
         for b in 0..BANDS {
             let left = BAND_X0 + BAND_SLOT * b as i32;
             assert_eq!(band_at(left), Some(b), "left edge of band {b}");
-            assert_eq!(band_at(left + BAND_SLOT - 1), Some(b), "right edge of band {b}");
+            assert_eq!(
+                band_at(left + BAND_SLOT - 1),
+                Some(b),
+                "right edge of band {b}"
+            );
         }
         assert_eq!(band_at(BAND_X0 - 1), None, "left gutter");
-        assert_eq!(band_at(BAND_X0 + BAND_SLOT * BANDS as i32), None, "right gutter");
-        assert!(BAND_X0 + BAND_SLOT * BANDS as i32 <= W as i32, "last column runs off the panel");
+        assert_eq!(
+            band_at(BAND_X0 + BAND_SLOT * BANDS as i32),
+            None,
+            "right gutter"
+        );
+        assert!(
+            BAND_X0 + BAND_SLOT * BANDS as i32 <= W as i32,
+            "last column runs off the panel"
+        );
     }
 
     /// Both ends of the range keep the knob (and so its label above) inside the field.
@@ -189,7 +252,10 @@ mod tests {
     fn full_scale_knobs_stay_inside_the_field() {
         for v in [BAND_MIN, BAND_MAX] {
             let y = knob_y(v);
-            assert!(y > FIELD_TOP && y < FIELD_BOTTOM, "knob at {v} leaves the field ({y})");
+            assert!(
+                y > FIELD_TOP && y < FIELD_BOTTOM,
+                "knob at {v} leaves the field ({y})"
+            );
         }
         assert!(knob_y(BAND_MAX) < FIELD_ZERO && FIELD_ZERO < knob_y(BAND_MIN));
     }

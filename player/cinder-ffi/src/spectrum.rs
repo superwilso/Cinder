@@ -117,7 +117,9 @@ pub fn from_pcm(
     let half = n / 2;
     // A full-scale sine through a Hann window peaks at n/4 in its bin; dividing by that puts it at 1.
     let norm = 4.0 / n as f32;
-    let power: Vec<f32> = (0..half).map(|k| (re[k] * re[k] + im[k] * im[k]) * norm * norm).collect();
+    let power: Vec<f32> = (0..half)
+        .map(|k| (re[k] * re[k] + im[k] * im[k]) * norm * norm)
+        .collect();
     let hz_per_bin = rate as f32 / n as f32;
     let hi_hz = PCM_HI_HZ.min(rate as f32 * 0.45);
     let edge = |b: usize| PCM_LO_HZ * (hi_hz / PCM_LO_HZ).powf(b as f32 / bars as f32);
@@ -141,7 +143,14 @@ pub fn from_pcm(
     };
     let mut out = vec![0.0f32; bars];
     for (b, slot) in out.iter_mut().enumerate() {
-        *slot = smooth_dt(to_frac(mag[b], reference, cfg.range_db), prev, bars, b, cfg, dt_ms);
+        *slot = smooth_dt(
+            to_frac(mag[b], reference, cfg.range_db),
+            prev,
+            bars,
+            b,
+            cfg,
+            dt_ms,
+        );
     }
     out
 }
@@ -194,7 +203,11 @@ fn resample(src: &[f32], bars: usize, interp: Interp) -> Vec<f32> {
     }
     let at = |i: isize| -> f32 { src[(i.clamp(0, n as isize - 1)) as usize] };
     for (b, slot) in out.iter_mut().enumerate() {
-        let t = if bars > 1 { b as f32 * (n - 1) as f32 / (bars - 1) as f32 } else { 0.0 };
+        let t = if bars > 1 {
+            b as f32 * (n - 1) as f32 / (bars - 1) as f32
+        } else {
+            0.0
+        };
         let i0 = (t.floor() as isize).clamp(0, n as isize - 1);
         let f = t - i0 as f32;
         *slot = match interp {
@@ -368,7 +381,10 @@ mod tests {
         assert_eq!(lv.len(), 4);
         assert!(lv[3] > lv[0], "higher bands should map to higher bars");
         assert!(lv[3] <= 1.0 && lv[0] >= 0.0);
-        assert!(peak >= 650.0, "peak auto-gain should track the resampled frame max");
+        assert!(
+            peak >= 650.0,
+            "peak auto-gain should track the resampled frame max"
+        );
     }
 
     #[test]
@@ -398,7 +414,10 @@ mod tests {
                 equal_runs += 1;
             }
         }
-        assert!(equal_runs <= 2, "output is a staircase, not a curve ({equal_runs} flat steps)");
+        assert!(
+            equal_runs <= 2,
+            "output is a staircase, not a curve ({equal_runs} flat steps)"
+        );
         assert!(lv[35] > lv[0], "rising input must give a rising output");
     }
 
@@ -411,11 +430,18 @@ mod tests {
         let lv = from_bands(&bands, 6, &[], &mut peak, &cfg(), DT);
         // The quietest band is ~-46 dB below the peak: visible, near the floor, but not zero.
         assert!(lv[0] > 0.01, "quietest band vanished: {lv:?}");
-        assert!(lv[0] < 0.25, "quietest band should still read as quiet: {lv:?}");
+        assert!(
+            lv[0] < 0.25,
+            "quietest band should still read as quiet: {lv:?}"
+        );
         assert!(lv[5] > 0.95, "loudest band should be near full: {lv:?}");
         // And the middle of the range should land in the middle of the display, which is the whole
         // point of a log mapping — under the old linear/sqrt form it sat around a fifth.
-        assert!(lv[3] > 0.55 && lv[3] < 0.95, "mid-range band mapped to {:.2}", lv[3]);
+        assert!(
+            lv[3] > 0.55 && lv[3] < 0.95,
+            "mid-range band mapped to {:.2}",
+            lv[3]
+        );
     }
 
     /// All-zero bands: log(0) is -inf, and a NaN reaching the renderer would draw garbage or panic.
@@ -433,25 +459,44 @@ mod tests {
     }
 
     fn sine(hz: f32, rate: u32, amp: f32) -> Vec<f32> {
-        (0..PCM_FFT).map(|i| amp * (2.0 * std::f32::consts::PI * hz * i as f32 / rate as f32).sin()).collect()
+        (0..PCM_FFT)
+            .map(|i| amp * (2.0 * std::f32::consts::PI * hz * i as f32 / rate as f32).sin())
+            .collect()
     }
 
     /// A sine lights the band it is in and leaves the far ones low, at every band count.
     #[test]
     fn a_pcm_sine_lands_in_its_band() {
-        let cfg = VizCfg { scale: Scale::Fixed, ..cfg() };
+        let cfg = VizCfg {
+            scale: Scale::Fixed,
+            ..cfg()
+        };
         for bars in [12, 24, 36, 48, 64] {
             for hz in [60.0, 440.0, 3000.0, 12000.0] {
                 let mut peak = 0.0;
                 let out = from_pcm(&sine(hz, 44100, 1.0), 44100, bars, &[], &mut peak, &cfg, DT);
                 assert_eq!(out.len(), bars);
-                let top = out.iter().enumerate().fold(0, |m, (i, &v)| if v > out[m] { i } else { m });
+                let top = out
+                    .iter()
+                    .enumerate()
+                    .fold(0, |m, (i, &v)| if v > out[m] { i } else { m });
                 let hi = PCM_HI_HZ.min(44100.0 * 0.45);
                 let want = ((hz / PCM_LO_HZ).ln() / (hi / PCM_LO_HZ).ln() * bars as f32) as usize;
-                assert!(top.abs_diff(want) <= 1, "{bars} bars, {hz} Hz: loudest band {top}, expected {want}");
-                assert!(out[top] > 0.9, "{bars} bars, {hz} Hz: full scale reads {}", out[top]);
+                assert!(
+                    top.abs_diff(want) <= 1,
+                    "{bars} bars, {hz} Hz: loudest band {top}, expected {want}"
+                );
+                assert!(
+                    out[top] > 0.9,
+                    "{bars} bars, {hz} Hz: full scale reads {}",
+                    out[top]
+                );
                 let far = if want > bars / 2 { 0 } else { bars - 1 };
-                assert!(out[far] < 0.5, "{bars} bars, {hz} Hz: band {far} reads {}", out[far]);
+                assert!(
+                    out[far] < 0.5,
+                    "{bars} bars, {hz} Hz: band {far} reads {}",
+                    out[far]
+                );
             }
         }
     }
@@ -459,15 +504,41 @@ mod tests {
     /// Silence is flat and a quiet sine is lower than a loud one on the fixed scale; nothing is NaN.
     #[test]
     fn pcm_silence_is_flat_and_level_follows_amplitude() {
-        let cfg = VizCfg { scale: Scale::Fixed, ..cfg() };
+        let cfg = VizCfg {
+            scale: Scale::Fixed,
+            ..cfg()
+        };
         let mut peak = 0.0;
         let quiet = from_pcm(&vec![0.0; PCM_FFT], 44100, 48, &[], &mut peak, &cfg, DT);
         assert!(quiet.iter().all(|v| *v == 0.0 && v.is_finite()));
-        let loud = from_pcm(&sine(1000.0, 44100, 1.0), 44100, 48, &[], &mut peak, &cfg, DT);
-        let soft = from_pcm(&sine(1000.0, 44100, 0.01), 44100, 48, &[], &mut peak, &cfg, DT);
+        let loud = from_pcm(
+            &sine(1000.0, 44100, 1.0),
+            44100,
+            48,
+            &[],
+            &mut peak,
+            &cfg,
+            DT,
+        );
+        let soft = from_pcm(
+            &sine(1000.0, 44100, 0.01),
+            44100,
+            48,
+            &[],
+            &mut peak,
+            &cfg,
+            DT,
+        );
         let max = |v: &[f32]| v.iter().fold(0.0f32, |a, &x| a.max(x));
-        assert!(max(&soft) < max(&loud) - 0.5, "-40 dB reads {} against {}", max(&soft), max(&loud));
-        assert!(from_pcm(&[0.5; 10], 44100, 36, &[], &mut peak, &cfg, DT).is_empty(), "too few samples");
+        assert!(
+            max(&soft) < max(&loud) - 0.5,
+            "-40 dB reads {} against {}",
+            max(&soft),
+            max(&loud)
+        );
+        assert!(
+            from_pcm(&[0.5; 10], 44100, 36, &[], &mut peak, &cfg, DT).is_empty(),
+            "too few samples"
+        );
     }
-
 }

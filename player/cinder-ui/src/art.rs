@@ -9,16 +9,56 @@ use embedded_graphics::prelude::*;
 
 fn stops(name: &str) -> [(f32, (u8, u8, u8)); 3] {
     match name {
-        "harvest" => [(0.0, (0xe8, 0xc3, 0x4a)), (0.7, (0x8a, 0x6b, 0x1d)), (1.0, (0x2b, 0x20, 0x08))],
-        "midnight" => [(0.0, (0x4a, 0x6d, 0xb8)), (0.6, (0x1a, 0x25, 0x47)), (1.0, (0x05, 0x08, 0x10))],
-        "ferns" => [(0.0, (0x6b, 0x9e, 0x6b)), (0.6, (0x2f, 0x4d, 0x34)), (1.0, (0x0d, 0x1a, 0x10))],
-        "halcyon" => [(0.0, (0xc4, 0xa3, 0xd4)), (0.6, (0x6b, 0x4a, 0x83)), (1.0, (0x1a, 0x0d, 0x2b))],
-        "atlas" => [(0.0, (0x2a, 0x25, 0x22)), (0.5, (0x1a, 0x16, 0x14)), (1.0, (0x05, 0x04, 0x03))],
-        "bloom" => [(0.0, (0xf0, 0xa3, 0xa0)), (0.6, (0xb0, 0x48, 0x55)), (1.0, (0x3a, 0x0d, 0x18))],
-        "prism" => [(0.0, (0x4a, 0x8a, 0xcb)), (0.5, (0xb0, 0x4e, 0x9a)), (1.0, (0xd4, 0xa9, 0x55))],
-        "static" => [(0.0, (0x2a, 0x2a, 0x2a)), (0.5, (0x1f, 0x1f, 0x1f)), (1.0, (0x1a, 0x1a, 0x1a))],
-        "cassette" => [(0.0, (0xc8, 0xa4, 0x5b)), (0.5, (0x5a, 0x45, 0x20)), (1.0, (0x1d, 0x16, 0x10))],
-        "kind" | "" => [(0.0, (0xd9, 0x77, 0x57)), (0.6, (0x8b, 0x3a, 0x1e)), (1.0, (0x2a, 0x11, 0x08))],
+        "harvest" => [
+            (0.0, (0xe8, 0xc3, 0x4a)),
+            (0.7, (0x8a, 0x6b, 0x1d)),
+            (1.0, (0x2b, 0x20, 0x08)),
+        ],
+        "midnight" => [
+            (0.0, (0x4a, 0x6d, 0xb8)),
+            (0.6, (0x1a, 0x25, 0x47)),
+            (1.0, (0x05, 0x08, 0x10)),
+        ],
+        "ferns" => [
+            (0.0, (0x6b, 0x9e, 0x6b)),
+            (0.6, (0x2f, 0x4d, 0x34)),
+            (1.0, (0x0d, 0x1a, 0x10)),
+        ],
+        "halcyon" => [
+            (0.0, (0xc4, 0xa3, 0xd4)),
+            (0.6, (0x6b, 0x4a, 0x83)),
+            (1.0, (0x1a, 0x0d, 0x2b)),
+        ],
+        "atlas" => [
+            (0.0, (0x2a, 0x25, 0x22)),
+            (0.5, (0x1a, 0x16, 0x14)),
+            (1.0, (0x05, 0x04, 0x03)),
+        ],
+        "bloom" => [
+            (0.0, (0xf0, 0xa3, 0xa0)),
+            (0.6, (0xb0, 0x48, 0x55)),
+            (1.0, (0x3a, 0x0d, 0x18)),
+        ],
+        "prism" => [
+            (0.0, (0x4a, 0x8a, 0xcb)),
+            (0.5, (0xb0, 0x4e, 0x9a)),
+            (1.0, (0xd4, 0xa9, 0x55)),
+        ],
+        "static" => [
+            (0.0, (0x2a, 0x2a, 0x2a)),
+            (0.5, (0x1f, 0x1f, 0x1f)),
+            (1.0, (0x1a, 0x1a, 0x1a)),
+        ],
+        "cassette" => [
+            (0.0, (0xc8, 0xa4, 0x5b)),
+            (0.5, (0x5a, 0x45, 0x20)),
+            (1.0, (0x1d, 0x16, 0x10)),
+        ],
+        "kind" | "" => [
+            (0.0, (0xd9, 0x77, 0x57)),
+            (0.6, (0x8b, 0x3a, 0x1e)),
+            (1.0, (0x2a, 0x11, 0x08)),
+        ],
         // Real library items (album/track titles) hash to a distinct, stable gradient so
         // each looks different even before real album-art thumbnails are decoded.
         other => hashed_stops(other),
@@ -74,7 +114,9 @@ fn hashed_stops(name: &str) -> [(f32, (u8, u8, u8)); 3] {
 }
 
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+    (a as f32 + (b as f32 - a as f32) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 /// A decoded album-cover bitmap (packed RGB, 3 bytes/px). Produced by the shell's decoder
@@ -103,7 +145,11 @@ impl Image {
     pub fn scaled_to(&self, dw: usize, dh: usize) -> Image {
         let mut out = vec![0u8; dw * dh * 3];
         if self.w == 0 || self.h == 0 || dw == 0 || dh == 0 {
-            return Image { w: dw, h: dh, rgb: out };
+            return Image {
+                w: dw,
+                h: dh,
+                rgb: out,
+            };
         }
         if dw <= self.w && dh <= self.h && (dw < self.w || dh < self.h) {
             return self.area_scaled(dw, dh);
@@ -126,13 +172,19 @@ impl Image {
                     let p01 = self.rgb[(y0 * self.w + x1) * 3 + ch] as f32;
                     let p10 = self.rgb[(y1 * self.w + x0) * 3 + ch] as f32;
                     let p11 = self.rgb[(y1 * self.w + x1) * 3 + ch] as f32;
-                    let v = p00 * (1.0 - tx) * (1.0 - ty) + p01 * tx * (1.0 - ty)
-                        + p10 * (1.0 - tx) * ty + p11 * tx * ty;
+                    let v = p00 * (1.0 - tx) * (1.0 - ty)
+                        + p01 * tx * (1.0 - ty)
+                        + p10 * (1.0 - tx) * ty
+                        + p11 * tx * ty;
                     out[o + ch] = v.round().clamp(0.0, 255.0) as u8;
                 }
             }
         }
-        Image { w: dw, h: dh, rgb: out }
+        Image {
+            w: dw,
+            h: dh,
+            rgb: out,
+        }
     }
 
     /// Box filter: each output pixel is the mean of every source pixel that maps onto it. Only
@@ -162,7 +214,11 @@ impl Image {
                 out[o + 2] = (b / n) as u8;
             }
         }
-        Image { w: dw, h: dh, rgb: out }
+        Image {
+            w: dw,
+            h: dh,
+            rgb: out,
+        }
     }
 }
 
@@ -191,9 +247,13 @@ pub fn draw_image(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, opac
     };
     if let Some(l) = lut {
         for yy in 0..img.h {
-            let Some((skip, dst)) = c.row_run(y0 + yy as i32, x0, img.w) else { continue };
+            let Some((skip, dst)) = c.row_run(y0 + yy as i32, x0, img.w) else {
+                continue;
+            };
             let base = (yy * img.w + skip) * 3;
-            let Some(src) = img.rgb.get(base..) else { continue };
+            let Some(src) = img.rgb.get(base..) else {
+                continue;
+            };
             if op >= 1.0 {
                 for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
                     *d = ((l[s[0] as usize] as u32) << 16)
@@ -215,9 +275,13 @@ pub fn draw_image(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, opac
     // index for each of a full cover's 230,400 pixels; `row_run` does the clip once per row and
     // hands back a slice, so the inner loop is just a pack-and-store the optimiser can unroll.
     for yy in 0..img.h {
-        let Some((skip, dst)) = c.row_run(y0 + yy as i32, x0, img.w) else { continue };
+        let Some((skip, dst)) = c.row_run(y0 + yy as i32, x0, img.w) else {
+            continue;
+        };
         let base = (yy * img.w + skip) * 3;
-        let Some(src) = img.rgb.get(base..) else { continue };
+        let Some(src) = img.rgb.get(base..) else {
+            continue;
+        };
         if op >= 1.0 {
             for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
                 *d = ((s[0] as u32) << 16) | ((s[1] as u32) << 8) | s[2] as u32;
@@ -250,10 +314,18 @@ fn ramp_lut(name: &str) -> [(u8, u8, u8); RAMP] {
         let pos = i as f32 / (RAMP - 1) as f32;
         *e = if pos <= s[1].0 {
             let u = (pos - s[0].0) * inv0;
-            (lerp(s[0].1 .0, s[1].1 .0, u), lerp(s[0].1 .1, s[1].1 .1, u), lerp(s[0].1 .2, s[1].1 .2, u))
+            (
+                lerp(s[0].1 .0, s[1].1 .0, u),
+                lerp(s[0].1 .1, s[1].1 .1, u),
+                lerp(s[0].1 .2, s[1].1 .2, u),
+            )
         } else {
             let u = (pos - s[1].0) * inv1;
-            (lerp(s[1].1 .0, s[2].1 .0, u), lerp(s[1].1 .1, s[2].1 .1, u), lerp(s[1].1 .2, s[2].1 .2, u))
+            (
+                lerp(s[1].1 .0, s[2].1 .0, u),
+                lerp(s[1].1 .1, s[2].1 .1, u),
+                lerp(s[1].1 .2, s[2].1 .2, u),
+            )
         };
     }
     lut
@@ -306,14 +378,25 @@ fn grad_row(
 
 /// Draw a gradient art block at (x0,y0) sized w×h. `opacity` (0..1) blends the
 /// gradient toward `t.bg` so night-dimmed art and small thumbnails sit back.
-pub fn block(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32, name: &str, opacity: f32) {
+pub fn block(
+    c: &mut Canvas,
+    t: &Theme,
+    x0: i32,
+    y0: i32,
+    w: i32,
+    h: i32,
+    name: &str,
+    opacity: f32,
+) {
     let lut = ramp_lut(name);
     let bg = (t.bg.r(), t.bg.g(), t.bg.b());
     let op = opacity.clamp(0.0, 1.0);
     let inv_w = 1.0 / (w.max(1) as f32);
     let inv_h = 1.0 / (h.max(1) as f32);
     for yy in 0..h {
-        let Some((skip, dst)) = c.row_run(y0 + yy, x0, w.max(0) as usize) else { continue };
+        let Some((skip, dst)) = c.row_run(y0 + yy, x0, w.max(0) as usize) else {
+            continue;
+        };
         grad_row(dst, &lut, skip, yy as f32 * inv_h, inv_w, op, bg);
     }
 }
@@ -333,8 +416,16 @@ pub fn block(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32, name: 
 /// Above `CACHE_MAX_EDGE` it declines and draws directly: one 480×480 entry is 691 KB, and this
 /// device has aborted an allocator over render-path churn once already (ROADMAP 2026-07-28). The
 /// full-screen fallback is supplied pre-baked by the shell in normal operation anyway.
-pub fn block_cached(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32,
-                    name: &str, opacity: f32) {
+pub fn block_cached(
+    c: &mut Canvas,
+    t: &Theme,
+    x0: i32,
+    y0: i32,
+    w: i32,
+    h: i32,
+    name: &str,
+    opacity: f32,
+) {
     let op = opacity.clamp(0.0, 1.0);
     if w != h || w > CACHE_MAX_EDGE || w <= 0 {
         block(c, t, x0, y0, w, h, name, op);
@@ -368,9 +459,11 @@ pub fn block_cached(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32,
             t.set(n);
             n
         });
-        let e = cache.entry(key).or_insert_with(|| (tick, gradient_image(t, w, h, name, op)));
+        let e = cache
+            .entry(key)
+            .or_insert_with(|| (tick, gradient_image(t, w, h, name, op)));
         e.0 = tick; // touch: this key is in the visible set as of this frame
-        // The opacity is already baked in, so blit at 1.0 — blending again would darken it twice.
+                    // The opacity is already baked in, so blit at 1.0 — blending again would darken it twice.
         draw_image(c, t, x0, y0, &e.1, 1.0);
     });
 }
@@ -382,7 +475,15 @@ pub fn block_cached(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32,
 /// ONE entry. A new track brings a new image, which replaces it. The key is the source's address,
 /// length and a few of its pixels, so a new cover that happens to land at the old address is still
 /// told apart. At 400 px the entry is 480 KB, held only while a style that insets the cover is on.
-pub fn draw_fitted(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, size: usize, opacity: f32) {
+pub fn draw_fitted(
+    c: &mut Canvas,
+    t: &Theme,
+    x0: i32,
+    y0: i32,
+    img: &Image,
+    size: usize,
+    opacity: f32,
+) {
     if img.w == size && img.h == size {
         draw_image(c, t, x0, y0, img, opacity);
         return;
@@ -538,12 +639,24 @@ mod tests {
         block(&mut c, &t, 440, 40, 100, 20, "kind", 1.0); // hangs off the right
         block(&mut c, &t, -500, 70, 100, 20, "kind", 1.0); // entirely off-screen
         block(&mut c, &t, 0, -30, 100, 20, "kind", 1.0); // entirely above
-        // Column 479 belongs to the right-hand block's rows only; column 0 to the left one's.
-        assert_ne!(c.buf[10 * crate::canvas::W], 0, "left-clipped block drew nothing");
-        assert_ne!(c.buf[40 * crate::canvas::W + 479], 0, "right-clipped block drew nothing");
+                                                         // Column 479 belongs to the right-hand block's rows only; column 0 to the left one's.
+        assert_ne!(
+            c.buf[10 * crate::canvas::W],
+            0,
+            "left-clipped block drew nothing"
+        );
+        assert_ne!(
+            c.buf[40 * crate::canvas::W + 479],
+            0,
+            "right-clipped block drew nothing"
+        );
         // Nothing may have leaked onto the row used by the fully off-screen draws.
         for x in 0..crate::canvas::W {
-            assert_eq!(c.buf[70 * crate::canvas::W + x], 0, "off-screen block painted row 70");
+            assert_eq!(
+                c.buf[70 * crate::canvas::W + x],
+                0,
+                "off-screen block painted row 70"
+            );
         }
     }
 
@@ -553,12 +666,19 @@ mod tests {
     /// `draw_image` applies the factor itself.
     #[test]
     fn album_art_honours_the_night_dim() {
-        let img = Image { w: 2, h: 1, rgb: vec![0xff, 0x80, 0x40, 0xff, 0x80, 0x40] };
+        let img = Image {
+            w: 2,
+            h: 1,
+            rgb: vec![0xff, 0x80, 0x40, 0xff, 0x80, 0x40],
+        };
 
         // Full brightness: untouched, byte for byte.
         let mut c = Canvas::new();
         draw_image(&mut c, &Theme::day(), 0, 0, &img, 1.0);
-        assert_eq!(c.buf[0], 0xff8040, "the day path must not alter a single pixel");
+        assert_eq!(
+            c.buf[0], 0xff8040,
+            "the day path must not alter a single pixel"
+        );
 
         // Dimmed: every channel scaled by the same factor, so the image keeps its own balance.
         let dim = Theme::night().scaled(50);
@@ -566,13 +686,27 @@ mod tests {
         draw_image(&mut c2, &dim, 0, 0, &img, 1.0);
         let px = c2.buf[0];
         let (r, g, b) = ((px >> 16) & 0xff, (px >> 8) & 0xff, px & 0xff);
-        assert_eq!((r, g, b), (0x7f, 0x40, 0x20), "art was not scaled by the night dim");
+        assert_eq!(
+            (r, g, b),
+            (0x7f, 0x40, 0x20),
+            "art was not scaled by the night dim"
+        );
         assert!(r > g && g > b, "scaling changed the image's colour balance");
 
         // And the dimmest rung really is dimmer than the brightest one.
         let mut c3 = Canvas::new();
-        draw_image(&mut c3, &Theme::night().scaled(Theme::NIGHT_LEVEL_PCT[0]), 0, 0, &img, 1.0);
-        assert!((c3.buf[0] >> 16) & 0xff < r, "the lowest night step is not the dimmest");
+        draw_image(
+            &mut c3,
+            &Theme::night().scaled(Theme::NIGHT_LEVEL_PCT[0]),
+            0,
+            0,
+            &img,
+            1.0,
+        );
+        assert!(
+            (c3.buf[0] >> 16) & 0xff < r,
+            "the lowest night step is not the dimmest"
+        );
     }
 
     /// The accent swatches are raw palette entries, not theme colours — the same bypass as art.
@@ -594,17 +728,33 @@ mod tests {
     fn draw_image_places_and_clips_correctly() {
         let t = Theme::day();
         let mut c = Canvas::new();
-        let img = Image { w: 4, h: 2, rgb: vec![0x11, 0x22, 0x33].repeat(8) };
+        let img = Image {
+            w: 4,
+            h: 2,
+            rgb: vec![0x11, 0x22, 0x33].repeat(8),
+        };
         draw_image(&mut c, &t, 2, 5, &img, 1.0);
         assert_eq!(c.buf[5 * crate::canvas::W + 2], 0x112233);
         assert_eq!(c.buf[5 * crate::canvas::W + 5], 0x112233);
         assert_eq!(c.buf[5 * crate::canvas::W + 1], 0, "painted left of x0");
-        assert_eq!(c.buf[5 * crate::canvas::W + 6], 0, "painted right of the image");
+        assert_eq!(
+            c.buf[5 * crate::canvas::W + 6],
+            0,
+            "painted right of the image"
+        );
         // Hanging off the left: only the visible columns land, and on the right row.
         draw_image(&mut c, &t, -2, 20, &img, 1.0);
         assert_eq!(c.buf[20 * crate::canvas::W], 0x112233);
-        assert_eq!(c.buf[20 * crate::canvas::W + 2], 0, "clipped image drew too wide");
-        assert_eq!(c.buf[19 * crate::canvas::W + 479], 0, "wrapped onto the previous row");
+        assert_eq!(
+            c.buf[20 * crate::canvas::W + 2],
+            0,
+            "clipped image drew too wide"
+        );
+        assert_eq!(
+            c.buf[19 * crate::canvas::W + 479],
+            0,
+            "wrapped onto the previous row"
+        );
     }
 }
 
@@ -656,7 +806,11 @@ mod scale_tests {
     /// Upscaling still goes through bilinear, and an even magnification of a flat image is flat.
     #[test]
     fn upscaling_still_works() {
-        let img = Image { w: 2, h: 2, rgb: vec![10, 20, 30].repeat(4) };
+        let img = Image {
+            w: 2,
+            h: 2,
+            rgb: vec![10, 20, 30].repeat(4),
+        };
         let big = img.scaled_to(8, 8);
         assert_eq!((big.w, big.h), (8, 8));
         assert_eq!(&big.rgb[0..3], &[10, 20, 30]);

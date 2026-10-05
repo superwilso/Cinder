@@ -56,7 +56,11 @@ pub fn initial(s: &str) -> u8 {
 
 /// The rail letter an ARTIST name files under, skipping "The" exactly when [`cmp_artist`] does.
 pub fn artist_initial(s: &str, ignore_the: bool) -> u8 {
-    initial_of(if ignore_the { strip_article(s) } else { s.trim() })
+    initial_of(if ignore_the {
+        strip_article(s)
+    } else {
+        s.trim()
+    })
 }
 
 fn initial_of(s: &str) -> u8 {
@@ -72,7 +76,11 @@ fn strip_article(s: &str) -> &str {
     match t.get(..4) {
         Some(head) if head.eq_ignore_ascii_case("the ") => {
             let rest = t[4..].trim_start();
-            if rest.is_empty() { t } else { rest }
+            if rest.is_empty() {
+                t
+            } else {
+                rest
+            }
         }
         _ => t,
     }
@@ -98,7 +106,10 @@ struct Folded<'a> {
 
 impl<'a> Folded<'a> {
     fn new(s: &'a str) -> Self {
-        Folded { chars: s.chars(), pending: None }
+        Folded {
+            chars: s.chars(),
+            pending: None,
+        }
     }
 }
 
@@ -156,8 +167,21 @@ mod tests {
     #[test]
     fn the_misfiled_artists_sort_where_they_are_filed() {
         let shuffled = [
-            "widowdusk", "高中正義", "the north", "Zola Jesus", "bôa", "112", "julie", "Björk",
-            "アルク", "alt‐J", "Julie", "The Beatles", "Édith Piaf", "Boa", "A Tribe Called Quest",
+            "widowdusk",
+            "高中正義",
+            "the north",
+            "Zola Jesus",
+            "bôa",
+            "112",
+            "julie",
+            "Björk",
+            "アルク",
+            "alt‐J",
+            "Julie",
+            "The Beatles",
+            "Édith Piaf",
+            "Boa",
+            "A Tribe Called Quest",
             "'Round About Midnight",
         ];
         let mut as_written = shuffled.to_vec();
@@ -165,9 +189,22 @@ mod tests {
         assert_eq!(
             as_written,
             [
-                "'Round About Midnight", "112", "A Tribe Called Quest", "alt‐J", "Björk", "Boa",
-                "bôa", "Édith Piaf", "Julie", "julie", "The Beatles", "the north", "widowdusk",
-                "Zola Jesus", "アルク", "高中正義",
+                "'Round About Midnight",
+                "112",
+                "A Tribe Called Quest",
+                "alt‐J",
+                "Björk",
+                "Boa",
+                "bôa",
+                "Édith Piaf",
+                "Julie",
+                "julie",
+                "The Beatles",
+                "the north",
+                "widowdusk",
+                "Zola Jesus",
+                "アルク",
+                "高中正義",
             ]
         );
         let mut ignoring_the = shuffled.to_vec();
@@ -175,9 +212,22 @@ mod tests {
         assert_eq!(
             ignoring_the,
             [
-                "'Round About Midnight", "112", "A Tribe Called Quest", "alt‐J", "The Beatles",
-                "Björk", "Boa", "bôa", "Édith Piaf", "Julie", "julie", "the north", "widowdusk",
-                "Zola Jesus", "アルク", "高中正義",
+                "'Round About Midnight",
+                "112",
+                "A Tribe Called Quest",
+                "alt‐J",
+                "The Beatles",
+                "Björk",
+                "Boa",
+                "bôa",
+                "Édith Piaf",
+                "Julie",
+                "julie",
+                "the north",
+                "widowdusk",
+                "Zola Jesus",
+                "アルク",
+                "高中正義",
             ]
         );
     }
@@ -188,14 +238,27 @@ mod tests {
         assert_eq!(strip_article("  the   xx "), "xx");
         assert_eq!(strip_article("Theatre of Tragedy"), "Theatre of Tragedy");
         assert_eq!(strip_article("The"), "The");
-        assert_eq!(cmp_artist("The Zombies", "Theatre of Tragedy", true), Ordering::Greater);
-        assert_eq!(cmp_artist("The Zombies", "Theatre of Tragedy", false), Ordering::Less);
-        assert_eq!(cmp("The Zombies", "Zebra"), Ordering::Less, "titles keep their The");
+        assert_eq!(
+            cmp_artist("The Zombies", "Theatre of Tragedy", true),
+            Ordering::Greater
+        );
+        assert_eq!(
+            cmp_artist("The Zombies", "Theatre of Tragedy", false),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp("The Zombies", "Zebra"),
+            Ordering::Less,
+            "titles keep their The"
+        );
     }
 
     #[test]
     fn special_letters_fold_the_way_they_are_spelled() {
-        assert_eq!(Folded::new("Straße Æon Øyvind Łódź").collect::<String>(), "strasse aeon oyvind lodz");
+        assert_eq!(
+            Folded::new("Straße Æon Øyvind Łódź").collect::<String>(),
+            "strasse aeon oyvind lodz"
+        );
         assert_eq!(cmp("Øyvind", "Oz"), Ordering::Less);
         assert_eq!(cmp("a × b", "a x b"), "a × b".cmp("a x b"), "× is not an x");
     }
@@ -219,7 +282,10 @@ mod tests {
             let ch = char::from_u32(cp).unwrap();
             let fold = LATIN[(cp - 0xC0) as usize];
             if ch.is_alphabetic() {
-                assert!(!fold.is_empty() && fold.iter().all(u8::is_ascii_lowercase), "{ch} U+{cp:04X}");
+                assert!(
+                    !fold.is_empty() && fold.iter().all(u8::is_ascii_lowercase),
+                    "{ch} U+{cp:04X}"
+                );
             } else {
                 assert!(fold.is_empty(), "{ch} U+{cp:04X} is not a letter");
             }

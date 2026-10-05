@@ -48,9 +48,9 @@ pub struct Track {
     pub track_no: i64,
     pub duration_raw: Option<i64>, // DURATION ext-int prop; units = DB's (calibrate on device, likely ms)
     pub is_hires: bool,
-    pub othumb_id: Option<i64>, // -> images.id for album art
-    pub album_id: Option<i64>,  // -> albums.id (stable key — album NAMES can collide)
-    pub added: i64,             // object_body.addedtime (scan/import time; 0 if unknown) — "recently added"
+    pub othumb_id: Option<i64>,      // -> images.id for album art
+    pub album_id: Option<i64>,       // -> albums.id (stable key — album NAMES can collide)
+    pub added: i64, // object_body.addedtime (scan/import time; 0 if unknown) — "recently added"
     pub releaseyear_id: Option<i64>, // -> releaseyears.id (resolve via Db::release_years)
     /// -> genres.id. Kept as the ID rather than the string: 3,463 tracks share 95 genres on the
     /// reference device, so storing the text per row would be ~3,400 redundant heap strings to say
@@ -147,7 +147,9 @@ impl SensMe {
 
     /// The channel ids this track belongs to, ascending.
     pub fn channel_ids(&self) -> Vec<u8> {
-        (0..SENSME_CHANNELS.len() as u8).filter(|&id| self.in_channel(id)).collect()
+        (0..SENSME_CHANNELS.len() as u8)
+            .filter(|&id| self.in_channel(id))
+            .collect()
     }
 }
 
@@ -174,10 +176,18 @@ struct SensMeAkeys {
 impl SensMeAkeys {
     /// Anything to read at all?
     fn any(&self) -> bool {
-        [self.channels, self.channel_id, self.tempo, self.mood, self.kind, self.style, self.time,
-         self.sabi]
-            .iter()
-            .any(Option::is_some)
+        [
+            self.channels,
+            self.channel_id,
+            self.tempo,
+            self.mood,
+            self.kind,
+            self.style,
+            self.time,
+            self.sabi,
+        ]
+        .iter()
+        .any(Option::is_some)
     }
 }
 
@@ -307,7 +317,11 @@ impl Db {
                  will group albums under the wrong people."
             );
         }
-        let albumartist_table = if has_albumartists { "albumartists" } else { "artists" };
+        let albumartist_table = if has_albumartists {
+            "albumartists"
+        } else {
+            "artists"
+        };
         let has_genre = conn
             .query_row("SELECT genre_id FROM object_body LIMIT 1", [], |r| {
                 r.get::<_, Option<i64>>(0)
@@ -317,7 +331,13 @@ impl Db {
             eprintln!("[cinder-db] object_body has no `genre_id` — genre filtering unavailable");
         }
         let dirs = Self::build_dirs(&conn);
-        Db { conn, duration_akey, albumartist_table, has_genre, dirs }
+        Db {
+            conn,
+            duration_akey,
+            albumartist_table,
+            has_genre,
+            dirs,
+        }
     }
 
     /// Mount point for each STORAGE ROOT of the MTP file tree, by the root object's name.
@@ -333,11 +353,11 @@ impl Db {
     /// BOTH STORAGES MATTER: this device has ~2/3 of the library on internal storage and ~1/3 on
     /// the microSD, and they hang off two different roots.
     const ROOTS: [(&'static str, &'static str); 10] = [
-        ("internal", "/contents"),          // /emmc@contents, vfat
+        ("internal", "/contents"), // /emmc@contents, vfat
         ("contents", "/contents"),
         ("emmc", "/contents"),
         ("internal storage", "/contents"),
-        ("external", "/contents_ext"),      // the microSD, /dev/block/mmcblk1p1
+        ("external", "/contents_ext"), // the microSD, /dev/block/mmcblk1p1
         ("contents_ext", "/contents_ext"),
         ("sdcard", "/contents_ext"),
         ("sdcard1", "/contents_ext"),
@@ -378,7 +398,9 @@ impl Db {
             let mut cur = id;
             let mut prefix: Option<&str> = None;
             for _ in 0..32 {
-                let Some((parent, name)) = raw.get(&cur) else { break };
+                let Some((parent, name)) = raw.get(&cur) else {
+                    break;
+                };
                 if *parent == 0 {
                     // A storage root: its own name selects the mount, and is not part of the path.
                     prefix = Self::ROOTS
@@ -422,17 +444,19 @@ impl Db {
     /// out). An inner JOIN drops them by construction, and computes the count in the same pass
     /// instead of running a subquery per album row.
     pub fn albums(&self) -> Result<Vec<Album>> {
-        let mut st = self.conn.prepare(
-            &format!(
-                "SELECT al.id, al.value, COUNT(ob.object_id) \
+        let mut st = self.conn.prepare(&format!(
+            "SELECT al.id, al.value, COUNT(ob.object_id) \
                  FROM albums al \
                  JOIN object_body ob ON ob.album_id = al.id AND {TRACK_WHERE} \
                  GROUP BY al.id, al.value, al.sort_str \
                  ORDER BY al.sort_str, al.value"
-            ),
-        )?;
+        ))?;
         let rows = st.query_map([], |r| {
-            Ok(Album { id: r.get(0)?, name: text_at(r, 1)?, track_count: r.get(2)? })
+            Ok(Album {
+                id: r.get(0)?,
+                name: text_at(r, 1)?,
+                track_count: r.get(2)?,
+            })
         })?;
         rows.collect()
     }
@@ -462,9 +486,7 @@ impl Db {
              GROUP BY ob.album_id \
              ORDER BY ob.album_id"
         ))?;
-        let rows = st.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, text_at(r, 2)?))
-        })?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, text_at(r, 2)?)))?;
         rows.collect()
     }
 
@@ -488,7 +510,12 @@ impl Db {
         let mut st = self
             .conn
             .prepare("SELECT id, value FROM artists ORDER BY sort_str, value")?;
-        let rows = st.query_map([], |r| Ok(Artist { id: r.get(0)?, name: text_at(r, 1)? }))?;
+        let rows = st.query_map([], |r| {
+            Ok(Artist {
+                id: r.get(0)?,
+                name: text_at(r, 1)?,
+            })
+        })?;
         rows.collect()
     }
 
@@ -521,7 +548,11 @@ impl Db {
              ORDER BY p.sort_str, p.title",
         )?;
         let rows = st.query_map([], |r| {
-            Ok(Playlist { id: r.get(0)?, name: text_at(r, 1)?, track_count: r.get(2)? })
+            Ok(Playlist {
+                id: r.get(0)?,
+                name: text_at(r, 1)?,
+                track_count: r.get(2)?,
+            })
         })?;
         rows.collect()
     }
@@ -565,7 +596,9 @@ impl Db {
     /// exactly the cases they fail, and it materialises no rows.
     pub fn health(&self) -> Result<i64> {
         self.conn
-            .query_row("SELECT count(*) FROM object_body", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT count(*) FROM object_body", [], |r| {
+                r.get::<_, i64>(0)
+            })
     }
 
     /// What the library is BUILT FROM, as one number. See [`content_signature`].
@@ -664,7 +697,14 @@ fn content_signature_of(conn: &Connection) -> Result<u64> {
     }
     // The lookup tables the library joins against. Absent is folded in too, so a table appearing or
     // disappearing is a change.
-    for t in ["albums", "artists", "albumartists", "genres", "releaseyears", "images"] {
+    for t in [
+        "albums",
+        "artists",
+        "albumartists",
+        "genres",
+        "releaseyears",
+        "images",
+    ] {
         h.bytes(t.as_bytes());
         let present = fold_table(conn, t, &mut h)?;
         h.bytes(&[present as u8]);
@@ -701,7 +741,6 @@ fn content_signature_of(conn: &Connection) -> Result<u64> {
 }
 
 impl Db {
-
     /// Every track in (album, disc, track) order — one query to build all the per-album track
     /// lists (group consecutive `album_id` runs), instead of a query per album.
     pub fn tracks_album_order(&self) -> Result<Vec<Track>> {
@@ -741,9 +780,10 @@ impl Db {
             "ob.object_id",
             [base, base_dec],
         )?;
-        if let Some(exact) = v.iter().position(|t| {
-            t.filename == filename || t.filename == clean || t.filename == decoded
-        }) {
+        if let Some(exact) = v
+            .iter()
+            .position(|t| t.filename == filename || t.filename == clean || t.filename == decoded)
+        {
             return Ok(v.into_iter().nth(exact));
         }
         // Match by suffix (e.g. "Artist/Album/01 Track.flac" from a relative playlist entry)
@@ -832,7 +872,9 @@ impl Db {
 
             // Tier 1 — exact, on any of the three spellings.
             let hit = v()
-                .position(|t| t.filename == filename || t.filename == clean || t.filename == decoded)
+                .position(|t| {
+                    t.filename == filename || t.filename == clean || t.filename == decoded
+                })
                 // Tier 2 — suffix, either direction (a relative playlist entry like
                 // "Artist/Album/01 Track.flac", or a bare basename against a full path).
                 .or_else(|| {
@@ -976,7 +1018,11 @@ impl Db {
             None => (String::new(), "NULL"),
         };
         let aa_table = self.albumartist_table;
-        let genre_sel = if self.has_genre { "ob.genre_id" } else { "NULL" };
+        let genre_sel = if self.has_genre {
+            "ob.genre_id"
+        } else {
+            "NULL"
+        };
         let sql = format!(
             "SELECT ob.object_id, ob.title, COALESCE(ar.value,''), COALESCE(al.value,''), \
                     ob.filename, COALESCE(ob.disc_no,0), COALESCE(ob.series_no,0), {dur_sel}, \
@@ -1069,13 +1115,20 @@ impl Db {
                 Ok((id, year))
             });
             if let Ok(rows) = rows {
-                let map: std::collections::HashMap<i64, String> =
-                    rows.filter_map(|r| r.ok()).filter(|(_, y)| !y.is_empty()).collect();
-                eprintln!("[cinder-db] release_years: table '{table}' -> {} entries", map.len());
+                let map: std::collections::HashMap<i64, String> = rows
+                    .filter_map(|r| r.ok())
+                    .filter(|(_, y)| !y.is_empty())
+                    .collect();
+                eprintln!(
+                    "[cinder-db] release_years: table '{table}' -> {} entries",
+                    map.len()
+                );
                 return map;
             }
         }
-        eprintln!("[cinder-db] release_years: no releaseyears/releaseyear table — years left blank");
+        eprintln!(
+            "[cinder-db] release_years: no releaseyears/releaseyear table — years left blank"
+        );
         std::collections::HashMap::new()
     }
 
@@ -1095,9 +1148,7 @@ impl Db {
                 return std::collections::HashMap::new();
             }
         };
-        let rows = st.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, text_at(r, 1)?))
-        });
+        let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, text_at(r, 1)?)));
         match rows {
             Ok(rows) => {
                 let map: std::collections::HashMap<i64, String> =
@@ -1208,12 +1259,20 @@ impl Db {
             eprintln!("[cinder-db] sensme: this store names none of the SensMe properties");
             return HashMap::new();
         }
-        let wanted: Vec<String> = [a.channels, a.channel_id, a.tempo, a.mood, a.kind, a.style,
-                                   a.time, a.sabi]
-            .iter()
-            .flatten()
-            .map(|k| k.to_string())
-            .collect();
+        let wanted: Vec<String> = [
+            a.channels,
+            a.channel_id,
+            a.tempo,
+            a.mood,
+            a.kind,
+            a.style,
+            a.time,
+            a.sabi,
+        ]
+        .iter()
+        .flatten()
+        .map(|k| k.to_string())
+        .collect();
         // The akeys are integers resolved from the DB, so they are inlined (no param-count games
         // for a list whose length varies), exactly as `query_tracks` inlines the DURATION akey.
         let sql = format!(
@@ -1238,7 +1297,8 @@ impl Db {
         // Row by row and leniently, like the track query: one odd value costs that value, never
         // the whole feature.
         while let Ok(Some(r)) = rows.next() {
-            let (Ok(id), Ok(akey), Ok(v)) = (r.get::<_, i64>(0), r.get::<_, i64>(1), opt_int_at(r, 2))
+            let (Ok(id), Ok(akey), Ok(v)) =
+                (r.get::<_, i64>(0), r.get::<_, i64>(1), opt_int_at(r, 2))
             else {
                 continue;
             };
@@ -1421,18 +1481,36 @@ mod tests {
             "#,
             )
             .unwrap();
-        let all = d.tracks(Sort::Title).expect("one odd row must not fail the whole query");
+        let all = d
+            .tracks(Sort::Title)
+            .expect("one odd row must not fail the whole query");
         assert_eq!(all.len(), 4, "every track still reads: {all:?}");
         let t = all.iter().find(|t| t.object_id == 4).unwrap();
-        assert_eq!(t.artist, "Bj\u{FFFD}rk", "invalid UTF-8 is replaced, not refused");
+        assert_eq!(
+            t.artist, "Bj\u{FFFD}rk",
+            "invalid UTF-8 is replaced, not refused"
+        );
         assert_eq!(t.album, "Po\u{FFFD}t");
         assert_eq!(t.track_no, 3, "\"03/12\" reads as track 3");
         assert_eq!(t.disc_no, 1, "\"1/2\" reads as disc 1");
-        assert!(t.filename.ends_with("/MUSIC/Benjamin Francis Leftwich - Last Smoke/hyper.flac"), "{}", t.filename);
+        assert!(
+            t.filename
+                .ends_with("/MUSIC/Benjamin Francis Leftwich - Last Smoke/hyper.flac"),
+            "{}",
+            t.filename
+        );
         let albums = d.albums().expect("the album list reads the same odd name");
-        assert!(albums.iter().any(|a| a.id == 13 && a.name == "Po\u{FFFD}t"), "{albums:?}");
+        assert!(
+            albums.iter().any(|a| a.id == 13 && a.name == "Po\u{FFFD}t"),
+            "{albums:?}"
+        );
         let artists = d.artists().expect("and so does the artist list");
-        assert!(artists.iter().any(|a| a.id == 22 && a.name == "Bj\u{FFFD}rk"), "{artists:?}");
+        assert!(
+            artists
+                .iter()
+                .any(|a| a.id == 22 && a.name == "Bj\u{FFFD}rk"),
+            "{artists:?}"
+        );
     }
 
     #[test]
@@ -1586,9 +1664,18 @@ mod tests {
             .unwrap();
         let p = d.undecodable_paths();
         assert_eq!(p.len(), 1, "{p:?}");
-        assert!(p[0].ends_with("/atlas.flac") && p[0].starts_with('/'), "a full path: {}", p[0]);
-        d.conn.execute_batch("UPDATE object_body SET filename='atlas.wav' WHERE object_id=1;").unwrap();
-        assert!(d.undecodable_paths().is_empty(), "a 32-bit WAV is not held back");
+        assert!(
+            p[0].ends_with("/atlas.flac") && p[0].starts_with('/'),
+            "a full path: {}",
+            p[0]
+        );
+        d.conn
+            .execute_batch("UPDATE object_body SET filename='atlas.wav' WHERE object_id=1;")
+            .unwrap();
+        assert!(
+            d.undecodable_paths().is_empty(),
+            "a 32-bit WAV is not held back"
+        );
     }
 
     /// A store with no bit-depth rows at all holds nothing back.
@@ -1646,7 +1733,10 @@ mod tests {
     fn album_artist_comes_from_the_albumartists_table() {
         let tracks = db().tracks(Sort::Title).unwrap();
         let harvest = tracks.iter().find(|t| t.title == "Harvest Moon").unwrap();
-        assert_eq!(harvest.artist, "Cold Stone & Sea", "track artist still comes from `artists`");
+        assert_eq!(
+            harvest.artist, "Cold Stone & Sea",
+            "track artist still comes from `artists`"
+        );
         assert_eq!(
             harvest.album_artist, "Someone Else Entirely",
             "album artist must resolve through `albumartists` — same id, different table"
@@ -1658,8 +1748,14 @@ mod tests {
         let a = db().albums().unwrap();
         // 3 rows in `albums`, but id 12 has no tracks left and must not be listed.
         assert_eq!(a.len(), 2);
-        assert!(a.iter().all(|x| x.id != 12), "orphan album row listed: {a:?}");
-        assert!(a.iter().all(|x| x.track_count > 0), "album with 0 tracks listed: {a:?}");
+        assert!(
+            a.iter().all(|x| x.id != 12),
+            "orphan album row listed: {a:?}"
+        );
+        assert!(
+            a.iter().all(|x| x.track_count > 0),
+            "album with 0 tracks listed: {a:?}"
+        );
         let last = a.iter().find(|x| x.id == 10).unwrap();
         assert_eq!(last.name, "Last Smoke Before the Snowstorm");
         assert_eq!(last.track_count, 2); // Atlas + Box (folder excluded)
@@ -1687,7 +1783,9 @@ mod tests {
     #[test]
     fn health_passes_on_a_good_store() {
         let db = db();
-        let n = db.health().expect("a healthy store must answer the health query");
+        let n = db
+            .health()
+            .expect("a healthy store must answer the health query");
         assert!(n > 0, "the fixture has rows, so the count must not be zero");
         assert_eq!(
             n,
@@ -1702,24 +1800,43 @@ mod tests {
     #[test]
     fn content_signature_holds_still_and_moves_on_real_changes() {
         let db = db();
-        let base = db.content_signature().expect("fixture store must be readable");
+        let base = db
+            .content_signature()
+            .expect("fixture store must be readable");
         assert_ne!(base, 0, "0 is the shell's 'cannot tell'");
-        assert_eq!(base, db.content_signature().unwrap(), "asking twice is not a change");
+        assert_eq!(
+            base,
+            db.content_signature().unwrap(),
+            "asking twice is not a change"
+        );
 
         // A write to a table the library does not read is not a change.
-        db.conn.execute("UPDATE schema SET prop_name = prop_name", []).unwrap();
-        assert_eq!(base, db.content_signature().unwrap(), "a no-op write must not register");
+        db.conn
+            .execute("UPDATE schema SET prop_name = prop_name", [])
+            .unwrap();
+        assert_eq!(
+            base,
+            db.content_signature().unwrap(),
+            "a no-op write must not register"
+        );
 
         // A retag that keeps the title's LENGTH — the case a count or a size sum cannot see.
         let t: String = db
             .conn
-            .query_row("SELECT title FROM object_body WHERE media_type != 0 LIMIT 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT title FROM object_body WHERE media_type != 0 LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         let mut flipped = t.clone().into_bytes();
         flipped[0] = if flipped[0] == b'X' { b'Y' } else { b'X' };
         let flipped = String::from_utf8(flipped).unwrap();
         db.conn
-            .execute("UPDATE object_body SET title = ?1 WHERE title = ?2", [&flipped, &t])
+            .execute(
+                "UPDATE object_body SET title = ?1 WHERE title = ?2",
+                [&flipped, &t],
+            )
             .unwrap();
         let retag = db.content_signature().unwrap();
         assert_ne!(base, retag, "a same-length retag must register");
@@ -1731,7 +1848,11 @@ mod tests {
 
         // A lookup-table rename (album title fixed by a rescan).
         db.conn.execute("UPDATE albums SET value = value || '!' WHERE rowid = (SELECT min(rowid) FROM albums)", []).unwrap();
-        assert_ne!(analysed, db.content_signature().unwrap(), "an album rename must register");
+        assert_ne!(
+            analysed,
+            db.content_signature().unwrap(),
+            "an album rename must register"
+        );
     }
 
     /// Opening by path is read-only and gives the same answer as the method.
@@ -1749,12 +1870,20 @@ mod tests {
         .unwrap();
         let by_path = content_signature(path.to_str().unwrap()).expect("readable store");
         assert_eq!(by_path, content_signature_of(&conn).unwrap());
-        conn.execute("INSERT INTO object_body VALUES (3, 1, 'Three')", []).unwrap();
-        assert_ne!(by_path, content_signature(path.to_str().unwrap()).unwrap(), "a new track registers");
+        conn.execute("INSERT INTO object_body VALUES (3, 1, 'Three')", [])
+            .unwrap();
+        assert_ne!(
+            by_path,
+            content_signature(path.to_str().unwrap()).unwrap(),
+            "a new track registers"
+        );
 
         let empty = dir.join("empty.db");
         let _ = std::fs::remove_file(&empty);
-        Connection::open(&empty).unwrap().execute_batch("CREATE TABLE other (x);").unwrap();
+        Connection::open(&empty)
+            .unwrap()
+            .execute_batch("CREATE TABLE other (x);")
+            .unwrap();
         assert!(
             content_signature(empty.to_str().unwrap()).is_err(),
             "no track table is 'cannot tell', never a signature"
@@ -1821,8 +1950,16 @@ mod tests {
                  VALUES (4,1,921,1,0,'Odd One','odd.flac',1,1,10);",
             )
             .unwrap();
-        let t = d.tracks(Sort::Title).unwrap().into_iter().find(|t| t.title == "Odd One").unwrap();
-        assert_eq!(t.filename, "odd.flac", "an unknown root must not invent a mount");
+        let t = d
+            .tracks(Sort::Title)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "Odd One")
+            .unwrap();
+        assert_eq!(
+            t.filename, "odd.flac",
+            "an unknown root must not invent a mount"
+        );
     }
 
     /// Basenames repeat constantly across a real library. The now-playing lookup gets the absolute
@@ -1845,7 +1982,9 @@ mod tests {
             .unwrap();
         assert_eq!(sd.title, "Harvest Moon");
         let internal = d
-            .track_by_filename("/contents/MUSIC/Benjamin Francis Leftwich - Last Smoke/harvest.flac")
+            .track_by_filename(
+                "/contents/MUSIC/Benjamin Francis Leftwich - Last Smoke/harvest.flac",
+            )
             .unwrap()
             .unwrap();
         assert_eq!(internal.title, "Harvest Moon (Live)");
@@ -1943,7 +2082,10 @@ mod tests {
 
     #[test]
     fn now_playing_lookup_by_filename() {
-        let t = db().track_by_filename("/contents_ext/MUSIC/Neil Young - Harvest Moon/harvest.flac").unwrap().unwrap();
+        let t = db()
+            .track_by_filename("/contents_ext/MUSIC/Neil Young - Harvest Moon/harvest.flac")
+            .unwrap()
+            .unwrap();
         assert_eq!(t.title, "Harvest Moon");
         assert_eq!(t.album, "Harvest Moon");
         assert_eq!(t.duration_raw, Some(303000));
@@ -1969,7 +2111,11 @@ mod tests {
         let d = db();
         let g = d.genres();
         assert_eq!(g.get(&2).map(String::as_str), Some("Rock"));
-        assert_eq!(g.get(&1).map(String::as_str), Some(""), "the empty genre is a real row");
+        assert_eq!(
+            g.get(&1).map(String::as_str),
+            Some(""),
+            "the empty genre is a real row"
+        );
     }
 
     #[test]

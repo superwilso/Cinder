@@ -64,8 +64,13 @@ fn np_hostile() -> NowPlaying<'static> {
 }
 
 fn np_plain() -> NowPlaying<'static> {
-    NowPlaying { title: "Atlas Hands", artist: "Benjamin Francis Leftwich",
-                 codec: "FLAC · 24bit / 96.0 kHz", badge: "FLAC 24/96", ..np_hostile() }
+    NowPlaying {
+        title: "Atlas Hands",
+        artist: "Benjamin Francis Leftwich",
+        codec: "FLAC · 24bit / 96.0 kHz",
+        badge: "FLAC 24/96",
+        ..np_hostile()
+    }
 }
 
 /// Render one screen and return how many pixels ran off the LEFT or RIGHT margin.
@@ -89,11 +94,16 @@ fn overflow_of(app: &mut App, fonts: &FontSet, np: &NowPlaying) -> u32 {
 /// own names are ordinary, so the list screens were only ever audited against text that fits.
 fn hostile_library() -> cinder_ui::Library {
     const TITLE: &str = "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364 — III. Presto";
-    const ARTIST: &str = "Королевский филармонический оркестр / 東京都交響楽団 feat. A Very Long Guest Artist Name";
+    const ARTIST: &str =
+        "Королевский филармонический оркестр / 東京都交響楽団 feat. A Very Long Guest Artist Name";
     const ALBUM: &str = "The Complete Symphonies and Sinfonie Concertanti (Remastered 2026 Deluxe Anniversary Edition)";
     let mut l = cinder_ui::Library::sample();
     for (i, s) in l.songs.iter_mut().enumerate() {
-        s.title = if i % 2 == 0 { TITLE.into() } else { "夜に駆ける — 東京都交響楽団 (Orchestral Version) 夜に駆ける".into() };
+        s.title = if i % 2 == 0 {
+            TITLE.into()
+        } else {
+            "夜に駆ける — 東京都交響楽団 (Orchestral Version) 夜に駆ける".into()
+        };
         s.artist = ARTIST.into();
         s.dur = "1:07:22".into();
     }
@@ -108,7 +118,8 @@ fn hostile_library() -> cinder_ui::Library {
         a.name = ARTIST.into();
     }
     for p in &mut l.playlists {
-        p.name = "Late Night On The Bus Mix — Winter Edition (Every Song I Could Not Skip) vol. 2".into();
+        p.name = "Late Night On The Bus Mix — Winter Edition (Every Song I Could Not Skip) vol. 2"
+            .into();
     }
     for g in &mut l.genres {
         g.name = "Contemporary Classical / Neo-Classical Crossover".into();
@@ -124,7 +135,10 @@ fn at(screen: Screen) -> App {
     if screen == Screen::NowPlaying {
         // With lyrics, so the Lyrics chip is on screen with everything else.
         a.set_lyrics(Some(cinder_ui::lyrics::Lyrics {
-            lines: vec![cinder_ui::lyrics::Line { at_ms: None, text: "words".into() }],
+            lines: vec![cinder_ui::lyrics::Line {
+                at_ms: None,
+                text: "words".into(),
+            }],
         }));
         return a;
     }
@@ -137,14 +151,16 @@ fn at(screen: Screen) -> App {
         // The longest palette name a file may give (`palette::MAX_NAME`), in the widest glyphs:
         // the Palette row's value, with a swatch beside it that has to move out of its way.
         let name = "東".repeat(cinder_ui::palette::MAX_NAME);
-        let p = cinder_ui::palette::Palette::parse("wide", &format!("name = {name}\n")).expect("a legal palette");
+        let p = cinder_ui::palette::Palette::parse("wide", &format!("name = {name}\n"))
+            .expect("a legal palette");
         a.set_palettes(vec![p], vec![]);
         a.set_palette_wanted("wide");
     }
     if screen == Screen::Palette {
         // The longest names a file may give, in wide glyphs, and refusals with long reasons.
         let long = |id: &str, n: &str| {
-            cinder_ui::palette::Palette::parse(id, &format!("name = {n}\n")).expect("a legal palette")
+            cinder_ui::palette::Palette::parse(id, &format!("name = {n}\n"))
+                .expect("a legal palette")
         };
         a.set_palettes(
             vec![long("wide", &"東".repeat(cinder_ui::palette::MAX_NAME)), long("long", "Midnight Aurora")],
@@ -157,9 +173,21 @@ fn at(screen: Screen) -> App {
     if screen == Screen::Bluetooth {
         // Device names are whatever the headphones advertise; 30-odd characters is ordinary.
         a.set_bt_on(true);
-        a.bt_paired_add("Sony WH-1000XM5 (Living Room) — Headphones", "HEADPHONES", true);
-        a.bt_paired_add("ソニー ワイヤレスノイズキャンセリングステレオヘッドセット", "HEADPHONES", false);
-        a.bt_paired_add("JBL Charge 5 Wi-Fi Portable Speaker Kitchen", "SPEAKER", false);
+        a.bt_paired_add(
+            "Sony WH-1000XM5 (Living Room) — Headphones",
+            "HEADPHONES",
+            true,
+        );
+        a.bt_paired_add(
+            "ソニー ワイヤレスノイズキャンセリングステレオヘッドセット",
+            "HEADPHONES",
+            false,
+        );
+        a.bt_paired_add(
+            "JBL Charge 5 Wi-Fi Portable Speaker Kitchen",
+            "SPEAKER",
+            false,
+        );
         a.set_bt_connected(Some("Sony WH-1000XM5 (Living Room) — Headphones"));
     }
     if screen == Screen::Device {
@@ -176,20 +204,46 @@ fn at(screen: Screen) -> App {
 }
 
 const SCREENS: &[Screen] = &[
-    Screen::Lock, Screen::NowPlaying, Screen::Menu, Screen::Library, Screen::Album,
-    Screen::Artist, Screen::Playlist, Screen::UpNext, Screen::Eq, Screen::Sound,
-    Screen::Bluetooth, Screen::Pairing, Screen::Settings, Screen::Fm, Screen::UsbDac,
-    Screen::Receiver, Screen::Onboarding, Screen::UsbStorage, Screen::GenreFilter,
-    Screen::Folders, Screen::SensMe, Screen::TrackInfo, Screen::Lyrics, Screen::Search,
+    Screen::Lock,
+    Screen::NowPlaying,
+    Screen::Menu,
+    Screen::Library,
+    Screen::Album,
+    Screen::Artist,
+    Screen::Playlist,
+    Screen::UpNext,
+    Screen::Eq,
+    Screen::Sound,
+    Screen::Bluetooth,
+    Screen::Pairing,
+    Screen::Settings,
+    Screen::Fm,
+    Screen::UsbDac,
+    Screen::Receiver,
+    Screen::Onboarding,
+    Screen::UsbStorage,
+    Screen::GenreFilter,
+    Screen::Folders,
+    Screen::SensMe,
+    Screen::TrackInfo,
+    Screen::Lyrics,
+    Screen::Search,
     Screen::ClockSet,
-    Screen::Advanced, Screen::Tone, Screen::DacEq, Screen::Profiles,
-    Screen::Keyboard, Screen::PlaylistPick, Screen::TrackPick,
+    Screen::Advanced,
+    Screen::Tone,
+    Screen::DacEq,
+    Screen::Profiles,
+    Screen::Keyboard,
+    Screen::PlaylistPick,
+    Screen::TrackPick,
     // Added 2026-09-06 by the UI audit. These three were the whole of the gap: reachable,
     // content-bearing screens that no panel-overflow gate had ever rendered. `Canvas` clips
     // silently, so a layout defect on them had no symptom at all — which is the exact reasoning
     // this matrix was built on. (Shelf is the fourth `Screen` variant missing from this list and
     // is deliberately absent: it is an overlay, covered by `overlays_and_modals_stay_on_the_panel`.)
-    Screen::BtCodec, Screen::Device, Screen::VizSet,
+    Screen::BtCodec,
+    Screen::Device,
+    Screen::VizSet,
     // The 2026-09 redesign's Settings ▸ Display page (handoff 5k).
     Screen::Display,
     // Its palette picker (handoff 5j).
@@ -197,7 +251,8 @@ const SCREENS: &[Screen] = &[
     // Help & controls as one list (handoff 5i).
     Screen::Help,
     // The playlist editor (5b) and the saved-view editor (5c).
-    Screen::PlaylistEdit, Screen::ViewEdit,
+    Screen::PlaylistEdit,
+    Screen::ViewEdit,
     // Menu ▸ Soundscapes.
     Screen::Soundscape,
 ];
@@ -215,8 +270,12 @@ fn keyboard_labels_fit_their_keys_at_every_scale() {
         for page in [0u8, 1] {
             for row in 0..ROWS {
                 for col in 0.. {
-                    let Some((_, _, w, _)) = key_rect(page, row, col) else { break };
-                    let Some(key) = key_at(page, row, col) else { break };
+                    let Some((_, _, w, _)) = key_rect(page, row, col) else {
+                        break;
+                    };
+                    let Some(key) = key_at(page, row, col) else {
+                        break;
+                    };
                     let (label, size) = match key {
                         Key::Char(ch) => (ch.to_string(), 24.0),
                         Key::Shift => ("CAPS".to_string(), 15.0),
@@ -226,17 +285,27 @@ fn keyboard_labels_fit_their_keys_at_every_scale() {
                         Key::Done => ("DONE".to_string(), 15.0),
                     };
                     let st = cinder_ui::widgets::sty(
-                        cinder_ui::text::Family::Sans, cinder_ui::text::Weight::SemiBold, size,
-                        cinder_ui::theme::Theme::day().ink, 0.0);
+                        cinder_ui::text::Family::Sans,
+                        cinder_ui::text::Weight::SemiBold,
+                        size,
+                        cinder_ui::theme::Theme::day().ink,
+                        0.0,
+                    );
                     let measured = cinder_ui::text::measure(&fonts, &label, &st);
                     if measured > (w - 6) as f32 {
-                        bad.push(format!("scale {idx}: {label:?} is {measured:.0}px in a {w}px key"));
+                        bad.push(format!(
+                            "scale {idx}: {label:?} is {measured:.0}px in a {w}px key"
+                        ));
                     }
                 }
             }
         }
     }
-    assert!(bad.is_empty(), "keyboard labels overflow their keys:\n{}", bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "keyboard labels overflow their keys:\n{}",
+        bad.join("\n")
+    );
 }
 
 #[test]
@@ -251,12 +320,18 @@ fn no_screen_draws_off_the_panel() {
                 a.night = night;
                 let n = overflow_of(&mut a, &fonts, &np);
                 if n > 0 {
-                    bad.push(format!("{s:?} [{label}, night={night}]: {n} px past the margin"));
+                    bad.push(format!(
+                        "{s:?} [{label}, night={night}]: {n} px past the margin"
+                    ));
                 }
             }
         }
     }
-    assert!(bad.is_empty(), "content is being clipped away:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "content is being clipped away:\n  {}",
+        bad.join("\n  ")
+    );
 }
 
 /// The same audit at every UI scale. This is where overflow actually bites: the layout was drawn
@@ -279,9 +354,12 @@ fn no_screen_draws_off_the_panel_at_any_ui_scale() {
     }
     // Leave the process on the default scale for whatever runs next.
     let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
-    assert!(bad.is_empty(), "content is clipped at non-default UI scale:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "content is clipped at non-default UI scale:\n  {}",
+        bad.join("\n  ")
+    );
 }
-
 
 /// Render one screen with the text-collision audit on and return every pair of text runs that
 /// inked the same pixels (`Canvas::track_text`). Rendered twice for the marquee, like `overflow_of`.
@@ -291,7 +369,11 @@ fn collisions_of(app: &mut App, fonts: &FontSet, np: &NowPlaying) -> Vec<(String
     c.track_text();
     app.render(&mut c, fonts, np);
     let mut out = c.text_collisions();
-    out.extend(c.text_hidden().into_iter().map(|(a, n)| (a, "(covered by a later draw)".to_string(), n)));
+    out.extend(
+        c.text_hidden()
+            .into_iter()
+            .map(|(a, n)| (a, "(covered by a later draw)".to_string(), n)),
+    );
     out
 }
 
@@ -315,7 +397,10 @@ fn no_text_runs_into_other_text() {
                 for night in [false, true] {
                     let mut a = at(s);
                     a.night = night;
-                    report(format!("{s:?} [{label}, night={night}]"), collisions_of(&mut a, &fonts, &np));
+                    report(
+                        format!("{s:?} [{label}, night={night}]"),
+                        collisions_of(&mut a, &fonts, &np),
+                    );
                 }
             }
         }
@@ -325,12 +410,20 @@ fn no_text_runs_into_other_text() {
         let pct = cinder_ui::text::SCALE_STEPS[idx];
         for &s in SCREENS {
             let mut a = at(s);
-            report(format!("{s:?} @ {pct}%"), collisions_of(&mut a, &fonts, &np_hostile()));
+            report(
+                format!("{s:?} @ {pct}%"),
+                collisions_of(&mut a, &fonts, &np_hostile()),
+            );
         }
     }
     let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
     bad.dedup();
-    assert!(bad.is_empty(), "text runs into other text ({}):\n  {}", bad.len(), bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "text runs into other text ({}):\n  {}",
+        bad.len(),
+        bad.join("\n  ")
+    );
 }
 
 /// The audit must fire when two runs really do overlap, or a clean result above means nothing.
@@ -338,19 +431,30 @@ fn no_text_runs_into_other_text() {
 fn the_text_collision_audit_actually_fires() {
     let _g = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
     let fonts = FontSet::load();
-    let st = cinder_ui::widgets::sty(cinder_ui::text::Family::Sans, cinder_ui::text::Weight::Bold, 24.0,
-                                     cinder_ui::theme::Theme::day().ink, 0.0);
+    let st = cinder_ui::widgets::sty(
+        cinder_ui::text::Family::Sans,
+        cinder_ui::text::Weight::Bold,
+        24.0,
+        cinder_ui::theme::Theme::day().ink,
+        0.0,
+    );
     let mut c = Canvas::new();
     c.track_text();
     cinder_ui::text::draw(&mut c, &fonts, 20.0, 100.0, "Overlapping", &st);
     cinder_ui::text::draw(&mut c, &fonts, 40.0, 100.0, "Overlapping", &st);
-    assert!(!c.text_collisions().is_empty(), "two runs on the same pixels must be reported");
+    assert!(
+        !c.text_collisions().is_empty(),
+        "two runs on the same pixels must be reported"
+    );
 
     let mut c = Canvas::new();
     c.track_text();
     let end = cinder_ui::text::draw(&mut c, &fonts, 20.0, 100.0, "Side", &st);
     cinder_ui::text::draw(&mut c, &fonts, end + 2.0, 100.0, "by side", &st);
-    assert!(c.text_collisions().is_empty(), "adjacent runs are not a collision");
+    assert!(
+        c.text_collisions().is_empty(),
+        "adjacent runs are not a collision"
+    );
 }
 
 /// EVERY onboarding page, at every scale, day and night.
@@ -375,16 +479,21 @@ fn every_onboarding_page_stays_on_the_panel_at_every_scale() {
                 // appmgr's SIGCHLD reboot), and only these pages draw these strings.
                 let n = overflow_of(&mut a, &fonts, &np);
                 if n > 0 {
-                    bad.push(format!("onboarding page {page} @ {pct}% night={night}: {n} px past the margin"));
+                    bad.push(format!(
+                        "onboarding page {page} @ {pct}% night={night}: {n} px past the margin"
+                    ));
                 }
-                a.press(Button::Select);   // next page (finishes on the last, which is fine here)
+                a.press(Button::Select); // next page (finishes on the last, which is fine here)
             }
         }
     }
     let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
-    assert!(bad.is_empty(), "onboarding content is clipped:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "onboarding content is clipped:\n  {}",
+        bad.join("\n  ")
+    );
 }
-
 
 /// NO PIECE OF UI CHROME MAY NEED SONY'S FONTS.
 ///
@@ -502,7 +611,11 @@ fn overlays_and_modals_stay_on_the_panel() {
         }
     }
 
-    assert!(bad.is_empty(), "an overlay is clipped:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "an overlay is clipped:\n  {}",
+        bad.join("\n  ")
+    );
 }
 
 /// The pull-down panel (`quick.rs`) at every UI scale, with a long connected-headphone name on its
@@ -527,7 +640,11 @@ fn the_pull_down_panel_stays_readable_at_every_scale() {
         }
     }
     let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
-    assert!(bad.is_empty(), "the pull-down panel is not readable:\n  {}", bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "the pull-down panel is not readable:\n  {}",
+        bad.join("\n  ")
+    );
 }
 
 /// Every VPT room and DC Phase filter label must fit its pill, at every UI scale.
@@ -549,9 +666,12 @@ fn effect_enum_labels_fit_at_every_scale() {
             a.set_vpt_mode(room);
             let oob = overflow_of(&mut a, &fonts, &np);
             assert_eq!(
-                oob, 0,
+                oob,
+                0,
                 "VPT room {:?} overflows at {}% UI scale ({} px past the margin)",
-                cinder_ui::nav::VPT_MODES[room], pct, oob
+                cinder_ui::nav::VPT_MODES[room],
+                pct,
+                oob
             );
         }
         // THE SOUND SCREEN'S FOOTER, under every override. Its warning line names a control and
@@ -602,14 +722,20 @@ fn effect_enum_labels_fit_at_every_scale() {
             a.set_adv_flags(f);
             a.set_tone_bands([cinder_ui::tone::BAND_MAX; cinder_ui::tone::BANDS]);
             let oob = overflow_of(&mut a, &fonts, &np);
-            assert_eq!(oob, 0, "Tone Control overflows at {pct}% (flags {f:#07b}): {oob} px");
+            assert_eq!(
+                oob, 0,
+                "Tone Control overflows at {pct}% (flags {f:#07b}): {oob} px"
+            );
             // …and with ClearAudio+ upstream, which names a different control in the same line.
             let mut a = at(Screen::Tone);
             a.set_adv_flags(f);
             a.set_sound_flags(1 << 5);
             a.set_tone_bands([-cinder_ui::tone::BAND_MAX; cinder_ui::tone::BANDS]);
             let oob = overflow_of(&mut a, &fonts, &np);
-            assert_eq!(oob, 0, "Tone Control overflows under ClearAudio+ at {pct}%: {oob} px");
+            assert_eq!(
+                oob, 0,
+                "Tone Control overflows under ClearAudio+ at {pct}%: {oob} px"
+            );
         }
         // DAC EQ: the state line names Source Direct when it is on, and every band at both ends of
         // its range puts the widest labels ("-12", "+6") above the knobs.
@@ -619,7 +745,10 @@ fn effect_enum_labels_fit_at_every_scale() {
                 a.set_adv_flags(f);
                 a.set_dac_eq([g; cinder_ui::dac_eq::BANDS]);
                 let oob = overflow_of(&mut a, &fonts, &np);
-                assert_eq!(oob, 0, "DAC EQ overflows at {pct}% (flags {f:#07b}, gain {g}): {oob} px");
+                assert_eq!(
+                    oob, 0,
+                    "DAC EQ overflows at {pct}% (flags {f:#07b}, gain {g}): {oob} px"
+                );
             }
         }
         for ty in 0..cinder_ui::nav::DC_PHASE_TYPES.len() {
@@ -628,9 +757,12 @@ fn effect_enum_labels_fit_at_every_scale() {
             a.set_dc_type(ty);
             let oob = overflow_of(&mut a, &fonts, &np);
             assert_eq!(
-                oob, 0,
+                oob,
+                0,
                 "DC Phase type {:?} overflows at {}% UI scale ({} px past the margin)",
-                cinder_ui::nav::DC_PHASE_TYPES[ty], pct, oob
+                cinder_ui::nav::DC_PHASE_TYPES[ty],
+                pct,
+                oob
             );
         }
     }
@@ -652,9 +784,17 @@ fn the_unresolved_detector_actually_fires() {
     );
     // U+2603 SNOWMAN: not in Hanken Grotesk or JetBrains Mono, and outside every script the Sony
     // fallbacks exist to provide — so no font anywhere on the device can draw it.
-    assert!(!text::device_chain_covers('\u{2603}'), "pick a character the chain is NOT for");
+    assert!(
+        !text::device_chain_covers('\u{2603}'),
+        "pick a character the chain is NOT for"
+    );
     let st = cinder_ui::widgets::sty(
-        Family::Sans, Weight::Regular, 18.0, cinder_ui::theme::Theme::day().ink, 0.0);
+        Family::Sans,
+        Weight::Regular,
+        18.0,
+        cinder_ui::theme::Theme::day().ink,
+        0.0,
+    );
     text::draw(&mut c, &fonts, 10.0, 40.0, "\u{2603}", &st);
     assert_eq!(
         fonts.unresolved_chars(),
@@ -692,5 +832,10 @@ fn every_style_stays_on_the_panel_with_its_text_apart() {
     }
     let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
     bad.dedup();
-    assert!(bad.is_empty(), "a style's Now Playing overflows ({}):\n  {}", bad.len(), bad.join("\n  "));
+    assert!(
+        bad.is_empty(),
+        "a style's Now Playing overflows ({}):\n  {}",
+        bad.len(),
+        bad.join("\n  ")
+    );
 }

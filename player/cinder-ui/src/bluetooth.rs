@@ -141,7 +141,12 @@ const PAIRED_LABEL_Y: i32 = CARD_Y + CARD_H;
 /// into [`QUALITIES`] (the persisted order, which Auto leads and which cannot move).
 const LDAC_ORDER: [usize; 4] = [1, 2, 3, 0];
 /// Sony's own names for the four LDAC modes, by [`QUALITIES`] index.
-const LDAC_NAMES: [&str; 4] = ["Best effort", "Sound quality priority", "Standard", "Connection priority"];
+const LDAC_NAMES: [&str; 4] = [
+    "Best effort",
+    "Sound quality priority",
+    "Standard",
+    "Connection priority",
+];
 
 /// One band of the Sound quality page.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -186,7 +191,10 @@ fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
 }
 
 fn codec_part_centre(ldac: bool, want: Part) -> i32 {
-    codec_parts(ldac).into_iter().find(|&(p, _, _)| p == want).map_or(0, |(_, top, h)| top + h / 2)
+    codec_parts(ldac)
+        .into_iter()
+        .find(|&(p, _, _)| p == want)
+        .map_or(0, |(_, top, h)| top + h / 2)
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -317,7 +325,9 @@ pub fn hit_codec(x: i32, y: i32, on: bool, codec_is_ldac: bool) -> BtHit {
             continue;
         }
         return match p {
-            Part::Codecs => crate::kit::chip_at(CODECS.len(), top, x, y).map_or(BtHit::None, BtHit::Codec),
+            Part::Codecs => {
+                crate::kit::chip_at(CODECS.len(), top, x, y).map_or(BtHit::None, BtHit::Codec)
+            }
             Part::Ldac(k) => BtHit::Quality(LDAC_ORDER[k]),
             Part::Enhanced => BtHit::Enhanced,
             Part::Fine => BtHit::FineVolume,
@@ -350,7 +360,10 @@ fn codec_strip(bt: &Bt) -> String {
                 None => want == CODECS[LDAC as usize].0,
             };
             if fell_back {
-                format!("{name} \u{b7} {live} \u{b7} ASKED FOR {}", want.to_uppercase())
+                format!(
+                    "{name} \u{b7} {live} \u{b7} ASKED FOR {}",
+                    want.to_uppercase()
+                )
             } else {
                 format!("{name} \u{b7} {live}")
             }
@@ -379,7 +392,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             Some(codec) => format!("CONNECTED · {}", codec.to_uppercase()),
             None => "CONNECTED".to_string(),
         };
-        text::draw(c, f, 40.0, (CARD_Y + 24) as f32, &tag, &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
+        text::draw(
+            c,
+            f,
+            40.0,
+            (CARD_Y + 24) as f32,
+            &tag,
+            &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18),
+        );
         // There used to be a "HP BATT 60%" readout here. It was hardcoded, and it cannot be made
         // real on this firmware: the entire BT stack exposes exactly one battery API — AVRCP's
         // coarse 5-state BtBatteryStatus, via BtTransmitterService::ChangeBatteryStatus and
@@ -396,19 +416,45 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         // off the panel for a 42-character name (`tests/ui_overflow.rs`, hostile Bluetooth state).
         let (dx, dy, dw, dh) = DISC;
         let nst = sty(Family::Sans, Weight::Bold, 24.0, t.ink, 0.0);
-        text::draw(c, f, 40.0, (CARD_Y + 52) as f32, &crate::widgets::fit(f, name, &nst, (dx - 12 - 40) as f32), &nst);
+        text::draw(
+            c,
+            f,
+            40.0,
+            (CARD_Y + 52) as f32,
+            &crate::widgets::fit(f, name, &nst, (dx - 12 - 40) as f32),
+            &nst,
+        );
         stroke_rect(c, dx, dy, dw, dh, t.line, 1);
-        center(c, f, (dx + dw / 2) as f32, (dy + dh / 2 + 4) as f32, "Disconnect", &sty(Family::Sans, Weight::SemiBold, 14.0, t.dim, 0.0));
+        center(
+            c,
+            f,
+            (dx + dw / 2) as f32,
+            (dy + dh / 2 + 4) as f32,
+            "Disconnect",
+            &sty(Family::Sans, Weight::SemiBold, 14.0, t.dim, 0.0),
+        );
     } else if bt.on && bt.connecting {
         // In flight. A solid card rather than the dashed empty state, because something IS
         // happening — and a moving spinner, because a connect can take several seconds and the
         // difference between "trying" and "failed" has to be visible without waiting it out.
         fill_rect(c, 22, CARD_Y, 436, CARD_H, t.panel);
         stroke_rect(c, 22, CARD_Y, 436, CARD_H, t.line, 1);
-        text::draw(c, f, 64.0, (CARD_Y + 24) as f32, "CONNECTING",
-                   &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
-        text::draw(c, f, 64.0, (CARD_Y + 52) as f32, "Linking to device…",
-                   &sty(Family::Sans, Weight::Regular, 18.0, t.dim, 0.0));
+        text::draw(
+            c,
+            f,
+            64.0,
+            (CARD_Y + 24) as f32,
+            "CONNECTING",
+            &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18),
+        );
+        text::draw(
+            c,
+            f,
+            64.0,
+            (CARD_Y + 52) as f32,
+            "Linking to device…",
+            &sty(Family::Sans, Weight::Regular, 18.0, t.dim, 0.0),
+        );
         crate::widgets::spinner(c, 42, CARD_Y + CARD_H / 2, 9, 3, bt.busy_phase, t.acc);
     } else {
         let mut dx = 22;
@@ -424,7 +470,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         } else {
             "Link state unavailable on this firmware"
         };
-        center(c, f, 240.0, (CARD_Y + CARD_H / 2 + 4) as f32, msg, &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+        center(
+            c,
+            f,
+            240.0,
+            (CARD_Y + CARD_H / 2 + 4) as f32,
+            msg,
+            &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
+        );
     }
 
     // PAIRED DEVICES — the body of the screen, and tappable.
@@ -448,11 +501,23 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     if !bt.on {
         // Nothing here is actionable with the radio off, and greyed rows invite taps that do
         // nothing. Say why the list is empty instead of showing a dead one.
-        center(c, f, 240.0, (PAIRED_Y0 + 40) as f32, "Turn Bluetooth on to see your devices",
-               &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+        center(
+            c,
+            f,
+            240.0,
+            (PAIRED_Y0 + 40) as f32,
+            "Turn Bluetooth on to see your devices",
+            &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
+        );
     } else if bt.paired.is_empty() {
-        center(c, f, 240.0, (PAIRED_Y0 + 40) as f32, "No paired devices yet",
-               &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+        center(
+            c,
+            f,
+            240.0,
+            (PAIRED_Y0 + 40) as f32,
+            "No paired devices yet",
+            &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
+        );
     } else {
         for (i, d) in bt.paired.iter().take(PAIRED_SHOWN).enumerate() {
             let y = PAIRED_Y0 + i as i32 * PAIRED_RH;
@@ -462,18 +527,44 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             }
             let icol = if d.connected { t.acc } else { t.dim };
             icons::bt(c, 38.0, cy as f32, 16.0, icol);
-            let nst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW,
-                          if d.connected { t.acc } else { t.ink }, 0.0);
+            let nst = sty(
+                Family::Sans,
+                Weight::SemiBold,
+                crate::scale::ROW,
+                if d.connected { t.acc } else { t.ink },
+                0.0,
+            );
             // Leave room for the right-hand status word rather than running under it.
             crate::widgets::draw_fit(c, f, 64.0, (cy - 2) as f32, &d.name, &nst, 360.0);
-            let sub = if d.connected { "CONNECTED" } else { d.kind.as_str() };
+            let sub = if d.connected {
+                "CONNECTED"
+            } else {
+                d.kind.as_str()
+            };
             let scol = if d.connected { t.acc } else { t.faint };
-            crate::widgets::draw_fit(c, f, 64.0, (cy + 16) as f32, sub,
-                                     &sty(Family::Mono, Weight::Regular, 11.0, scol, 0.06), 360.0);
-            crate::widgets::right(c, f, 458.0, (cy + 4) as f32,
-                                  if d.connected { "\u{2022}" } else { "CONNECT" },
-                                  &sty(Family::Mono, Weight::Regular, 11.0,
-                                       if d.connected { t.acc } else { t.dim }, 0.1));
+            crate::widgets::draw_fit(
+                c,
+                f,
+                64.0,
+                (cy + 16) as f32,
+                sub,
+                &sty(Family::Mono, Weight::Regular, 11.0, scol, 0.06),
+                360.0,
+            );
+            crate::widgets::right(
+                c,
+                f,
+                458.0,
+                (cy + 4) as f32,
+                if d.connected { "\u{2022}" } else { "CONNECT" },
+                &sty(
+                    Family::Mono,
+                    Weight::Regular,
+                    11.0,
+                    if d.connected { t.acc } else { t.dim },
+                    0.1,
+                ),
+            );
             crate::widgets::hline(c, y + PAIRED_RH, t.line);
         }
     }
@@ -500,22 +591,56 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     } else {
         want.to_uppercase()
     };
-    crate::kit::row(c, t, f, ADV_Y, ADV_H,
-        &crate::kit::Row::new("Sound quality").sub(&detail).trail(crate::kit::Trail::Open(&value)));
-    crate::kit::row(c, t, f, PROFILE_Y, PROFILE_H,
-        &crate::kit::Row::new("Sound profile").sub("Used while connected").trail(crate::kit::Trail::Open(bt.profile)));
-    let dsub = if bt.debug_log { "Recording · switch off to save it to the drive" } else { "Record the radio's traffic for a bug report" };
-    crate::kit::row(c, t, f, DEBUG_Y, DEBUG_H,
-        &crate::kit::Row::new("Debug log").sub(dsub).trail(crate::kit::Trail::Switch(bt.debug_log)));
+    crate::kit::row(
+        c,
+        t,
+        f,
+        ADV_Y,
+        ADV_H,
+        &crate::kit::Row::new("Sound quality")
+            .sub(&detail)
+            .trail(crate::kit::Trail::Open(&value)),
+    );
+    crate::kit::row(
+        c,
+        t,
+        f,
+        PROFILE_Y,
+        PROFILE_H,
+        &crate::kit::Row::new("Sound profile")
+            .sub("Used while connected")
+            .trail(crate::kit::Trail::Open(bt.profile)),
+    );
+    let dsub = if bt.debug_log {
+        "Recording · switch off to save it to the drive"
+    } else {
+        "Record the radio's traffic for a bug report"
+    };
+    crate::kit::row(
+        c,
+        t,
+        f,
+        DEBUG_Y,
+        DEBUG_H,
+        &crate::kit::Row::new("Debug log")
+            .sub(dsub)
+            .trail(crate::kit::Trail::Switch(bt.debug_log)),
+    );
 
     // Footer: an NFC hint on the left and the Receiver-mode link on the right, on ONE baseline.
     // Both were drawn at fixed x, so at 140% "…TO REAR PANEL" ran straight through "RECEIVER
     // MODE ›". The link keeps its width (it names a destination); the hint gives way.
     icons::rx(c, 30.0, 776.0, 14.0, t.faint);
     crate::widgets::row_pair(
-        c, f, 46.0, 458.0, 780.0,
-        "NFC · TOUCH DEVICE TO REAR PANEL", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
-        "RECEIVER MODE \u{203a}", &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08),
+        c,
+        f,
+        46.0,
+        458.0,
+        780.0,
+        "NFC · TOUCH DEVICE TO REAR PANEL",
+        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
+        "RECEIVER MODE \u{203a}",
+        &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08),
         14.0,
     );
 }
@@ -544,15 +669,24 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             }
             Part::Codecs => {
                 let names: Vec<&str> = CODECS.iter().map(|(n, _)| *n).collect();
-                let sel = bt.on.then_some((bt.codec_sel as usize).min(CODECS.len() - 1));
+                let sel = bt
+                    .on
+                    .then_some((bt.codec_sel as usize).min(CODECS.len() - 1));
                 kit::chips(c, &shown(t, bt.on), f, top, &names, sel);
             }
             Part::Ldac(k) => {
                 let q = LDAC_ORDER[k];
                 let chosen = bt.on && bt.ldac_quality as usize == q;
-                let sub = if q == 0 { "Adapts the rate to the link" } else { "" };
+                let sub = if q == 0 {
+                    "Adapts the rate to the link"
+                } else {
+                    ""
+                };
                 let value = QUALITIES[q].to_uppercase();
-                let r = Row::new(LDAC_NAMES[q]).sub(sub).trail(Trail::Value(&value)).sel(chosen);
+                let r = Row::new(LDAC_NAMES[q])
+                    .sub(sub)
+                    .trail(Trail::Value(&value))
+                    .sel(chosen);
                 row_or_off(c, t, f, top, h, &r, bt.on);
             }
             Part::Enhanced => {
@@ -569,7 +703,9 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
                 } else {
                     "Sends key presses \u{b7} on if volume won't change"
                 };
-                let r = Row::new("Use Enhanced Mode").sub(sub).trail(Trail::Switch(bt.on && bt.enhanced));
+                let r = Row::new("Use Enhanced Mode")
+                    .sub(sub)
+                    .trail(Trail::Switch(bt.on && bt.enhanced));
                 row_or_off(c, t, f, top, h, &r, bt.on);
             }
             Part::Fine => {
@@ -590,9 +726,19 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     }
     // What the chips and rows apply to, once, under them: the codec and the LDAC rate are the
     // device's, not the headphone's, and the USB-DAC → LDAC bridge sends with them too.
-    let st = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.04);
-    let note = crate::widgets::fit(f, "Used everywhere, USB-DAC to LDAC included.", &st,
-                                   (kit::RIGHT - kit::LEFT) as f32);
+    let st = sty(
+        Family::Mono,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.faint,
+        0.04,
+    );
+    let note = crate::widgets::fit(
+        f,
+        "Used everywhere, USB-DAC to LDAC included.",
+        &st,
+        (kit::RIGHT - kit::LEFT) as f32,
+    );
     text::draw(c, f, kit::LEFT as f32, (bottom + 28) as f32, &note, &st);
 }
 
@@ -607,7 +753,15 @@ fn shown(t: &Theme, on: bool) -> Theme {
     s
 }
 
-fn row_or_off(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &crate::kit::Row, on: bool) {
+fn row_or_off(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    h: i32,
+    r: &crate::kit::Row,
+    on: bool,
+) {
     crate::kit::row(c, &shown(t, on), f, y, h, &r.sel(r.sel && on));
 }
 
@@ -621,8 +775,17 @@ mod tests {
     fn the_receiver_link_answers_and_stays_below_the_rows() {
         assert_eq!(hit(400, 780, true, 0), BtHit::Receiver);
         assert_eq!(hit(400, 780, false, 0), BtHit::Receiver);
-        assert_ne!(hit(60, 780, true, 0), BtHit::Receiver, "the left half is the NFC hint");
-        assert!(DEBUG_Y + DEBUG_H <= FOOTER_LINK_TOP, "{} > {}", DEBUG_Y + DEBUG_H, FOOTER_LINK_TOP);
+        assert_ne!(
+            hit(60, 780, true, 0),
+            BtHit::Receiver,
+            "the left half is the NFC hint"
+        );
+        assert!(
+            DEBUG_Y + DEBUG_H <= FOOTER_LINK_TOP,
+            "{} > {}",
+            DEBUG_Y + DEBUG_H,
+            FOOTER_LINK_TOP
+        );
     }
 
     fn bt(on: bool, connected: Option<&str>, codec_sel: u8, link_codec: Option<u8>) -> Bt<'_> {
@@ -659,20 +822,36 @@ mod tests {
                     Part::Strip | Part::Label(_) => BtHit::None,
                 };
                 assert_eq!(got, want, "{p:?} (ldac {ldac})");
-                assert_eq!(hit_codec(240, top + h / 2, false, ldac), BtHit::None, "{p:?} answered with the radio off");
+                assert_eq!(
+                    hit_codec(240, top + h / 2, false, ldac),
+                    BtHit::None,
+                    "{p:?} answered with the radio off"
+                );
             }
             let (_, top, h) = *codec_parts(ldac).last().unwrap();
-            assert!(top + h < crate::canvas::H as i32 - 40, "the page runs off the glass (ldac {ldac})");
+            assert!(
+                top + h < crate::canvas::H as i32 - 40,
+                "the page runs off the glass (ldac {ldac})"
+            );
         }
         for i in 0..CODECS.len() {
             let (x, y) = codec_chip(i);
             assert_eq!(hit_codec(x, y, true, true), BtHit::Codec(i));
         }
         for q in 0..QUALITIES.len() {
-            assert_eq!(hit_codec(240, quality_row_y(q), true, true), BtHit::Quality(q));
+            assert_eq!(
+                hit_codec(240, quality_row_y(q), true, true),
+                BtHit::Quality(q)
+            );
         }
-        assert_eq!(hit_codec(240, enhanced_row_y(false), true, false), BtHit::Enhanced);
-        assert_eq!(hit_codec(240, fine_row_y(true), true, true), BtHit::FineVolume);
+        assert_eq!(
+            hit_codec(240, enhanced_row_y(false), true, false),
+            BtHit::Enhanced
+        );
+        assert_eq!(
+            hit_codec(240, fine_row_y(true), true, true),
+            BtHit::FineVolume
+        );
     }
 
     /// The strip names the live codec, and says so when it is not the one asked for — the silent
@@ -681,15 +860,25 @@ mod tests {
     fn the_strip_says_when_the_link_fell_back() {
         const LDAC_RAW: u8 = 0x02;
         const OTHER_RAW: u8 = 0x05;
-        assert_eq!(codec_strip(&bt(true, Some("WH-1000XM5"), LDAC, Some(LDAC_RAW))), "WH-1000XM5 · LDAC");
+        assert_eq!(
+            codec_strip(&bt(true, Some("WH-1000XM5"), LDAC, Some(LDAC_RAW))),
+            "WH-1000XM5 · LDAC"
+        );
         assert_eq!(
             codec_strip(&bt(true, Some("WH-1000XM5"), LDAC, Some(OTHER_RAW))),
             "WH-1000XM5 · CODEC 0x05 · ASKED FOR LDAC"
         );
         // An unknown byte while SBC was asked for may well BE SBC: no claim either way.
-        assert_eq!(codec_strip(&bt(true, Some("Buds"), 3, Some(OTHER_RAW))), "BUDS · CODEC 0x05");
-        assert_eq!(codec_strip(&bt(true, Some("Buds"), 3, None)), "BUDS · CONNECTED");
+        assert_eq!(
+            codec_strip(&bt(true, Some("Buds"), 3, Some(OTHER_RAW))),
+            "BUDS · CODEC 0x05"
+        );
+        assert_eq!(
+            codec_strip(&bt(true, Some("Buds"), 3, None)),
+            "BUDS · CONNECTED"
+        );
         assert!(codec_strip(&bt(true, None, LDAC, None)).starts_with("NOTHING CONNECTED"));
-        assert!(codec_strip(&bt(false, Some("Buds"), LDAC, Some(LDAC_RAW))).starts_with("BLUETOOTH IS OFF"));
+        assert!(codec_strip(&bt(false, Some("Buds"), LDAC, Some(LDAC_RAW)))
+            .starts_with("BLUETOOTH IS OFF"));
     }
 }

@@ -45,7 +45,12 @@ pub const VOLUME_HUDS: [&str; 2] = ["Full", "Minimal"];
 /// The Style label names what a style redraws so far, so nobody picks Terminal and wonders why the
 /// Library did not change. Part of the label, not its right-hand action: that slot is drawn in the
 /// accent, and the accent means "tap here".
-const SECTIONS: [(&str, usize); 4] = [("COLOUR", 3), ("VOLUME", 1), ("TEXT", 2), ("STYLE · NOW PLAYING", 1)];
+const SECTIONS: [(&str, usize); 4] = [
+    ("COLOUR", 3),
+    ("VOLUME", 1),
+    ("TEXT", 2),
+    ("STYLE · NOW PLAYING", 1),
+];
 
 /// Screen-y of the top of row `r`.
 pub fn row_top(r: usize) -> i32 {
@@ -151,7 +156,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &DisplayVie
     }
 }
 
-fn draw_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, r: usize, sel: bool, v: &DisplayView) -> i32 {
+fn draw_row(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    r: usize,
+    sel: bool,
+    v: &DisplayView,
+) -> i32 {
     match r {
         ROW_PALETTE => {
             // The palette's own colours beside its name: background, line, dim, ink, accent — the
@@ -162,10 +175,23 @@ fn draw_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, r: usize, sel: bool,
             // placed from that same string. Positioning it from the unfitted name put it under the
             // title for a wide name (16 CJK characters at 140%), because the row shortens the
             // value it is given but nobody told the swatch.
-            let vst = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.1);
+            let vst = sty(
+                Family::Mono,
+                Weight::Regular,
+                crate::scale::CAPTION,
+                t.faint,
+                0.1,
+            );
             let room = (kit::RIGHT - kit::LEFT) as f32 / 2.0 - (swatch_w + 14) as f32;
             let name = crate::widgets::fit(f, &v.palette.to_uppercase(), &vst, room);
-            let next = kit::row(c, t, f, y, kit::ROW_H, &Row::new("Palette").trail(Trail::Open(&name)).sel(sel));
+            let next = kit::row(
+                c,
+                t,
+                f,
+                y,
+                kit::ROW_H,
+                &Row::new("Palette").trail(Trail::Open(&name)).sel(sel),
+            );
             let vx = kit::RIGHT - 20 - text::measure(f, &name, &vst) as i32 - 14;
             let x0 = vx - swatch_w;
             let cy = y + kit::ROW_H / 2;
@@ -177,16 +203,34 @@ fn draw_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, r: usize, sel: bool,
         }
         ROW_ACCENT => {
             if v.accent_locked {
-                return kit::row(c, t, f, y, kit::ROW_H,
-                    &Row::new("Accent").sub("Set by the palette").trail(Trail::Value("—")).sel(sel));
+                return kit::row(
+                    c,
+                    t,
+                    f,
+                    y,
+                    kit::ROW_H,
+                    &Row::new("Accent")
+                        .sub("Set by the palette")
+                        .trail(Trail::Value("—"))
+                        .sel(sel),
+                );
             }
             // "Amber", not the chip-case "AMBER": it is a second line of prose, not a value.
             let upper = v.accent.name();
             let mut name = upper[..1].to_string();
             name.push_str(&upper[1..].to_lowercase());
             let swatches = kit::RIGHT - swatch_x(0);
-            let next = kit::row(c, t, f, y, kit::ROW_H,
-                                &Row::new("Accent").sub(&name).trail(Trail::Reserve(swatches)).sel(sel));
+            let next = kit::row(
+                c,
+                t,
+                f,
+                y,
+                kit::ROW_H,
+                &Row::new("Accent")
+                    .sub(&name)
+                    .trail(Trail::Reserve(swatches))
+                    .sel(sel),
+            );
             let cy = y + kit::ROW_H / 2;
             for (i, a) in Accent::ALL.iter().enumerate() {
                 let sx = swatch_x(i);
@@ -200,13 +244,29 @@ fn draw_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, r: usize, sel: bool,
             }
             next
         }
-        ROW_NIGHT => kit::row(c, t, f, y, kit::ROW_H,
-            &Row::new("Night").sub("Dims everything after dark").trail(Trail::Switch(v.night)).sel(sel)),
+        ROW_NIGHT => kit::row(
+            c,
+            t,
+            f,
+            y,
+            kit::ROW_H,
+            &Row::new("Night")
+                .sub("Dims everything after dark")
+                .trail(Trail::Switch(v.night))
+                .sel(sel),
+        ),
         ROW_VOLUME => {
             if sel {
                 fill_rect(c, 0, y, W as i32, kit::ROW_H, t.row_sel);
             }
-            kit::chips(c, t, f, chips_top(), &VOLUME_HUDS, Some(v.volume_hud as usize));
+            kit::chips(
+                c,
+                t,
+                f,
+                chips_top(),
+                &VOLUME_HUDS,
+                Some(v.volume_hud as usize),
+            );
             crate::widgets::hline(c, y + kit::ROW_H - 1, t.line);
             y + kit::ROW_H
         }
@@ -220,7 +280,14 @@ fn draw_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, r: usize, sel: bool,
             crate::widgets::hline(c, y + kit::ROW_H - 1, t.line);
             y + kit::ROW_H
         }
-        _ => kit::row(c, t, f, y, kit::ROW_H, &Row::new("Visualiser").trail(Trail::Open(v.viz)).sel(sel)),
+        _ => kit::row(
+            c,
+            t,
+            f,
+            y,
+            kit::ROW_H,
+            &Row::new("Visualiser").trail(Trail::Open(v.viz)).sel(sel),
+        ),
     }
 }
 
@@ -232,7 +299,14 @@ fn size_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool) -> i32 {
     fill_rect(c, SLIDER_X0, cy - 1, SLIDER_W, 2, t.line);
     for i in 0..n {
         let x = SLIDER_X0 + i * SLIDER_W / (n - 1);
-        fill_rect(c, x - 1, cy - 4, 2, 8, if i <= idx { t.acc } else { t.line });
+        fill_rect(
+            c,
+            x - 1,
+            cy - 4,
+            2,
+            8,
+            if i <= idx { t.acc } else { t.line },
+        );
     }
     let kx = SLIDER_X0 + idx * SLIDER_W / (n - 1);
     fill_rect(c, SLIDER_X0, cy - 1, kx - SLIDER_X0, 2, t.acc);
@@ -240,8 +314,14 @@ fn size_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool) -> i32 {
     // A CONSTANT pixel size: this is the control that sets the scale, so letting the readout grow
     // with it would crowd the knob at 140% and move the slider's own geometry.
     let unscaled = 14.0 * 100.0 / text::scale_pct() as f32;
-    right(c, f, kit::RIGHT as f32, (cy + 5) as f32, &format!("{}%", text::scale_pct()),
-          &sty(Family::Mono, Weight::Regular, unscaled, t.faint, 0.04));
+    right(
+        c,
+        f,
+        kit::RIGHT as f32,
+        (cy + 5) as f32,
+        &format!("{}%", text::scale_pct()),
+        &sty(Family::Mono, Weight::Regular, unscaled, t.faint, 0.04),
+    );
     next
 }
 
@@ -253,7 +333,10 @@ mod tests {
     #[test]
     fn the_page_fits_above_the_now_playing_bar() {
         let bottom = row_top(ROWS - 1) + kit::ROW_H;
-        assert!(bottom <= crate::H as i32 - crate::chrome::NP_BAR_H, "Display runs to {bottom}");
+        assert!(
+            bottom <= crate::H as i32 - crate::chrome::NP_BAR_H,
+            "Display runs to {bottom}"
+        );
     }
 
     /// Every row's middle is that row, and the gaps (section labels) are nobody's.
@@ -262,7 +345,11 @@ mod tests {
         for r in 0..ROWS {
             assert_eq!(row_at(row_top(r) + kit::ROW_H / 2), Some(r));
         }
-        assert_eq!(row_at(crate::chrome::HEADER_BOTTOM + 5), None, "the first section label");
+        assert_eq!(
+            row_at(crate::chrome::HEADER_BOTTOM + 5),
+            None,
+            "the first section label"
+        );
     }
 
     /// Every swatch is hittable at its centre and picks itself.
@@ -281,9 +368,16 @@ mod tests {
         let top = row_top(ROW_STYLE);
         assert!(style_chips_top() >= top && style_chips_top() + kit::CHIP_H <= top + kit::ROW_H);
         let y = style_chips_top() + kit::CHIP_H / 2;
-        let picks: Vec<usize> = [60, 240, 420].iter().filter_map(|&x| style_chip_at(x, y)).collect();
+        let picks: Vec<usize> = [60, 240, 420]
+            .iter()
+            .filter_map(|&x| style_chip_at(x, y))
+            .collect();
         assert_eq!(picks, [0, 1, 2]);
-        assert_eq!(style_chip_at(240, top - 5), None, "the section label is not a chip");
+        assert_eq!(
+            style_chip_at(240, top - 5),
+            None,
+            "the section label is not a chip"
+        );
     }
 
     /// The chips sit inside the Volume row.

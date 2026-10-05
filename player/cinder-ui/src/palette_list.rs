@@ -63,7 +63,10 @@ pub struct Skipped {
 pub fn skipped_from(msg: &str) -> Skipped {
     let (file, rest) = msg.split_once(": ").unwrap_or((msg, ""));
     let why = rest.split("; ").next().unwrap_or("").to_string();
-    Skipped { file: file.to_string(), why }
+    Skipped {
+        file: file.to_string(),
+        why,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -137,7 +140,15 @@ pub fn item_at(x: i32, y: i32, scroll: i32, entries: usize, skipped: usize) -> O
     None
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sort: usize, entries: &[Entry], skipped: &[Skipped], scroll: i32) {
+pub fn render(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    sort: usize,
+    entries: &[Entry],
+    skipped: &[Skipped],
+    scroll: i32,
+) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "Palette", None);
     c.set_clip_y(TOP, H as i32);
@@ -155,12 +166,28 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sort: usize, entries: &[En
             }
             Part::Row(Item::Entry(i)) => {
                 let e = &entries[i];
-                kit::row(c, t, f, y, kit::ROW_H,
-                         &Row::new(&e.name).sub(&e.sub).trail(Trail::Reserve(SWATCH_W)).sel(e.active));
+                kit::row(
+                    c,
+                    t,
+                    f,
+                    y,
+                    kit::ROW_H,
+                    &Row::new(&e.name)
+                        .sub(&e.sub)
+                        .trail(Trail::Reserve(SWATCH_W))
+                        .sel(e.active),
+                );
                 let x0 = kit::RIGHT - SWATCH_W;
                 let sy = y + (kit::ROW_H - CELL_H) / 2;
                 for (k, col) in e.cells.iter().enumerate() {
-                    fill_rect(c, x0 + k as i32 * CELL_W, sy, CELL_W, CELL_H, t.scale_color(*col));
+                    fill_rect(
+                        c,
+                        x0 + k as i32 * CELL_W,
+                        sy,
+                        CELL_W,
+                        CELL_H,
+                        t.scale_color(*col),
+                    );
                 }
                 stroke_rect(c, x0, sy, SWATCH_W, CELL_H, t.ctrl(), 1);
             }
@@ -170,8 +197,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sort: usize, entries: &[En
                 kit::row(c, t, f, y, kit::ROW_H, &Row::new(&s.file).sub(&s.why));
             }
             Part::Row(Item::Add) => {
-                kit::row(c, t, f, y, kit::ROW_H,
-                         &Row::new("Add a palette").sub("Copy .palette files to cinder_palettes/"));
+                kit::row(
+                    c,
+                    t,
+                    f,
+                    y,
+                    kit::ROW_H,
+                    &Row::new("Add a palette").sub("Copy .palette files to cinder_palettes/"),
+                );
             }
             Part::Row(Item::Sort(_)) => {}
         }
@@ -186,7 +219,9 @@ mod tests {
 
     #[test]
     fn a_skip_message_splits_into_the_file_and_its_first_problem() {
-        let s = skipped_from("neon.palette: line 3: `day.ink` is not a colour; line 9: unknown key `glow`");
+        let s = skipped_from(
+            "neon.palette: line 3: `day.ink` is not a colour; line 9: unknown key `glow`",
+        );
         assert_eq!(s.file, "neon.palette");
         assert_eq!(s.why, "line 3: `day.ink` is not a colour");
         let s = skipped_from("odd");
@@ -206,18 +241,33 @@ mod tests {
         }
         assert_eq!(seen.len(), n + k + 1);
         let (x, w) = kit::chip_span(1, 2);
-        assert_eq!(item_at(x + w / 2, TOP + kit::SECTION_H + kit::CHIP_H / 2, 0, n, k), Some(Item::Sort(1)));
-        assert_eq!(item_at(240, TOP + 5, 0, n, k), None, "a label is not a target");
+        assert_eq!(
+            item_at(x + w / 2, TOP + kit::SECTION_H + kit::CHIP_H / 2, 0, n, k),
+            Some(Item::Sort(1))
+        );
+        assert_eq!(
+            item_at(240, TOP + 5, 0, n, k),
+            None,
+            "a label is not a target"
+        );
     }
 
     /// No SKIPPED section when nothing was skipped, and the list scrolls only when it must.
     #[test]
     fn the_skipped_section_and_the_scroll_appear_only_when_needed() {
-        assert!(!parts(1, 0).iter().any(|(p, _, _)| *p == Part::Label("SKIPPED")));
-        assert!(parts(1, 1).iter().any(|(p, _, _)| *p == Part::Label("SKIPPED")));
+        assert!(!parts(1, 0)
+            .iter()
+            .any(|(p, _, _)| *p == Part::Label("SKIPPED")));
+        assert!(parts(1, 1)
+            .iter()
+            .any(|(p, _, _)| *p == Part::Label("SKIPPED")));
         assert_eq!(max_scroll(1, 0), 0);
         assert!(max_scroll(crate::palette::MAX_FILES + 1, 3) > 0);
         let deep = max_scroll(33, 3);
-        assert_eq!(item_at(240, H as i32 - 40, deep, 33, 3), Some(Item::Add), "the ADD row is reachable");
+        assert_eq!(
+            item_at(240, H as i32 - 40, deep, 33, 3),
+            Some(Item::Add),
+            "the ADD row is reachable"
+        );
     }
 }

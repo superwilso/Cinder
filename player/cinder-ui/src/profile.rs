@@ -142,9 +142,21 @@ pub enum Hit {
 
 /// The ALSO PER PROFILE rows: `(bit, title, what it means)`.
 pub const FOLLOWS: [(u8, &str, &str); 3] = [
-    (crate::nav::FOLLOW_MONO, "Mono", "Each profile has its own mono switch"),
-    (crate::nav::FOLLOW_AMP, "Linear amp", "3.5 mm only \u{b7} each profile picks its amp"),
-    (crate::nav::FOLLOW_DAC_EQ, "DAC EQ", "3.5 mm only \u{b7} each profile has its curve"),
+    (
+        crate::nav::FOLLOW_MONO,
+        "Mono",
+        "Each profile has its own mono switch",
+    ),
+    (
+        crate::nav::FOLLOW_AMP,
+        "Linear amp",
+        "3.5 mm only \u{b7} each profile picks its amp",
+    ),
+    (
+        crate::nav::FOLLOW_DAC_EQ,
+        "DAC EQ",
+        "3.5 mm only \u{b7} each profile has its curve",
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,19 +257,40 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Profiles) {
             }
             Part::Row(Hit::Copy) => {
                 let title = format!("Copy {live_letter} to {other_letter}");
-                let sub = format!("{other_letter} becomes the same as {live_letter}, to tune from there");
+                let sub =
+                    format!("{other_letter} becomes the same as {live_letter}, to tune from there");
                 kit::row(c, t, f, top, h, &Row::new(&title).sub(&sub));
             }
             Part::Row(Hit::Follow(bit)) => {
                 if let Some((_, title, sub)) = FOLLOWS.iter().find(|(b, _, _)| *b == bit) {
-                    kit::row(c, t, f, top, h, &Row::new(title).sub(sub).trail(Trail::Switch(p.follow & bit != 0)));
+                    kit::row(
+                        c,
+                        t,
+                        f,
+                        top,
+                        h,
+                        &Row::new(title)
+                            .sub(sub)
+                            .trail(Trail::Switch(p.follow & bit != 0)),
+                    );
                 }
             }
             Part::Note => {
                 // What a profile HOLDS, said once. Without it the letters are just letters.
-                let st = sty(Family::Sans, Weight::Regular, crate::scale::SECONDARY, t.dim, 0.0);
+                let st = sty(
+                    Family::Sans,
+                    Weight::Regular,
+                    crate::scale::SECONDARY,
+                    t.dim,
+                    0.0,
+                );
                 let w = (kit::RIGHT - kit::LEFT) as f32;
-                let l1 = fit(f, "A profile is the EQ, every effect and the balance.", &st, w);
+                let l1 = fit(
+                    f,
+                    "A profile is the EQ, every effect and the balance.",
+                    &st,
+                    w,
+                );
                 let l2 = fit(f, "Tap an output to switch its letter.", &st, w);
                 text::draw(c, f, kit::LEFT as f32, (top + 26) as f32, &l1, &st);
                 text::draw(c, f, kit::LEFT as f32, (top + 50) as f32, &l2, &st);
@@ -275,7 +308,11 @@ mod tests {
         assert_eq!(output_for(false, false), Output::Jack);
         assert_eq!(output_for(false, true), Output::Bluetooth);
         assert_eq!(output_for(true, false), Output::UsbDac);
-        assert_eq!(output_for(true, true), Output::UsbDac, "DAC mode bridging to BT is still DAC mode");
+        assert_eq!(
+            output_for(true, true),
+            Output::UsbDac,
+            "DAC mode bridging to BT is still DAC mode"
+        );
     }
 
     #[test]
@@ -291,9 +328,18 @@ mod tests {
 
     #[test]
     fn the_summary_names_only_outputs_on_the_other_profile() {
-        assert_eq!(summary([0, 0, 0], Output::Jack), "3.5 mm now \u{b7} every output uses A");
-        assert_eq!(summary([0, 1, 0], Output::Jack), "3.5 mm now \u{b7} Bluetooth uses B");
-        assert_eq!(summary([0, 1, 1], Output::Bluetooth), "Bluetooth now \u{b7} Headphone jack uses A");
+        assert_eq!(
+            summary([0, 0, 0], Output::Jack),
+            "3.5 mm now \u{b7} every output uses A"
+        );
+        assert_eq!(
+            summary([0, 1, 0], Output::Jack),
+            "3.5 mm now \u{b7} Bluetooth uses B"
+        );
+        assert_eq!(
+            summary([0, 1, 1], Output::Bluetooth),
+            "Bluetooth now \u{b7} Headphone jack uses A"
+        );
     }
 
     /// Every output row and the copy row can be hit at its centre, and the rows do not overlap.

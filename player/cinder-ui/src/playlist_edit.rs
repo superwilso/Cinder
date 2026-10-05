@@ -118,14 +118,38 @@ fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, s: &SongRow, lifted: bool
         hline(c, y, t.acc);
     }
     let cy = y + RH / 2;
-    icons::grip(c, 34.0, cy as f32, 20.0, if lifted { t.acc } else { t.faint });
+    icons::grip(
+        c,
+        34.0,
+        cy as f32,
+        20.0,
+        if lifted { t.acc } else { t.faint },
+    );
     let x = (kit::LEFT + 26 + 14 + 8) as f32;
     let w = (REMOVE_X0 - 8) as f32 - x;
-    let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, if lifted { t.acc } else { t.ink }, 0.0);
+    let tst = sty(
+        Family::Sans,
+        Weight::SemiBold,
+        crate::scale::ROW,
+        if lifted { t.acc } else { t.ink },
+        0.0,
+    );
     text::draw(c, f, x, (cy - 3) as f32, &fit(f, &s.title, &tst, w), &tst);
-    let sst = sty(Family::Sans, Weight::Regular, crate::scale::SECONDARY, t.dim, 0.0);
+    let sst = sty(
+        Family::Sans,
+        Weight::Regular,
+        crate::scale::SECONDARY,
+        t.dim,
+        0.0,
+    );
     text::draw(c, f, x, (cy + 18) as f32, &fit(f, &s.artist, &sst, w), &sst);
-    icons::close(c, ((REMOVE_X0 + REMOVE_X1) / 2) as f32, cy as f32, 12.0, t.faint);
+    icons::close(
+        c,
+        ((REMOVE_X0 + REMOVE_X1) / 2) as f32,
+        cy as f32,
+        12.0,
+        t.faint,
+    );
     hline(c, y + RH - 1, if lifted { t.acc } else { t.line });
 }
 
@@ -134,14 +158,29 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
     crate::chrome::header_action(c, t, f, "Edit playlist", "DONE");
     kit::strip(c, t, f, STRIP_Y, &v.name.to_uppercase());
     let n = v.rows.len();
-    let count = if n == 1 { "1 TRACK".to_string() } else { format!("{n} TRACKS") };
+    let count = if n == 1 {
+        "1 TRACK".to_string()
+    } else {
+        format!("{n} TRACKS")
+    };
     kit::section_label(c, t, f, LABEL_Y, &count, v.can_undo.then_some("UNDO"));
 
     let scroll = v.scroll_px.clamp(0, max_scroll(n));
     c.set_clip_y(LIST_TOP, LIST_BOTTOM);
     if n == 0 {
-        let st = sty(Family::Sans, Weight::Regular, crate::scale::SECONDARY, t.dim, 0.0);
-        let msg = fit(f, "Every track removed. DONE saves it empty.", &st, (kit::RIGHT - kit::LEFT) as f32);
+        let st = sty(
+            Family::Sans,
+            Weight::Regular,
+            crate::scale::SECONDARY,
+            t.dim,
+            0.0,
+        );
+        let msg = fit(
+            f,
+            "Every track removed. DONE saves it empty.",
+            &st,
+            (kit::RIGHT - kit::LEFT) as f32,
+        );
         text::draw(c, f, kit::LEFT as f32, (LIST_TOP + 40) as f32, &msg, &st);
     }
     // While a row is lifted the others part around the slot it would land in: the CONTENT flows
@@ -163,7 +202,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
         row(c, t, f, y, v.rows[i], false);
     }
     c.clear_clip();
-    crate::library::scrollbar(c, t, LIST_TOP, LIST_BOTTOM, scroll, content_h(n), v.sbar_active);
+    crate::library::scrollbar(
+        c,
+        t,
+        LIST_TOP,
+        LIST_BOTTOM,
+        scroll,
+        content_h(n),
+        v.sbar_active,
+    );
     // The lifted row floats under the finger, over everything, unclipped at the list's edges so it
     // never vanishes mid-gesture.
     if let (Some(d), Some(i)) = (v.drag, lifted) {
@@ -189,10 +236,17 @@ mod tests {
                 }
                 assert_eq!(row_at(n, scroll, mid), Some(i), "scroll {scroll} row {i}");
                 assert_eq!(hit_remove(n, scroll, REMOVE_X0 + 10, mid), Some(i));
-                assert_eq!(hit_remove(n, scroll, GRIP_X1 + 10, mid), None, "the title is not the ×");
+                assert_eq!(
+                    hit_remove(n, scroll, GRIP_X1 + 10, mid),
+                    None,
+                    "the title is not the ×"
+                );
             }
         }
-        assert!(REMOVE_X1 - REMOVE_X0 >= 44 && GRIP_X1 >= 44, "both columns are real targets");
+        assert!(
+            REMOVE_X1 - REMOVE_X0 >= 44 && GRIP_X1 >= 44,
+            "both columns are real targets"
+        );
         assert_eq!(row_at(n, 0, LIST_TOP - 1), None);
         assert_eq!(row_at(2, 0, LIST_TOP + 2 * RH), None, "below the last row");
     }

@@ -56,7 +56,9 @@ const SLOT_H: i32 = 52;
 /// x from which a filled slot's row is the "forget" (×) target; left of it is GO.
 const CLEAR_X: i32 = 420;
 /// Baseline for a section caption sitting above the block it names.
-const fn caption_y(block_top: i32) -> i32 { block_top - 14 }
+const fn caption_y(block_top: i32) -> i32 {
+    block_top - 14
+}
 
 /// Number of pin slots.
 ///
@@ -88,7 +90,6 @@ fn slot_text_w(f: &FontSet, x: f32, gost: &crate::text::TextStyle) -> f32 {
 }
 const GO_LABEL: &str = "GO \u{203a}";
 
-
 /// Centre of the header "Pin" button. Exposed so callers and tests aim at the layout instead of
 /// repeating a pixel — the coordinates in the nav tests silently stopped hitting it when the sheet
 /// was rebalanced, and the tests failed on the CONSEQUENCE (no pin was stored) rather than saying
@@ -103,9 +104,16 @@ pub fn slot_center_y(i: usize) -> i32 {
     SLOT0_Y + i as i32 * SLOT_DY + SLOT_H / 2
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub: &str, pins: &[Option<Pin>; SLOTS]) {
+pub fn render(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    this_title: &str,
+    this_sub: &str,
+    pins: &[Option<Pin>; SLOTS],
+) {
     c.begin_layer(); // a sheet over the screen: what it covers is covered on purpose
-    // 1. dim the screen behind (≈55% black backdrop)
+                     // 1. dim the screen behind (≈55% black backdrop)
     for px in c.buf.iter_mut() {
         let r = ((*px >> 16) & 0xff) * 45 / 100;
         let g = ((*px >> 8) & 0xff) * 45 / 100;
@@ -118,8 +126,22 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub
 
     // header
     icons::bookmark(c, 24.0, (TOP + 18) as f32, 16.0, t.ink);
-    text::draw(c, f, 48.0, (TOP + 30) as f32, "Shelf", &sty(Family::Sans, Weight::Bold, 22.0, t.ink, 0.0));
-    right(c, f, 458.0, (TOP + 28) as f32, "CLOSE ×", &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.08));
+    text::draw(
+        c,
+        f,
+        48.0,
+        (TOP + 30) as f32,
+        "Shelf",
+        &sty(Family::Sans, Weight::Bold, 22.0, t.ink, 0.0),
+    );
+    right(
+        c,
+        f,
+        458.0,
+        (TOP + 28) as f32,
+        "CLOSE ×",
+        &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.08),
+    );
 
     let cap = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18);
 
@@ -128,36 +150,88 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub
     stroke_rect(c, 22, THIS_Y, 436, THIS_H, t.line, 1);
     let tst = sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0);
     let sst = sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0);
-    text::draw(c, f, 36.0, (THIS_Y + 24) as f32,
-               &crate::widgets::fit(f, this_title, &tst, this_text_w(36.0)), &tst);
-    text::draw(c, f, 36.0, (THIS_Y + 42) as f32,
-               &crate::widgets::fit(f, this_sub, &sst, this_text_w(36.0)), &sst);
+    text::draw(
+        c,
+        f,
+        36.0,
+        (THIS_Y + 24) as f32,
+        &crate::widgets::fit(f, this_title, &tst, this_text_w(36.0)),
+        &tst,
+    );
+    text::draw(
+        c,
+        f,
+        36.0,
+        (THIS_Y + 42) as f32,
+        &crate::widgets::fit(f, this_sub, &sst, this_text_w(36.0)),
+        &sst,
+    );
     let (px, py, pw, ph) = PIN_BTN;
     fill_rect(c, px, py + 6, pw, ph - 12, t.acc);
-    center(c, f, (px + pw / 2) as f32, (py + ph / 2 + 4) as f32, "Pin", &sty(Family::Sans, Weight::Bold, 14.0, t.acc_ink, 0.0));
+    center(
+        c,
+        f,
+        (px + pw / 2) as f32,
+        (py + ph / 2 + 4) as f32,
+        "Pin",
+        &sty(Family::Sans, Weight::Bold, 14.0, t.acc_ink, 0.0),
+    );
 
     // PINNED · N/3
     let filled = pins.iter().filter(|p| p.is_some()).count();
-    text::draw(c, f, 22.0, caption_y(SLOT0_Y) as f32, &format!("PINNED \u{00b7} {}/{}", filled, SLOTS), &cap);
+    text::draw(
+        c,
+        f,
+        22.0,
+        caption_y(SLOT0_Y) as f32,
+        &format!("PINNED \u{00b7} {}/{}", filled, SLOTS),
+        &cap,
+    );
     for (i, slot) in pins.iter().enumerate() {
         let y = SLOT0_Y + i as i32 * SLOT_DY;
         match slot {
             Some(p) => {
                 stroke_rect(c, 22, y, 436, SLOT_H, t.line, 1);
                 let mid = SLOT_H / 2;
-                text::draw(c, f, 36.0, (y + mid + 5) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 13.0, t.acc, 0.0));
+                text::draw(
+                    c,
+                    f,
+                    36.0,
+                    (y + mid + 5) as f32,
+                    &format!("{}", i + 1),
+                    &sty(Family::Mono, Weight::Regular, 13.0, t.acc, 0.0),
+                );
                 let pst = sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0);
                 let sub = sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0);
                 let gost = sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.0);
                 let avail = slot_text_w(f, 58.0, &gost);
-                text::draw(c, f, 58.0, (y + mid - 3) as f32,
-                           &crate::widgets::fit(f, p.title, &pst, avail), &pst);
-                text::draw(c, f, 58.0, (y + mid + 15) as f32,
-                           &crate::widgets::fit(f, p.sub, &sub, avail), &sub);
+                text::draw(
+                    c,
+                    f,
+                    58.0,
+                    (y + mid - 3) as f32,
+                    &crate::widgets::fit(f, p.title, &pst, avail),
+                    &pst,
+                );
+                text::draw(
+                    c,
+                    f,
+                    58.0,
+                    (y + mid + 15) as f32,
+                    &crate::widgets::fit(f, p.sub, &sub, avail),
+                    &sub,
+                );
                 // Separator makes the two tap zones legible: row body = GO, × column = forget.
                 fill_rect(c, CLEAR_X, y + 6, 1, SLOT_H - 12, t.line);
                 right(c, f, 404.0, (y + mid + 5) as f32, GO_LABEL, &gost);
-                center(c, f, ((CLEAR_X + 458) / 2) as f32, (y + mid + 6) as f32, "\u{00d7}", &sty(Family::Mono, Weight::Regular, 17.0, t.faint, 0.0));
+                center(
+                    c,
+                    f,
+                    ((CLEAR_X + 458) / 2) as f32,
+                    (y + mid + 6) as f32,
+                    "\u{00d7}",
+                    &sty(Family::Mono, Weight::Regular, 17.0, t.faint, 0.0),
+                );
             }
             None => {
                 // dashed border (drawn as dashes) + hint — the WHOLE row pins here
@@ -167,8 +241,22 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub
                     fill_rect(c, dx, y + SLOT_H - 1, 7, 1, t.line);
                     dx += 14;
                 }
-                text::draw(c, f, 36.0, (y + SLOT_H / 2 + 5) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
-                text::draw(c, f, 58.0, (y + SLOT_H / 2 + 5) as f32, "Empty slot \u{2014} tap to pin here", &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+                text::draw(
+                    c,
+                    f,
+                    36.0,
+                    (y + SLOT_H / 2 + 5) as f32,
+                    &format!("{}", i + 1),
+                    &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0),
+                );
+                text::draw(
+                    c,
+                    f,
+                    58.0,
+                    (y + SLOT_H / 2 + 5) as f32,
+                    "Empty slot \u{2014} tap to pin here",
+                    &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
+                );
             }
         }
     }
@@ -199,7 +287,11 @@ pub fn hit(x: i32, y: i32, filled: [bool; SLOTS]) -> ShelfHit {
         if !is_filled {
             return ShelfHit::PinTo(i); // whole row, exactly as the hint says
         }
-        return if x >= CLEAR_X { ShelfHit::Clear(i) } else { ShelfHit::Go(i) };
+        return if x >= CLEAR_X {
+            ShelfHit::Clear(i)
+        } else {
+            ShelfHit::Go(i)
+        };
     }
     ShelfHit::None
 }
@@ -240,8 +332,14 @@ mod tests {
         let (px, py, pw, ph) = PIN_BTN;
         let (cx, cy) = (px + pw / 2, py + ph / 2);
         assert_eq!(hit(cx, cy, EMPTY), ShelfHit::PinTo(0));
-        assert_eq!(hit(cx, cy, [true, false, false, false, false, false]), ShelfHit::PinTo(1));
-        assert_eq!(hit(cx, cy, [true, true, false, false, false, false]), ShelfHit::PinTo(2));
+        assert_eq!(
+            hit(cx, cy, [true, false, false, false, false, false]),
+            ShelfHit::PinTo(1)
+        );
+        assert_eq!(
+            hit(cx, cy, [true, true, false, false, false, false]),
+            ShelfHit::PinTo(2)
+        );
         assert_eq!(hit(cx, cy, FULL), ShelfHit::PinTo(0)); // all full → replace the first
     }
 

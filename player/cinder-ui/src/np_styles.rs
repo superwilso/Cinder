@@ -52,12 +52,28 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 /// The Lyrics chip and the Menu band: the same in every style, and first and last in its order.
 fn push_lyrics(l: &mut Layout, lyrics: bool) {
     if lyrics {
-        l.push(Shape::Rect { x: 0, y: crate::chrome::STATUS_H, w: np::LYRICS_HIT_W, h: 44 }, Hit::Lyrics);
+        l.push(
+            Shape::Rect {
+                x: 0,
+                y: crate::chrome::STATUS_H,
+                w: np::LYRICS_HIT_W,
+                h: 44,
+            },
+            Hit::Lyrics,
+        );
     }
 }
 
 fn push_menu(l: &mut Layout) {
-    l.push(Shape::Rect { x: 0, y: 0, w: W, h: crate::chrome::HEADER_BOTTOM }, Hit::Menu);
+    l.push(
+        Shape::Rect {
+            x: 0,
+            y: 0,
+            w: W,
+            h: crate::chrome::HEADER_BOTTOM,
+        },
+        Hit::Menu,
+    );
 }
 
 fn centre(l: &Layout, h: Hit) -> (f32, f32) {
@@ -74,18 +90,52 @@ fn idle(np: &NowPlaying) -> bool {
 }
 
 /// The page block's contents for pages 2 and 3, inside `(x, y, w, h)`; page 1 is the style's own.
-fn audio_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, (x, y, w, h): (i32, i32, i32, i32)) {
+fn audio_page(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    np: &NowPlaying,
+    (x, y, w, h): (i32, i32, i32, i32),
+) {
     let mid = (x + w / 2) as f32;
     let caption = s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18);
     match np::page_from_index(np.page) {
         NpPage::Cover => {}
         NpPage::Spectrum => {
-            widgets::center(c, f, mid, (y + 24) as f32, crate::viz::name_upper(np.viz_kind), &caption);
+            widgets::center(
+                c,
+                f,
+                mid,
+                (y + 24) as f32,
+                crate::viz::name_upper(np.viz_kind),
+                &caption,
+            );
             if np::viz_live(np) {
-                crate::viz::draw_any(c, x + 12, y + 44, w - 24, h - 60, np.viz_seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, 255, 255);
+                crate::viz::draw_any(
+                    c,
+                    x + 12,
+                    y + 44,
+                    w - 24,
+                    h - 60,
+                    np.viz_seed,
+                    crate::viz::from_index(np.viz_kind),
+                    t.acc,
+                    t.line,
+                    np.viz_levels,
+                    np.viz_peaks,
+                    np.viz_sig,
+                    255,
+                    255,
+                );
             } else {
-                widgets::center(c, f, mid, (y + h / 2) as f32, np::viz_absent_text(np).0,
-                                &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0));
+                widgets::center(
+                    c,
+                    f,
+                    mid,
+                    (y + h / 2) as f32,
+                    np::viz_absent_text(np).0,
+                    &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0),
+                );
             }
         }
         NpPage::Level => {
@@ -99,10 +149,23 @@ fn audio_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, (x, y, w,
                 fill_rect(c, mx, my, fw, mh, t.acc);
             }
             let px = mx + ((mw - 3) as f32 * peak).round() as i32;
-            fill_rect(c, px, my - 6, 3, mh + 12, if peak > 0.0 { t.ink } else { t.line });
+            fill_rect(
+                c,
+                px,
+                my - 6,
+                3,
+                mh + 12,
+                if peak > 0.0 { t.ink } else { t.line },
+            );
             let mut b = [0u8; 3];
-            widgets::center(c, f, mid, (my + mh + 72) as f32, np::dec((mean * 100.0).round() as i32, &mut b),
-                            &s(Family::Mono, Weight::Bold, 48.0, t.ink, 0.0));
+            widgets::center(
+                c,
+                f,
+                mid,
+                (my + mh + 72) as f32,
+                np::dec((mean * 100.0).round() as i32, &mut b),
+                &s(Family::Mono, Weight::Bold, 48.0, t.ink, 0.0),
+            );
         }
     }
 }
@@ -121,16 +184,48 @@ fn cover(c: &mut Canvas, t: &Theme, np: &NowPlaying, x: i32, y: i32, size: i32) 
 fn cover_viz(c: &mut Canvas, t: &Theme, np: &NowPlaying, x: i32, w: i32, bottom: i32) {
     let size = crate::viz::size_from_index(np.viz_size);
     if let Some((vy, vh, at, ab)) = crate::viz::size_box(size, bottom, false) {
-        crate::viz::draw_any(c, x, vy, w, vh, np.viz_seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, at, ab);
+        crate::viz::draw_any(
+            c,
+            x,
+            vy,
+            w,
+            vh,
+            np.viz_seed,
+            crate::viz::from_index(np.viz_kind),
+            t.acc,
+            t.line,
+            np.viz_levels,
+            np.viz_peaks,
+            np.viz_sig,
+            at,
+            ab,
+        );
     }
 }
 
 fn nothing_playing(c: &mut Canvas, t: &Theme, f: &FontSet, cx: f32, cy: f32, upper: bool) {
-    let head = if upper { "NOTHING PLAYING" } else { "Nothing playing" };
+    let head = if upper {
+        "NOTHING PLAYING"
+    } else {
+        "Nothing playing"
+    };
     let fam = if upper { Family::Mono } else { Family::Sans };
-    widgets::center(c, f, cx, cy, head, &s(fam, Weight::Regular, 22.0, t.dim, 0.0));
-    widgets::center(c, f, cx, cy + 26.0, "CHOOSE A TRACK FROM YOUR LIBRARY",
-                    &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+    widgets::center(
+        c,
+        f,
+        cx,
+        cy,
+        head,
+        &s(fam, Weight::Regular, 22.0, t.dim, 0.0),
+    );
+    widgets::center(
+        c,
+        f,
+        cx,
+        cy + 26.0,
+        "CHOOSE A TRACK FROM YOUR LIBRARY",
+        &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+    );
 }
 
 // ── Nocturne ──────────────────────────────────────────────────────────────────────────────────
@@ -158,20 +253,86 @@ mod noc {
 
 fn nocturne_layout(lyrics: bool) -> Layout {
     use noc::*;
-    let rail = Rail { x0: ART_X, y: RAIL_Y, w: ART, h: 2, grab_top: 614, grab_bot: 668 };
+    let rail = Rail {
+        x0: ART_X,
+        y: RAIL_Y,
+        w: ART,
+        h: 2,
+        grab_top: 614,
+        grab_bot: 668,
+    };
     let mut l = Layout::new(rail, ART_Y, ART_Y + ART);
     push_lyrics(&mut l, lyrics);
     let (hx, hy, hh) = HEART;
-    l.push(Shape::Rect { x: hx - hh, y: hy - hh, w: 2 * hh + 1, h: 2 * hh + 1 }, Hit::Like);
-    l.push(Shape::Rect { x: 0, y: 516, w: hx - hh - 4, h: 94 }, Hit::Info);
+    l.push(
+        Shape::Rect {
+            x: hx - hh,
+            y: hy - hh,
+            w: 2 * hh + 1,
+            h: 2 * hh + 1,
+        },
+        Hit::Like,
+    );
+    l.push(
+        Shape::Rect {
+            x: 0,
+            y: 516,
+            w: hx - hh - 4,
+            h: 94,
+        },
+        Hit::Info,
+    );
     let ty = TRANSPORT_Y;
-    l.push(Shape::Circle { cx: 240, cy: ty, r: 38 }, Hit::PlayPause);
-    l.push(Shape::Circle { cx: 150, cy: ty, r: 30 }, Hit::Prev);
-    l.push(Shape::Circle { cx: 330, cy: ty, r: 30 }, Hit::Next);
-    l.push(Shape::Circle { cx: 64, cy: ty, r: 24 }, Hit::Shuffle);
-    l.push(Shape::Circle { cx: 416, cy: ty, r: 24 }, Hit::Repeat);
+    l.push(
+        Shape::Circle {
+            cx: 240,
+            cy: ty,
+            r: 38,
+        },
+        Hit::PlayPause,
+    );
+    l.push(
+        Shape::Circle {
+            cx: 150,
+            cy: ty,
+            r: 30,
+        },
+        Hit::Prev,
+    );
+    l.push(
+        Shape::Circle {
+            cx: 330,
+            cy: ty,
+            r: 30,
+        },
+        Hit::Next,
+    );
+    l.push(
+        Shape::Circle {
+            cx: 64,
+            cy: ty,
+            r: 24,
+        },
+        Hit::Shuffle,
+    );
+    l.push(
+        Shape::Circle {
+            cx: 416,
+            cy: ty,
+            r: 24,
+        },
+        Hit::Repeat,
+    );
     for i in 0..4 {
-        l.push(Shape::Rect { x: i * 120, y: TOOLBAR_TOP + 1, w: 120, h: H - TOOLBAR_TOP - 1 }, Hit::Toolbar(i as u8));
+        l.push(
+            Shape::Rect {
+                x: i * 120,
+                y: TOOLBAR_TOP + 1,
+                w: 120,
+                h: H - TOOLBAR_TOP - 1,
+            },
+            Hit::Toolbar(i as u8),
+        );
     }
     push_menu(&mut l);
     l
@@ -199,16 +360,46 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     if !quiet {
         for i in 0..np::PAGES as i32 {
             let on = i == (np.page % np::PAGES) as i32;
-            fill_rect(c, 240 - 22 + i * 16, DOTS_Y, if on { 12 } else { 4 }, 2, if on { t.acc } else { t.faint });
+            fill_rect(
+                c,
+                240 - 22 + i * 16,
+                DOTS_Y,
+                if on { 12 } else { 4 },
+                2,
+                if on { t.acc } else { t.faint },
+            );
         }
     }
 
     // The words: codec as a kicker, the title large and light, the artist under it.
     if !quiet {
         let kick = s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.18);
-        text::draw(c, f, TEXT_X, KICKER_Y, &widgets::fit(f, np.codec, &kick, TEXT_W), &kick);
-        widgets::marquee(c, f, TEXT_X, TITLE_Y, np.title, &s(Family::Sans, Weight::Light, 34.0, t.ink, 0.0), TEXT_W);
-        widgets::marquee(c, f, TEXT_X, ARTIST_Y, np.artist, &s(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0), TEXT_W);
+        text::draw(
+            c,
+            f,
+            TEXT_X,
+            KICKER_Y,
+            &widgets::fit(f, np.codec, &kick, TEXT_W),
+            &kick,
+        );
+        widgets::marquee(
+            c,
+            f,
+            TEXT_X,
+            TITLE_Y,
+            np.title,
+            &s(Family::Sans, Weight::Light, 34.0, t.ink, 0.0),
+            TEXT_W,
+        );
+        widgets::marquee(
+            c,
+            f,
+            TEXT_X,
+            ARTIST_Y,
+            np.artist,
+            &s(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0),
+            TEXT_W,
+        );
         let (hx, hy) = centre(l, Hit::Like);
         icons::heart(c, hx, hy, 24.0, if np.liked { t.acc } else { t.faint });
     }
@@ -223,7 +414,17 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
         fill_rect(c, r.x0 + fw - 1, r.y + r.h / 2 - knob / 2, 2, knob, t.acc);
         let ts = s(Family::Mono, Weight::Regular, 12.0, t.dim, 0.06);
         text::draw(c, f, r.x0 as f32, TIMES_Y, np.elapsed, &ts);
-        widgets::right(c, f, (r.x0 + r.w) as f32, TIMES_Y, np.remaining, &TextStyle { color: t.faint, ..ts });
+        widgets::right(
+            c,
+            f,
+            (r.x0 + r.w) as f32,
+            TIMES_Y,
+            np.remaining,
+            &TextStyle {
+                color: t.faint,
+                ..ts
+            },
+        );
     }
 
     // The transport: plain glyphs either side of an outlined ring.
@@ -245,13 +446,36 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     let (x, y) = centre(l, Hit::Next);
     icons::next(c, x, y, 28.0, side);
     let (x, y) = centre(l, Hit::Shuffle);
-    icons::shuffle(c, x, y, 20.0, if np.shuffle && !quiet { t.acc } else { t.faint });
+    icons::shuffle(
+        c,
+        x,
+        y,
+        20.0,
+        if np.shuffle && !quiet { t.acc } else { t.faint },
+    );
     let (x, y) = centre(l, Hit::Repeat);
-    icons::repeat(c, x, y, 20.0, if np.repeat > 0 && !quiet { t.acc } else { t.faint });
+    icons::repeat(
+        c,
+        x,
+        y,
+        20.0,
+        if np.repeat > 0 && !quiet {
+            t.acc
+        } else {
+            t.faint
+        },
+    );
     if !quiet && np.repeat == 1 {
         fill_rect(c, x as i32 - 1, y as i32 - 1, 3, 3, t.acc);
     } else if !quiet && np.repeat == np::REPEAT_ALBUM {
-        widgets::center(c, f, x, y + 24.0, "ALBUM", &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1));
+        widgets::center(
+            c,
+            f,
+            x,
+            y + 24.0,
+            "ALBUM",
+            &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1),
+        );
     }
 
     // The toolbar: four words under a hairline.
@@ -293,20 +517,91 @@ mod term {
 
 fn terminal_layout(lyrics: bool) -> Layout {
     use term::*;
-    let rail = Rail { x0: RAIL_X0, y: RAIL_Y, w: RAIL_W, h: 14, grab_top: 608, grab_bot: 660 };
+    let rail = Rail {
+        x0: RAIL_X0,
+        y: RAIL_Y,
+        w: RAIL_W,
+        h: 14,
+        grab_top: 608,
+        grab_bot: 660,
+    };
     let mut l = Layout::new(rail, FRAME_Y, FRAME_Y + FRAME);
     push_lyrics(&mut l, lyrics);
     let (hx, hy, hh) = HEART;
-    l.push(Shape::Rect { x: hx - hh, y: hy - hh, w: 2 * hh + 1, h: 2 * hh + 1 }, Hit::Like);
-    l.push(Shape::Rect { x: 0, y: 508, w: hx - hh - 6, h: 96 }, Hit::Info);
+    l.push(
+        Shape::Rect {
+            x: hx - hh,
+            y: hy - hh,
+            w: 2 * hh + 1,
+            h: 2 * hh + 1,
+        },
+        Hit::Like,
+    );
+    l.push(
+        Shape::Rect {
+            x: 0,
+            y: 508,
+            w: hx - hh - 6,
+            h: 96,
+        },
+        Hit::Info,
+    );
     let ty = TRANSPORT_Y;
-    l.push(Shape::Rect { x: 172, y: ty - 26, w: 136, h: 52 }, Hit::PlayPause);
-    l.push(Shape::Rect { x: 104, y: ty - 22, w: 64, h: 44 }, Hit::Prev);
-    l.push(Shape::Rect { x: 312, y: ty - 22, w: 64, h: 44 }, Hit::Next);
-    l.push(Shape::Rect { x: 20, y: ty - 22, w: 76, h: 44 }, Hit::Shuffle);
-    l.push(Shape::Rect { x: 384, y: ty - 22, w: 76, h: 44 }, Hit::Repeat);
+    l.push(
+        Shape::Rect {
+            x: 172,
+            y: ty - 26,
+            w: 136,
+            h: 52,
+        },
+        Hit::PlayPause,
+    );
+    l.push(
+        Shape::Rect {
+            x: 104,
+            y: ty - 22,
+            w: 64,
+            h: 44,
+        },
+        Hit::Prev,
+    );
+    l.push(
+        Shape::Rect {
+            x: 312,
+            y: ty - 22,
+            w: 64,
+            h: 44,
+        },
+        Hit::Next,
+    );
+    l.push(
+        Shape::Rect {
+            x: 20,
+            y: ty - 22,
+            w: 76,
+            h: 44,
+        },
+        Hit::Shuffle,
+    );
+    l.push(
+        Shape::Rect {
+            x: 384,
+            y: ty - 22,
+            w: 76,
+            h: 44,
+        },
+        Hit::Repeat,
+    );
     for i in 0..4 {
-        l.push(Shape::Rect { x: i * 120, y: TOOLBAR_TOP + 1, w: 120, h: H - TOOLBAR_TOP - 1 }, Hit::Toolbar(i as u8));
+        l.push(
+            Shape::Rect {
+                x: i * 120,
+                y: TOOLBAR_TOP + 1,
+                w: 120,
+                h: H - TOOLBAR_TOP - 1,
+            },
+            Hit::Toolbar(i as u8),
+        );
     }
     push_menu(&mut l);
     l
@@ -321,8 +616,20 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     let mono = |size: f32, w: Weight, col: Rgb888| s(Family::Mono, w, size, col, 0.04);
 
     // The framed page block.
-    stroke_rect(c, FRAME_X, FRAME_Y, FRAME, FRAME, if quiet { t.line } else { t.dim }, 1);
-    let (ax, ay, asz) = (FRAME_X + ART_INSET, FRAME_Y + ART_INSET, FRAME - ART_INSET * 2);
+    stroke_rect(
+        c,
+        FRAME_X,
+        FRAME_Y,
+        FRAME,
+        FRAME,
+        if quiet { t.line } else { t.dim },
+        1,
+    );
+    let (ax, ay, asz) = (
+        FRAME_X + ART_INSET,
+        FRAME_Y + ART_INSET,
+        FRAME - ART_INSET * 2,
+    );
     if quiet {
         nothing_playing(c, t, f, 240.0, (FRAME_Y + FRAME / 2) as f32, true);
     } else if np::page_from_index(np.page) == NpPage::Cover {
@@ -338,15 +645,37 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     if !quiet {
         let mut pg = *b"[1/3]";
         pg[1] = b'1' + (np.page % np::PAGES);
-        widgets::center(c, f, 240.0, READOUT_Y, core::str::from_utf8(&pg).unwrap_or(""), &cap);
+        widgets::center(
+            c,
+            f,
+            240.0,
+            READOUT_Y,
+            core::str::from_utf8(&pg).unwrap_or(""),
+            &cap,
+        );
         if !np.badge.is_empty() {
             let st = mono(11.0, Weight::Regular, t.acc);
             let badge = widgets::fit(f, np.badge, &st, 140.0);
             widgets::right(c, f, 456.0, READOUT_Y, &format!("[{badge}]"), &st);
         }
-        widgets::marquee(c, f, TEXT_X, TITLE_Y, &np.title.to_uppercase(), &mono(24.0, Weight::Bold, t.ink), TEXT_W);
-        widgets::marquee(c, f, TEXT_X, ARTIST_Y, &format!("BY {}", np.artist.to_uppercase()),
-                         &mono(13.0, Weight::Regular, t.dim), TEXT_W);
+        widgets::marquee(
+            c,
+            f,
+            TEXT_X,
+            TITLE_Y,
+            &np.title.to_uppercase(),
+            &mono(24.0, Weight::Bold, t.ink),
+            TEXT_W,
+        );
+        widgets::marquee(
+            c,
+            f,
+            TEXT_X,
+            ARTIST_Y,
+            &format!("BY {}", np.artist.to_uppercase()),
+            &mono(13.0, Weight::Regular, t.dim),
+            TEXT_W,
+        );
         let (hx, hy) = centre(l, Hit::Like);
         icons::heart(c, hx, hy, 24.0, if np.liked { t.acc } else { t.faint });
     }
@@ -354,7 +683,11 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     // The rail: a row of cells, filled to the position, with the times under its two ends.
     let r = l.rail;
     let cell = r.w / CELLS;
-    let filled = if quiet { 0 } else { (np.progress.clamp(0.0, 1.0) * CELLS as f32).round() as i32 };
+    let filled = if quiet {
+        0
+    } else {
+        (np.progress.clamp(0.0, 1.0) * CELLS as f32).round() as i32
+    };
     for i in 0..CELLS {
         let col = if i < filled { t.acc } else { t.line };
         fill_rect(c, r.x0 + i * cell, r.y, cell - 2, r.h, col);
@@ -365,7 +698,17 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     if !quiet {
         let ts = mono(13.0, Weight::Regular, t.dim);
         text::draw(c, f, r.x0 as f32, TIMES_Y, np.elapsed, &ts);
-        widgets::right(c, f, (r.x0 + r.w) as f32, TIMES_Y, np.remaining, &TextStyle { color: t.faint, ..ts });
+        widgets::right(
+            c,
+            f,
+            (r.x0 + r.w) as f32,
+            TIMES_Y,
+            np.remaining,
+            &TextStyle {
+                color: t.faint,
+                ..ts
+            },
+        );
     }
 
     // The transport: bracketed words, Play boxed in the accent.
@@ -377,17 +720,40 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     if let Some(Shape::Rect { x, y, w, h }) = l.at(Hit::PlayPause) {
         stroke_rect(c, x + 4, y + 4, w - 8, h - 8, t.acc, 2);
     }
-    word(c, Hit::PlayPause, if np.playing && !quiet { "|| PAUSE" } else { "> PLAY" }, t.acc);
+    word(
+        c,
+        Hit::PlayPause,
+        if np.playing && !quiet {
+            "|| PAUSE"
+        } else {
+            "> PLAY"
+        },
+        t.acc,
+    );
     word(c, Hit::Prev, "[<<]", side);
     word(c, Hit::Next, "[>>]", side);
-    word(c, Hit::Shuffle, "[SHUF]", if np.shuffle && !quiet { t.acc } else { t.faint });
+    word(
+        c,
+        Hit::Shuffle,
+        "[SHUF]",
+        if np.shuffle && !quiet { t.acc } else { t.faint },
+    );
     let rpt = match np.repeat {
         _ if quiet => "[RPT]",
         1 => "[RPT1]",
         np::REPEAT_ALBUM => "[ALBM]",
         _ => "[RPT]",
     };
-    word(c, Hit::Repeat, rpt, if np.repeat > 0 && !quiet { t.acc } else { t.faint });
+    word(
+        c,
+        Hit::Repeat,
+        rpt,
+        if np.repeat > 0 && !quiet {
+            t.acc
+        } else {
+            t.faint
+        },
+    );
 
     // The toolbar.
     hline(c, TOOLBAR_TOP, t.line);

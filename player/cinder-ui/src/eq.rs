@@ -53,7 +53,12 @@ const PRESET_W: i32 = (W as i32 - 2 * PRESET_X0 - 4 * PRESET_GAP) / 5;
 
 /// `(x, y, w, h)` of preset pill `i`.
 pub fn preset_rect(i: usize) -> (i32, i32, i32, i32) {
-    (PRESET_X0 + i as i32 * (PRESET_W + PRESET_GAP), PRESET_TOP, PRESET_W, PRESET_H)
+    (
+        PRESET_X0 + i as i32 * (PRESET_W + PRESET_GAP),
+        PRESET_TOP,
+        PRESET_W,
+        PRESET_H,
+    )
 }
 
 /// Which preset pill is under `(x, y)`, if any. Returns None for the gaps between pills, so a
@@ -119,15 +124,26 @@ pub fn footer_at(x: i32, y: i32) -> Option<Footer> {
         return None;
     }
     // Split down the middle: "Reset" is left-aligned, "Save Sound Preset" right-aligned.
-    Some(if x < W as i32 / 2 { Footer::Reset } else { Footer::Save })
+    Some(if x < W as i32 / 2 {
+        Footer::Reset
+    } else {
+        Footer::Save
+    })
 }
 
 /// `off` = why the 10-band EQ is NOT in the signal path right now (Tone Control replaces it;
 /// ClearAudio+ and Source Direct bypass it), or None when it is. The bands stay editable — you can
 /// set them up for later — but the footer says they are not being heard, instead of letting a drag
 /// that changes nothing look broken.
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: &str, sel: usize,
-              off: Option<&str>) {
+pub fn render(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    bands: &[i8; 10],
+    preset: &str,
+    sel: usize,
+    off: Option<&str>,
+) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "Equalizer", None);
     // header-right pill: CUSTOM <preset>
@@ -140,13 +156,26 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
     // preset pills row — laid out by `preset_rect`, the same helper the hit test uses.
     for (i, (name, _)) in EQ_PRESETS.iter().enumerate() {
         let on = *name == preset;
-        let st = sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc_ink } else { t.dim }, 0.08);
+        let st = sty(
+            Family::Mono,
+            Weight::Regular,
+            12.0,
+            if on { t.acc_ink } else { t.dim },
+            0.08,
+        );
         let (px, py, pw, ph) = preset_rect(i);
         if on {
             fill_rect(c, px, py, pw, ph, t.acc);
         }
         stroke_rect(c, px, py, pw, ph, if on { t.acc } else { t.line }, 1);
-        crate::widgets::center(c, f, (px + pw / 2) as f32, (py + ph / 2 + 4) as f32, name, &st);
+        crate::widgets::center(
+            c,
+            f,
+            (px + pw / 2) as f32,
+            (py + ph / 2 + 4) as f32,
+            name,
+            &st,
+        );
     }
 
     // slider field
@@ -166,7 +195,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
         // vertical guide
         fill_rect(c, bx - 1, sy, 2, by - sy, t.line);
         // deviation fill (mid → knob)
-        let (fy, fh) = if knob_y < mid { (knob_y, mid - knob_y) } else { (mid, knob_y - mid) };
+        let (fy, fh) = if knob_y < mid {
+            (knob_y, mid - knob_y)
+        } else {
+            (mid, knob_y - mid)
+        };
         fill_rect(c, bx - 1, fy, 2, fh, t.acc);
         let on = i == sel;
         // knob: bg ring + accent core (selected band gets a brighter, larger highlight ring)
@@ -183,25 +216,70 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
             v if v.fract() == 0.0 => format!("{v:+.0}"),
             v => format!("{v:+.1}"),
         };
-        let dbcol = if on { t.ink } else if db != 0 { t.acc } else { t.faint };
-        crate::widgets::center(c, f, bx as f32, (sy - 6) as f32, &dbl, &sty(Family::Mono, Weight::Regular, if on { 10.0 } else { 9.0 }, dbcol, 0.0));
+        let dbcol = if on {
+            t.ink
+        } else if db != 0 {
+            t.acc
+        } else {
+            t.faint
+        };
+        crate::widgets::center(
+            c,
+            f,
+            bx as f32,
+            (sy - 6) as f32,
+            &dbl,
+            &sty(
+                Family::Mono,
+                Weight::Regular,
+                if on { 10.0 } else { 9.0 },
+                dbcol,
+                0.0,
+            ),
+        );
         // Hz label below
-        crate::widgets::center(c, f, bx as f32, (by + 22) as f32, EQ_BANDS[i], &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0));
+        crate::widgets::center(
+            c,
+            f,
+            bx as f32,
+            (by + 22) as f32,
+            EQ_BANDS[i],
+            &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0),
+        );
     }
 
     // footer
     let fy = FOOTER_TOP;
     hline(c, fy, t.line);
     let fcy = (fy + FOOTER_H / 2) as f32;
-    text::draw(c, f, 22.0, fcy + 4.0, "Reset", &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0));
+    text::draw(
+        c,
+        f,
+        22.0,
+        fcy + 4.0,
+        "Reset",
+        &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0),
+    );
     // NOT "Save Sound Preset": there is no save step. Every band change is written to the settings
     // file as it happens, so a Save button would be a control that appears to do something and
     // does not — and the accent colour made it look like the primary action on the screen.
     match off {
-        Some(why) => right(c, f, 458.0, fcy + 4.0, why,
-                           &sty(Family::Sans, Weight::SemiBold, 14.0, t.acc, 0.0)),
-        None => right(c, f, 458.0, fcy + 4.0, "Saved automatically",
-                      &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0)),
+        Some(why) => right(
+            c,
+            f,
+            458.0,
+            fcy + 4.0,
+            why,
+            &sty(Family::Sans, Weight::SemiBold, 14.0, t.acc, 0.0),
+        ),
+        None => right(
+            c,
+            f,
+            458.0,
+            fcy + 4.0,
+            "Saved automatically",
+            &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0),
+        ),
     };
     let _ = W;
 }

@@ -67,12 +67,18 @@ pub fn is_listened(length_s: u32, played_s: u32) -> bool {
 
 /// Strip tab/newline from a field (the format is tab/newline delimited).
 fn clean(s: &str) -> String {
-    s.chars().filter(|c| *c != '\t' && *c != '\n' && *c != '\r').collect()
+    s.chars()
+        .filter(|c| *c != '\t' && *c != '\n' && *c != '\r')
+        .collect()
 }
 
 /// Build one AS/1.1 log line (no trailing newline). `rating` is "L" or "S".
 pub fn format_line(t: &Track, rating: &str, start_unix: u64) -> String {
-    let track_no = if t.track_no > 0 { t.track_no.to_string() } else { String::new() };
+    let track_no = if t.track_no > 0 {
+        t.track_no.to_string()
+    } else {
+        String::new()
+    };
     format!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t",
         clean(&t.artist),
@@ -87,7 +93,12 @@ pub fn format_line(t: &Track, rating: &str, start_unix: u64) -> String {
 
 impl Scrobbler {
     pub fn new(path: impl Into<PathBuf>, client: impl Into<String>) -> Self {
-        Scrobbler { path: path.into(), client: client.into(), cur: None, header_done: false }
+        Scrobbler {
+            path: path.into(),
+            client: client.into(),
+            cur: None,
+            header_done: false,
+        }
     }
 
     /// Advance the play clock by one second (call once a second from the pump). Only counts
@@ -135,7 +146,12 @@ impl Scrobbler {
                 let _ = self.append(&line);
             }
         }
-        self.cur = Some(Pending { track, start_unix: now_unix, played_ms: 0, logged: false });
+        self.cur = Some(Pending {
+            track,
+            start_unix: now_unix,
+            played_ms: 0,
+            logged: false,
+        });
     }
 
     /// True if the current pending track matches `t` (so the caller can avoid re-setting it).
@@ -146,7 +162,10 @@ impl Scrobbler {
     /// Append a line to the log, writing the AS/1.1 header on first write. Best-effort: a log
     /// write must never disrupt playback, so I/O errors are swallowed (returned for tests).
     fn append(&mut self, line: &str) -> std::io::Result<()> {
-        let mut f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         if !self.header_done {
             // Only write the header if the file is empty (don't duplicate on an existing log).
             let empty = f.metadata().map(|m| m.len() == 0).unwrap_or(true);
@@ -213,11 +232,25 @@ mod tests {
     #[test]
     fn log_matches_the_shared_contract() {
         let row = |artist: &str, album: &str, title: &str, no, len, rating, at| {
-            let t = Track { artist: artist.into(), album: album.into(), title: title.into(), track_no: no, length_s: len };
+            let t = Track {
+                artist: artist.into(),
+                album: album.into(),
+                title: title.into(),
+                track_no: no,
+                length_s: len,
+            };
             format_line(&t, rating, at) + "\n"
         };
         let body = format!("{HEADER}#CLIENT/Cinder NW-A55 0.1\n")
-            + &row("Bonobo", "Migration", "Break Apart", 3, 268, "L", 1_758_300_000)
+            + &row(
+                "Bonobo",
+                "Migration",
+                "Break Apart",
+                3,
+                268,
+                "L",
+                1_758_300_000,
+            )
             + &row("Sigur Rós", "( )", "Untitled 1", 0, 398, "L", 1_758_300_300)
             + &row("Bicep", "Isles", "Atlas", 1, 258, "S", 1_758_300_600);
         assert_eq!(body, include_str!("../../../contracts/scrobbler.log"));
@@ -234,7 +267,10 @@ mod tests {
         for _ in 0..29 {
             s.tick_ms(true, 1000); // 29s — not yet half
         }
-        assert!(std::fs::read_to_string(&path).is_err() || !std::fs::read_to_string(&path).unwrap().contains("Atlas"));
+        assert!(
+            std::fs::read_to_string(&path).is_err()
+                || !std::fs::read_to_string(&path).unwrap().contains("Atlas")
+        );
         s.tick_ms(true, 1000); // 30s == half of 60 → listened, logged immediately
         let body = std::fs::read_to_string(&path).unwrap();
         // UNKNOWN, not UTC: the device has no timezone, so the PC-side uploader must apply one.
@@ -257,13 +293,16 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut s = Scrobbler::new(&path, "c");
         s.set_track(t(60), 1000); // needs 30 s to count
-        // 28 ticks of a realistic dark-panel interval already exceed 30 s of real time; a
-        // call-counting clock would still be sitting at 28 s and would not have logged.
+                                  // 28 ticks of a realistic dark-panel interval already exceed 30 s of real time; a
+                                  // call-counting clock would still be sitting at 28 s and would not have logged.
         for _ in 0..28 {
             s.tick_ms(true, 1100);
         }
         let body = std::fs::read_to_string(&path).unwrap_or_default();
-        assert!(body.contains("Atlas Hands"), "real elapsed time should have crossed the threshold");
+        assert!(
+            body.contains("Atlas Hands"),
+            "real elapsed time should have crossed the threshold"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

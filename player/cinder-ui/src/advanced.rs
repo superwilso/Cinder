@@ -64,7 +64,13 @@ pub fn row_at(y: i32) -> Option<usize> {
 /// DSEE HX Custom modes, catalogue order — the index IS the value handed to `SetDseeHxCustomMode`.
 /// Same provisional-label caveat as `nav::VPT_MODES`: catalogue order is almost certainly enum
 /// order, but only listening settles it.
-pub const DSEE_MODES: [&str; 5] = ["Standard", "Female Vocal", "Male Vocal", "Percussion", "Strings"];
+pub const DSEE_MODES: [&str; 5] = [
+    "Standard",
+    "Female Vocal",
+    "Male Vocal",
+    "Percussion",
+    "Strings",
+];
 
 /// Vinylizer characters, catalogue order — the index IS the value for `SetVinylizerType`.
 ///
@@ -112,22 +118,55 @@ fn dimmed(a: &Advanced, row: usize) -> bool {
 /// A row drawn dim, for when something upstream has taken it out of the path. Same geometry as
 /// `sound::row` — it just draws the label in the faint ink so the screen reads as "these are not
 /// doing anything right now" at a glance rather than after reading a footnote.
-fn dim_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, desc: &str) -> i32 {
+fn dim_row(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    sel: bool,
+    label: &str,
+    desc: &str,
+) -> i32 {
     let cy = y + ROW_H / 2;
     if sel {
         fill_rect(c, 0, y, crate::canvas::W as i32, ROW_H, t.row_sel);
     }
-    text::draw(c, f, 22.0, (cy - 3) as f32, label,
-               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.faint, 0.0));
-    text::draw(c, f, 22.0, (cy + 15) as f32, desc,
-               &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0));
+    text::draw(
+        c,
+        f,
+        22.0,
+        (cy - 3) as f32,
+        label,
+        &sty(
+            Family::Sans,
+            Weight::SemiBold,
+            crate::scale::ROW,
+            t.faint,
+            0.0,
+        ),
+    );
+    text::draw(
+        c,
+        f,
+        22.0,
+        (cy + 15) as f32,
+        desc,
+        &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0),
+    );
     hline(c, y + ROW_H, t.line);
     cy
 }
 
 fn a_row(
-    c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, y: i32, sel: bool, row: usize,
-    label: &str, desc: &str,
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    a: &Advanced,
+    y: i32,
+    sel: bool,
+    row: usize,
+    label: &str,
+    desc: &str,
 ) -> i32 {
     if dimmed(a, row) {
         dim_row(c, t, f, y, sel, label, desc)
@@ -144,12 +183,30 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
 
     let rh = ROW_H;
 
-    let cy = a_row(c, t, f, a, y0, sel == 0, ROW_SOURCE_DIRECT,
-                   "Source Direct", "Shortest path — bypasses every effect");
+    let cy = a_row(
+        c,
+        t,
+        f,
+        a,
+        y0,
+        sel == 0,
+        ROW_SOURCE_DIRECT,
+        "Source Direct",
+        "Shortest path — bypasses every effect",
+    );
     toggle(c, t, 418, cy - 11, 40, 22, 14, a.source_direct);
 
-    let cy = a_row(c, t, f, a, y0 + rh, sel == 1, ROW_CLEAR_PHASE,
-                   "Clear Phase", "Correct headphone phase response");
+    let cy = a_row(
+        c,
+        t,
+        f,
+        a,
+        y0 + rh,
+        sel == 1,
+        ROW_CLEAR_PHASE,
+        "Clear Phase",
+        "Correct headphone phase response",
+    );
     toggle(c, t, 418, cy - 11, 40, 22, 14, a.clear_phase);
 
     // DSEE AI. SAYS WHAT IS KNOWN ABOUT IT, which is less than the other rows on this screen.
@@ -164,48 +221,145 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
     //
     // NOT removed, because unlike high gain nobody has measured it inert; the honest state is "we
     // do not know", and a subtitle can say that where a bare toggle cannot.
-    let aidesc = if a.dsee_hx { "Upscaling by source analysis — UNVERIFIED on this hardware" }
-                 else { "Upscaling by source analysis — DSEE HX is off" };
-    let cy = a_row(c, t, f, a, y0 + rh * 2, sel == 2, ROW_DSEE_AI, "DSEE AI", aidesc);
+    let aidesc = if a.dsee_hx {
+        "Upscaling by source analysis — UNVERIFIED on this hardware"
+    } else {
+        "Upscaling by source analysis — DSEE HX is off"
+    };
+    let cy = a_row(
+        c,
+        t,
+        f,
+        a,
+        y0 + rh * 2,
+        sel == 2,
+        ROW_DSEE_AI,
+        "DSEE AI",
+        aidesc,
+    );
     toggle(c, t, 418, cy - 11, 40, 22, 14, a.dsee_ai);
 
     // Tuning the upscaler needs an upscaler. Same sentence shape as the two rows below, which have
     // said this about their own parents since the screen was written.
-    let cdesc = if a.dsee_hx { "Tune the upscaler to the material" } else { "DSEE HX is off" };
-    let cy = a_row(c, t, f, a, y0 + rh * 3, sel == 3, ROW_DSEE_CUSTOM, "DSEE HX Custom", cdesc);
+    let cdesc = if a.dsee_hx {
+        "Tune the upscaler to the material"
+    } else {
+        "DSEE HX is off"
+    };
+    let cy = a_row(
+        c,
+        t,
+        f,
+        a,
+        y0 + rh * 3,
+        sel == 3,
+        ROW_DSEE_CUSTOM,
+        "DSEE HX Custom",
+        cdesc,
+    );
     crate::sound::value_pill(c, f, t, 458, cy, a.dsee_custom);
 
-    let vdesc = if a.vinyl_on { "Character of the vinyl emulation" } else { "Vinyl Processor is off" };
-    let cy = a_row(c, t, f, a, y0 + rh * 4, sel == 4, ROW_VINYL_TYPE, "Vinyl Character", vdesc);
+    let vdesc = if a.vinyl_on {
+        "Character of the vinyl emulation"
+    } else {
+        "Vinyl Processor is off"
+    };
+    let cy = a_row(
+        c,
+        t,
+        f,
+        a,
+        y0 + rh * 4,
+        sel == 4,
+        ROW_VINYL_TYPE,
+        "Vinyl Character",
+        vdesc,
+    );
     crate::sound::value_pill(c, f, t, 458, cy, a.vinyl_type);
 
-    let cy = a_row(c, t, f, a, y0 + rh * 5, sel == 5, ROW_TONE,
-                   "Tone Control", "Bass / mid / treble — alternative to the EQ");
+    let cy = a_row(
+        c,
+        t,
+        f,
+        a,
+        y0 + rh * 5,
+        sel == 5,
+        ROW_TONE,
+        "Tone Control",
+        "Bass / mid / treble — alternative to the EQ",
+    );
     toggle(c, t, 418, cy - 11, 40, 22, 14, a.tone_control);
 
     // The band editor. A ROUTE, not a setting — the same shape as the Sound screen's own
     // "Advanced ›" row. It stays reachable while Tone Control is off, because "set it up, then
     // switch it on" is a reasonable order to do things in — the Vinyl Character row above says
     // the same thing about the Vinyl Processor.
-    let bdesc = if a.tone_control { "Three bands, ±10 dB" } else { "Three bands — Tone Control is off" };
-    let cy = a_row(c, t, f, a, y0 + rh * 6, sel == 6, ROW_TONE_BANDS, "Adjust bands", bdesc);
-    let chev = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.dim, 0.0);
+    let bdesc = if a.tone_control {
+        "Three bands, ±10 dB"
+    } else {
+        "Three bands — Tone Control is off"
+    };
+    let cy = a_row(
+        c,
+        t,
+        f,
+        a,
+        y0 + rh * 6,
+        sel == 6,
+        ROW_TONE_BANDS,
+        "Adjust bands",
+        bdesc,
+    );
+    let chev = sty(
+        Family::Sans,
+        Weight::SemiBold,
+        crate::scale::ROW,
+        t.dim,
+        0.0,
+    );
     crate::widgets::right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
 
     // The linear amp. Says "experimental" and what it costs up front: it has only been measured
     // into a line input, it is about 3 dB louder at the same volume, and it gives up the class-D
     // amp's efficiency by an amount this device cannot measure.
-    let hdesc = if a.hp_linear { "Experimental — about 3 dB louder, may cost battery" }
-                else { "Experimental — off uses Sony's S-Master amp" };
-    let cy = a_row(c, t, f, a, y0 + rh * 7, sel == 7, ROW_HP_AMP, "Linear headphone amp", hdesc);
+    let hdesc = if a.hp_linear {
+        "Experimental — about 3 dB louder, may cost battery"
+    } else {
+        "Experimental — off uses Sony's S-Master amp"
+    };
+    let cy = a_row(
+        c,
+        t,
+        f,
+        a,
+        y0 + rh * 7,
+        sel == 7,
+        ROW_HP_AMP,
+        "Linear headphone amp",
+        hdesc,
+    );
     toggle(c, t, 418, cy - 11, 40, 22, 14, a.hp_linear);
 
     // The DAC EQ. A route, like "Adjust bands". Source Direct holds it flat, and says so here
     // instead of dimming: the row stays the way in.
-    let edesc = if a.source_direct { "Five bands in the DAC chip — flat under Source Direct" }
-                else if a.dac_eq_on { "Five bands in the DAC chip — on" }
-                else { "Five bands in the DAC chip — flat" };
-    let cy = a_row(c, t, f, a, y0 + rh * 8, sel == 8, ROW_DAC_EQ, "DAC EQ", edesc);
+    let edesc = if a.source_direct {
+        "Five bands in the DAC chip — flat under Source Direct"
+    } else if a.dac_eq_on {
+        "Five bands in the DAC chip — on"
+    } else {
+        "Five bands in the DAC chip — flat"
+    };
+    let cy = a_row(
+        c,
+        t,
+        f,
+        a,
+        y0 + rh * 8,
+        sel == 8,
+        ROW_DAC_EQ,
+        "DAC EQ",
+        edesc,
+    );
     crate::widgets::right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
 
     // ── the override banner ─────────────────────────────────────────────────────────────────
@@ -221,13 +375,22 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         text::draw(c, f, 22.0, (by + dy) as f32, &s, &st);
     };
     if let Some(who) = a.overridden_by {
-        line(14, &format!("{who} is on"),
-             sty(Family::Sans, Weight::SemiBold, 13.0, t.acc, 0.0));
-        line(34, "The effects above are not in the path.",
-             sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
+        line(
+            14,
+            &format!("{who} is on"),
+            sty(Family::Sans, Weight::SemiBold, 13.0, t.acc, 0.0),
+        );
+        line(
+            34,
+            "The effects above are not in the path.",
+            sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0),
+        );
     } else {
-        line(14, "Set these once for a pair of headphones.",
-             sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0));
+        line(
+            14,
+            "Set these once for a pair of headphones.",
+            sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0),
+        );
     }
 }
 
@@ -237,9 +400,17 @@ mod tests {
 
     fn sample() -> Advanced {
         Advanced {
-            source_direct: false, clear_phase: false, dsee_ai: false, dsee_hx: false,
-            dsee_custom: "Off", vinyl_type: VINYL_TYPES[0], vinyl_on: false,
-            tone_control: false, hp_linear: false, dac_eq_on: false, overridden_by: None,
+            source_direct: false,
+            clear_phase: false,
+            dsee_ai: false,
+            dsee_hx: false,
+            dsee_custom: "Off",
+            vinyl_type: VINYL_TYPES[0],
+            vinyl_on: false,
+            tone_control: false,
+            hp_linear: false,
+            dac_eq_on: false,
+            overridden_by: None,
         }
     }
 
@@ -262,7 +433,10 @@ mod tests {
     /// were inert.
     #[test]
     fn source_direct_never_dims_itself() {
-        let a = Advanced { overridden_by: Some("Source Direct"), ..sample() };
+        let a = Advanced {
+            overridden_by: Some("Source Direct"),
+            ..sample()
+        };
         assert!(!dimmed(&a, ROW_SOURCE_DIRECT));
         for r in 1..ROWS {
             if r == ROW_HP_AMP || r == ROW_DAC_EQ {
@@ -277,7 +451,10 @@ mod tests {
     #[test]
     fn the_amp_row_never_dims() {
         for who in ["Source Direct", "ClearAudio+"] {
-            let a = Advanced { overridden_by: Some(who), ..sample() };
+            let a = Advanced {
+                overridden_by: Some(who),
+                ..sample()
+            };
             assert!(!dimmed(&a, ROW_HP_AMP), "dimmed under {who}");
         }
     }
@@ -287,7 +464,10 @@ mod tests {
     #[test]
     fn the_dac_eq_row_never_dims() {
         for who in ["Source Direct", "ClearAudio+"] {
-            let a = Advanced { overridden_by: Some(who), ..sample() };
+            let a = Advanced {
+                overridden_by: Some(who),
+                ..sample()
+            };
             assert!(!dimmed(&a, ROW_DAC_EQ), "dimmed under {who}");
         }
     }
@@ -296,7 +476,10 @@ mod tests {
     #[test]
     fn nine_rows_and_the_banner_fit() {
         let banner_bottom = TOP + ROW_H * ROWS as i32 + 18 + 34 + 6;
-        assert!(banner_bottom < crate::canvas::H as i32, "banner ends at {banner_bottom}");
+        assert!(
+            banner_bottom < crate::canvas::H as i32,
+            "banner ends at {banner_bottom}"
+        );
     }
 
     /// With nothing overriding, nothing is dim.

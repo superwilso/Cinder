@@ -73,7 +73,11 @@ impl Signal<'_> {
             VizKind::Scope => self.wave.len() >= 2,
             VizKind::Stereo => !self.left.is_empty() && self.left.len() == self.right.len(),
             VizKind::Meters => self.meter.iter().chain(self.hold.iter()).any(|v| *v > 0.0),
-            VizKind::Spectrogram => self.hist_cols > 0 && self.hist_rows > 0 && self.hist.len() >= self.hist_cols * self.hist_rows,
+            VizKind::Spectrogram => {
+                self.hist_cols > 0
+                    && self.hist_rows > 0
+                    && self.hist.len() >= self.hist_cols * self.hist_rows
+            }
             _ => true,
         }
     }
@@ -239,7 +243,9 @@ pub fn draw(
     a_top: u8,
     a_bot: u8,
 ) {
-    draw_with_peaks(c, x, y, w, h, n, gap, seed, kind, acc, dim, levels, None, a_top, a_bot);
+    draw_with_peaks(
+        c, x, y, w, h, n, gap, seed, kind, acc, dim, levels, None, a_top, a_bot,
+    );
 }
 
 /// `draw`, plus peak-hold markers.
@@ -277,8 +283,14 @@ pub fn draw_with_peaks(
         if a_top == a_bot {
             return a_top;
         }
-        let t = if h <= 1 { 1.0 } else { ((yy - y) as f32 / (h - 1) as f32).clamp(0.0, 1.0) };
-        (a_top as f32 + (a_bot as f32 - a_top as f32) * t).round().clamp(0.0, 255.0) as u8
+        let t = if h <= 1 {
+            1.0
+        } else {
+            ((yy - y) as f32 / (h - 1) as f32).clamp(0.0, 1.0)
+        };
+        (a_top as f32 + (a_bot as f32 - a_top as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
     };
     // Opaque is the original path: a straight store, no per-pixel blend, so `Full` costs exactly
     // what it always did and only the translucent sizes pay for compositing over the artwork.
@@ -302,7 +314,9 @@ pub fn draw_with_peaks(
     // per-column level: real spectrum (mapped to n columns) if present, else synthetic
     let level = |i: i32| -> f32 {
         match levels {
-            Some(l) if !l.is_empty() => l[(i as usize * l.len()) / n as usize % l.len()].clamp(0.0, 1.0),
+            Some(l) if !l.is_empty() => {
+                l[(i as usize * l.len()) / n as usize % l.len()].clamp(0.0, 1.0)
+            }
             _ => synth(i, seed),
         }
     };
@@ -310,7 +324,11 @@ pub fn draw_with_peaks(
         // Without a signal (an old caller, or no tap), the sample styles draw nothing here — see
         // `draw_any`, which is what every screen calls. Radial and Spectrogram need more than a
         // strip of columns too, and are drawn there.
-        VizKind::Scope | VizKind::Stereo | VizKind::Meters | VizKind::Spectrogram | VizKind::Radial => {}
+        VizKind::Scope
+        | VizKind::Stereo
+        | VizKind::Meters
+        | VizKind::Spectrogram
+        | VizKind::Radial => {}
         VizKind::Bars => {
             for i in 0..n {
                 let bh = ((level(i) * h as f32).round() as i32).max(2);
@@ -341,7 +359,11 @@ pub fn draw_with_peaks(
                     let sy = y + h - (s + 1) * (seg_h + seg_gap);
                     // top-most lit segments accent, the rest dim; unlit = faint baseline
                     let col = if s < lit {
-                        if s >= lit - 2 { acc } else { dim }
+                        if s >= lit - 2 {
+                            acc
+                        } else {
+                            dim
+                        }
                     } else {
                         continue; // leave unlit cells empty for a cleaner look
                     };
@@ -437,7 +459,10 @@ pub fn draw_with_peaks(
     // top is not a thing (Wave is a waveform about the centre line; Pulse has one bar for the
     // whole spectrum), and skipped entirely when the caller passed none.
     if let Some(pk) = peaks {
-        if !pk.is_empty() && !matches!(kind, VizKind::Wave | VizKind::Pulse) && !is_signal_style(kind) {
+        if !pk.is_empty()
+            && !matches!(kind, VizKind::Wave | VizKind::Pulse)
+            && !is_signal_style(kind)
+        {
             let mirror = kind == VizKind::Mirror;
             for i in 0..n {
                 let p = pk[(i as usize * pk.len()) / n as usize % pk.len()].clamp(0.0, 1.0);
@@ -496,14 +521,19 @@ fn line2(
 
 /// The styles `draw_with_peaks` does not draw: the sample ones, and the two that are not columns.
 pub fn is_signal_style(k: VizKind) -> bool {
-    matches!(k, VizKind::Scope | VizKind::Stereo | VizKind::Meters | VizKind::Spectrogram | VizKind::Radial)
+    matches!(
+        k,
+        VizKind::Scope | VizKind::Stereo | VizKind::Meters | VizKind::Spectrogram | VizKind::Radial
+    )
 }
 
 /// Is there anything to draw for `kind`? The screens use this to decide between the visualiser and
 /// their "no signal" line, so the decision cannot drift from what `draw_any` would draw.
 pub fn can_draw(kind: VizKind, levels: Option<&[f32]>, sig: Option<&Signal>) -> bool {
     match kind {
-        VizKind::Scope | VizKind::Stereo | VizKind::Meters | VizKind::Spectrogram => sig.is_some_and(|s| s.has(kind)),
+        VizKind::Scope | VizKind::Stereo | VizKind::Meters | VizKind::Spectrogram => {
+            sig.is_some_and(|s| s.has(kind))
+        }
         _ => levels.is_some_and(|l| !l.is_empty()),
     }
 }
@@ -527,7 +557,13 @@ pub fn draw_any(
     a_top: u8,
     a_bot: u8,
 ) {
-    let px = Px { x, y, h, a_top, a_bot };
+    let px = Px {
+        x,
+        y,
+        h,
+        a_top,
+        a_bot,
+    };
     match kind {
         VizKind::Scope => {
             if let Some(s) = sig.filter(|s| s.has(kind)) {
@@ -561,7 +597,23 @@ pub fn draw_any(
         }
         _ => {
             let n = columns_for(levels);
-            draw_with_peaks(c, x, y, w, h, n as i32, gap_for(n), seed, kind, acc, dim, levels, peaks, a_top, a_bot);
+            draw_with_peaks(
+                c,
+                x,
+                y,
+                w,
+                h,
+                n as i32,
+                gap_for(n),
+                seed,
+                kind,
+                acc,
+                dim,
+                levels,
+                peaks,
+                a_top,
+                a_bot,
+            );
         }
     }
 }
@@ -580,8 +632,14 @@ impl Px {
         if self.a_top == self.a_bot {
             return self.a_top;
         }
-        let t = if self.h <= 1 { 1.0 } else { ((yy - self.y) as f32 / (self.h - 1) as f32).clamp(0.0, 1.0) };
-        (self.a_top as f32 + (self.a_bot as f32 - self.a_top as f32) * t).round().clamp(0.0, 255.0) as u8
+        let t = if self.h <= 1 {
+            1.0
+        } else {
+            ((yy - self.y) as f32 / (self.h - 1) as f32).clamp(0.0, 1.0)
+        };
+        (self.a_top as f32 + (self.a_bot as f32 - self.a_top as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
     }
     fn dot(&self, c: &mut Canvas, x: i32, y: i32, col: Rgb888, a: u8) {
         if y < self.y || y >= self.y + self.h {
@@ -680,12 +738,18 @@ fn draw_stereo(c: &mut Canvas, px: &Px, w: i32, l: &[f32], r: &[f32], acc: Rgb88
     let mut biggest = 0.0f32;
     let (mut lr, mut ll, mut rr) = (0.0f32, 0.0f32, 0.0f32);
     for (a, b) in l.iter().zip(r) {
-        biggest = biggest.max(((a + b) * std::f32::consts::FRAC_1_SQRT_2).abs()).max(((b - a) * std::f32::consts::FRAC_1_SQRT_2).abs());
+        biggest = biggest
+            .max(((a + b) * std::f32::consts::FRAC_1_SQRT_2).abs())
+            .max(((b - a) * std::f32::consts::FRAC_1_SQRT_2).abs());
         lr += a * b;
         ll += a * a;
         rr += b * b;
     }
-    let gain = if biggest > 1e-4 { (0.92 / biggest).clamp(1.0, 6.0) } else { 1.0 };
+    let gain = if biggest > 1e-4 {
+        (0.92 / biggest).clamp(1.0, 6.0)
+    } else {
+        1.0
+    };
     for (a, b) in l.iter().zip(r) {
         let m = (a + b) * std::f32::consts::FRAC_1_SQRT_2 * gain;
         let sd = (b - a) * std::f32::consts::FRAC_1_SQRT_2 * gain;
@@ -695,7 +759,11 @@ fn draw_stereo(c: &mut Canvas, px: &Px, w: i32, l: &[f32], r: &[f32], acc: Rgb88
         px.dot(c, x + 1, y, acc, 120);
     }
     // correlation: -1 (left end) .. +1 (right end), marker from the centre
-    let corr = if ll > 0.0 && rr > 0.0 { (lr / (ll * rr).sqrt()).clamp(-1.0, 1.0) } else { 0.0 };
+    let corr = if ll > 0.0 && rr > 0.0 {
+        (lr / (ll * rr).sqrt()).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
     let by = px.y + size + 6;
     let bx0 = cx - half;
     px.rect(c, bx0, by + bar_h / 2, half * 2, 1, dim);
@@ -707,7 +775,15 @@ fn draw_stereo(c: &mut Canvas, px: &Px, w: i32, l: &[f32], r: &[f32], acc: Rgb88
 
 /// Two horizontal meters, L over R: the RMS as a bar, the peak as a line, the held peak as a tick,
 /// on a −60..0 dBFS scale with ticks at −48, −24, −12, −6 and −3.
-fn draw_meters(c: &mut Canvas, px: &Px, w: i32, m: [f32; 4], hold: [f32; 2], acc: Rgb888, dim: Rgb888) {
+fn draw_meters(
+    c: &mut Canvas,
+    px: &Px,
+    w: i32,
+    m: [f32; 4],
+    hold: [f32; 2],
+    acc: Rgb888,
+    dim: Rgb888,
+) {
     let bar = (px.h / 4).clamp(6, 40);
     let gap = (px.h - 2 * bar) / 3;
     for ch in 0..2 {
@@ -748,7 +824,11 @@ fn draw_spectrogram(c: &mut Canvas, px: &Px, w: i32, s: &Signal, acc: Rgb888, di
             // A curve on the low half keeps the quiet cells near the background, so the loud
             // ones stand out the way they do on a real spectrogram rather than the whole block
             // glowing.
-            let col = if v < 0.6 { mix(dim, acc, (v / 0.6).powf(1.8)) } else { mix(acc, hot, (v - 0.6) / 0.4) };
+            let col = if v < 0.6 {
+                mix(dim, acc, (v / 0.6).powf(1.8))
+            } else {
+                mix(acc, hot, (v - 0.6) / 0.4)
+            };
             px.rect(c, xx, y_top, cell_w, (y_bot - y_top).max(1), col);
         }
     }
@@ -757,8 +837,16 @@ fn draw_spectrogram(c: &mut Canvas, px: &Px, w: i32, s: &Signal, acc: Rgb888, di
 /// The spectrum as spokes round a circle: lows at the top, running clockwise, a held-peak dot on
 /// each spoke when peaks are on.
 #[allow(clippy::too_many_arguments)]
-fn draw_radial(c: &mut Canvas, px: &Px, w: i32, n: usize, level: &dyn Fn(usize) -> f32, peaks: Option<&[f32]>,
-               acc: Rgb888, dim: Rgb888) {
+fn draw_radial(
+    c: &mut Canvas,
+    px: &Px,
+    w: i32,
+    n: usize,
+    level: &dyn Fn(usize) -> f32,
+    peaks: Option<&[f32]>,
+    acc: Rgb888,
+    dim: Rgb888,
+) {
     let cx = px.x + w / 2;
     let cy = px.y + px.h / 2;
     let rmax = (w.min(px.h) / 2 - 2) as f32;
@@ -768,19 +856,44 @@ fn draw_radial(c: &mut Canvas, px: &Px, w: i32, n: usize, level: &dyn Fn(usize) 
     let ring = (r0 * 6.3) as usize;
     for k in 0..ring.max(12) {
         let a = k as f32 / ring.max(12) as f32 * std::f32::consts::TAU;
-        px.dot(c, cx + (a.cos() * (r0 - 3.0)) as i32, cy + (a.sin() * (r0 - 3.0)) as i32, dim, 255);
+        px.dot(
+            c,
+            cx + (a.cos() * (r0 - 3.0)) as i32,
+            cy + (a.sin() * (r0 - 3.0)) as i32,
+            dim,
+            255,
+        );
     }
     for i in 0..spokes {
         let a = i as f32 / spokes as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
         let (sa, ca) = a.sin_cos();
         let lv = level(i * n / spokes);
         let r1 = r0 + lv * (rmax - r0);
-        let col = if i % 4 == 0 { acc } else { mix(dim, acc, 0.5 + 0.5 * lv) };
-        px.line(c, cx + (ca * r0) as i32, cy + (sa * r0) as i32, cx + (ca * r1) as i32, cy + (sa * r1) as i32, col, 2);
+        let col = if i % 4 == 0 {
+            acc
+        } else {
+            mix(dim, acc, 0.5 + 0.5 * lv)
+        };
+        px.line(
+            c,
+            cx + (ca * r0) as i32,
+            cy + (sa * r0) as i32,
+            cx + (ca * r1) as i32,
+            cy + (sa * r1) as i32,
+            col,
+            2,
+        );
         if let Some(pk) = peaks.filter(|p| !p.is_empty()) {
             let p = pk[(i * pk.len()) / spokes % pk.len()].clamp(0.0, 1.0);
             let rp = r0 + p * (rmax - r0);
-            px.rect(c, cx + (ca * rp) as i32 - 1, cy + (sa * rp) as i32 - 1, 3, 3, acc);
+            px.rect(
+                c,
+                cx + (ca * rp) as i32 - 1,
+                cy + (sa * rp) as i32 - 1,
+                3,
+                3,
+                acc,
+            );
         }
     }
 }
@@ -796,7 +909,11 @@ mod signal_tests {
         for yy in 0..crate::canvas::H as i32 {
             for xx in 0..W as i32 {
                 if c.buf[yy as usize * W + xx as usize] != bg {
-                    if (x..x + w).contains(&xx) && (y..y + h).contains(&yy) { inside += 1 } else { outside += 1 }
+                    if (x..x + w).contains(&xx) && (y..y + h).contains(&yy) {
+                        inside += 1
+                    } else {
+                        outside += 1
+                    }
                 }
             }
         }
@@ -804,8 +921,17 @@ mod signal_tests {
     }
 
     fn sig_with<'a>(wave: &'a [f32], l: &'a [f32], r: &'a [f32], hist: &'a [f32]) -> Signal<'a> {
-        Signal { wave, left: l, right: r, meter: [0.8, 0.7, 0.5, 0.45], hold: [0.85, 0.75],
-                 hist, hist_cols: 32, hist_rows: 64, hist_head: 5 }
+        Signal {
+            wave,
+            left: l,
+            right: r,
+            meter: [0.8, 0.7, 0.5, 0.45],
+            hold: [0.85, 0.75],
+            hist,
+            hist_cols: 32,
+            hist_rows: 64,
+            hist_head: 5,
+        }
     }
 
     /// Every style draws something with a signal, and nothing outside its box.
@@ -814,16 +940,35 @@ mod signal_tests {
         let t = Theme::day();
         let wave: Vec<f32> = (0..480).map(|i| (i as f32 * 0.05).sin() * 0.8).collect();
         let l: Vec<f32> = (0..512).map(|i| (i as f32 * 0.1).sin() * 0.6).collect();
-        let r: Vec<f32> = (0..512).map(|i| (i as f32 * 0.1 + 0.6).sin() * 0.6).collect();
+        let r: Vec<f32> = (0..512)
+            .map(|i| (i as f32 * 0.1 + 0.6).sin() * 0.6)
+            .collect();
         let hist: Vec<f32> = (0..32 * 64).map(|i| (i % 32) as f32 / 32.0).collect();
-        let levels: Vec<f32> = (0..48).map(|i| 0.2 + 0.6 * ((i as f32) * 0.3).sin().abs()).collect();
+        let levels: Vec<f32> = (0..48)
+            .map(|i| 0.2 + 0.6 * ((i as f32) * 0.3).sin().abs())
+            .collect();
         let sig = sig_with(&wave, &l, &r, &hist);
         let bg = crate::canvas::to_u32(t.bg);
         for k in 0..COUNT {
             let kind = from_index(k);
             let mut c = Canvas::new();
             c.fill(t.bg);
-            draw_any(&mut c, 24, 154, 432, 348, 2.0, kind, t.acc, t.line, Some(&levels), None, Some(&sig), 255, 255);
+            draw_any(
+                &mut c,
+                24,
+                154,
+                432,
+                348,
+                2.0,
+                kind,
+                t.acc,
+                t.line,
+                Some(&levels),
+                None,
+                Some(&sig),
+                255,
+                255,
+            );
             let (inside, outside) = painted(&c, bg, 24, 154, 432, 348);
             assert!(inside > 50, "{} drew {inside} pixels", name(k));
             assert_eq!(outside, 0, "{} painted outside its box", name(k));
@@ -837,17 +982,32 @@ mod signal_tests {
         for k in 0..COUNT {
             let kind = from_index(k);
             let can = can_draw(kind, Some(&levels), None);
-            assert_eq!(can, !matches!(kind, VizKind::Scope | VizKind::Stereo | VizKind::Meters | VizKind::Spectrogram),
-                       "{}", name(k));
+            assert_eq!(
+                can,
+                !matches!(
+                    kind,
+                    VizKind::Scope | VizKind::Stereo | VizKind::Meters | VizKind::Spectrogram
+                ),
+                "{}",
+                name(k)
+            );
         }
         let empty = Signal::default();
-        assert!(!empty.has(VizKind::Scope) && !empty.has(VizKind::Stereo) && !empty.has(VizKind::Meters));
+        assert!(
+            !empty.has(VizKind::Scope)
+                && !empty.has(VizKind::Stereo)
+                && !empty.has(VizKind::Meters)
+        );
     }
 
     /// The names round-trip and the new ones are where the settings file expects them.
     #[test]
     fn indices_are_stable() {
-        assert_eq!(from_index(7), VizKind::Pulse, "the eight older styles keep their numbers");
+        assert_eq!(
+            from_index(7),
+            VizKind::Pulse,
+            "the eight older styles keep their numbers"
+        );
         assert_eq!(from_index(8), VizKind::Scope);
         assert_eq!(from_index(12), VizKind::Radial);
         assert_eq!(from_index(COUNT), VizKind::Bars, "wraps");

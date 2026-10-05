@@ -43,7 +43,13 @@ impl Touch {
     /// a claim routes everything to `scrub_*` and skips tap/swipe/drag entirely.
     fn press(&mut self, app: &mut App, x: i32, y: i32) {
         app.stop_fling();
-        *self = Touch { down: true, start: (x, y), cur: (x, y), last_y: y, ..Default::default() };
+        *self = Touch {
+            down: true,
+            start: (x, y),
+            cur: (x, y),
+            last_y: y,
+            ..Default::default()
+        };
         self.scrub = app.scrub_begin(x, y);
     }
 
@@ -219,11 +225,20 @@ fn main() {
     // window manager can't deliver the keystroke.
     let boot = std::time::Instant::now();
     let unlocked = std::env::args().any(|a| a == "--unlocked");
-    let mut app = if unlocked { App::unlocked() } else { App::new() };
+    let mut app = if unlocked {
+        App::unlocked()
+    } else {
+        App::new()
+    };
     app.set_library(big_library());
     // Something playing, so the screens that are about the playing song have one: Track
     // information's rows (with its Rating row) and a play context for the stars to rate.
-    let first_album = app.library().albums_flat().first().map(|a| a.track_list.clone()).unwrap_or_default();
+    let first_album = app
+        .library()
+        .albums_flat()
+        .first()
+        .map(|a| a.track_list.clone())
+        .unwrap_or_default();
     app.set_play_context(first_album, 0);
     app.set_track_info(vec![
         ("Rating".into(), "-".into()),
@@ -256,11 +271,13 @@ fn main() {
         repeat: 1,
         viz_seed: 2.0,
         viz_kind: 0,
-        viz_size: 1, page: 0,
+        viz_size: 1,
+        page: 0,
         viz_levels: None,
         viz_peaks: None,
         viz_sig: None,
-        scrubbing: false, lyrics: false,
+        scrubbing: false,
+        lyrics: false,
     };
 
     // Scripted, windowless run: gestures from a file, frames to disk, then exit.
@@ -275,7 +292,10 @@ fn main() {
         "Cinder · NW-A55  [arrows·Enter·Backspace·Tab·Space·=/-vol·H·P·V=viz · Q quits]",
         W,
         H,
-        WindowOptions { scale: minifb::Scale::X2, ..WindowOptions::default() },
+        WindowOptions {
+            scale: minifb::Scale::X2,
+            ..WindowOptions::default()
+        },
     )
     .expect("open window (WSLg provides the display)");
     window.set_target_fps(60);
@@ -295,7 +315,9 @@ fn main() {
         }
         // ── touchscreen ──
         let down = window.get_mouse_down(MouseButton::Left);
-        let pos = window.get_mouse_pos(MouseMode::Clamp).map(|(x, y)| (x as i32, y as i32));
+        let pos = window
+            .get_mouse_pos(MouseMode::Clamp)
+            .map(|(x, y)| (x as i32, y as i32));
         if let Some((mx, my)) = pos {
             if down && !was_down {
                 touch.press(&mut app, mx, my);
@@ -313,9 +335,9 @@ fn main() {
         }
         was_down = down;
         app.tick(); // advance HUD/overlay countdowns (volume), like the device pump
-        // Advance the title marquee, exactly as cinder_render_tick does on device. Without this
-        // the sim renders long titles frozen at phase 0 and the scroll looks broken here while
-        // working on hardware — the sim's whole value is that a gesture takes the same path.
+                    // Advance the title marquee, exactly as cinder_render_tick does on device. Without this
+                    // the sim renders long titles frozen at phase 0 and the scroll looks broken here while
+                    // working on hardware — the sim's whole value is that a gesture takes the same path.
         cinder_ui::widgets::set_marquee_ms(boot.elapsed().as_millis() as u32);
         // Animate the visualiser while "playing" on Now Playing (mirrors cinder-ffi on device).
         if np.playing && app.is_now_playing() && app.viz_on() {
@@ -330,11 +352,25 @@ fn main() {
 fn big_library() -> Library {
     use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, SongRow};
     let artists = [
-        "Benjamin Francis Leftwich", "Cold Stone & Sea", "Glass Atlas", "Hollow Pines",
-        "Neon Cartography", "Petal & Wire", "Vesper Lane", "Aurora Bay", "Slow Tide",
+        "Benjamin Francis Leftwich",
+        "Cold Stone & Sea",
+        "Glass Atlas",
+        "Hollow Pines",
+        "Neon Cartography",
+        "Petal & Wire",
+        "Vesper Lane",
+        "Aurora Bay",
+        "Slow Tide",
     ];
     let kinds = ["Drift", "Ember", "Lantern", "Quartz", "Halcyon", "Bloom"];
-    let albums_n = ["Nightfall", "Driftwood", "Halo", "Cinder", "Last Smoke", "After the Rain"];
+    let albums_n = [
+        "Nightfall",
+        "Driftwood",
+        "Halo",
+        "Cinder",
+        "Last Smoke",
+        "After the Rain",
+    ];
 
     let mut songs = Vec::new();
     let mut album_groups = Vec::new();
@@ -374,7 +410,10 @@ fn big_library() -> Library {
                 ..Default::default()
             });
         }
-        album_groups.push(ArtistGroup { artist: a.to_string(), albums: group_albums });
+        album_groups.push(ArtistGroup {
+            artist: a.to_string(),
+            albums: group_albums,
+        });
     }
     let artist_rows = artists
         .iter()
@@ -391,13 +430,31 @@ fn big_library() -> Library {
     // One playlist of the user's own (so the page has its edit bar and EDIT) and one of Sony's.
     let playlists = vec![
         cinder_ui::model::PlaylistRow {
-            id: -1, name: "Night Bus".into(), tracks: 9, art: "Night Bus".into(), user: true,
-            track_list: songs.iter().step_by(11).take(9).cloned().collect(), ..Default::default()
+            id: -1,
+            name: "Night Bus".into(),
+            tracks: 9,
+            art: "Night Bus".into(),
+            user: true,
+            track_list: songs.iter().step_by(11).take(9).cloned().collect(),
+            ..Default::default()
         },
         cinder_ui::model::PlaylistRow {
-            id: 1, name: "Synced from the PC".into(), tracks: 5, art: "Synced".into(), user: false,
-            track_list: songs.iter().skip(3).step_by(17).take(5).cloned().collect(), ..Default::default()
+            id: 1,
+            name: "Synced from the PC".into(),
+            tracks: 5,
+            art: "Synced".into(),
+            user: false,
+            track_list: songs.iter().skip(3).step_by(17).take(5).cloned().collect(),
+            ..Default::default()
         },
     ];
-    Library { songs, album_groups, artists: artist_rows, playlists, thumbs: Default::default(), genres: Vec::new(), ..Default::default() }
+    Library {
+        songs,
+        album_groups,
+        artists: artist_rows,
+        playlists,
+        thumbs: Default::default(),
+        genres: Vec::new(),
+        ..Default::default()
+    }
 }

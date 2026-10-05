@@ -3,9 +3,9 @@
 //! ClearAudio+. A strip under the header shows the live signal path (design handoff 2a: it is the
 //! answer to "what am I hearing?", so it sits where you look first rather than in a footer).
 
+use crate::kit::{Row, Trail};
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::kit::{Row, Trail};
 use crate::widgets::{center, fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
@@ -44,7 +44,15 @@ pub const ROW_EQ: usize = 9;
 
 /// Top-to-bottom order of the rows, for the render, the hit test and the Up/Down buttons alike.
 pub const ORDER: [usize; ROWS] = [
-    ROW_PROFILE, ROW_EQ, ROW_DSEE, ROW_CLEAR, ROW_VPT, ROW_DC, ROW_VINYL, ROW_NORM, ROW_BALANCE,
+    ROW_PROFILE,
+    ROW_EQ,
+    ROW_DSEE,
+    ROW_CLEAR,
+    ROW_VPT,
+    ROW_DC,
+    ROW_VINYL,
+    ROW_NORM,
+    ROW_BALANCE,
     ROW_ADVANCED,
 ];
 
@@ -135,7 +143,10 @@ pub fn max_scroll() -> i32 {
 
 /// Screen-y of the top of row `r` at scroll `scroll`.
 pub fn row_top(r: usize, scroll: i32) -> i32 {
-    parts(scroll).into_iter().find_map(|(p, y)| (p == Part::Row(r)).then_some(y)).unwrap_or(TOP)
+    parts(scroll)
+        .into_iter()
+        .find_map(|(p, y)| (p == Part::Row(r)).then_some(y))
+        .unwrap_or(TOP)
 }
 
 /// Which row is under `y`. Nothing above the list (the strip, the header), nothing on a label.
@@ -168,7 +179,12 @@ pub const BAL_TRACK_DY: i32 = 86;
 pub const BAL_RESET_W: i32 = 104;
 pub const BAL_RESET_H: i32 = 38;
 pub fn balance_reset_rect(scroll: i32) -> (i32, i32, i32, i32) {
-    (BAL_X1 - BAL_RESET_W, balance_top(scroll) + 12, BAL_RESET_W, BAL_RESET_H)
+    (
+        BAL_X1 - BAL_RESET_W,
+        balance_top(scroll) + 12,
+        BAL_RESET_W,
+        BAL_RESET_H,
+    )
 }
 /// Every hit test below refuses a point above the list: scrolled up, the row passes UNDER the
 /// strip, and a control you cannot see must not be a control you can press.
@@ -205,7 +221,11 @@ pub fn balance_at(x: i32) -> usize {
     let t = (x - BAL_X0).clamp(0, span);
     let pos = ((t as i64 * BALANCE_MAX as i64 + span as i64 / 2) / span as i64) as usize;
     // Snap through the detent, so centre is reachable with a normal finger.
-    if pos.abs_diff(BALANCE_CENTRE) <= BAL_SNAP { BALANCE_CENTRE } else { pos }
+    if pos.abs_diff(BALANCE_CENTRE) <= BAL_SNAP {
+        BALANCE_CENTRE
+    } else {
+        pos
+    }
 }
 
 /// Screen x of the knob for position `pos`.
@@ -329,18 +349,40 @@ pub(crate) fn value_pill(c: &mut Canvas, f: &FontSet, t: &Theme, xr: i32, cy: i3
     text::draw(c, f, (xr - w + 12) as f32, (cy + 4) as f32, &up, &st);
 }
 
-pub(crate) fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, desc: &str) -> i32 {
+pub(crate) fn row(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    sel: bool,
+    label: &str,
+    desc: &str,
+) -> i32 {
     let rh = ROW_H;
     let cy = y + rh / 2;
     if sel {
         fill_rect(c, 0, y, crate::canvas::W as i32, rh, t.row_sel);
     }
     let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy - 3) as f32, label, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
+    text::draw(
+        c,
+        f,
+        22.0,
+        (cy - 3) as f32,
+        label,
+        &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0),
+    );
     // Fitted to the space LEFT of the row's control (the toggles start at 418, the pills a little
     // earlier): at 140% UI scale the longer subtitles ran underneath the switch.
     let ds = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
-    text::draw(c, f, 22.0, (cy + 15) as f32, &crate::widgets::fit(f, desc, &ds, 380.0), &ds);
+    text::draw(
+        c,
+        f,
+        22.0,
+        (cy + 15) as f32,
+        &crate::widgets::fit(f, desc, &ds, 380.0),
+        &ds,
+    );
     hline(c, y + rh, t.line);
     cy
 }
@@ -350,7 +392,11 @@ fn wrap_lines(f: &FontSet, text_s: &str, st: &text::TextStyle, max_w: f32) -> Ve
     let mut out = Vec::new();
     let mut line = String::new();
     for word in text_s.split(' ') {
-        let trial = if line.is_empty() { word.to_string() } else { format!("{} {}", line, word) };
+        let trial = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{} {}", line, word)
+        };
         if text::measure(f, &trial, st) > max_w && !line.is_empty() {
             out.push(std::mem::replace(&mut line, word.to_string()));
         } else {
@@ -367,7 +413,13 @@ fn wrap_lines(f: &FontSet, text_s: &str, st: &text::TextStyle, max_w: f32) -> Ve
 /// line and then its END with an ellipsis in front. The end is the output — what the chain arrives
 /// at — and a path cut off before it answers nothing. A bypass warning takes the second line (the
 /// path is short then: a bypass leaves nothing in the middle).
-pub fn strip_lines(f: &FontSet, path: &str, warn: Option<&str>, st: &text::TextStyle, max_w: f32) -> (String, String) {
+pub fn strip_lines(
+    f: &FontSet,
+    path: &str,
+    warn: Option<&str>,
+    st: &text::TextStyle,
+    max_w: f32,
+) -> (String, String) {
     let fit = |s: &str| crate::widgets::fit(f, s, st, max_w);
     if let Some(w) = warn {
         return (fit(path), fit(w));
@@ -394,10 +446,26 @@ fn path_strip(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, path: &str, warn: 
     fill_rect(c, 0, y, crate::canvas::W as i32, PATH_STRIP_H, t.panel);
     hline(c, y, t.line);
     hline(c, y + PATH_STRIP_H - 1, t.line);
-    let st = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.dim, 0.06);
+    let st = sty(
+        Family::Mono,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.dim,
+        0.06,
+    );
     let (l1, l2) = strip_lines(f, path, warn, &st, (RIGHT - LEFT) as f32);
     text::draw(c, f, LEFT as f32, (y + 24) as f32, &l1, &st);
-    let st2 = if warn.is_some() { sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.06) } else { st };
+    let st2 = if warn.is_some() {
+        sty(
+            Family::Mono,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.acc,
+            0.06,
+        )
+    } else {
+        st
+    };
     text::draw(c, f, LEFT as f32, (y + 44) as f32, &l2, &st2);
 }
 
@@ -415,8 +483,14 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
         fill_rect(c, 0, y, crate::canvas::W as i32, BALANCE_ROW_H, t.row_sel);
     }
     let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (y + 36) as f32, "Balance",
-               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
+    text::draw(
+        c,
+        f,
+        22.0,
+        (y + 36) as f32,
+        "Balance",
+        &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0),
+    );
     // THE SUBTITLE SAYS WHAT IS ACTUALLY REACHED, in every state. Mono first, because when it is
     // on the slider below is inert and saying anything else about the slider would be the more
     // misleading of the two truths.
@@ -425,7 +499,10 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
         // `analysis/RE_mono_audio.md`. Same rule as the Bluetooth line below it — a control that
         // silently does nothing to what you are hearing is the defect this screen has had cleaned
         // out of it twice.
-        ("Mono — not reachable on this output; USB-DAC to Bluetooth only", true)
+        (
+            "Mono — not reachable on this output; USB-DAC to Bluetooth only",
+            true,
+        )
     } else if s.mono {
         ("Mono — both ears carry the same signal", true)
     } else if s.bt_route {
@@ -442,10 +519,22 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
     // The baseline also moves down by however much the UI scale grew the text: a scaled line grows
     // UPWARD from its baseline, and at 140% its ascenders reached back into the buttons' bottom
     // edge (found by the text audit, `cinder-host --audit`). At 100% nothing moves.
-    let sst = sty(Family::Sans, Weight::Regular, 13.0, if warn { t.acc } else { t.dim }, 0.0);
+    let sst = sty(
+        Family::Sans,
+        Weight::Regular,
+        13.0,
+        if warn { t.acc } else { t.dim },
+        0.0,
+    );
     let grow = (text::scaled(13.0) - 13.0).max(0.0).round();
-    text::draw(c, f, 22.0, (y + 62) as f32 + grow,
-               &crate::widgets::fit(f, sub, &sst, (BAL_X1 - 22) as f32), &sst);
+    text::draw(
+        c,
+        f,
+        22.0,
+        (y + 62) as f32 + grow,
+        &crate::widgets::fit(f, sub, &sst, (BAL_X1 - 22) as f32),
+        &sst,
+    );
 
     // MONO. A latching button rather than a switch, because it sits in a row of buttons and a
     // 40x22 switch here would be the only one of its kind on the screen.
@@ -457,8 +546,14 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
         } else {
             stroke_rect(c, rx, ry, rw, rh, t.line, 1);
         }
-        center(c, f, (rx + rw / 2) as f32, (ry + rh / 2 + 5) as f32, "MONO",
-               &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14));
+        center(
+            c,
+            f,
+            (rx + rw / 2) as f32,
+            (ry + rh / 2 + 5) as f32,
+            "MONO",
+            &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14),
+        );
     }
 
     // CENTRE reset. Greyed out when already centred — it is not a state, it is an action, and an
@@ -469,8 +564,14 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
         let dead = centred || s.mono;
         let col = if dead { t.faint } else { t.acc };
         stroke_rect(c, rx, ry, rw, rh, if dead { t.line } else { t.acc }, 1);
-        center(c, f, (rx + rw / 2) as f32, (ry + rh / 2 + 5) as f32, "CENTRE",
-               &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14));
+        center(
+            c,
+            f,
+            (rx + rw / 2) as f32,
+            (ry + rh / 2 + 5) as f32,
+            "CENTRE",
+            &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14),
+        );
     }
 
     let ty = bal_track_y(scroll);
@@ -496,12 +597,28 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
     // the amount are both readable at a glance without doing arithmetic on the label.
     fill_rect(c, BAL_X0, ty - 1, BAL_X1 - BAL_X0, 3, track_col);
     if !centred && live {
-        let (fx, fw) = if kx < cx { (kx, cx - kx) } else { (cx, kx - cx) };
+        let (fx, fw) = if kx < cx {
+            (kx, cx - kx)
+        } else {
+            (cx, kx - cx)
+        };
         fill_rect(c, fx, ty - 1, fw, 3, t.acc);
     }
     // Centre detent: a taller tick, so you can see where the null is while dragging.
-    fill_rect(c, cx - 1, ty - 11, 2, 23,
-              if !live { t.faint } else if centred { t.acc } else { t.dim });
+    fill_rect(
+        c,
+        cx - 1,
+        ty - 11,
+        2,
+        23,
+        if !live {
+            t.faint
+        } else if centred {
+            t.acc
+        } else {
+            t.dim
+        },
+    );
 
     // Knob. Square, to match the toggle's knob — this UI has no circle primitive and a hand-rolled
     // one here would be the only round thing on the screen. It grows under a finger.
@@ -516,10 +633,19 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
     text::draw(c, f, BAL_X0 as f32, (ty + 32) as f32, "L", &cap);
     right(c, f, BAL_X1 as f32, (ty + 32) as f32, "R", &cap);
     // Under mono the readout names the STATE, not a position the ear cannot hear.
-    let readout =
-        if live { balance_label(s.balance).to_uppercase() } else { "BOTH CHANNELS".to_string() };
-    center(c, f, 240.0, (ty + 32) as f32, &readout,
-           &sty(Family::Mono, Weight::Regular, 13.0, vc, 0.1));
+    let readout = if live {
+        balance_label(s.balance).to_uppercase()
+    } else {
+        "BOTH CHANNELS".to_string()
+    };
+    center(
+        c,
+        f,
+        240.0,
+        (ty + 32) as f32,
+        &readout,
+        &sty(Family::Mono, Weight::Regular, 13.0, vc, 0.1),
+    );
     hline(c, y + BALANCE_ROW_H, t.line);
 }
 
@@ -565,19 +691,40 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
     // ClearAudio+ REPLACES the tone stage and the manual effects — the warning below says so, and
     // a chain drawn above it naming the EQ and DSEE HX said the opposite in the same breath.
     if s.clearaudio {
-        return (format!("SIGNAL PATH ({ab}): SOURCE → CLEARAUDIO+ → {out}"), warn);
+        return (
+            format!("SIGNAL PATH ({ab}): SOURCE → CLEARAUDIO+ → {out}"),
+            warn,
+        );
     }
     // Which tone system is really in the chain. Sony picks ONE of the two, so naming the wrong one
     // is the same lie as naming both.
-    let tone_stage =
-        if s.tone_control { "TONE".to_string() } else { format!("EQ ({})", s.eq_preset) };
+    let tone_stage = if s.tone_control {
+        "TONE".to_string()
+    } else {
+        format!("EQ ({})", s.eq_preset)
+    };
     let mut parts: Vec<String> = Vec::new();
-    if s.dsee { parts.push("DSEE HX".into()); }
-    if s.vinyl { parts.push("VINYL".into()); }
-    if !s.vpt.eq_ignore_ascii_case("off") { parts.push(format!("VPT·{}", s.vpt.to_uppercase())); }
-    if !s.dcphase.eq_ignore_ascii_case("off") { parts.push("DC PHASE".into()); }
-    let mid = if parts.is_empty() { "DIRECT".to_string() } else { parts.join(" → ") };
-    (format!("SIGNAL PATH ({ab}): SOURCE → {tone_stage} → {mid} → {out}"), warn)
+    if s.dsee {
+        parts.push("DSEE HX".into());
+    }
+    if s.vinyl {
+        parts.push("VINYL".into());
+    }
+    if !s.vpt.eq_ignore_ascii_case("off") {
+        parts.push(format!("VPT·{}", s.vpt.to_uppercase()));
+    }
+    if !s.dcphase.eq_ignore_ascii_case("off") {
+        parts.push("DC PHASE".into());
+    }
+    let mid = if parts.is_empty() {
+        "DIRECT".to_string()
+    } else {
+        parts.join(" → ")
+    };
+    (
+        format!("SIGNAL PATH ({ab}): SOURCE → {tone_stage} → {mid} → {out}"),
+        warn,
+    )
 }
 
 /// Why rows are out of the path, as the subtitle that replaces theirs: `(manual effects, every
@@ -645,7 +792,12 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
             fx_over,
             RowTrail::Open(s.eq_preset.to_uppercase()),
         ),
-        ROW_DSEE => t("DSEE HX", "Upscale compressed audio to near hi-res", fx_over, RowTrail::Switch(s.dsee)),
+        ROW_DSEE => t(
+            "DSEE HX",
+            "Upscale compressed audio to near hi-res",
+            fx_over,
+            RowTrail::Switch(s.dsee),
+        ),
         // The handoff: ClearAudio+ SAYS what it overrides, instead of only greying things out.
         ROW_CLEAR => t(
             "ClearAudio+",
@@ -653,10 +805,30 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
             all_over,
             RowTrail::Switch(s.clearaudio),
         ),
-        ROW_VPT => t("VPT Surround", "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix", fx_over, pill(s.vpt)),
-        ROW_DC => t("DC Phase Linearizer", "Analog-amp low-frequency phase", fx_over, pill(s.dcphase)),
-        ROW_VINYL => t("Vinyl Processor", "Tonearm resonance, surface noise", fx_over, RowTrail::Switch(s.vinyl)),
-        ROW_NORM => t("Dynamic Normalizer", "Even out volume between tracks", all_over, RowTrail::Switch(s.normalizer)),
+        ROW_VPT => t(
+            "VPT Surround",
+            "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix",
+            fx_over,
+            pill(s.vpt),
+        ),
+        ROW_DC => t(
+            "DC Phase Linearizer",
+            "Analog-amp low-frequency phase",
+            fx_over,
+            pill(s.dcphase),
+        ),
+        ROW_VINYL => t(
+            "Vinyl Processor",
+            "Tonearm resonance, surface noise",
+            fx_over,
+            RowTrail::Switch(s.vinyl),
+        ),
+        ROW_NORM => t(
+            "Dynamic Normalizer",
+            "Even out volume between tracks",
+            all_over,
+            RowTrail::Switch(s.normalizer),
+        ),
         _ => RowText {
             title: "Advanced".into(),
             sub: "Source Direct, Clear Phase, DSEE AI, Tone Control".into(),
@@ -666,7 +838,15 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
     }
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, setup: usize, scroll: i32) {
+pub fn render(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    s: &Sound,
+    sel: usize,
+    setup: usize,
+    scroll: i32,
+) {
     c.fill(t.bg);
     // No subtitle here — the A/B compare control occupies the header's right side.
     let y0 = crate::chrome::header(c, t, f, "Sound", None);
@@ -678,18 +858,38 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
         let segs = [("A", setup == 0), ("B", setup == 1)];
         for (i, (label, on)) in segs.iter().enumerate() {
             let (sx, sy, sw, sh) = ab_rect(i);
-            let st = sty(Family::Mono, Weight::Bold, 18.0, if *on { t.acc_ink } else { t.dim }, 0.1);
+            let st = sty(
+                Family::Mono,
+                Weight::Bold,
+                18.0,
+                if *on { t.acc_ink } else { t.dim },
+                0.1,
+            );
             if *on {
                 fill_rect(c, sx, sy, sw, sh, t.acc);
             }
             stroke_rect(c, sx, sy, sw, sh, if *on { t.acc } else { t.line }, 1);
-            center(c, f, (sx + sw / 2) as f32, (sy + sh / 2 + 6) as f32, label, &st);
+            center(
+                c,
+                f,
+                (sx + sw / 2) as f32,
+                (sy + sh / 2 + 6) as f32,
+                label,
+                &st,
+            );
         }
         // The hint sits LEFT of the segments rather than under them: the segments fill the
         // header's vertical space, and a caption below would run past HEADER_BOTTOM into the list.
         let hint = sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14);
         let (x0, _, _, _) = ab_rect(0);
-        right(c, f, (x0 - 12) as f32, (AB_TOP + AB_H / 2 + 4) as f32, "COMPARE", &hint);
+        right(
+            c,
+            f,
+            (x0 - 12) as f32,
+            (AB_TOP + AB_H / 2 + 4) as f32,
+            "COMPARE",
+            &hint,
+        );
     }
 
     // ── the signal path ───────────────────────────────────────────────────────────────────────
@@ -700,7 +900,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
     // header: the list scrolls beneath it, so the answer never scrolls away.
     let (path, warn) = signal_path(s, setup);
     path_strip(c, t, f, y0, &path, warn);
-    debug_assert_eq!(y0 + PATH_STRIP_H, TOP, "sound list top drifted from the hit test");
+    debug_assert_eq!(
+        y0 + PATH_STRIP_H,
+        TOP,
+        "sound list top drifted from the hit test"
+    );
 
     // ── the grouped list (handoff 2a): Profile, then ENHANCE / SPACE / LEVEL ────────────────────
     // CLIPPED to below the strip, so a scrolled row cannot paint over the path or the header.
@@ -742,7 +946,13 @@ mod tests {
         let _g = crate::text::scale_guard();
         let f = FontSet::load();
         let t = Theme::day();
-        let st = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.dim, 0.06);
+        let st = sty(
+            Family::Mono,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.dim,
+            0.06,
+        );
         let w = (crate::kit::RIGHT - crate::kit::LEFT) as f32;
         let (path, _) = signal_path(&loud(), 0);
         for idx in 0..crate::text::SCALE_STEPS.len() {
@@ -752,12 +962,26 @@ mod tests {
             assert!(l1.starts_with("SIGNAL PATH (A)"), "{pct}%: {l1}");
             assert!(l2.ends_with("3.5MM"), "{pct}%: the output fell off: {l2}");
             for l in [&l1, &l2] {
-                assert!(crate::text::measure(&f, l, &st) <= w, "{pct}%: {l} is wider than the strip");
+                assert!(
+                    crate::text::measure(&f, l, &st) <= w,
+                    "{pct}%: {l} is wider than the strip"
+                );
             }
         }
-        crate::text::set_scale_idx(crate::text::SCALE_STEPS.iter().position(|s| *s == 100).unwrap());
+        crate::text::set_scale_idx(
+            crate::text::SCALE_STEPS
+                .iter()
+                .position(|s| *s == 100)
+                .unwrap(),
+        );
         // A bypass puts its warning on the second line.
-        let (_, l2) = strip_lines(&f, "SIGNAL PATH (A): SOURCE → AMP → 3.5MM", Some("! SOURCE DIRECT: ALL BYPASSED"), &st, w);
+        let (_, l2) = strip_lines(
+            &f,
+            "SIGNAL PATH (A): SOURCE → AMP → 3.5MM",
+            Some("! SOURCE DIRECT: ALL BYPASSED"),
+            &st,
+            w,
+        );
         assert_eq!(l2, "! SOURCE DIRECT: ALL BYPASSED");
     }
 
@@ -774,12 +998,24 @@ mod tests {
 
         // Every pixel of each button hits that button and not the other.
         for x in mx..mx + mw {
-            assert!(hit_balance_mono(x, my + mh / 2, max_scroll()), "MONO dead at x={x}");
-            assert!(!hit_balance_reset(x, my + mh / 2, max_scroll()), "CENTRE claims a MONO pixel at x={x}");
+            assert!(
+                hit_balance_mono(x, my + mh / 2, max_scroll()),
+                "MONO dead at x={x}"
+            );
+            assert!(
+                !hit_balance_reset(x, my + mh / 2, max_scroll()),
+                "CENTRE claims a MONO pixel at x={x}"
+            );
         }
         for x in rx..rx + rw {
-            assert!(hit_balance_reset(x, ry + rh / 2, max_scroll()), "CENTRE dead at x={x}");
-            assert!(!hit_balance_mono(x, ry + rh / 2, max_scroll()), "MONO claims a CENTRE pixel at x={x}");
+            assert!(
+                hit_balance_reset(x, ry + rh / 2, max_scroll()),
+                "CENTRE dead at x={x}"
+            );
+            assert!(
+                !hit_balance_mono(x, ry + rh / 2, max_scroll()),
+                "MONO claims a CENTRE pixel at x={x}"
+            );
         }
         // …and both are inside the Balance row, so `row_at` agrees they belong to it.
         assert_eq!(row_at(my + mh / 2, max_scroll()), Some(ROW_BALANCE));
@@ -793,7 +1029,10 @@ mod tests {
     fn pressing_mono_does_not_grab_the_slider() {
         let (_, my, _, mh) = balance_mono_rect(max_scroll());
         for y in my..my + mh {
-            assert!(!balance_grab(y, max_scroll()), "the slider grab band reaches the buttons at y={y}");
+            assert!(
+                !balance_grab(y, max_scroll()),
+                "the slider grab band reaches the buttons at y={y}"
+            );
         }
     }
 
@@ -826,15 +1065,27 @@ mod tests {
     fn the_grouped_list_hits_every_row_where_it_is_drawn() {
         let labels: Vec<&str> = parts(0)
             .iter()
-            .filter_map(|(p, _)| if let Part::Label(l) = p { Some(*l) } else { None })
+            .filter_map(|(p, _)| {
+                if let Part::Label(l) = p {
+                    Some(*l)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(labels, ["ENHANCE", "SPACE", "LEVEL"]);
-        let rows: Vec<usize> =
-            parts(0).iter().filter_map(|(p, _)| if let Part::Row(r) = p { Some(*r) } else { None }).collect();
+        let rows: Vec<usize> = parts(0)
+            .iter()
+            .filter_map(|(p, _)| if let Part::Row(r) = p { Some(*r) } else { None })
+            .collect();
         assert_eq!(rows, ORDER);
         let mut ids = ORDER.to_vec();
         ids.sort_unstable();
-        assert_eq!(ids, (0..ROWS).collect::<Vec<_>>(), "ORDER names every row exactly once");
+        assert_eq!(
+            ids,
+            (0..ROWS).collect::<Vec<_>>(),
+            "ORDER names every row exactly once"
+        );
         for scroll in [0, max_scroll() / 2, max_scroll()] {
             for (p, top) in parts(scroll) {
                 let mid = top + part_h(p) / 2;
@@ -842,8 +1093,12 @@ mod tests {
                     continue;
                 }
                 match p {
-                    Part::Row(r) => assert_eq!(row_at(mid, scroll), Some(r), "row {r} at scroll {scroll}"),
-                    Part::Label(l) => assert_eq!(row_at(mid, scroll), None, "label {l} is not a target"),
+                    Part::Row(r) => {
+                        assert_eq!(row_at(mid, scroll), Some(r), "row {r} at scroll {scroll}")
+                    }
+                    Part::Label(l) => {
+                        assert_eq!(row_at(mid, scroll), None, "label {l} is not a target")
+                    }
                 }
             }
         }
@@ -852,9 +1107,15 @@ mod tests {
     /// The list is taller than the glass, and the scroll reaches its last row with room under it.
     #[test]
     fn the_scroll_reaches_the_last_row() {
-        assert!(max_scroll() > 0, "the grouped list fits without scrolling — drop the scroll");
+        assert!(
+            max_scroll() > 0,
+            "the grouped list fits without scrolling — drop the scroll"
+        );
         let top = row_top(ROW_ADVANCED, max_scroll());
-        assert!(top + ROW_H <= crate::canvas::H as i32, "Advanced is cut off at full scroll");
+        assert!(
+            top + ROW_H <= crate::canvas::H as i32,
+            "Advanced is cut off at full scroll"
+        );
         // Unscrolled, the first row starts under the strip.
         assert_eq!(row_top(ROW_PROFILE, 0), TOP);
     }
@@ -885,7 +1146,11 @@ mod tests {
         render(&mut b, &t, &f, &s, 0, 0, max_scroll());
         let w = crate::canvas::W;
         for y in 0..TOP as usize {
-            assert_eq!(a.buf[y * w..(y + 1) * w], b.buf[y * w..(y + 1) * w], "row {y} changed with the scroll");
+            assert_eq!(
+                a.buf[y * w..(y + 1) * w],
+                b.buf[y * w..(y + 1) * w],
+                "row {y} changed with the scroll"
+            );
         }
         assert_ne!(a.buf, b.buf, "scrolling moved nothing");
     }
@@ -894,18 +1159,38 @@ mod tests {
     /// what it replaces (handoff 2a).
     #[test]
     fn rows_say_what_overrides_them() {
-        let ca = Sound { clearaudio: true, ..loud() };
-        assert!(row_text(&ca, ROW_DSEE, 0).dim && row_text(&ca, ROW_DSEE, 0).sub.contains("ClearAudio+"));
-        assert!(row_text(&ca, ROW_EQ, 0).dim, "ClearAudio+ replaces the EQ too");
+        let ca = Sound {
+            clearaudio: true,
+            ..loud()
+        };
+        assert!(
+            row_text(&ca, ROW_DSEE, 0).dim
+                && row_text(&ca, ROW_DSEE, 0).sub.contains("ClearAudio+")
+        );
+        assert!(
+            row_text(&ca, ROW_EQ, 0).dim,
+            "ClearAudio+ replaces the EQ too"
+        );
         assert!(!row_text(&ca, ROW_CLEAR, 0).dim && !row_text(&ca, ROW_NORM, 0).dim);
         assert!(row_text(&loud(), ROW_CLEAR, 0).sub.contains("replaces"));
-        let sd = Sound { source_direct: true, ..loud() };
-        for r in [ROW_EQ, ROW_DSEE, ROW_CLEAR, ROW_VPT, ROW_DC, ROW_VINYL, ROW_NORM] {
-            assert!(row_text(&sd, r, 0).dim, "row {r} is bypassed by Source Direct");
+        let sd = Sound {
+            source_direct: true,
+            ..loud()
+        };
+        for r in [
+            ROW_EQ, ROW_DSEE, ROW_CLEAR, ROW_VPT, ROW_DC, ROW_VINYL, ROW_NORM,
+        ] {
+            assert!(
+                row_text(&sd, r, 0).dim,
+                "row {r} is bypassed by Source Direct"
+            );
         }
         assert!(!row_text(&sd, ROW_PROFILE, 0).dim && !row_text(&sd, ROW_ADVANCED, 0).dim);
         // The Equalizer row names the tone system that is in the path.
-        let tone = Sound { tone_control: true, ..loud() };
+        let tone = Sound {
+            tone_control: true,
+            ..loud()
+        };
         assert!(matches!(row_text(&tone, ROW_EQ, 0).trail, RowTrail::Open(ref v) if v == "TONE"));
         assert!(matches!(row_text(&loud(), ROW_EQ, 0).trail, RowTrail::Open(ref v) if v == "ROCK"));
         assert_eq!(row_text(&loud(), ROW_PROFILE, 1).title, "Profile B");
@@ -916,34 +1201,60 @@ mod tests {
     fn a_live_chain_names_every_stage() {
         let (p, w) = signal_path(&loud(), 0);
         assert_eq!(p, "SIGNAL PATH (A): SOURCE → EQ (Rock) → DSEE HX → VINYL → VPT·CLUB → DC PHASE → AMP → 3.5MM");
-        assert!(w.is_none(), "nothing is overriding, so nothing to warn about");
+        assert!(
+            w.is_none(),
+            "nothing is overriding, so nothing to warn about"
+        );
     }
 
     /// Source Direct bypasses the whole chain. The footer used to have no field for it at all, so
     /// it drew the full chain over a total bypass and said nothing.
     #[test]
     fn source_direct_empties_the_path_and_says_so() {
-        let (p, w) = signal_path(&Sound { source_direct: true, ..loud() }, 0);
-        assert_eq!(p, "SIGNAL PATH (A): SOURCE → AMP → 3.5MM",
-                   "nothing may appear between the source and the amp");
+        let (p, w) = signal_path(
+            &Sound {
+                source_direct: true,
+                ..loud()
+            },
+            0,
+        );
+        assert_eq!(
+            p, "SIGNAL PATH (A): SOURCE → AMP → 3.5MM",
+            "nothing may appear between the source and the amp"
+        );
         for stage in ["EQ", "DSEE", "VINYL", "VPT", "DC PHASE", "TONE"] {
             assert!(!p.contains(stage), "{stage} is bypassed but still drawn");
         }
         let w = w.unwrap();
         assert!(w.contains("SOURCE DIRECT"), "the bypass must be named");
-        assert!(w.ends_with("BYPASSED"), "the warning must keep its verb: {w}");
+        assert!(
+            w.ends_with("BYPASSED"),
+            "the warning must keep its verb: {w}"
+        );
     }
 
     /// Tone Control REPLACES the 10-band EQ (`SetSelectUsingEq` picks one of the two), so naming a
     /// preset while it is on names something that is not in the path.
     #[test]
     fn tone_control_replaces_the_eq_in_the_path() {
-        let (p, _) = signal_path(&Sound { tone_control: true, ..loud() }, 0);
-        assert!(p.contains("SOURCE → TONE →"), "Tone Control must take the EQ's place: {p}");
+        let (p, _) = signal_path(
+            &Sound {
+                tone_control: true,
+                ..loud()
+            },
+            0,
+        );
+        assert!(
+            p.contains("SOURCE → TONE →"),
+            "Tone Control must take the EQ's place: {p}"
+        );
         assert!(!p.contains("EQ ("), "the EQ preset is not in the path: {p}");
         // …and with it off, the EQ is back and named.
         let (p, _) = signal_path(&loud(), 0);
-        assert!(p.contains("EQ (Rock)"), "the EQ returns when Tone Control is off: {p}");
+        assert!(
+            p.contains("EQ (Rock)"),
+            "the EQ returns when Tone Control is off: {p}"
+        );
         assert!(!p.contains("TONE"), "{p}");
     }
 
@@ -951,9 +1262,16 @@ mod tests {
     /// different stories about one state. Source Direct is the OUTER bypass and wins.
     #[test]
     fn source_direct_outranks_clearaudio_in_the_warning() {
-        let both = Sound { source_direct: true, clearaudio: true, ..loud() };
+        let both = Sound {
+            source_direct: true,
+            clearaudio: true,
+            ..loud()
+        };
         assert!(signal_path(&both, 0).1.unwrap().contains("SOURCE DIRECT"));
-        let ca = Sound { clearaudio: true, ..loud() };
+        let ca = Sound {
+            clearaudio: true,
+            ..loud()
+        };
         assert!(signal_path(&ca, 0).1.unwrap().contains("CLEARAUDIO+"));
         // ClearAudio+ REPLACES the EQ and the manual effects, so the path names it and not them.
         // (It used to draw the full chain and warn underneath that the chain was bypassed — two
@@ -967,9 +1285,16 @@ mod tests {
     #[test]
     fn bypassed_rows_say_what_bypasses_them() {
         assert_eq!(bypass_reasons(&loud()), (None, None));
-        let (fx, all) = bypass_reasons(&Sound { clearaudio: true, ..loud() });
+        let (fx, all) = bypass_reasons(&Sound {
+            clearaudio: true,
+            ..loud()
+        });
         assert!(fx.unwrap().contains("ClearAudio+") && all.is_none());
-        let (fx, all) = bypass_reasons(&Sound { source_direct: true, clearaudio: true, ..loud() });
+        let (fx, all) = bypass_reasons(&Sound {
+            source_direct: true,
+            clearaudio: true,
+            ..loud()
+        });
         assert!(fx.unwrap().contains("Source Direct") && all.unwrap().contains("Source Direct"));
     }
 
@@ -977,16 +1302,26 @@ mod tests {
     #[test]
     fn an_empty_chain_reads_direct() {
         let quiet = Sound {
-            dsee: false, vinyl: false, vpt: "Off", dcphase: "Off", ..loud()
+            dsee: false,
+            vinyl: false,
+            vpt: "Off",
+            dcphase: "Off",
+            ..loud()
         };
         let (p, _) = signal_path(&quiet, 0);
-        assert_eq!(p, "SIGNAL PATH (A): SOURCE → EQ (Rock) → DIRECT → AMP → 3.5MM");
+        assert_eq!(
+            p,
+            "SIGNAL PATH (A): SOURCE → EQ (Rock) → DIRECT → AMP → 3.5MM"
+        );
     }
 
     /// The output stage names the live link, and setup B is a chain like A rather than a bypass.
     #[test]
     fn the_output_stage_and_the_setup_letter() {
-        let bt = Sound { bt_codec: Some("LDAC"), ..loud() };
+        let bt = Sound {
+            bt_codec: Some("LDAC"),
+            ..loud()
+        };
         assert!(signal_path(&bt, 0).0.ends_with("→ BT·LDAC"));
         assert!(signal_path(&bt, 1).0.starts_with("SIGNAL PATH (B):"));
         assert!(signal_path(&bt, 0).0.starts_with("SIGNAL PATH (A):"));

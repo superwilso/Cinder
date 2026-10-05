@@ -71,17 +71,34 @@ pub fn status_lines(rx: &Rx) -> Vec<String> {
             "If a code appears, check it matches, then YES.".into(),
         ],
         (true, 2) => vec![
-            format!("Connected{}", if rx.peer.is_empty() { String::new() } else { format!(": {}", rx.peer) }),
+            format!(
+                "Connected{}",
+                if rx.peer.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", rx.peer)
+                }
+            ),
             "Start playing on the other device.".into(),
         ],
         (true, _) => vec![
-            format!("Playing{}", if rx.peer.is_empty() { String::new() } else { format!(" from {}", rx.peer) }),
+            format!(
+                "Playing{}",
+                if rx.peer.is_empty() {
+                    String::new()
+                } else {
+                    format!(" from {}", rx.peer)
+                }
+            ),
             // Sony's codec enum, named where it is known (`bluetooth::link_codec_label`): 0x03 is
             // AAC, which is what both a Windows PC and an iPhone chose. GetBitrate read 1 throughout
             // a working stream, so it is not a kbps figure and is left off.
             if rx.freq >= 8000 {
-                format!("{} · {:.1} kHz", crate::bluetooth::link_codec_label(rx.codec as u8),
-                        rx.freq as f32 / 1000.0)
+                format!(
+                    "{} · {:.1} kHz",
+                    crate::bluetooth::link_codec_label(rx.codec as u8),
+                    rx.freq as f32 / 1000.0
+                )
             } else {
                 crate::bluetooth::link_codec_label(rx.codec as u8)
             },
@@ -93,21 +110,47 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "BT Receiver", Some("EXPERIMENTAL"));
 
-    let sub = if rx.on { "On · your music is paused" } else { "Play from a phone or PC into this Walkman" };
-    kit::row(c, t, f, SWITCH_Y, SWITCH_H,
-             &Row::new("Receiver mode").sub(sub).trail(Trail::Switch(rx.on)));
+    let sub = if rx.on {
+        "On · your music is paused"
+    } else {
+        "Play from a phone or PC into this Walkman"
+    };
+    kit::row(
+        c,
+        t,
+        f,
+        SWITCH_Y,
+        SWITCH_H,
+        &Row::new("Receiver mode")
+            .sub(sub)
+            .trail(Trail::Switch(rx.on)),
+    );
 
     // The fallback: Sony's own receiver, via a restart. Here and not in Settings because this is
     // where someone finds out Cinder's does not pair with their phone.
     hline(c, SONY_Y - 1, t.line);
-    kit::row(c, t, f, SONY_Y, SONY_H,
-             &Row::new("Use Sony's receiver").sub("Restarts into the Sony player").trail(Trail::Open("")));
+    kit::row(
+        c,
+        t,
+        f,
+        SONY_Y,
+        SONY_H,
+        &Row::new("Use Sony's receiver")
+            .sub("Restarts into the Sony player")
+            .trail(Trail::Open("")),
+    );
 
     const AVAIL: f32 = 436.0;
     let mut y = STATUS_Y as f32;
     for (i, line) in status_lines(rx).iter().enumerate() {
         let st = if i == 0 {
-            sty(Family::Sans, Weight::SemiBold, 19.0, if rx.on { t.ink } else { t.dim }, 0.0)
+            sty(
+                Family::Sans,
+                Weight::SemiBold,
+                19.0,
+                if rx.on { t.ink } else { t.dim },
+                0.0,
+            )
         } else {
             sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0)
         };
@@ -130,8 +173,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         ny += 22.0;
     }
     hline(c, 740, t.line);
-    crate::widgets::center(c, f, 240.0, 770.0, "EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE",
-                           &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1));
+    crate::widgets::center(
+        c,
+        f,
+        240.0,
+        770.0,
+        "EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE",
+        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1),
+    );
 }
 
 #[cfg(test)]
@@ -139,7 +188,15 @@ mod tests {
     use super::*;
 
     fn rx(on: bool, phase: u8) -> Rx<'static> {
-        Rx { on, phase, peer: "ARTHURS-PC", codec: 3, freq: 48000, bitrate: 1, radio: true }
+        Rx {
+            on,
+            phase,
+            peer: "ARTHURS-PC",
+            codec: 3,
+            freq: 48000,
+            bitrate: 1,
+            radio: true,
+        }
     }
 
     #[test]
@@ -153,7 +210,10 @@ mod tests {
 
     #[test]
     fn a_radio_that_is_off_is_named_before_anything_else() {
-        let r = Rx { radio: false, ..rx(false, 0) };
+        let r = Rx {
+            radio: false,
+            ..rx(false, 0)
+        };
         assert!(status_lines(&r)[0].contains("Bluetooth is off"));
     }
 

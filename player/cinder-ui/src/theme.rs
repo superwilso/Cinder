@@ -49,20 +49,62 @@ struct AccentRow {
 // the one the design was drawn against.
 const ACCENT_ROWS: [AccentRow; 6] = [
     // Cinder amber — the original. These six values are unchanged from the pre-accent theme.
-    AccentRow { name:"AMBER",   acc_d: 0xf4651f, ink_d: 0x1a0a02, sel_d: 0x1c1713,
-                               acc_n: 0x863810, ink_n: 0x000000, sel_n: 0x0f0c0a },
-    AccentRow { name:"CRIMSON", acc_d: 0xe0392f, ink_d: 0x1a0403, sel_d: 0x1c1214,
-                               acc_n: 0x7a1f1a, ink_n: 0x000000, sel_n: 0x0f0a0b },
-    AccentRow { name:"VIOLET",  acc_d: 0x9a6ff0, ink_d: 0x0b0618, sel_d: 0x15141f,
-                               acc_n: 0x553d84, ink_n: 0x000000, sel_n: 0x0b0a10 },
-    AccentRow { name:"AZURE",   acc_d: 0x2f8fe0, ink_d: 0x020a16, sel_d: 0x12161f,
-                               acc_n: 0x1a4e7a, ink_n: 0x000000, sel_n: 0x0a0b10 },
-    AccentRow { name:"MINT",    acc_d: 0x2fc98a, ink_d: 0x02120c, sel_d: 0x121a17,
-                               acc_n: 0x1a6e4c, ink_n: 0x000000, sel_n: 0x0a0e0c },
+    AccentRow {
+        name: "AMBER",
+        acc_d: 0xf4651f,
+        ink_d: 0x1a0a02,
+        sel_d: 0x1c1713,
+        acc_n: 0x863810,
+        ink_n: 0x000000,
+        sel_n: 0x0f0c0a,
+    },
+    AccentRow {
+        name: "CRIMSON",
+        acc_d: 0xe0392f,
+        ink_d: 0x1a0403,
+        sel_d: 0x1c1214,
+        acc_n: 0x7a1f1a,
+        ink_n: 0x000000,
+        sel_n: 0x0f0a0b,
+    },
+    AccentRow {
+        name: "VIOLET",
+        acc_d: 0x9a6ff0,
+        ink_d: 0x0b0618,
+        sel_d: 0x15141f,
+        acc_n: 0x553d84,
+        ink_n: 0x000000,
+        sel_n: 0x0b0a10,
+    },
+    AccentRow {
+        name: "AZURE",
+        acc_d: 0x2f8fe0,
+        ink_d: 0x020a16,
+        sel_d: 0x12161f,
+        acc_n: 0x1a4e7a,
+        ink_n: 0x000000,
+        sel_n: 0x0a0b10,
+    },
+    AccentRow {
+        name: "MINT",
+        acc_d: 0x2fc98a,
+        ink_d: 0x02120c,
+        sel_d: 0x121a17,
+        acc_n: 0x1a6e4c,
+        ink_n: 0x000000,
+        sel_n: 0x0a0e0c,
+    },
     // Bone is the "no colour" option: the accent is the ink itself. Nothing on screen is tinted,
     // which is the point — it is the closest Cinder gets to a monochrome instrument panel.
-    AccentRow { name:"BONE",    acc_d: 0xd8d2c8, ink_d: 0x0d0c0b, sel_d: 0x1a1917,
-                               acc_n: 0x77736e, ink_n: 0x000000, sel_n: 0x0e0d0c },
+    AccentRow {
+        name: "BONE",
+        acc_d: 0xd8d2c8,
+        ink_d: 0x0d0c0b,
+        sel_d: 0x1a1917,
+        acc_n: 0x77736e,
+        ink_n: 0x000000,
+        sel_n: 0x0e0d0c,
+    },
 ];
 
 impl Accent {
@@ -112,9 +154,17 @@ impl Accent {
     pub fn tokens(self, night: bool) -> AccentTokens {
         let p = &ACCENT_ROWS[self.index()];
         if night {
-            AccentTokens { acc: p.acc_n, acc_ink: p.ink_n, row_sel: p.sel_n }
+            AccentTokens {
+                acc: p.acc_n,
+                acc_ink: p.ink_n,
+                row_sel: p.sel_n,
+            }
         } else {
-            AccentTokens { acc: p.acc_d, acc_ink: p.ink_d, row_sel: p.sel_d }
+            AccentTokens {
+                acc: p.acc_d,
+                acc_ink: p.ink_d,
+                row_sel: p.sel_d,
+            }
         }
     }
 }
@@ -159,8 +209,22 @@ pub struct Tokens {
 
 /// Cinder's own palette — the neutrals `Theme::day_with` / `night_with` have always produced.
 pub const CINDER: Tokens = Tokens {
-    day: Neutrals { bg: 0x0d0c0b, panel: 0x13110f, line: 0x221f1b, ink: 0xece7df, dim: 0x95908a, faint: 0x5f5a52 },
-    night: Neutrals { bg: 0x000000, panel: 0x0a0908, line: 0x161310, ink: 0x8d8170, dim: 0x5b5347, faint: 0x3b362d },
+    day: Neutrals {
+        bg: 0x0d0c0b,
+        panel: 0x13110f,
+        line: 0x221f1b,
+        ink: 0xece7df,
+        dim: 0x95908a,
+        faint: 0x5f5a52,
+    },
+    night: Neutrals {
+        bg: 0x000000,
+        panel: 0x0a0908,
+        line: 0x161310,
+        ink: 0x8d8170,
+        dim: 0x5b5347,
+        faint: 0x3b362d,
+    },
     accent: None,
 };
 
@@ -168,7 +232,13 @@ impl Tokens {
     /// The accent in force: the palette's own if it has one, otherwise the user's pick.
     pub fn accent_tokens(&self, night: bool, a: Accent) -> AccentTokens {
         match self.accent {
-            Some((day, nt)) => if night { nt } else { day },
+            Some((day, nt)) => {
+                if night {
+                    nt
+                } else {
+                    day
+                }
+            }
             None => a.tokens(night),
         }
     }
@@ -390,7 +460,11 @@ mod tests {
         assert_eq!(d.row_sel, rgb(0x1c1713));
         let n = Theme::night();
         assert_eq!(n.acc, rgb(dim_rgb(0x863810, Theme::NIGHT_DIM_PCT)));
-        assert_eq!(n.acc_ink, rgb(0x000000), "ink ON the accent must not be dimmed too");
+        assert_eq!(
+            n.acc_ink,
+            rgb(0x000000),
+            "ink ON the accent must not be dimmed too"
+        );
         assert_eq!(n.row_sel, rgb(dim_rgb(0x0f0c0a, Theme::NIGHT_DIM_PCT)));
     }
 
@@ -406,11 +480,23 @@ mod tests {
         for (i, pct) in Theme::NIGHT_LEVEL_PCT.iter().enumerate().rev() {
             let t = Theme::night().scaled(*pct);
             let l = lum(t.ink);
-            assert!(l <= prev, "level {} is not dimmer than the one above it", i + 1);
+            assert!(
+                l <= prev,
+                "level {} is not dimmer than the one above it",
+                i + 1
+            );
             prev = l;
             // Ordering intact at every rung, including the dimmest.
-            assert!(lum(t.ink) >= lum(t.dim), "ink fell below dim at level {}", i + 1);
-            assert!(lum(t.dim) >= lum(t.faint), "dim fell below faint at level {}", i + 1);
+            assert!(
+                lum(t.ink) >= lum(t.dim),
+                "ink fell below dim at level {}",
+                i + 1
+            );
+            assert!(
+                lum(t.dim) >= lum(t.faint),
+                "dim fell below faint at level {}",
+                i + 1
+            );
             assert!(t.night, "scaling must not change what theme this is");
         }
         // Level 5 is the untouched palette — nobody's night look changes until they ask for it.
@@ -426,11 +512,20 @@ mod tests {
         let lum = |c: Rgb888| c.r() as u32 * 2 + c.g() as u32 * 3 + c.b() as u32;
         let n = Theme::night();
         // The pre-change values, for the comparison this test exists to make.
-        assert!(lum(n.ink) < lum(rgb(0x8d8170)), "night ink is no dimmer than before");
-        assert!(lum(n.acc) < lum(rgb(0x863810)), "night accent is no dimmer than before");
+        assert!(
+            lum(n.ink) < lum(rgb(0x8d8170)),
+            "night ink is no dimmer than before"
+        );
+        assert!(
+            lum(n.acc) < lum(rgb(0x863810)),
+            "night accent is no dimmer than before"
+        );
         assert!(lum(n.ink) > lum(n.dim), "ink must stay above dim");
         assert!(lum(n.dim) > lum(n.faint), "dim must stay above faint");
-        assert!(lum(n.ink) > lum(n.bg), "ink must stay readable against the background");
+        assert!(
+            lum(n.ink) > lum(n.bg),
+            "ink must stay readable against the background"
+        );
         assert_eq!(n.bg, rgb(0x000000), "night background must stay true black");
     }
 
@@ -454,8 +549,16 @@ mod tests {
     fn every_accent_is_distinct() {
         for (i, a) in Accent::ALL.iter().enumerate() {
             for b in &Accent::ALL[i + 1..] {
-                assert_ne!(a.swatch(false), b.swatch(false), "{a:?} and {b:?} look the same");
-                assert_ne!(a.swatch(true), b.swatch(true), "{a:?}/{b:?} collide at night");
+                assert_ne!(
+                    a.swatch(false),
+                    b.swatch(false),
+                    "{a:?} and {b:?} look the same"
+                );
+                assert_ne!(
+                    a.swatch(true),
+                    b.swatch(true),
+                    "{a:?}/{b:?} collide at night"
+                );
             }
         }
     }

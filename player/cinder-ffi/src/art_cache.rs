@@ -91,7 +91,11 @@ pub fn load(key: u64, edge: usize) -> Option<Image> {
         let _ = std::fs::remove_file(path(key, edge));
         return None;
     }
-    Some(Image { w: edge, h: edge, rgb })
+    Some(Image {
+        w: edge,
+        h: edge,
+        rgb,
+    })
 }
 
 /// Write one thumbnail. Temp file + rename, so a reader can never see a half-written cover and an
@@ -116,7 +120,10 @@ fn store(key: u64, img: &Image) -> std::io::Result<()> {
 /// may be built by cinder-probe as root or by cinder-home as uid 100.
 fn usable(key: u64, edge: usize) -> bool {
     match std::fs::File::open(path(key, edge)) {
-        Ok(f) => f.metadata().map(|m| m.len() as usize == edge * edge * 3).unwrap_or(false),
+        Ok(f) => f
+            .metadata()
+            .map(|m| m.len() as usize == edge * edge * 3)
+            .unwrap_or(false),
         Err(_) => false,
     }
 }
@@ -219,14 +226,19 @@ const CACHE_VERSION: &str = "3";
 /// and the whole cache is disposable by design.
 fn discard_if_stale(d: &str) {
     let stamp = format!("{d}/version");
-    if std::fs::read_to_string(&stamp).map(|v| v.trim() == CACHE_VERSION).unwrap_or(false) {
+    if std::fs::read_to_string(&stamp)
+        .map(|v| v.trim() == CACHE_VERSION)
+        .unwrap_or(false)
+    {
         return;
     }
     let mut n = 0;
     if let Ok(rd) = std::fs::read_dir(d) {
         for e in rd.flatten() {
             let p = e.path();
-            let stale = p.extension().and_then(|x| x.to_str())
+            let stale = p
+                .extension()
+                .and_then(|x| x.to_str())
                 .map(|x| x == format!("t{T48}") || x == format!("t{T96}"))
                 .unwrap_or(false);
             if stale && std::fs::remove_file(&p).is_ok() {
@@ -235,8 +247,10 @@ fn discard_if_stale(d: &str) {
         }
     }
     if n > 0 {
-        eprintln!("cinder-ffi: art cache: discarded {n} thumbnails from an older scaler — \
-                   they rebuild in the background");
+        eprintln!(
+            "cinder-ffi: art cache: discarded {n} thumbnails from an older scaler — \
+                   they rebuild in the background"
+        );
     }
     let _ = std::fs::write(&stamp, CACHE_VERSION);
     let _ = std::fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o666));
@@ -257,7 +271,11 @@ mod tests {
     }
 
     fn img(edge: usize, fill: u8) -> Image {
-        Image { w: edge, h: edge, rgb: vec![fill; edge * edge * 3] }
+        Image {
+            w: edge,
+            h: edge,
+            rgb: vec![fill; edge * edge * 3],
+        }
     }
 
     #[test]
@@ -288,7 +306,10 @@ mod tests {
         let p9 = path(9, T48);
         std::fs::write(&p9, vec![0u8; 100]).unwrap();
         assert!(load(9, T48).is_none());
-        assert!(!std::path::Path::new(&p9).exists(), "corrupt file left behind");
+        assert!(
+            !std::path::Path::new(&p9).exists(),
+            "corrupt file left behind"
+        );
         assert!(!is_cached(9));
         std::fs::remove_dir_all(&d).ok();
     }
@@ -323,7 +344,11 @@ mod tests {
         let b = "/data/mnt/internal/MUSIC/Virgo Rising - Tristan/01 - Virgo Rising - Tristan.flac";
 
         // Same cover source => same file, whatever the database calls the album this week.
-        assert_eq!(key_of(a), key_of(a), "the key must be a pure function of the path");
+        assert_eq!(
+            key_of(a),
+            key_of(a),
+            "the key must be a pure function of the path"
+        );
         // Different covers => different files, even when a rebuild gives them a neighbour's id.
         assert_ne!(key_of(a), key_of(b));
         assert_ne!(path(key_of(a), T48), path(key_of(b), T48));
@@ -348,12 +373,17 @@ mod tests {
         let _ = std::fs::remove_file(format!("{d}/version"));
         store(11, &img(T48, 0x10)).unwrap();
         store(11, &img(T96, 0x10)).unwrap();
-        assert!(is_cached(11), "precondition: the old thumbnails are present");
+        assert!(
+            is_cached(11),
+            "precondition: the old thumbnails are present"
+        );
 
         assert!(ensure_dir());
         assert!(!is_cached(11), "an older scaler's thumbnails were kept");
         assert_eq!(
-            std::fs::read_to_string(format!("{d}/version")).unwrap().trim(),
+            std::fs::read_to_string(format!("{d}/version"))
+                .unwrap()
+                .trim(),
             CACHE_VERSION
         );
 

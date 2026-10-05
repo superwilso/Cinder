@@ -19,10 +19,12 @@
 
 use crate::chrome::HEADER_BOTTOM;
 use crate::kit::{self, Row, Trail};
+use crate::shuffle::ShuffleBy;
 use crate::text::FontSet;
 use crate::theme::Theme;
-use crate::shuffle::ShuffleBy;
-use crate::views::{FormatRule, Played, SavedView, ViewSort, RATINGS, RATING_LABELS, SHUFFLE_LABELS};
+use crate::views::{
+    FormatRule, Played, SavedView, ViewSort, RATINGS, RATING_LABELS, SHUFFLE_LABELS,
+};
 use crate::Canvas;
 
 /// The chip sections, top to bottom.
@@ -35,8 +37,13 @@ pub enum Section {
     Shuffle,
 }
 
-pub const SECTIONS: [Section; 5] =
-    [Section::Rating, Section::Played, Section::Format, Section::Sort, Section::Shuffle];
+pub const SECTIONS: [Section; 5] = [
+    Section::Rating,
+    Section::Played,
+    Section::Format,
+    Section::Sort,
+    Section::Shuffle,
+];
 
 impl Section {
     fn label(self) -> &'static str {
@@ -62,7 +69,10 @@ impl Section {
         match self {
             Section::Rating => RATINGS.iter().position(|r| *r == v.min_rating).unwrap_or(0),
             Section::Played => Played::ALL.iter().position(|p| *p == v.played).unwrap_or(0),
-            Section::Format => FormatRule::ALL.iter().position(|p| *p == v.format).unwrap_or(0),
+            Section::Format => FormatRule::ALL
+                .iter()
+                .position(|p| *p == v.format)
+                .unwrap_or(0),
             Section::Sort => ViewSort::ALL.iter().position(|p| *p == v.sort).unwrap_or(0),
             // Chip 0 is "Settings" (no mode of its own); the rest are `ShuffleBy::ALL` in order.
             Section::Shuffle => v
@@ -78,7 +88,11 @@ impl Section {
             Section::Played => v.played = Played::ALL.get(i).copied().unwrap_or_default(),
             Section::Format => v.format = FormatRule::ALL.get(i).copied().unwrap_or_default(),
             Section::Sort => v.sort = ViewSort::ALL.get(i).copied().unwrap_or_default(),
-            Section::Shuffle => v.shuffle = i.checked_sub(1).and_then(|i| ShuffleBy::ALL.get(i).copied()),
+            Section::Shuffle => {
+                v.shuffle = i
+                    .checked_sub(1)
+                    .and_then(|i| ShuffleBy::ALL.get(i).copied())
+            }
         }
     }
 }
@@ -133,14 +147,32 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ViewEditView) {
         n => format!("{n} SONGS MATCH"),
     };
     kit::strip(c, t, f, HEADER_BOTTOM, &line);
-    let name = if v.draft.name.trim().is_empty() { "Choose a name" } else { v.draft.name.as_str() };
-    kit::row(c, t, f, NAME_Y, kit::ROW_H, &Row::new("Name").trail(Trail::Open(name)));
+    let name = if v.draft.name.trim().is_empty() {
+        "Choose a name"
+    } else {
+        v.draft.name.as_str()
+    };
+    kit::row(
+        c,
+        t,
+        f,
+        NAME_Y,
+        kit::ROW_H,
+        &Row::new("Name").trail(Trail::Open(name)),
+    );
     for (i, s) in SECTIONS.iter().enumerate() {
         kit::section_label(c, t, f, section_top(i), s.label(), None);
         kit::chips(c, t, f, chips_top(i), s.labels(), Some(s.selected(v.draft)));
     }
     if v.existing {
-        kit::row(c, t, f, DELETE_Y, kit::ROW_H, &Row::new("Delete smart playlist").sub("The songs stay on the player"));
+        kit::row(
+            c,
+            t,
+            f,
+            DELETE_Y,
+            kit::ROW_H,
+            &Row::new("Delete smart playlist").sub("The songs stay on the player"),
+        );
     }
 }
 
@@ -151,16 +183,27 @@ mod tests {
     /// The page fits above the Shelf's swipe zone, and every chip is hit where it is drawn.
     #[test]
     fn the_page_fits_and_every_chip_hits_itself() {
-        assert!(DELETE_Y + kit::ROW_H <= crate::canvas::H as i32 - 28, "Delete ends at {}", DELETE_Y + kit::ROW_H);
+        assert!(
+            DELETE_Y + kit::ROW_H <= crate::canvas::H as i32 - 28,
+            "Delete ends at {}",
+            DELETE_Y + kit::ROW_H
+        );
         for (i, s) in SECTIONS.iter().enumerate() {
             let n = s.labels().len();
             for c in 0..n {
                 let (x, w) = kit::chip_span(c, n);
-                assert_eq!(chip_at(x + w / 2, chips_top(i) + kit::CHIP_H / 2), Some((*s, c)));
+                assert_eq!(
+                    chip_at(x + w / 2, chips_top(i) + kit::CHIP_H / 2),
+                    Some((*s, c))
+                );
             }
         }
         assert!(!hit_name(section_top(0)) && hit_name(NAME_Y + 1));
-        assert_eq!(chip_at(240, section_top(0) + 2), None, "the label band is not a chip");
+        assert_eq!(
+            chip_at(240, section_top(0) + 2),
+            None,
+            "the label band is not a chip"
+        );
     }
 
     /// Selecting a chip and reading it back agree, in every section.

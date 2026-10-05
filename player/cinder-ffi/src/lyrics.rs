@@ -57,7 +57,9 @@ pub fn load_for(track_path: &str) -> Option<Lyrics> {
 /// read; pictures and audio are seeked over.
 fn embedded(track_path: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let Ok(mut f) = File::open(track_path) else { return out };
+    let Ok(mut f) = File::open(track_path) else {
+        return out;
+    };
     let mut head = [0u8; 12];
     if f.read_exact(&mut head).is_err() {
         return out;
@@ -65,7 +67,8 @@ fn embedded(track_path: &str) -> Vec<String> {
     let mut at = 0u64;
     if &head[..3] == b"ID3" {
         at = id3_uslt(&mut f, &head, &mut out).unwrap_or(0);
-        if at == 0 || f.seek(SeekFrom::Start(at)).is_err() || f.read_exact(&mut head[..4]).is_err() {
+        if at == 0 || f.seek(SeekFrom::Start(at)).is_err() || f.read_exact(&mut head[..4]).is_err()
+        {
             return out;
         }
     }
@@ -103,23 +106,33 @@ fn flac_comments(f: &mut File, mut pos: u64, out: &mut Vec<String>) {
         }
         let len = u32::from_be_bytes([0, h[1], h[2], h[3]]) as u64;
         if h[0] & 0x7F == 4 {
-            let Some(b) = take(f, len, MAX_COMMENT_BLOCK) else { return };
+            let Some(b) = take(f, len, MAX_COMMENT_BLOCK) else {
+                return;
+            };
             // Lengths come from the file: checked, so a corrupt one ends the walk instead of
             // overflowing a 32-bit usize on the device.
             let u32_at = |i: usize| {
-                b.get(i..i.checked_add(4)?).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize)
+                b.get(i..i.checked_add(4)?)
+                    .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize)
             };
             let Some(vendor) = u32_at(0) else { return };
-            let Some(mut i) = vendor.checked_add(4) else { return };
+            let Some(mut i) = vendor.checked_add(4) else {
+                return;
+            };
             let Some(count) = u32_at(i) else { return };
             i += 4;
             for _ in 0..count {
                 let Some(n) = u32_at(i) else { return };
-                let Some(c) = (i + 4).checked_add(n).and_then(|e| b.get(i + 4..e)) else { return };
+                let Some(c) = (i + 4).checked_add(n).and_then(|e| b.get(i + 4..e)) else {
+                    return;
+                };
                 i += 4 + n;
                 if let Some(eq) = c.iter().position(|&x| x == b'=') {
                     let key = std::str::from_utf8(&c[..eq]).unwrap_or("");
-                    if ["LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS"].iter().any(|k| k.eq_ignore_ascii_case(key)) {
+                    if ["LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS"]
+                        .iter()
+                        .any(|k| k.eq_ignore_ascii_case(key))
+                    {
                         out.push(String::from_utf8_lossy(&c[eq + 1..]).into_owned());
                     }
                 }
@@ -149,9 +162,17 @@ fn id3_uslt(f: &mut File, head: &[u8; 12], out: &mut Vec<String>) -> Option<u64>
         f.seek(SeekFrom::Start(10)).ok()?;
         let mut e = [0u8; 4];
         f.read_exact(&mut e).ok()?;
-        pos += if ver == 4 { syncsafe(&e) } else { 4 + u32::from_be_bytes(e) as u64 };
+        pos += if ver == 4 {
+            syncsafe(&e)
+        } else {
+            4 + u32::from_be_bytes(e) as u64
+        };
     }
-    let (hdr, id) = if ver == 2 { (6u64, &b"ULT"[..]) } else { (10u64, &b"USLT"[..]) };
+    let (hdr, id) = if ver == 2 {
+        (6u64, &b"ULT"[..])
+    } else {
+        (10u64, &b"USLT"[..])
+    };
     while pos + hdr <= end {
         f.seek(SeekFrom::Start(pos)).ok()?;
         let mut h = [0u8; 10];
@@ -170,7 +191,11 @@ fn id3_uslt(f: &mut File, head: &[u8; 12], out: &mut Vec<String>) -> Option<u64>
         if &h[..idl] == id && !mangled {
             if let Some(b) = take(f, len, MAX_BYTES) {
                 // v2.4's data-length indicator puts four bytes of size before the frame's own.
-                let body = if ver == 4 && h[9] & 0x01 != 0 { b.get(4..) } else { Some(&b[..]) };
+                let body = if ver == 4 && h[9] & 0x01 != 0 {
+                    b.get(4..)
+                } else {
+                    Some(&b[..])
+                };
                 if let Some(text) = body.and_then(uslt_text) {
                     out.push(text);
                 }
@@ -194,7 +219,7 @@ fn uslt_text(b: &[u8]) -> Option<String> {
     };
     Some(match enc {
         0 => body.iter().map(|&x| x as char).collect(),
-        1 => decode(body), // UTF-16 with a BOM
+        1 => decode(body),                                // UTF-16 with a BOM
         2 => decode(&[&[0xFE, 0xFF][..], body].concat()), // UTF-16BE, no BOM
         _ => String::from_utf8_lossy(body).into_owned(),
     })
@@ -246,7 +271,10 @@ fn mp4_lyr(f: &mut File, mut pos: u64, end: u64, depth: u32, out: &mut Vec<Strin
 fn sidecar(track_path: &str) -> Option<PathBuf> {
     let p = Path::new(track_path);
     p.file_stem()?;
-    ["lrc", "LRC", "Lrc"].iter().map(|ext| p.with_extension(ext)).find(|c| c.is_file())
+    ["lrc", "LRC", "Lrc"]
+        .iter()
+        .map(|ext| p.with_extension(ext))
+        .find(|c| c.is_file())
 }
 
 /// Bytes to text. A BOM decides when there is one; otherwise UTF-8 when it is valid, and Windows-1252
@@ -267,7 +295,9 @@ fn decode(b: &[u8]) -> String {
                 u16::from_be_bytes([u[0], u[1]])
             }
         });
-        return char::decode_utf16(units).map(|r| r.unwrap_or('\u{FFFD}')).collect();
+        return char::decode_utf16(units)
+            .map(|r| r.unwrap_or('\u{FFFD}'))
+            .collect();
     }
     match std::str::from_utf8(b) {
         Ok(s) => s.to_string(),
@@ -278,10 +308,11 @@ fn decode(b: &[u8]) -> String {
 /// Windows-1252: Latin-1 with punctuation in 0x80..0x9F, where Latin-1 has control codes.
 fn cp1252(b: u8) -> char {
     const HIGH: [char; 32] = [
-        '\u{20AC}', '\u{FFFD}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
-        '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{FFFD}', '\u{017D}', '\u{FFFD}',
-        '\u{FFFD}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
-        '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{FFFD}', '\u{017E}', '\u{0178}',
+        '\u{20AC}', '\u{FFFD}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}',
+        '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{FFFD}',
+        '\u{017D}', '\u{FFFD}', '\u{FFFD}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}',
+        '\u{2022}', '\u{2013}', '\u{2014}', '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}',
+        '\u{0153}', '\u{FFFD}', '\u{017E}', '\u{0178}',
     ];
     match b {
         0x80..=0x9F => HIGH[(b - 0x80) as usize],
@@ -291,7 +322,9 @@ fn cp1252(b: u8) -> char {
 
 /// `mm:ss`, `mm:ss.x`, `mm:ss.xx`, `mm:ss.xxx` or `mm:ss:xx`, in milliseconds.
 fn timestamp(tag: &str) -> Option<u32> {
-    let digits = |s: &str, max: usize| !s.is_empty() && s.len() <= max && s.bytes().all(|b| b.is_ascii_digit());
+    let digits = |s: &str, max: usize| {
+        !s.is_empty() && s.len() <= max && s.bytes().all(|b| b.is_ascii_digit())
+    };
     let (min, rest) = tag.split_once(':')?;
     let (sec, frac) = match rest.find(['.', ':']) {
         Some(i) => (&rest[..i], Some(&rest[i + 1..])),
@@ -314,7 +347,9 @@ fn timestamp(tag: &str) -> Option<u32> {
 
 /// Metadata tags LRC tools write. Only `offset` changes anything; the rest are dropped. A bracket
 /// that is not one of these — `[Chorus]`, `[Verse 1: Name]` — is part of the words.
-const META_KEYS: &[&str] = &["ar", "al", "ti", "au", "by", "length", "offset", "re", "ve", "tool", "id", "la", "lang", "#"];
+const META_KEYS: &[&str] = &[
+    "ar", "al", "ti", "au", "by", "length", "offset", "re", "ve", "tool", "id", "la", "lang", "#",
+];
 
 /// Remove enhanced-LRC word stamps (`<00:12.34>`), leaving any other angle brackets alone.
 fn strip_word_stamps(s: &str) -> String {
@@ -351,9 +386,10 @@ pub fn parse(text: &str) -> Lyrics {
             let tag = &body[..close];
             if let Some(ms) = timestamp(tag) {
                 stamps.push(ms);
-            } else if let Some((key, val)) = tag.split_once(':').filter(|(k, _)| {
-                META_KEYS.iter().any(|m| m.eq_ignore_ascii_case(k.trim()))
-            }) {
+            } else if let Some((key, val)) = tag
+                .split_once(':')
+                .filter(|(k, _)| META_KEYS.iter().any(|m| m.eq_ignore_ascii_case(k.trim())))
+            {
                 if key.trim().eq_ignore_ascii_case("offset") {
                     offset_ms = val.trim().trim_start_matches('+').parse().unwrap_or(0);
                 }
@@ -363,7 +399,10 @@ pub fn parse(text: &str) -> Lyrics {
             }
             rest = body[close + 1..].trim_start();
         }
-        let words: String = strip_word_stamps(rest).chars().filter(|c| !c.is_control()).collect();
+        let words: String = strip_word_stamps(rest)
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
         let words = words.trim().to_string();
         if !stamps.is_empty() {
             timed.extend(stamps.into_iter().map(|ms| (ms, words.clone())));
@@ -378,7 +417,10 @@ pub fn parse(text: &str) -> Lyrics {
         // A positive offset shows the words EARLIER — the LRC convention.
         let lines = timed
             .into_iter()
-            .map(|(ms, text)| Line { at_ms: Some((ms as i64 - offset_ms).clamp(0, u32::MAX as i64) as u32), text })
+            .map(|(ms, text)| Line {
+                at_ms: Some((ms as i64 - offset_ms).clamp(0, u32::MAX as i64) as u32),
+                text,
+            })
             .collect();
         return Lyrics { lines };
     }
@@ -389,7 +431,10 @@ pub fn parse(text: &str) -> Lyrics {
         if words.is_empty() && lines.last().map_or(true, |l: &Line| l.text.is_empty()) {
             continue;
         }
-        lines.push(Line { at_ms: None, text: words });
+        lines.push(Line {
+            at_ms: None,
+            text: words,
+        });
     }
     while lines.last().is_some_and(|l| l.text.is_empty()) {
         lines.pop();
@@ -408,13 +453,23 @@ mod tests {
     #[test]
     fn a_synced_file_reads_as_timed_lines() {
         let l = parse("[ti:Song]\n[ar:Someone]\n[00:12.00]Line one\r\n[00:15.50] Line two\n");
-        assert_eq!(stamps(&l), vec![(Some(12_000), "Line one"), (Some(15_500), "Line two")]);
+        assert_eq!(
+            stamps(&l),
+            vec![(Some(12_000), "Line one"), (Some(15_500), "Line two")]
+        );
     }
 
     #[test]
     fn repeated_stamps_become_one_line_each_in_time_order() {
         let l = parse("[00:30.00][00:10.00]Chorus\n[00:20.00]Verse");
-        assert_eq!(stamps(&l), vec![(Some(10_000), "Chorus"), (Some(20_000), "Verse"), (Some(30_000), "Chorus")]);
+        assert_eq!(
+            stamps(&l),
+            vec![
+                (Some(10_000), "Chorus"),
+                (Some(20_000), "Verse"),
+                (Some(30_000), "Chorus")
+            ]
+        );
     }
 
     #[test]
@@ -432,15 +487,31 @@ mod tests {
 
     #[test]
     fn a_positive_offset_shows_the_words_earlier() {
-        assert_eq!(parse("[offset:+500]\n[00:10.00]a").lines[0].at_ms, Some(9_500));
-        assert_eq!(parse("[offset:-500]\n[00:10.00]a").lines[0].at_ms, Some(10_500));
-        assert_eq!(parse("[offset:2000]\n[00:01.00]a").lines[0].at_ms, Some(0), "clamped, not wrapped");
+        assert_eq!(
+            parse("[offset:+500]\n[00:10.00]a").lines[0].at_ms,
+            Some(9_500)
+        );
+        assert_eq!(
+            parse("[offset:-500]\n[00:10.00]a").lines[0].at_ms,
+            Some(10_500)
+        );
+        assert_eq!(
+            parse("[offset:2000]\n[00:01.00]a").lines[0].at_ms,
+            Some(0),
+            "clamped, not wrapped"
+        );
     }
 
     #[test]
     fn brackets_that_are_not_tags_stay_in_the_words() {
         let l = parse("[00:05.00][Chorus] Hey\n[00:06.00][Verse 1: Name] Ho");
-        assert_eq!(stamps(&l), vec![(Some(5_000), "[Chorus] Hey"), (Some(6_000), "[Verse 1: Name] Ho")]);
+        assert_eq!(
+            stamps(&l),
+            vec![
+                (Some(5_000), "[Chorus] Hey"),
+                (Some(6_000), "[Verse 1: Name] Ho")
+            ]
+        );
     }
 
     #[test]
@@ -452,13 +523,28 @@ mod tests {
     #[test]
     fn an_empty_timed_line_is_kept_as_a_gap() {
         let l = parse("[00:01.00]Words\n[00:09.00]\n[00:20.00]More");
-        assert_eq!(stamps(&l), vec![(Some(1_000), "Words"), (Some(9_000), ""), (Some(20_000), "More")]);
+        assert_eq!(
+            stamps(&l),
+            vec![
+                (Some(1_000), "Words"),
+                (Some(9_000), ""),
+                (Some(20_000), "More")
+            ]
+        );
     }
 
     #[test]
     fn plain_text_keeps_verse_breaks_and_drops_the_rest_of_the_blank_space() {
         let l = parse("\n\nFirst verse\nline two\n\n\n\nSecond verse\n\n");
-        assert_eq!(stamps(&l), vec![(None, "First verse"), (None, "line two"), (None, ""), (None, "Second verse")]);
+        assert_eq!(
+            stamps(&l),
+            vec![
+                (None, "First verse"),
+                (None, "line two"),
+                (None, ""),
+                (None, "Second verse")
+            ]
+        );
         assert!(!l.is_synced());
     }
 
@@ -468,7 +554,11 @@ mod tests {
         assert_eq!(decode(b"\xFF\xFEB\x00j\x00\xF6\x00"), "Bjö");
         assert_eq!(decode(b"\xFE\xFF\x00B\x00j"), "Bj");
         assert_eq!(decode(b"Bj\xF6rk"), "Björk", "Latin-1");
-        assert_eq!(decode(b"don\x92t \x93stop\x94"), "don\u{2019}t \u{201C}stop\u{201D}", "Windows-1252 punctuation");
+        assert_eq!(
+            decode(b"don\x92t \x93stop\x94"),
+            "don\u{2019}t \u{201C}stop\u{201D}",
+            "Windows-1252 punctuation"
+        );
     }
 
     #[test]
@@ -481,7 +571,11 @@ mod tests {
         assert_eq!(load_for(track), None, "no .lrc yet");
 
         std::fs::write(dir.join("01 Song.LRC"), "[00:01.00]Hello").unwrap();
-        assert_eq!(load_for(track).map(|l| l.lines.len()), Some(1), "found in upper case");
+        assert_eq!(
+            load_for(track).map(|l| l.lines.len()),
+            Some(1),
+            "found in upper case"
+        );
 
         std::fs::write(dir.join("01 Song.LRC"), "[ti:Only metadata]\n").unwrap();
         assert_eq!(load_for(track), None, "a file with no words is no lyrics");
@@ -535,7 +629,12 @@ mod tests {
     }
 
     fn syncsafe(n: u32) -> [u8; 4] {
-        [(n >> 21) as u8 & 0x7F, (n >> 14) as u8 & 0x7F, (n >> 7) as u8 & 0x7F, n as u8 & 0x7F]
+        [
+            (n >> 21) as u8 & 0x7F,
+            (n >> 14) as u8 & 0x7F,
+            (n >> 7) as u8 & 0x7F,
+            n as u8 & 0x7F,
+        ]
     }
 
     fn id3(ver: u8, frames: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
@@ -543,7 +642,11 @@ mod tests {
         for (id, data) in frames {
             body.extend_from_slice(*id);
             let n = data.len() as u32;
-            body.extend_from_slice(&if ver == 4 { syncsafe(n) } else { n.to_be_bytes() });
+            body.extend_from_slice(&if ver == 4 {
+                syncsafe(n)
+            } else {
+                n.to_be_bytes()
+            });
             body.extend_from_slice(&[0, 0]);
             body.extend_from_slice(data);
         }
@@ -563,63 +666,152 @@ mod tests {
     }
 
     fn mp4_data(text: &str) -> Vec<u8> {
-        atom(b"data", &[&[0, 0, 0, 1, 0, 0, 0, 0][..], text.as_bytes()].concat())
+        atom(
+            b"data",
+            &[&[0, 0, 0, 1, 0, 0, 0, 0][..], text.as_bytes()].concat(),
+        )
     }
 
     #[test]
     fn a_flac_tag_is_read_in_both_shapes_taggers_write() {
         let synced = "LYRICS=[ti:Song]\n[ar:Someone]\n[by:Tool]\n\n[00:05.94]First line\n[00:10.60] Second line\n";
-        let p = scratch("synced.flac", &flac(&["TITLE=Song", synced, "replaygain_track_gain=-7.1 dB"]));
+        let p = scratch(
+            "synced.flac",
+            &flac(&["TITLE=Song", synced, "replaygain_track_gain=-7.1 dB"]),
+        );
         let l = load(&p).expect("LYRICS tag read");
-        assert_eq!(stamps(&l), vec![(Some(5_940), "First line"), (Some(10_600), "Second line")]);
+        assert_eq!(
+            stamps(&l),
+            vec![(Some(5_940), "First line"), (Some(10_600), "Second line")]
+        );
 
         let plain = "unsyncedlyrics=Verse one\r\nline two\r\n\r\n\r\n\r\nVerse two\r\n";
         let p = scratch("plain.flac", &flac(&["ARTIST=Someone", plain]));
         let l = load(&p).expect("key matched case-insensitively");
-        assert_eq!(stamps(&l), vec![(None, "Verse one"), (None, "line two"), (None, ""), (None, "Verse two")]);
+        assert_eq!(
+            stamps(&l),
+            vec![
+                (None, "Verse one"),
+                (None, "line two"),
+                (None, ""),
+                (None, "Verse two")
+            ]
+        );
 
-        let p = scratch("none.flac", &flac(&["TITLE=Song", "LYRICIST=Someone", "LYRICS="]));
-        assert_eq!(load(&p), None, "LYRICIST is not lyrics, and an empty tag is none");
+        let p = scratch(
+            "none.flac",
+            &flac(&["TITLE=Song", "LYRICIST=Someone", "LYRICS="]),
+        );
+        assert_eq!(
+            load(&p),
+            None,
+            "LYRICIST is not lyrics, and an empty tag is none"
+        );
     }
 
     #[test]
     fn synced_tags_win_over_plain_and_a_lrc_wins_over_both() {
         let tags = flac(&["LYRICS=Plain words", "UNSYNCEDLYRICS=[00:01.00]Timed words"]);
         let p = scratch("both.flac", &tags);
-        assert_eq!(stamps(&load(&p).unwrap()), vec![(Some(1_000), "Timed words")]);
+        assert_eq!(
+            stamps(&load(&p).unwrap()),
+            vec![(Some(1_000), "Timed words")]
+        );
 
         std::fs::write(p.with_extension("lrc"), "[00:02.00]From the file").unwrap();
-        assert_eq!(stamps(&load(&p).unwrap()), vec![(Some(2_000), "From the file")]);
+        assert_eq!(
+            stamps(&load(&p).unwrap()),
+            vec![(Some(2_000), "From the file")]
+        );
 
         std::fs::write(p.with_extension("lrc"), "[ti:No words]\n").unwrap();
-        assert_eq!(stamps(&load(&p).unwrap()), vec![(Some(1_000), "Timed words")], "an empty .lrc hides nothing");
+        assert_eq!(
+            stamps(&load(&p).unwrap()),
+            vec![(Some(1_000), "Timed words")],
+            "an empty .lrc hides nothing"
+        );
         std::fs::remove_file(p.with_extension("lrc")).ok();
     }
 
     #[test]
     fn an_id3_uslt_frame_is_read_and_so_is_a_flac_behind_an_id3_tag() {
         let latin1 = [&[0u8][..], b"eng", b"desc\0", b"Bj\xF6rk\nline two"].concat();
-        let mp3 = [id3(3, &[(b"TIT2", vec![0, b'x']), (b"APIC", vec![0; 4000]), (b"USLT", latin1)]), vec![0xFF, 0xFB, 0x90, 0]].concat();
+        let mp3 = [
+            id3(
+                3,
+                &[
+                    (b"TIT2", vec![0, b'x']),
+                    (b"APIC", vec![0; 4000]),
+                    (b"USLT", latin1),
+                ],
+            ),
+            vec![0xFF, 0xFB, 0x90, 0],
+        ]
+        .concat();
         let p = scratch("latin1.mp3", &mp3);
-        assert_eq!(stamps(&load(&p).unwrap()), vec![(None, "Björk"), (None, "line two")]);
+        assert_eq!(
+            stamps(&load(&p).unwrap()),
+            vec![(None, "Björk"), (None, "line two")]
+        );
 
-        let utf16: Vec<u8> = "[00:03.00]Bjö".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-        let wide = [&[1u8][..], b"eng", &[0xFF, 0xFE, 0, 0], &[0xFF, 0xFE], &utf16].concat();
-        let p = scratch("utf16.mp3", &[id3(4, &[(b"USLT", wide)]), vec![0xFF, 0xFB, 0x90, 0]].concat());
+        let utf16: Vec<u8> = "[00:03.00]Bjö"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let wide = [
+            &[1u8][..],
+            b"eng",
+            &[0xFF, 0xFE, 0, 0],
+            &[0xFF, 0xFE],
+            &utf16,
+        ]
+        .concat();
+        let p = scratch(
+            "utf16.mp3",
+            &[id3(4, &[(b"USLT", wide)]), vec![0xFF, 0xFB, 0x90, 0]].concat(),
+        );
         assert_eq!(stamps(&load(&p).unwrap()), vec![(Some(3_000), "Bjö")]);
 
-        let p = scratch("id3.flac", &[id3(3, &[(b"TIT2", vec![0, b'x'])]), flac(&["LYRICS=Behind the ID3"])].concat());
+        let p = scratch(
+            "id3.flac",
+            &[
+                id3(3, &[(b"TIT2", vec![0, b'x'])]),
+                flac(&["LYRICS=Behind the ID3"]),
+            ]
+            .concat(),
+        );
         assert_eq!(stamps(&load(&p).unwrap()), vec![(None, "Behind the ID3")]);
     }
 
     #[test]
     fn an_mp4_lyr_atom_is_read_with_its_bare_cr_line_breaks() {
-        let ilst = [atom(b"\xA9nam", &mp4_data("Song")), atom(b"\xA9lyr", &mp4_data("Line one\rLine two"))].concat();
-        let meta = [&[0u8, 0, 0, 0][..], &atom(b"hdlr", &[0; 25]), &atom(b"ilst", &ilst)].concat();
-        let moov = [atom(b"mvhd", &[0; 100]), atom(b"udta", &atom(b"meta", &meta))].concat();
-        let m4a = [atom(b"ftyp", b"M4A \0\0\0\0"), atom(b"mdat", &[0; 3000]), atom(b"moov", &moov)].concat();
+        let ilst = [
+            atom(b"\xA9nam", &mp4_data("Song")),
+            atom(b"\xA9lyr", &mp4_data("Line one\rLine two")),
+        ]
+        .concat();
+        let meta = [
+            &[0u8, 0, 0, 0][..],
+            &atom(b"hdlr", &[0; 25]),
+            &atom(b"ilst", &ilst),
+        ]
+        .concat();
+        let moov = [
+            atom(b"mvhd", &[0; 100]),
+            atom(b"udta", &atom(b"meta", &meta)),
+        ]
+        .concat();
+        let m4a = [
+            atom(b"ftyp", b"M4A \0\0\0\0"),
+            atom(b"mdat", &[0; 3000]),
+            atom(b"moov", &moov),
+        ]
+        .concat();
         let p = scratch("song.m4a", &m4a);
-        assert_eq!(stamps(&load(&p).unwrap()), vec![(None, "Line one"), (None, "Line two")]);
+        assert_eq!(
+            stamps(&load(&p).unwrap()),
+            vec![(None, "Line one"), (None, "Line two")]
+        );
     }
 
     #[test]
@@ -652,7 +844,12 @@ mod tests {
         assert_eq!(load(&scratch("bad-tag.mp3", &t)), None);
 
         // An MP4 atom that runs past its parent, and a file too short to have a header.
-        let m4a = [atom(b"ftyp", b"M4A "), vec![0x7F, 0, 0, 0], b"moov".to_vec()].concat();
+        let m4a = [
+            atom(b"ftyp", b"M4A "),
+            vec![0x7F, 0, 0, 0],
+            b"moov".to_vec(),
+        ]
+        .concat();
         assert_eq!(load(&scratch("bad-atom.m4a", &m4a)), None);
         assert_eq!(load(&scratch("short.flac", b"fLa")), None);
     }

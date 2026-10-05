@@ -156,7 +156,10 @@ pub struct Installed {
 impl Installed {
     /// Is there a reason to offer Update and Uninstall rather than just Install?
     pub fn present(&self) -> bool {
-        matches!(self.last, Some(LastRun::Installed) | Some(LastRun::Unfinished))
+        matches!(
+            self.last,
+            Some(LastRun::Installed) | Some(LastRun::Unfinished)
+        )
     }
 
     /// The one line worth saying under the status, most urgent first: Walkman One (the install
@@ -222,7 +225,6 @@ pub fn read_installed(root: &Path, payload_names: &[&str]) -> Installed {
     }
     st
 }
-
 
 /// Reduce the log to the outcome of its LAST session.
 ///
@@ -316,7 +318,11 @@ mod tests {
         fs::write(tmp.join(W1_DIR).join("settings.txt"), "ADB=1\n").unwrap();
         let st = read_installed(&tmp, &[]);
         assert!(st.walkman_one);
-        assert_eq!(st.advisory().as_deref(), Some(W1_WARNING), "W1 outranks the boot reason");
+        assert_eq!(
+            st.advisory().as_deref(),
+            Some(W1_WARNING),
+            "W1 outranks the boot reason"
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -381,7 +387,10 @@ sanity: cinder-home not executable
     /// update, and the only correct action is a fresh install.
     #[test]
     fn update_is_only_offered_when_something_is_actually_there() {
-        let mk = |k| Installed { last: Some(k), ..Default::default() };
+        let mk = |k| Installed {
+            last: Some(k),
+            ..Default::default()
+        };
         assert!(mk(LastRun::Installed).present());
         assert!(mk(LastRun::Unfinished).present());
         assert!(!mk(LastRun::Uninstalled).present());

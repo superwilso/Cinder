@@ -67,7 +67,10 @@ impl PresentThread {
         P: PresentTarget + 'static,
         F: FnOnce() -> Result<P, String> + Send + 'static,
     {
-        let shared = Arc::new(Shared { slot: Mutex::new(Slot::default()), cv: Condvar::new() });
+        let shared = Arc::new(Shared {
+            slot: Mutex::new(Slot::default()),
+            cv: Condvar::new(),
+        });
         let sh = shared.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::Builder::new()
@@ -107,7 +110,10 @@ impl PresentThread {
             })
             .map_err(|e| format!("spawn present thread: {e}"))?;
         match rx.recv() {
-            Ok(Ok(())) => Ok(PresentThread { shared, handle: Some(handle) }),
+            Ok(Ok(())) => Ok(PresentThread {
+                shared,
+                handle: Some(handle),
+            }),
             Ok(Err(e)) => {
                 let _ = handle.join();
                 Err(e)
@@ -130,7 +136,10 @@ impl PresentThread {
         if g.shutdown {
             return;
         }
-        let mut buf = g.spare.take().unwrap_or_else(|| vec![0u32; canvas_buf.len()]);
+        let mut buf = g
+            .spare
+            .take()
+            .unwrap_or_else(|| vec![0u32; canvas_buf.len()]);
         if buf.len() != canvas_buf.len() {
             buf.resize(canvas_buf.len(), 0);
         }
@@ -200,8 +209,14 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let count = Arc::new(AtomicUsize::new(0));
         let (s2, c2) = (seen.clone(), count.clone());
-        let t =
-            PresentThread::start(move || Ok(Mock { seen: s2, count: c2, delay_ms: 0 })).unwrap();
+        let t = PresentThread::start(move || {
+            Ok(Mock {
+                seen: s2,
+                count: c2,
+                delay_ms: 0,
+            })
+        })
+        .unwrap();
         let mut canvas = vec![0u32; 64];
         for v in [11u32, 22, 33] {
             canvas[0] = v;
@@ -218,8 +233,14 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let count = Arc::new(AtomicUsize::new(0));
         let (s2, c2) = (seen.clone(), count.clone());
-        let t =
-            PresentThread::start(move || Ok(Mock { seen: s2, count: c2, delay_ms: 40 })).unwrap();
+        let t = PresentThread::start(move || {
+            Ok(Mock {
+                seen: s2,
+                count: c2,
+                delay_ms: 40,
+            })
+        })
+        .unwrap();
         let mut canvas = vec![0u32; 64];
         let t0 = std::time::Instant::now();
         for v in 1..=4u32 {
@@ -227,16 +248,30 @@ mod tests {
             t.submit(&mut canvas);
         }
         // 4 submits against a 40 ms present: at least two must have waited for the pipe to drain.
-        assert!(t0.elapsed().as_millis() >= 60, "submits did not backpressure");
+        assert!(
+            t0.elapsed().as_millis() >= 60,
+            "submits did not backpressure"
+        );
         wait_count(&count, 4);
-        assert_eq!(*seen.lock().unwrap(), vec![1, 2, 3, 4], "a frame was dropped");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![1, 2, 3, 4],
+            "a frame was dropped"
+        );
     }
 
     #[test]
     fn drop_joins_cleanly_mid_present() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let count = Arc::new(AtomicUsize::new(0));
-        let t = PresentThread::start(move || Ok(Mock { seen, count, delay_ms: 30 })).unwrap();
+        let t = PresentThread::start(move || {
+            Ok(Mock {
+                seen,
+                count,
+                delay_ms: 30,
+            })
+        })
+        .unwrap();
         let mut canvas = vec![7u32; 64];
         t.submit(&mut canvas);
         drop(t); // joins; must not hang or panic while the mock sleeps
@@ -244,9 +279,7 @@ mod tests {
 
     #[test]
     fn failed_open_propagates_error() {
-        let r = PresentThread::start(|| {
-            Err::<Mock, String>("no display for you".into())
-        });
+        let r = PresentThread::start(|| Err::<Mock, String>("no display for you".into()));
         match r {
             Err(e) => assert!(e.contains("no display")),
             Ok(_) => panic!("open error was swallowed"),

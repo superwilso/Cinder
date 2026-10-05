@@ -58,11 +58,24 @@ const NOISE: &[&str] = &[
 ];
 
 const FEAT_MARKERS: &[&str] = &[
-    "(feat.", "(feat ", "[feat.", "[feat ", " feat. ", " feat ", " ft. ", " ft ", " featuring ",
-    "(ft.", "(ft ", "(featuring", "[featuring",
+    "(feat.",
+    "(feat ",
+    "[feat.",
+    "[feat ",
+    " feat. ",
+    " feat ",
+    " ft. ",
+    " ft ",
+    " featuring ",
+    "(ft.",
+    "(ft ",
+    "(featuring",
+    "[featuring",
 ];
 
-const ARTIST_SPLITS: &[&str] = &[" & ", ", ", "; ", " and ", " vs. ", " vs ", " x ", " / ", "/"];
+const ARTIST_SPLITS: &[&str] = &[
+    " & ", ", ", "; ", " and ", " vs. ", " vs ", " x ", " / ", "/",
+];
 
 fn fold_punctuation(input: &str) -> String {
     input
@@ -98,7 +111,10 @@ fn strip_feat(input: &str) -> String {
         }
     }
     match cut {
-        Some(position) => input[..position].trim_end_matches([' ', '(', '[', '-']).trim().to_string(),
+        Some(position) => input[..position]
+            .trim_end_matches([' ', '(', '[', '-'])
+            .trim()
+            .to_string(),
         None => input.to_string(),
     }
 }
@@ -115,7 +131,9 @@ fn is_noise(tail: &str) -> bool {
     // "2009 remaster", "remastered 2011", "2021 mix", "2021 stereo mix" — year-anchored only, so
     // a bare "club mix" (a different recording) is never stripped.
     let words: Vec<&str> = tail.split(' ').collect();
-    let has_year = words.iter().any(|w| w.len() == 4 && w.chars().all(|c| c.is_ascii_digit()));
+    let has_year = words
+        .iter()
+        .any(|w| w.len() == 4 && w.chars().all(|c| c.is_ascii_digit()));
     if !has_year {
         return false;
     }
@@ -206,7 +224,9 @@ pub fn parse_import(body: &str) -> Import {
             continue;
         }
         let mut fields = line.trim_end_matches(['\r', '\n']).split('\t');
-        let (Some(artist), Some(title)) = (fields.next(), fields.next()) else { continue };
+        let (Some(artist), Some(title)) = (fields.next(), fields.next()) else {
+            continue;
+        };
         let (artist, title) = (artist.trim(), title.trim());
         if !artist.is_empty() && !title.is_empty() {
             tracks.push((artist.to_string(), title.to_string()));
@@ -278,7 +298,11 @@ pub const LIKED_PATHS: &[&str] = &[INTERNAL_LIKED_PATH, EXTERNAL_LIKED_PATH];
 /// Load decimal object_ids from a cinder_liked.conf file.
 pub fn liked_load(path: &str) -> std::collections::BTreeSet<i64> {
     std::fs::read_to_string(path)
-        .map(|body| body.lines().filter_map(|l| l.trim().parse::<i64>().ok()).collect())
+        .map(|body| {
+            body.lines()
+                .filter_map(|l| l.trim().parse::<i64>().ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -360,7 +384,10 @@ where
     }
 
     if any_applied {
-        (Outcome::Applied(combined_ids.len(), total_missing), Some(combined_ids))
+        (
+            Outcome::Applied(combined_ids.len(), total_missing),
+            Some(combined_ids),
+        )
     } else {
         (last_outcome, None)
     }
@@ -374,7 +401,9 @@ mod tests {
     /// one-sided edit sends a like across as a different track (`contracts/likes_keys.tsv`).
     #[test]
     fn keys_match_the_shared_contract() {
-        let rows = include_str!("../../../contracts/likes_keys.tsv").lines().filter(|l| !l.starts_with('#'));
+        let rows = include_str!("../../../contracts/likes_keys.tsv")
+            .lines()
+            .filter(|l| !l.starts_with('#'));
         let mut seen = 0;
         for row in rows {
             let f: Vec<&str> = row.split('\t').collect();
@@ -389,24 +418,49 @@ mod tests {
 
     fn library() -> Vec<(i64, String, String, String)> {
         vec![
-            (1, "The Beatles".into(), "Don't Let Me Down (2021 Mix)".into(), "The Beatles".into()),
+            (
+                1,
+                "The Beatles".into(),
+                "Don't Let Me Down (2021 Mix)".into(),
+                "The Beatles".into(),
+            ),
             // Tagged to the guest artist, filed on the host artist's album — the real shape of
             // "02 - Cleo Sol - Woman.flac" inside "Little Simz - Sometimes I Might Be Introvert".
             (2, "Cleo Sol".into(), "Woman".into(), "Little Simz".into()),
-            (3, "Bob Marley".into(), "No Woman No Cry".into(), "Bob Marley".into()),
-            (4, "Bob Marley".into(), "No Woman No Cry (Live)".into(), "Bob Marley".into()),
-            (5, "America, George Martin".into(), "Ventura Highway".into(), "America".into()),
+            (
+                3,
+                "Bob Marley".into(),
+                "No Woman No Cry".into(),
+                "Bob Marley".into(),
+            ),
+            (
+                4,
+                "Bob Marley".into(),
+                "No Woman No Cry (Live)".into(),
+                "Bob Marley".into(),
+            ),
+            (
+                5,
+                "America, George Martin".into(),
+                "Ventura Highway".into(),
+                "America".into(),
+            ),
         ]
     }
 
     fn resolve_rows(rows: &[(&str, &str)]) -> (BTreeSet<i64>, usize) {
         let owned = library();
         let import = Import {
-            tracks: rows.iter().map(|(a, t)| (a.to_string(), t.to_string())).collect(),
+            tracks: rows
+                .iter()
+                .map(|(a, t)| (a.to_string(), t.to_string()))
+                .collect(),
             had_header: true,
         };
         resolve(
-            owned.iter().map(|(id, a, t, aa)| (*id, a.as_str(), t.as_str(), aa.as_str())),
+            owned
+                .iter()
+                .map(|(id, a, t, aa)| (*id, a.as_str(), t.as_str(), aa.as_str())),
             &import,
         )
     }
@@ -436,7 +490,8 @@ mod tests {
 
     #[test]
     fn featured_artist_credit_matches_the_album_tag() {
-        let (ids, missing) = resolve_rows(&[("Little Simz feat. Cleo Sol", "Woman (feat. Cleo Sol)")]);
+        let (ids, missing) =
+            resolve_rows(&[("Little Simz feat. Cleo Sol", "Woman (feat. Cleo Sol)")]);
         assert_eq!(missing, 0);
         assert!(ids.contains(&2));
     }
@@ -450,16 +505,21 @@ mod tests {
 
     #[test]
     fn unknown_rows_are_counted_not_fatal() {
-        let (ids, missing) = resolve_rows(&[("Nobody", "Nothing"), ("Bob Marley", "No Woman No Cry")]);
+        let (ids, missing) =
+            resolve_rows(&[("Nobody", "Nothing"), ("Bob Marley", "No Woman No Cry")]);
         assert_eq!(missing, 1);
         assert_eq!(ids.len(), 1);
     }
 
     #[test]
     fn parse_skips_junk_and_finds_the_header() {
-        let import = parse_import("# artist\ttitle — pushed from the PC\n\nA\tB\nbroken\nC\tD\tE\n");
+        let import =
+            parse_import("# artist\ttitle — pushed from the PC\n\nA\tB\nbroken\nC\tD\tE\n");
         assert!(import.had_header);
-        assert_eq!(import.tracks, vec![("A".into(), "B".into()), ("C".into(), "D".into())]);
+        assert_eq!(
+            import.tracks,
+            vec![("A".into(), "B".into()), ("C".into(), "D".into())]
+        );
     }
 
     #[test]
@@ -470,8 +530,10 @@ mod tests {
 
     #[test]
     fn import_path_sits_beside_the_liked_list() {
-        assert_eq!(import_path("/contents/cinder_liked.conf"),
-                   "/contents/cinder_liked_import.tsv");
+        assert_eq!(
+            import_path("/contents/cinder_liked.conf"),
+            "/contents/cinder_liked_import.tsv"
+        );
     }
 
     #[test]
@@ -485,7 +547,9 @@ mod tests {
         let owned = library();
         let (outcome, ids) = apply_import(
             liked.to_str().unwrap(),
-            owned.iter().map(|(id, a, t, aa)| (*id, a.as_str(), t.as_str(), aa.as_str())),
+            owned
+                .iter()
+                .map(|(id, a, t, aa)| (*id, a.as_str(), t.as_str(), aa.as_str())),
         );
         assert_eq!(outcome, Outcome::Applied(1, 0));
         assert_eq!(ids.unwrap().into_iter().collect::<Vec<_>>(), vec![3]);
@@ -504,7 +568,9 @@ mod tests {
         let owned = library();
         let (outcome, ids) = apply_import(
             liked.to_str().unwrap(),
-            owned.iter().map(|(id, a, t, aa)| (*id, a.as_str(), t.as_str(), aa.as_str())),
+            owned
+                .iter()
+                .map(|(id, a, t, aa)| (*id, a.as_str(), t.as_str(), aa.as_str())),
         );
         assert_eq!(outcome, Outcome::Applied(0, 0));
         assert!(ids.unwrap().is_empty());
@@ -522,7 +588,10 @@ mod tests {
         let (outcome, ids) = apply_import(liked.to_str().unwrap(), std::iter::empty());
         assert_eq!(outcome, Outcome::Unresolved(1));
         assert!(ids.is_none());
-        assert!(import.exists(), "an unresolved import must survive for the next boot");
+        assert!(
+            import.exists(),
+            "an unresolved import must survive for the next boot"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -533,7 +602,10 @@ mod tests {
         let f = dir.join("cinder_liked.conf");
         std::fs::write(&f, "101\n102\n\n103\ninvalid\n104\n").unwrap();
         let ids = liked_load(f.to_str().unwrap());
-        assert_eq!(ids.into_iter().collect::<Vec<_>>(), vec![101, 102, 103, 104]);
+        assert_eq!(
+            ids.into_iter().collect::<Vec<_>>(),
+            vec![101, 102, 103, 104]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

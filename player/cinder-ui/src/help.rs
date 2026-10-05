@@ -40,15 +40,40 @@ pub struct Line {
 }
 
 const fn l(title: &'static str, how: &'static str) -> Line {
-    Line { lead: "", title, sub: "", how }
+    Line {
+        lead: "",
+        title,
+        sub: "",
+        how,
+    }
 }
 
 /// The ladder, in the order to try it (`docs/RECOVERY.md`, rungs 0, 0b and 1, and Settings).
 const WAY_BACK: [Line; 4] = [
-    Line { lead: "1", title: "Switch on with the cable in", sub: "Not on the first start after an install", how: "" },
-    Line { lead: "2", title: "POWER while the Sony logo shows", sub: "Once or twice, no PC needed", how: "" },
-    Line { lead: "3", title: "Four failed starts in a row", sub: "Cinder hands over by itself", how: "" },
-    Line { lead: "4", title: "Boot to stock, in Settings", sub: "For one start", how: "" },
+    Line {
+        lead: "1",
+        title: "Switch on with the cable in",
+        sub: "Not on the first start after an install",
+        how: "",
+    },
+    Line {
+        lead: "2",
+        title: "POWER while the Sony logo shows",
+        sub: "Once or twice, no PC needed",
+        how: "",
+    },
+    Line {
+        lead: "3",
+        title: "Four failed starts in a row",
+        sub: "Cinder hands over by itself",
+        how: "",
+    },
+    Line {
+        lead: "4",
+        title: "Boot to stock, in Settings",
+        sub: "For one start",
+        how: "",
+    },
 ];
 const GETTING_AROUND: [Line; 5] = [
     l("Now Playing", "TAP THE CLOCK"),
@@ -76,9 +101,17 @@ const NOW_PLAYING: [Line; 5] = [
     l("Previous \u{b7} next track", "SWIPE BELOW IT"),
     l("Track info", "TAP THE TITLE"),
     l("Repeat all \u{b7} album \u{b7} one", "TAP REPEAT"),
-    Line { lead: "", title: "Stop after this song", sub: "Settings or the pull-down panel", how: "SLEEP: SONG" },
+    Line {
+        lead: "",
+        title: "Stop after this song",
+        sub: "Settings or the pull-down panel",
+        how: "SLEEP: SONG",
+    },
 ];
-const ANYWHERE: [Line; 2] = [l("The Shelf", "SWIPE UP"), l("Scroll a list", "SWIPE \u{2195}")];
+const ANYWHERE: [Line; 2] = [
+    l("The Shelf", "SWIPE UP"),
+    l("Scroll a list", "SWIPE \u{2195}"),
+];
 /// Listed only while Settings ▸ Pull-down panel is on.
 const PULL_DOWN: Line = l("Pull-down panel", "SWIPE DOWN");
 const BUTTONS: [Line; 6] = [
@@ -87,7 +120,12 @@ const BUTTONS: [Line; 6] = [
     l("Volume", "VOL + \u{2212}"),
     l("Screen on \u{b7} off", "POWER"),
     l("Power off \u{b7} restart", "HOLD POWER"),
-    Line { lead: "", title: "Lock the screen", sub: "Volume, play and skip still work", how: "HOLD SWITCH" },
+    Line {
+        lead: "",
+        title: "Lock the screen",
+        sub: "Volume, play and skip still work",
+        how: "HOLD SWITCH",
+    },
 ];
 
 /// A single-line row is shorter than the kit's two-line row: this is a reference list, and 28
@@ -117,7 +155,11 @@ fn parts(pull_down: bool) -> Vec<(Part, i32, i32)> {
         out.push((p, y, h));
         y += h;
     };
-    let anywhere: Vec<Line> = ANYWHERE.iter().copied().chain(pull_down.then_some(PULL_DOWN)).collect();
+    let anywhere: Vec<Line> = ANYWHERE
+        .iter()
+        .copied()
+        .chain(pull_down.then_some(PULL_DOWN))
+        .collect();
     let sections: [(&'static str, &[Line]); 7] = [
         ("THE WAY BACK TO SONY", &WAY_BACK),
         ("GETTING AROUND", &GETTING_AROUND),
@@ -130,7 +172,14 @@ fn parts(pull_down: bool) -> Vec<(Part, i32, i32)> {
     for (label, lines) in sections {
         push(Part::Label(label), kit::SECTION_H);
         for line in lines {
-            push(Part::Line(*line), if line.sub.is_empty() { LINE_H } else { kit::ROW_H });
+            push(
+                Part::Line(*line),
+                if line.sub.is_empty() {
+                    LINE_H
+                } else {
+                    kit::ROW_H
+                },
+            );
         }
     }
     push(Part::Label("AGAIN"), kit::SECTION_H);
@@ -172,11 +221,32 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, scroll: i32, pull_down: bo
                 kit::section_label(c, t, f, y, l, None);
             }
             Part::Line(line) => {
-                let trail = if line.how.is_empty() { Trail::None } else { Trail::Value(line.how) };
-                kit::row(c, t, f, y, h, &Row::new(line.title).lead(line.lead).sub(line.sub).trail(trail));
+                let trail = if line.how.is_empty() {
+                    Trail::None
+                } else {
+                    Trail::Value(line.how)
+                };
+                kit::row(
+                    c,
+                    t,
+                    f,
+                    y,
+                    h,
+                    &Row::new(line.title)
+                        .lead(line.lead)
+                        .sub(line.sub)
+                        .trail(trail),
+                );
             }
             Part::Replay => {
-                kit::row(c, t, f, y, h, &Row::new("Replay the introduction").trail(Trail::Open("")));
+                kit::row(
+                    c,
+                    t,
+                    f,
+                    y,
+                    h,
+                    &Row::new("Replay the introduction").trail(Trail::Open("")),
+                );
             }
         }
     }
@@ -200,7 +270,10 @@ mod tests {
             assert!(deep > 0, "the list is taller than the glass");
             let (_, top, h) = *parts(pull).last().unwrap();
             let y = TOP + top - deep + h / 2;
-            assert!(y < H as i32, "the replay row is off the bottom at full scroll");
+            assert!(
+                y < H as i32,
+                "the replay row is off the bottom at full scroll"
+            );
             assert_eq!(item_at(240, y, deep, pull), Some(Item::Replay));
         }
     }
@@ -208,7 +281,11 @@ mod tests {
     /// The pull-down gesture is listed only while the panel is switched on.
     #[test]
     fn the_pull_down_row_follows_the_setting() {
-        let has = |pull| parts(pull).iter().any(|(p, _, _)| *p == Part::Line(PULL_DOWN));
+        let has = |pull| {
+            parts(pull)
+                .iter()
+                .any(|(p, _, _)| *p == Part::Line(PULL_DOWN))
+        };
         assert!(!has(false));
         assert!(has(true));
     }
@@ -220,16 +297,36 @@ mod tests {
     fn every_character_is_in_the_face_that_draws_it() {
         let load = |name: &str| {
             let path = format!("{}/assets/fonts/{name}", env!("CARGO_MANIFEST_DIR"));
-            fontdue::Font::from_bytes(std::fs::read(path).unwrap(), fontdue::FontSettings::default()).unwrap()
+            fontdue::Font::from_bytes(
+                std::fs::read(path).unwrap(),
+                fontdue::FontSettings::default(),
+            )
+            .unwrap()
         };
-        let (mono, sans) = (load("JetBrainsMono-Regular.ttf"), load("HankenGrotesk-SemiBold.ttf"));
+        let (mono, sans) = (
+            load("JetBrainsMono-Regular.ttf"),
+            load("HankenGrotesk-SemiBold.ttf"),
+        );
         for (p, _, _) in parts(true) {
             let Part::Line(line) = p else { continue };
             for ch in line.how.chars() {
-                assert!(mono.lookup_glyph_index(ch) != 0, "mono lacks {ch:?} in {:?}", line.how);
+                assert!(
+                    mono.lookup_glyph_index(ch) != 0,
+                    "mono lacks {ch:?} in {:?}",
+                    line.how
+                );
             }
-            for ch in line.title.chars().chain(line.sub.chars()).chain(line.lead.chars()) {
-                assert!(ch.is_ascii() || sans.lookup_glyph_index(ch) != 0, "sans lacks {ch:?} in {:?}", line.title);
+            for ch in line
+                .title
+                .chars()
+                .chain(line.sub.chars())
+                .chain(line.lead.chars())
+            {
+                assert!(
+                    ch.is_ascii() || sans.lookup_glyph_index(ch) != 0,
+                    "sans lacks {ch:?} in {:?}",
+                    line.title
+                );
             }
         }
     }

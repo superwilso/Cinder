@@ -182,10 +182,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         fill_rect(c, px, py, pw, ph, t.acc);
     }
     stroke_rect(c, px, py, pw, ph, if s.playing { t.acc } else { t.line }, 1);
-    center(c, f, (px + pw / 2) as f32, (py + ph / 2 + 4) as f32,
-           if s.playing { "ON" } else { "OFF" },
-           &sty(Family::Mono, Weight::Regular, 12.0,
-                if s.playing { t.acc_ink } else { t.dim }, 0.14));
+    center(
+        c,
+        f,
+        (px + pw / 2) as f32,
+        (py + ph / 2 + 4) as f32,
+        if s.playing { "ON" } else { "OFF" },
+        &sty(
+            Family::Mono,
+            Weight::Regular,
+            12.0,
+            if s.playing { t.acc_ink } else { t.dim },
+            0.14,
+        ),
+    );
 
     // Bluetooth output pill. The radio's audio is analogue into the codec ADC, captured from
     // hw:0,1 and re-encoded — so the cable can stay in as the aerial while you listen on LDAC.
@@ -194,9 +204,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         fill_rect(c, bx, by, bw, bh, t.acc);
     }
     stroke_rect(c, bx, by, bw, bh, if s.bt_out { t.acc } else { t.line }, 1);
-    center(c, f, (bx + bw / 2) as f32, (by + bh / 2 + 4) as f32, "BT OUT",
-           &sty(Family::Mono, Weight::Regular, 12.0,
-                if s.bt_out { t.acc_ink } else { t.dim }, 0.14));
+    center(
+        c,
+        f,
+        (bx + bw / 2) as f32,
+        (by + bh / 2 + 4) as f32,
+        "BT OUT",
+        &sty(
+            Family::Mono,
+            Weight::Regular,
+            12.0,
+            if s.bt_out { t.acc_ink } else { t.dim },
+            0.14,
+        ),
+    );
 
     // big frequency readout
     let fstr = format!("{:.1}", s.khz as f32 / 1000.0);
@@ -217,7 +238,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         let lit = (s.signal.min(SIGNAL_FULL) * METER_SEGS + SIGNAL_FULL / 2) / SIGNAL_FULL;
         let seg_w = METER_W / METER_SEGS;
         // Above the floor it is a station and takes the accent; at or below it is just band noise.
-        let on = if s.signal > SIGNAL_FLOOR { t.acc } else { t.dim };
+        let on = if s.signal > SIGNAL_FLOOR {
+            t.acc
+        } else {
+            t.dim
+        };
         for i in 0..METER_SEGS {
             let x = METER_X + i * seg_w;
             let c_ = if i < lit { on } else { t.line };
@@ -225,8 +250,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         }
         // Stereo lock earns a label rather than an icon — it is rare enough here to be worth words.
         if s.stereo {
-            text::draw(c, f, (METER_X + METER_W - 30) as f32, (METER_Y - 8) as f32, "ST",
-                       &sty(Family::Mono, Weight::Regular, 10.0, t.acc, 0.10));
+            text::draw(
+                c,
+                f,
+                (METER_X + METER_W - 30) as f32,
+                (METER_Y - 8) as f32,
+                "ST",
+                &sty(Family::Mono, Weight::Regular, 10.0, t.acc, 0.10),
+            );
         }
     }
 
@@ -236,8 +267,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     while mhz <= 106 {
         let x = dial_x(mhz * 1000);
         fill_rect(c, x, DIAL_Y - 10, 1, 20, t.line);
-        center(c, f, x as f32, (DIAL_Y + 24) as f32, &format!("{mhz}"),
-               &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.0));
+        center(
+            c,
+            f,
+            x as f32,
+            (DIAL_Y + 24) as f32,
+            &format!("{mhz}"),
+            &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.0),
+        );
         mhz += 2;
     }
     // found stations as ticks ON the dial — the scan's result, visible where it means something
@@ -246,20 +283,44 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         fill_rect(c, x, DIAL_Y - 16, 1, 8, t.acc);
     }
     let nx = dial_x(s.khz);
-    fill_rect(c, nx - 1, DIAL_Y - 20, 2, 40, if s.playing { t.acc } else { t.dim });
+    fill_rect(
+        c,
+        nx - 1,
+        DIAL_Y - 20,
+        2,
+        40,
+        if s.playing { t.acc } else { t.dim },
+    );
 
     // transport row
     let bs = sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.08);
     for (i, l) in BTN_LABELS.iter().enumerate() {
         let bx = btn_x(i);
         stroke_rect(c, bx, BTN_Y, BTN_W, BTN_H, t.line, 1);
-        center(c, f, (bx + BTN_W / 2) as f32, (BTN_Y + BTN_H / 2 + 4) as f32, l, &bs);
+        center(
+            c,
+            f,
+            (bx + BTN_W / 2) as f32,
+            (BTN_Y + BTN_H / 2 + 4) as f32,
+            l,
+            &bs,
+        );
     }
 
     // presets = what the scan found
-    let cap = if s.n_stations == 0 { "PRESETS — RUN A SCAN" } else { "STATIONS FOUND" };
-    text::draw(c, f, 22.0, (PRESET_Y0 - 10) as f32, cap,
-               &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+    let cap = if s.n_stations == 0 {
+        "PRESETS — RUN A SCAN"
+    } else {
+        "STATIONS FOUND"
+    };
+    text::draw(
+        c,
+        f,
+        22.0,
+        (PRESET_Y0 - 10) as f32,
+        cap,
+        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+    );
     for i in 0..PRESETS {
         let cx = PRESET_COLS[i % 3];
         let cy = PRESET_Y0 + (i / 3) as i32 * (PRESET_H + 10);
@@ -268,14 +329,43 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         if active {
             fill_rect(c, cx, cy, PRESET_W, PRESET_H, t.acc);
         }
-        stroke_rect(c, cx, cy, PRESET_W, PRESET_H,
-                    if active { t.acc } else { t.line }, 1);
-        let col = if active { t.acc_ink } else if has { t.dim } else { t.faint };
-        let label = if has { format!("{:.1}", s.stations[i] as f32 / 1000.0) } else { "—".into() };
-        center(c, f, (cx + PRESET_W / 2) as f32, (cy + 24) as f32, &label,
-               &sty(Family::Mono, Weight::Regular, 17.0, col, 0.0));
-        center(c, f, (cx + PRESET_W / 2) as f32, (cy + 40) as f32, &format!("P{}", i + 1),
-               &sty(Family::Mono, Weight::Regular, 10.0, col, 0.14));
+        stroke_rect(
+            c,
+            cx,
+            cy,
+            PRESET_W,
+            PRESET_H,
+            if active { t.acc } else { t.line },
+            1,
+        );
+        let col = if active {
+            t.acc_ink
+        } else if has {
+            t.dim
+        } else {
+            t.faint
+        };
+        let label = if has {
+            format!("{:.1}", s.stations[i] as f32 / 1000.0)
+        } else {
+            "—".into()
+        };
+        center(
+            c,
+            f,
+            (cx + PRESET_W / 2) as f32,
+            (cy + 24) as f32,
+            &label,
+            &sty(Family::Mono, Weight::Regular, 17.0, col, 0.0),
+        );
+        center(
+            c,
+            f,
+            (cx + PRESET_W / 2) as f32,
+            (cy + 40) as f32,
+            &format!("P{}", i + 1),
+            &sty(Family::Mono, Weight::Regular, 10.0, col, 0.14),
+        );
     }
 
     // scan button / progress
@@ -284,14 +374,34 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     } else {
         "SCAN THE BAND".to_string()
     };
-    stroke_rect(c, 22, SCAN_Y, 436, SCAN_H, if s.scanning { t.acc } else { t.line }, 1);
+    stroke_rect(
+        c,
+        22,
+        SCAN_Y,
+        436,
+        SCAN_H,
+        if s.scanning { t.acc } else { t.line },
+        1,
+    );
     if s.scanning {
         // fill proportional to progress — the only honest progress bar is one driven by real work
         let w = 436 * s.scan_pct.min(100) as i32 / 100;
         fill_rect(c, 22, SCAN_Y, w, SCAN_H, t.row_sel);
     }
-    center(c, f, 240.0, (SCAN_Y + SCAN_H / 2 + 5) as f32, &scan_label,
-           &sty(Family::Mono, Weight::Regular, 14.0, if s.scanning { t.acc } else { t.dim }, 0.10));
+    center(
+        c,
+        f,
+        240.0,
+        (SCAN_Y + SCAN_H / 2 + 5) as f32,
+        &scan_label,
+        &sty(
+            Family::Mono,
+            Weight::Regular,
+            14.0,
+            if s.scanning { t.acc } else { t.dim },
+            0.10,
+        ),
+    );
     // What the scan actually costs depends on which route is live, and the difference is two
     // orders of magnitude — so say which one the user is about to get.
     let scan_note = if s.hw {
@@ -299,8 +409,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     } else {
         "no register access — measured from the audio, about a minute"
     };
-    center(c, f, 240.0, (SCAN_Y + SCAN_H + 20) as f32, scan_note,
-           &sty(Family::Sans, Weight::Regular, 11.0, t.faint, 0.0));
+    center(
+        c,
+        f,
+        240.0,
+        (SCAN_Y + SCAN_H + 20) as f32,
+        scan_note,
+        &sty(Family::Sans, Weight::Regular, 11.0, t.faint, 0.0),
+    );
 
     hline(c, 740, t.line);
     let note = if !s.antenna {
@@ -310,9 +426,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     } else {
         "ANTENNA: HEADPHONE CABLE"
     };
-    center(c, f, 240.0, 768.0, note,
-           &sty(Family::Mono, Weight::Regular, 11.0,
-                if s.antenna { t.faint } else { t.acc }, 0.08));
+    center(
+        c,
+        f,
+        240.0,
+        768.0,
+        note,
+        &sty(
+            Family::Mono,
+            Weight::Regular,
+            11.0,
+            if s.antenna { t.faint } else { t.acc },
+            0.08,
+        ),
+    );
 }
 
 #[cfg(test)]
@@ -325,8 +452,10 @@ mod tests {
         for khz in (MIN_KHZ..=MAX_KHZ).step_by(500) {
             let x = dial_x(khz);
             let back = dial_khz(x);
-            assert!((back - khz).abs() <= STEP_KHZ,
-                    "dial round trip {khz} -> x{x} -> {back}");
+            assert!(
+                (back - khz).abs() <= STEP_KHZ,
+                "dial round trip {khz} -> x{x} -> {back}"
+            );
         }
     }
 
@@ -349,9 +478,17 @@ mod tests {
     /// The gaps between controls must do nothing, or a fat finger retunes the radio by accident.
     #[test]
     fn gaps_are_not_targets() {
-        assert_eq!(hit(btn_x(0) - 6, BTN_Y + 10), None, "left of the first button");
+        assert_eq!(
+            hit(btn_x(0) - 6, BTN_Y + 10),
+            None,
+            "left of the first button"
+        );
         assert_eq!(hit(240, BTN_Y + BTN_H + 4), None, "below the button row");
-        assert_eq!(hit(5, PRESET_Y0 + 5), None, "left margin of the preset grid");
+        assert_eq!(
+            hit(5, PRESET_Y0 + 5),
+            None,
+            "left margin of the preset grid"
+        );
     }
 
     /// Tuning past the band edge clamps rather than wrapping — the tuner rejects out-of-band

@@ -81,7 +81,11 @@ pub struct Row {
 
 /// The album key for a track: its album id, or its own id when it has none.
 pub fn album_key(album_id: i64, object_id: i64) -> u64 {
-    if album_id > 0 { album_id as u64 } else { (object_id as u64) | (1 << 63) }
+    if album_id > 0 {
+        album_id as u64
+    } else {
+        (object_id as u64) | (1 << 63)
+    }
 }
 
 /// The artist key: case-blind FNV-1a over the name, so "The Cure" and "the cure" are one artist,
@@ -112,7 +116,12 @@ pub fn artist_key(name: &str) -> u64 {
 /// than handing back the order it was given.
 ///
 /// `rnd(n)` returns a number in `0..n`; the caller owns the generator, so tests are reproducible.
-pub fn deal(rows: &[Row], by: ShuffleBy, lead: Option<usize>, rnd: &mut dyn FnMut(usize) -> usize) -> Vec<usize> {
+pub fn deal(
+    rows: &[Row],
+    by: ShuffleBy,
+    lead: Option<usize>,
+    rnd: &mut dyn FnMut(usize) -> usize,
+) -> Vec<usize> {
     let n = rows.len();
     let lead = lead.filter(|&l| l < n);
     let key = |r: &Row| match by {
@@ -143,7 +152,8 @@ pub fn deal(rows: &[Row], by: ShuffleBy, lead: Option<usize>, rnd: &mut dyn FnMu
     // Inside a group: albums in order of first appearance, then disc and track. Stable, so rows
     // with no track numbers keep the order they came in.
     for (_, members) in &mut groups {
-        let mut album_rank: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        let mut album_rank: std::collections::HashMap<u64, usize> =
+            std::collections::HashMap::new();
         for &i in members.iter() {
             let len = album_rank.len();
             album_rank.entry(rows[i].album).or_insert(len);
@@ -175,7 +185,9 @@ mod tests {
     fn lcg(seed: u64) -> impl FnMut(usize) -> usize {
         let mut x = seed;
         move |n| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((x >> 33) as usize) % n
         }
     }
@@ -185,7 +197,12 @@ mod tests {
         let mut v = Vec::new();
         for (album, artist) in [(1u64, 10u64), (2, 20), (3, 10)] {
             for t in 1..=4 {
-                v.push(Row { album, artist, disc: 1, track: t });
+                v.push(Row {
+                    album,
+                    artist,
+                    disc: 1,
+                    track: t,
+                });
             }
         }
         v
@@ -222,7 +239,10 @@ mod tests {
             let o = deal(&r, ShuffleBy::Albums, None, &mut lcg(seed));
             for chunk in o.chunks(4) {
                 let album = r[chunk[0]].album;
-                assert!(chunk.iter().all(|&i| r[i].album == album), "an album was split: {o:?}");
+                assert!(
+                    chunk.iter().all(|&i| r[i].album == album),
+                    "an album was split: {o:?}"
+                );
                 let tracks: Vec<i32> = chunk.iter().map(|&i| r[i].track).collect();
                 assert_eq!(tracks, [1, 2, 3, 4]);
             }
@@ -240,10 +260,33 @@ mod tests {
         let o = deal(&r, ShuffleBy::Artists, None, &mut lcg(3));
         let artists: Vec<u64> = o.iter().map(|&i| r[i].artist).collect();
         let changes = artists.windows(2).filter(|w| w[0] != w[1]).count();
-        assert_eq!(changes, 1, "two artists, so exactly one change of artist: {artists:?}");
-        let tens: Vec<(u64, i32)> = o.iter().filter(|&&i| r[i].artist == 10).map(|&i| (r[i].album, r[i].track)).collect();
-        assert_eq!(tens, [(1, 1), (1, 2), (1, 3), (1, 4), (3, 1), (3, 2), (3, 3), (3, 4)]);
-        assert_eq!(artist_key("The Cure"), artist_key(" the cure "), "case-blind");
+        assert_eq!(
+            changes, 1,
+            "two artists, so exactly one change of artist: {artists:?}"
+        );
+        let tens: Vec<(u64, i32)> = o
+            .iter()
+            .filter(|&&i| r[i].artist == 10)
+            .map(|&i| (r[i].album, r[i].track))
+            .collect();
+        assert_eq!(
+            tens,
+            [
+                (1, 1),
+                (1, 2),
+                (1, 3),
+                (1, 4),
+                (3, 1),
+                (3, 2),
+                (3, 3),
+                (3, 4)
+            ]
+        );
+        assert_eq!(
+            artist_key("The Cure"),
+            artist_key(" the cure "),
+            "case-blind"
+        );
     }
 
     /// Mid-album: the playing track leads, the rest of its album follows from the next track and
@@ -260,7 +303,14 @@ mod tests {
     /// order it was handed (which would look like a shuffle button that does nothing).
     #[test]
     fn a_single_group_falls_back_to_songs() {
-        let r: Vec<Row> = (1..=10).map(|t| Row { album: 1, artist: 1, disc: 1, track: t }).collect();
+        let r: Vec<Row> = (1..=10)
+            .map(|t| Row {
+                album: 1,
+                artist: 1,
+                disc: 1,
+                track: t,
+            })
+            .collect();
         let o = deal(&r, ShuffleBy::Albums, None, &mut lcg(5));
         assert!(is_permutation(&o, 10));
         assert_ne!(o, (0..10).collect::<Vec<_>>());
@@ -273,6 +323,10 @@ mod tests {
         }
         assert_eq!(ShuffleBy::from_token("nonsense"), ShuffleBy::Songs);
         assert_eq!(album_key(0, 5), album_key(0, 5));
-        assert_ne!(album_key(0, 5), album_key(0, 6), "albumless tracks are singletons");
+        assert_ne!(
+            album_key(0, 5),
+            album_key(0, 6),
+            "albumless tracks are singletons"
+        );
     }
 }

@@ -71,7 +71,11 @@ fn row_len(page: u8, row: usize) -> usize {
 }
 
 fn chars_of(page: u8, row: usize) -> &'static str {
-    if page == 0 { LETTERS[row.min(2)] } else { SYMBOLS[row.min(2)] }
+    if page == 0 {
+        LETTERS[row.min(2)]
+    } else {
+        SYMBOLS[row.min(2)]
+    }
 }
 
 fn row_y(row: usize) -> i32 {
@@ -125,7 +129,11 @@ pub fn key_at(page: u8, row: usize, col: usize) -> Option<Key> {
         0 | 1 => Key::Char(chars_of(page, row).chars().nth(col)?),
         2 => {
             if col == 0 {
-                if page == 0 { Key::Shift } else { Key::Char('+') }
+                if page == 0 {
+                    Key::Shift
+                } else {
+                    Key::Char('+')
+                }
             } else if col == last {
                 Key::Backspace
             } else {
@@ -194,8 +202,16 @@ pub fn apply(key: Key, text: &mut String, shift: &mut bool, page: &mut u8) -> bo
 pub const MAX_LEN: usize = 64;
 
 /// Draw the keyboard screen.
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, value: &str,
-              placeholder: &str, page: u8, shift: bool) {
+pub fn render(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    title: &str,
+    value: &str,
+    placeholder: &str,
+    page: u8,
+    shift: bool,
+) {
     c.fill(t.bg);
     let y0 = crate::chrome::header(c, t, f, title, None);
     debug_assert_eq!(y0, crate::chrome::HEADER_BOTTOM);
@@ -207,8 +223,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, value: &str,
     let baseline = (TEXT_Y + TEXT_H / 2 + 9) as f32;
     let inner = (TEXT_W - 40) as f32;
     if value.is_empty() {
-        text::draw(c, f, (TEXT_X + 16) as f32, baseline, placeholder,
-                   &sty(Family::Sans, Weight::Regular, 22.0, t.faint, 0.0));
+        text::draw(
+            c,
+            f,
+            (TEXT_X + 16) as f32,
+            baseline,
+            placeholder,
+            &sty(Family::Sans, Weight::Regular, 22.0, t.faint, 0.0),
+        );
         fill_rect(c, TEXT_X + 16, TEXT_Y + 18, 2, TEXT_H - 36, t.acc);
     } else {
         // Show the TAIL when the name outgrows the field — what you just typed is the part you
@@ -217,15 +239,28 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, value: &str,
         let end = text::draw(c, f, (TEXT_X + 16) as f32, baseline, &shown, &vs);
         fill_rect(c, end as i32 + 3, TEXT_Y + 18, 2, TEXT_H - 36, t.acc);
     }
-    center(c, f, 240.0, (TEXT_Y + TEXT_H + 26) as f32,
-           if shift { "CAPS — NEXT LETTER IS A CAPITAL" } else { "TAP DONE TO SAVE · BACK TO CANCEL" },
-           &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16));
+    center(
+        c,
+        f,
+        240.0,
+        (TEXT_Y + TEXT_H + 26) as f32,
+        if shift {
+            "CAPS — NEXT LETTER IS A CAPITAL"
+        } else {
+            "TAP DONE TO SAVE · BACK TO CANCEL"
+        },
+        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16),
+    );
 
     // ── the keys ─────────────────────────────────────────────────────────────────
     for row in 0..ROWS {
         for col in 0..row_len(page, row) {
-            let Some((x, y, w, h)) = key_rect(page, row, col) else { continue };
-            let Some(key) = key_at(page, row, col) else { continue };
+            let Some((x, y, w, h)) = key_rect(page, row, col) else {
+                continue;
+            };
+            let Some(key) = key_at(page, row, col) else {
+                continue;
+            };
             let (label, wide) = label_of(key, page, shift);
             let accent = matches!(key, Key::Done) || (matches!(key, Key::Shift) && shift);
             if accent {
@@ -236,9 +271,19 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, value: &str,
             stroke_rect(c, x, y, w, h, t.line, 1);
             let ink = if accent { t.acc_ink } else { t.ink };
             let size = if wide { 15.0 } else { 24.0 };
-            let weight = if wide { Weight::SemiBold } else { Weight::Regular };
-            center(c, f, (x + w / 2) as f32, (y + h / 2 + size as i32 / 3) as f32, &label,
-                   &sty(Family::Sans, weight, size, ink, 0.0));
+            let weight = if wide {
+                Weight::SemiBold
+            } else {
+                Weight::Regular
+            };
+            center(
+                c,
+                f,
+                (x + w / 2) as f32,
+                (y + h / 2 + size as i32 / 3) as f32,
+                &label,
+                &sty(Family::Sans, weight, size, ink, 0.0),
+            );
         }
     }
 }
@@ -288,8 +333,11 @@ mod tests {
                 for col in 0..row_len(page, row) {
                     let (x, y, w, h) = key_rect(page, row, col).unwrap();
                     let hit = hit(page, x + w / 2, y + h / 2);
-                    assert_eq!(hit, key_at(page, row, col),
-                               "page {page} row {row} col {col} is not where it is drawn");
+                    assert_eq!(
+                        hit,
+                        key_at(page, row, col),
+                        "page {page} row {row} col {col} is not where it is drawn"
+                    );
                 }
             }
         }
@@ -302,11 +350,19 @@ mod tests {
             for row in 0..ROWS {
                 for col in 0..row_len(page, row) {
                     let (x, y, w, h) = key_rect(page, row, col).unwrap();
-                    assert!(x >= 0 && x + w <= W as i32, "page {page} row {row} col {col} off-panel");
-                    assert!(y + h <= crate::canvas::H as i32, "row {row} runs off the bottom");
+                    assert!(
+                        x >= 0 && x + w <= W as i32,
+                        "page {page} row {row} col {col} off-panel"
+                    );
+                    assert!(
+                        y + h <= crate::canvas::H as i32,
+                        "row {row} runs off the bottom"
+                    );
                     for other in &boxes {
-                        let overlap = x < other.0 + other.2 && other.0 < x + w
-                            && y < other.1 + other.3 && other.1 < y + h;
+                        let overlap = x < other.0 + other.2
+                            && other.0 < x + w
+                            && y < other.1 + other.3
+                            && other.1 < y + h;
                         assert!(!overlap, "keys overlap on page {page}");
                     }
                     boxes.push((x, y, w, h));

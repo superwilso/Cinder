@@ -155,7 +155,10 @@ impl Store {
             }
         }
         lists.sort_by(|a, b| cinder_ui::collate::cmp(&a.name, &b.name));
-        Store { dir: primary_dir, lists }
+        Store {
+            dir: primary_dir,
+            lists,
+        }
     }
 
     pub fn get(&self, id: i64) -> Option<&Playlist> {
@@ -175,7 +178,14 @@ impl Store {
         let name = clean_name(name);
         let stem = unique_stem(&name, &self.taken_stems());
         let file = self.dir.join(format!("{stem}.{EXT}"));
-        let mut list = Playlist { id: id_for(&stem), name, file, entries: Vec::new(), cover: None, edited: None };
+        let mut list = Playlist {
+            id: id_for(&stem),
+            name,
+            file,
+            entries: Vec::new(),
+            cover: None,
+            edited: None,
+        };
         write_file(&mut list)?;
         let id = list.id;
         self.lists.push(list);
@@ -187,7 +197,9 @@ impl Store {
     /// the file would change the id under the UI that is holding it. The display name lives in the
     /// `#PLAYLIST:` directive, which is what m3u readers use anyway.
     pub fn rename(&mut self, id: i64, name: &str) -> std::io::Result<()> {
-        let Some(index) = self.index_of(id) else { return Ok(()) };
+        let Some(index) = self.index_of(id) else {
+            return Ok(());
+        };
         self.lists[index].name = clean_name(name);
         write_file(&mut self.lists[index])?;
         self.sort();
@@ -195,7 +207,9 @@ impl Store {
     }
 
     pub fn delete(&mut self, id: i64) -> std::io::Result<()> {
-        let Some(index) = self.index_of(id) else { return Ok(()) };
+        let Some(index) = self.index_of(id) else {
+            return Ok(());
+        };
         let list = self.lists.remove(index);
         match fs::remove_file(&list.file) {
             Ok(()) => Ok(()),
@@ -209,16 +223,19 @@ impl Store {
     /// user is curating, and the second tap is much more likely to be "did that register?" than
     /// "I want it twice".
     pub fn add(&mut self, id: i64, uri: &str, label: &str) -> std::io::Result<bool> {
-        let Some(index) = self.index_of(id) else { return Ok(false) };
+        let Some(index) = self.index_of(id) else {
+            return Ok(false);
+        };
         if uri.trim().is_empty() || self.lists[index].entries.len() >= MAX_TRACKS {
             return Ok(false);
         }
         if self.lists[index].entries.iter().any(|e| e.uri == uri) {
             return Ok(false);
         }
-        self.lists[index]
-            .entries
-            .push(Entry { uri: uri.to_string(), label: label.to_string() });
+        self.lists[index].entries.push(Entry {
+            uri: uri.to_string(),
+            label: label.to_string(),
+        });
         write_file(&mut self.lists[index])?;
         Ok(true)
     }
@@ -228,7 +245,9 @@ impl Store {
     /// saved Up Next of a few hundred songs is a few hundred rewrites of a growing file on FAT.
     /// Returns how many went in.
     pub fn add_many(&mut self, id: i64, items: &[(String, String)]) -> std::io::Result<usize> {
-        let Some(index) = self.index_of(id) else { return Ok(0) };
+        let Some(index) = self.index_of(id) else {
+            return Ok(0);
+        };
         let list = &mut self.lists[index];
         let mut added = 0;
         for (uri, label) in items {
@@ -238,7 +257,10 @@ impl Store {
             if uri.trim().is_empty() || list.entries.iter().any(|e| &e.uri == uri) {
                 continue;
             }
-            list.entries.push(Entry { uri: uri.clone(), label: label.clone() });
+            list.entries.push(Entry {
+                uri: uri.clone(),
+                label: label.clone(),
+            });
             added += 1;
         }
         if added > 0 {
@@ -260,21 +282,32 @@ impl Store {
     /// the nearest one before it that was kept.
     ///
     /// Returns false, writing nothing, when the result is the list as it already is.
-    pub fn reorder(&mut self, id: i64, resolved: &[Option<i64>], order: &[i64]) -> std::io::Result<bool> {
-        let Some(index) = self.index_of(id) else { return Ok(false) };
+    pub fn reorder(
+        &mut self,
+        id: i64,
+        resolved: &[Option<i64>],
+        order: &[i64],
+    ) -> std::io::Result<bool> {
+        let Some(index) = self.index_of(id) else {
+            return Ok(false);
+        };
         let entries = &self.lists[index].entries;
         if resolved.len() != entries.len() {
             return Ok(false);
         }
         // Which entry each id in `order` means: the first unused entry with that id, so a file
         // listed twice keeps both copies apart.
-        let mut slots: std::collections::HashMap<i64, std::collections::VecDeque<usize>> = Default::default();
+        let mut slots: std::collections::HashMap<i64, std::collections::VecDeque<usize>> =
+            Default::default();
         for (i, r) in resolved.iter().enumerate() {
             if let Some(oid) = r {
                 slots.entry(*oid).or_default().push_back(i);
             }
         }
-        let kept: Vec<usize> = order.iter().filter_map(|oid| slots.get_mut(oid)?.pop_front()).collect();
+        let kept: Vec<usize> = order
+            .iter()
+            .filter_map(|oid| slots.get_mut(oid)?.pop_front())
+            .collect();
         let is_kept: std::collections::HashSet<usize> = kept.iter().copied().collect();
         // Each unresolved entry's anchor: the nearest KEPT member before it, or None for the top.
         let mut leading: Vec<usize> = Vec::new();
@@ -310,7 +343,9 @@ impl Store {
     }
 
     pub fn remove_at(&mut self, id: i64, position: usize) -> std::io::Result<bool> {
-        let Some(index) = self.index_of(id) else { return Ok(false) };
+        let Some(index) = self.index_of(id) else {
+            return Ok(false);
+        };
         if position >= self.lists[index].entries.len() {
             return Ok(false);
         }
@@ -326,8 +361,12 @@ impl Store {
     /// app must not write, so they can never carry one. Their rows still get the AUTOMATIC cover,
     /// which needs nothing stored anywhere.
     pub fn set_cover(&mut self, id: i64, path: Option<&str>) -> std::io::Result<bool> {
-        let Some(index) = self.index_of(id) else { return Ok(false) };
-        let next = path.map(|p| p.replace('\\', "/")).filter(|p| !p.trim().is_empty());
+        let Some(index) = self.index_of(id) else {
+            return Ok(false);
+        };
+        let next = path
+            .map(|p| p.replace('\\', "/"))
+            .filter(|p| !p.trim().is_empty());
         if self.lists[index].cover == next {
             return Ok(false);
         }
@@ -339,14 +378,20 @@ impl Store {
     fn taken_stems(&self) -> BTreeSet<String> {
         self.lists
             .iter()
-            .filter_map(|p| p.file.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+            .filter_map(|p| {
+                p.file
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+            })
             .collect()
     }
 
     // The Library's one collation, so the store's order is the order the Playlists tab draws and
     // the A–Z rail files (`cinder_ui::collate`).
     fn sort(&mut self) {
-        self.lists.sort_by(|a, b| cinder_ui::collate::cmp(&a.name, &b.name));
+        self.lists
+            .sort_by(|a, b| cinder_ui::collate::cmp(&a.name, &b.name));
     }
 }
 
@@ -448,7 +493,10 @@ impl Playlist {
     /// case-insensitive, but the SD card may be mounted by a driver that is not.
     fn sidecar_cover(&self) -> Option<String> {
         for ext in COVER_EXTS {
-            for cand in [self.file.with_extension(ext), self.file.with_extension(ext.to_uppercase())] {
+            for cand in [
+                self.file.with_extension(ext),
+                self.file.with_extension(ext.to_uppercase()),
+            ] {
                 if cand.is_file() {
                     return cand.to_str().map(str::to_string);
                 }
@@ -519,7 +567,10 @@ fn parse_file(path: &Path) -> Option<Playlist> {
         }
         if let Some(rest) = trimmed.strip_prefix("#EXTINF:") {
             // "#EXTINF:<seconds>,<label>"
-            pending_label = rest.split_once(',').map(|(_, l)| l.trim().to_string()).unwrap_or_default();
+            pending_label = rest
+                .split_once(',')
+                .map(|(_, l)| l.trim().to_string())
+                .unwrap_or_default();
             continue;
         }
         if trimmed.starts_with('#') {
@@ -529,10 +580,20 @@ fn parse_file(path: &Path) -> Option<Playlist> {
             break;
         }
         let norm_uri = trimmed.replace('\\', "/").replace("%20", " ");
-        entries.push(Entry { uri: norm_uri, label: std::mem::take(&mut pending_label) });
+        entries.push(Entry {
+            uri: norm_uri,
+            label: std::mem::take(&mut pending_label),
+        });
     }
 
-    Some(Playlist { id: id_for(&stem), name, file: path.to_path_buf(), entries, cover, edited })
+    Some(Playlist {
+        id: id_for(&stem),
+        name,
+        file: path.to_path_buf(),
+        entries,
+        cover,
+        edited,
+    })
 }
 
 /// The line that marks a playlist as changed on the player: `#CINDER-EDITED:<unix seconds>`.
@@ -583,8 +644,11 @@ mod tests {
     struct Dir(PathBuf);
     impl Dir {
         fn new(tag: &str) -> Dir {
-            let path = std::env::temp_dir()
-                .join(format!("cinder_pl_{tag}_{}_{:?}", std::process::id(), std::thread::current().id()));
+            let path = std::env::temp_dir().join(format!(
+                "cinder_pl_{tag}_{}_{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).unwrap();
             Dir(path)
@@ -611,8 +675,10 @@ mod tests {
         assert_eq!(reopened.lists.len(), 1);
         assert_eq!(reopened.lists[0].name, "Night Bus");
         assert_eq!(reopened.lists[0].id, id, "the id must survive a reopen");
-        assert_eq!(uris(&reopened.lists[0]),
-                   vec!["/contents/MUSIC/a.flac", "/contents/MUSIC/b.flac"]);
+        assert_eq!(
+            uris(&reopened.lists[0]),
+            vec!["/contents/MUSIC/a.flac", "/contents/MUSIC/b.flac"]
+        );
         assert_eq!(reopened.lists[0].entries[1].label, "B - Two");
     }
 
@@ -633,24 +699,39 @@ mod tests {
         // c first, b removed.
         assert!(store.reorder(id, &resolved, &[3, 1]).unwrap());
         let got = uris(&Store::open(&dir.0).lists[0]);
-        assert_eq!(got, ["/x/c.flac", "/x/sd2.flac", "/x/a.flac", "/x/sd1.flac"]);
+        assert_eq!(
+            got,
+            ["/x/c.flac", "/x/sd2.flac", "/x/a.flac", "/x/sd1.flac"]
+        );
         // A stale description of the file (the wrong length) changes nothing.
         assert!(!store.reorder(id, &[Some(1)], &[1]).unwrap());
         // Remove everything shown: the card tracks are all that is left, in their order.
         let resolved = [Some(3), None, Some(1), None];
         assert!(store.reorder(id, &resolved, &[]).unwrap());
-        assert_eq!(uris(&Store::open(&dir.0).lists[0]), ["/x/sd2.flac", "/x/sd1.flac"]);
+        assert_eq!(
+            uris(&Store::open(&dir.0).lists[0]),
+            ["/x/sd2.flac", "/x/sd1.flac"]
+        );
     }
 
     /// A file listed twice keeps both copies apart through a reorder.
     #[test]
     fn reorder_tells_duplicates_apart() {
         let dir = Dir::new("reorder_dup");
-        fs::write(dir.0.join("d.m3u8"), "#EXTM3U\n/x/a.flac\n/x/b.flac\n/x/a.flac\n").unwrap();
+        fs::write(
+            dir.0.join("d.m3u8"),
+            "#EXTM3U\n/x/a.flac\n/x/b.flac\n/x/a.flac\n",
+        )
+        .unwrap();
         let mut store = Store::open(&dir.0);
         let id = store.lists[0].id;
-        assert!(store.reorder(id, &[Some(1), Some(2), Some(1)], &[2, 1, 1]).unwrap());
-        assert_eq!(uris(&Store::open(&dir.0).lists[0]), ["/x/b.flac", "/x/a.flac", "/x/a.flac"]);
+        assert!(store
+            .reorder(id, &[Some(1), Some(2), Some(1)], &[2, 1, 1])
+            .unwrap());
+        assert_eq!(
+            uris(&Store::open(&dir.0).lists[0]),
+            ["/x/b.flac", "/x/a.flac", "/x/a.flac"]
+        );
     }
 
     /// Every write by the player stamps the file as edited; a file a PC wrote carries no stamp,
@@ -658,20 +739,44 @@ mod tests {
     #[test]
     fn a_playlist_changed_on_the_player_is_stamped_edited() {
         let dir = Dir::new("edited");
-        fs::write(dir.0.join("pc.m3u8"), "#EXTM3U\n#PLAYLIST:From the PC\n/x/a.flac\n").unwrap();
+        fs::write(
+            dir.0.join("pc.m3u8"),
+            "#EXTM3U\n#PLAYLIST:From the PC\n/x/a.flac\n",
+        )
+        .unwrap();
         let mut store = Store::open(&dir.0);
-        assert_eq!(store.lists[0].edited, None, "a PC-written file is not edited");
+        assert_eq!(
+            store.lists[0].edited, None,
+            "a PC-written file is not edited"
+        );
         let id = store.lists[0].id;
         store.add(id, "/x/b.flac", "B").unwrap();
         let body = fs::read_to_string(dir.0.join("pc.m3u8")).unwrap();
-        assert!(body.lines().any(|l| l.starts_with("#CINDER-EDITED:")), "{body}");
+        assert!(
+            body.lines().any(|l| l.starts_with("#CINDER-EDITED:")),
+            "{body}"
+        );
         let reopened = Store::open(&dir.0);
         assert!(reopened.lists[0].edited.is_some());
-        assert_eq!(uris(&reopened.lists[0]), ["/x/a.flac", "/x/b.flac"], "the stamp is not a member");
+        assert_eq!(
+            uris(&reopened.lists[0]),
+            ["/x/a.flac", "/x/b.flac"],
+            "the stamp is not a member"
+        );
         // A stamp with no readable time still counts.
-        fs::write(dir.0.join("odd.m3u8"), "#EXTM3U\n#CINDER-EDITED:soon\n/x/a.flac\n").unwrap();
+        fs::write(
+            dir.0.join("odd.m3u8"),
+            "#EXTM3U\n#CINDER-EDITED:soon\n/x/a.flac\n",
+        )
+        .unwrap();
         let odd = Store::open(&dir.0);
-        assert!(odd.lists.iter().find(|l| l.name == "odd").unwrap().edited.is_some());
+        assert!(odd
+            .lists
+            .iter()
+            .find(|l| l.name == "odd")
+            .unwrap()
+            .edited
+            .is_some());
     }
 
     #[test]
@@ -693,12 +798,32 @@ mod tests {
         let id = store.create("Up Next").unwrap();
         let items: Vec<(String, String)> = ["b", "a", "b", "", "c"]
             .iter()
-            .map(|n| (if n.is_empty() { String::new() } else { format!("/x/{n}.flac") }, n.to_string()))
+            .map(|n| {
+                (
+                    if n.is_empty() {
+                        String::new()
+                    } else {
+                        format!("/x/{n}.flac")
+                    },
+                    n.to_string(),
+                )
+            })
             .collect();
         assert_eq!(store.add_many(id, &items).unwrap(), 3);
-        assert_eq!(uris(&Store::open(&dir.0).lists[0]), vec!["/x/b.flac", "/x/a.flac", "/x/c.flac"]);
-        assert_eq!(store.add_many(id, &items).unwrap(), 0, "a second save of the same list adds nothing");
-        assert_eq!(store.add_many(-1, &items).unwrap(), 0, "an unknown playlist takes nothing");
+        assert_eq!(
+            uris(&Store::open(&dir.0).lists[0]),
+            vec!["/x/b.flac", "/x/a.flac", "/x/c.flac"]
+        );
+        assert_eq!(
+            store.add_many(id, &items).unwrap(),
+            0,
+            "a second save of the same list adds nothing"
+        );
+        assert_eq!(
+            store.add_many(-1, &items).unwrap(),
+            0,
+            "an unknown playlist takes nothing"
+        );
     }
 
     #[test]
@@ -711,9 +836,15 @@ mod tests {
         }
         assert!(store.remove_at(id, 1).unwrap());
         assert_eq!(uris(store.get(id).unwrap()), vec!["/x/a.flac", "/x/c.flac"]);
-        assert!(!store.remove_at(id, 9).unwrap(), "an out-of-range row must not remove anything");
+        assert!(
+            !store.remove_at(id, 9).unwrap(),
+            "an out-of-range row must not remove anything"
+        );
         // and it survives the round trip
-        assert_eq!(uris(&Store::open(&dir.0).lists[0]), vec!["/x/a.flac", "/x/c.flac"]);
+        assert_eq!(
+            uris(&Store::open(&dir.0).lists[0]),
+            vec!["/x/a.flac", "/x/c.flac"]
+        );
     }
 
     #[test]
@@ -725,7 +856,10 @@ mod tests {
         store.rename(id, "  New   Name  ").unwrap();
 
         let reopened = Store::open(&dir.0);
-        assert_eq!(reopened.lists[0].name, "New Name", "whitespace is collapsed");
+        assert_eq!(
+            reopened.lists[0].name, "New Name",
+            "whitespace is collapsed"
+        );
         assert_eq!(reopened.lists[0].id, id, "renaming must not move the id");
         assert_eq!(reopened.lists[0].entries.len(), 1);
     }
@@ -750,7 +884,10 @@ mod tests {
         let id = store.create("2 a.m. / rain :: ЛЕТО").unwrap();
         let list = store.get(id).unwrap();
         let stem = list.file.file_stem().unwrap().to_str().unwrap();
-        assert!(!stem.contains('/') && !stem.contains(':'), "stem must be path-safe: {stem}");
+        assert!(
+            !stem.contains('/') && !stem.contains(':'),
+            "stem must be path-safe: {stem}"
+        );
         // The name the user typed survives in full, in the file, not in the file NAME.
         assert_eq!(Store::open(&dir.0).lists[0].name, "2 a.m. / rain :: ЛЕТО");
     }
@@ -791,14 +928,26 @@ mod tests {
         let mut store = Store::open(&d.0);
         let id = store.create("Night Bus").unwrap();
         store.add(id, "/contents/MUSIC/a.flac", "A - a").unwrap();
-        assert!(!store.get(id).unwrap().cover_is_custom(), "a new playlist has no chosen cover");
+        assert!(
+            !store.get(id).unwrap().cover_is_custom(),
+            "a new playlist has no chosen cover"
+        );
         // …and its AUTOMATIC cover is its first member.
-        assert_eq!(store.get(id).unwrap().cover_source().as_deref(), Some("/contents/MUSIC/a.flac"));
+        assert_eq!(
+            store.get(id).unwrap().cover_source().as_deref(),
+            Some("/contents/MUSIC/a.flac")
+        );
 
         assert!(store.set_cover(id, Some("/contents/MUSIC/b.flac")).unwrap());
-        assert!(!store.set_cover(id, Some("/contents/MUSIC/b.flac")).unwrap(), "no-op is reported");
+        assert!(
+            !store.set_cover(id, Some("/contents/MUSIC/b.flac")).unwrap(),
+            "no-op is reported"
+        );
         assert!(store.get(id).unwrap().cover_is_custom());
-        assert_eq!(store.get(id).unwrap().cover_source().as_deref(), Some("/contents/MUSIC/b.flac"));
+        assert_eq!(
+            store.get(id).unwrap().cover_source().as_deref(),
+            Some("/contents/MUSIC/b.flac")
+        );
 
         // It is IN THE FILE, and it survives adding a track and a rename — both rewrite the file,
         // and a cover dropped by an unrelated edit is exactly the bug this asserts against.
@@ -808,7 +957,11 @@ mod tests {
         store.rename(id, "Late Bus").unwrap();
         let reopened = Store::open(&d.0);
         let pl = reopened.get(id).unwrap();
-        assert_eq!(pl.cover.as_deref(), Some("/contents/MUSIC/b.flac"), "an edit dropped the cover");
+        assert_eq!(
+            pl.cover.as_deref(),
+            Some("/contents/MUSIC/b.flac"),
+            "an edit dropped the cover"
+        );
         assert_eq!(pl.name, "Late Bus");
         assert_eq!(uris(pl).len(), 2);
 
@@ -816,8 +969,13 @@ mod tests {
         let mut store = reopened;
         assert!(store.set_cover(id, None).unwrap());
         assert!(!store.get(id).unwrap().cover_is_custom());
-        assert_eq!(store.get(id).unwrap().cover_source().as_deref(), Some("/contents/MUSIC/a.flac"));
-        assert!(!fs::read_to_string(&store.get(id).unwrap().file).unwrap().contains("#EXTIMG"));
+        assert_eq!(
+            store.get(id).unwrap().cover_source().as_deref(),
+            Some("/contents/MUSIC/a.flac")
+        );
+        assert!(!fs::read_to_string(&store.get(id).unwrap().file)
+            .unwrap()
+            .contains("#EXTIMG"));
     }
 
     /// A picture dropped beside the playlist is its cover, with nothing to configure. This is the
@@ -833,8 +991,15 @@ mod tests {
 
         let store = Store::open(&d.0);
         let pl = store.get(id).unwrap();
-        assert_eq!(pl.cover_source().as_deref(), jpg.to_str(), "the sidecar wins over the member");
-        assert!(pl.cover_is_custom(), "a picture the owner placed is a chosen cover");
+        assert_eq!(
+            pl.cover_source().as_deref(),
+            jpg.to_str(),
+            "the sidecar wins over the member"
+        );
+        assert!(
+            pl.cover_is_custom(),
+            "a picture the owner placed is a chosen cover"
+        );
         assert!(pl.cover.is_none(), "…and it needed no #EXTIMG to say so");
         assert!(Playlist::cover_is_image(jpg.to_str().unwrap()));
         assert!(!Playlist::cover_is_image("/contents/MUSIC/a.flac"));
@@ -843,7 +1008,8 @@ mod tests {
         let mut store = store;
         store.set_cover(id, Some("/contents/MUSIC/z.flac")).unwrap();
         assert_eq!(
-            store.get(id).unwrap().cover_source().as_deref(), Some("/contents/MUSIC/z.flac"),
+            store.get(id).unwrap().cover_source().as_deref(),
+            Some("/contents/MUSIC/z.flac"),
         );
     }
 
@@ -852,18 +1018,28 @@ mod tests {
         let dir = Dir::new("plain");
         fs::write(dir.0.join("From PC.m3u8"), "/x/a.flac\r\n/x/b.flac\r\n").unwrap();
         let store = Store::open(&dir.0);
-        assert_eq!(store.lists[0].name, "From PC", "falls back to the file name");
+        assert_eq!(
+            store.lists[0].name, "From PC",
+            "falls back to the file name"
+        );
         assert_eq!(uris(&store.lists[0]).len(), 2);
     }
 
     #[test]
     fn m3u_and_windows_paths_supported() {
         let dir = Dir::new("m3u_win");
-        fs::write(dir.0.join("Synced Playlist.m3u"), "MUSIC\\Artist\\Album\\01%20Track.flac\r\n..\\MUSIC\\b.mp3\n").unwrap();
+        fs::write(
+            dir.0.join("Synced Playlist.m3u"),
+            "MUSIC\\Artist\\Album\\01%20Track.flac\r\n..\\MUSIC\\b.mp3\n",
+        )
+        .unwrap();
         let store = Store::open(&dir.0);
         assert_eq!(store.lists.len(), 1);
         assert_eq!(store.lists[0].name, "Synced Playlist");
-        assert_eq!(uris(&store.lists[0]), vec!["MUSIC/Artist/Album/01 Track.flac", "../MUSIC/b.mp3"]);
+        assert_eq!(
+            uris(&store.lists[0]),
+            vec!["MUSIC/Artist/Album/01 Track.flac", "../MUSIC/b.mp3"]
+        );
     }
 
     #[test]

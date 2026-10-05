@@ -52,7 +52,11 @@ impl SongRow {
     /// track artist. The same fallback `cinder-ffi` builds the Artists tab and the album groups
     /// with, so grouping by this can never disagree with what those screens show.
     pub fn group_artist(&self) -> &str {
-        if self.album_artist.is_empty() { &self.artist } else { &self.album_artist }
+        if self.album_artist.is_empty() {
+            &self.artist
+        } else {
+            &self.album_artist
+        }
     }
 }
 
@@ -281,11 +285,15 @@ impl SortRanks {
         let s = &lib.songs;
         let flat = lib.albums_flat();
         SortRanks {
-            title: dense_ranks(s.len(), |a, b| crate::collate::cmp(&s[a].title, &s[b].title)),
+            title: dense_ranks(s.len(), |a, b| {
+                crate::collate::cmp(&s[a].title, &s[b].title)
+            }),
             artist: dense_ranks(s.len(), |a, b| {
                 crate::collate::cmp_artist(&s[a].artist, &s[b].artist, lib.ignore_the)
             }),
-            album_name: dense_ranks(flat.len(), |a, b| crate::collate::cmp(&flat[a].name, &flat[b].name)),
+            album_name: dense_ranks(flat.len(), |a, b| {
+                crate::collate::cmp(&flat[a].name, &flat[b].name)
+            }),
             ignore_the: lib.ignore_the,
         }
     }
@@ -501,8 +509,10 @@ impl Library {
     /// arrives and whenever the setting changes — the lists themselves are built once.
     pub fn sort_artists(&mut self) {
         let ignore = self.ignore_the;
-        self.artists.sort_by(|a, b| crate::collate::cmp_artist(&a.name, &b.name, ignore));
-        self.album_groups.sort_by(|a, b| crate::collate::cmp_artist(&a.artist, &b.artist, ignore));
+        self.artists
+            .sort_by(|a, b| crate::collate::cmp_artist(&a.name, &b.name, ignore));
+        self.album_groups
+            .sort_by(|a, b| crate::collate::cmp_artist(&a.artist, &b.artist, ignore));
     }
 
     /// Everything the Library's orderings need, done once: the artist lists sorted under
@@ -531,7 +541,10 @@ impl Library {
 
     /// Flat list of albums in display order (Albums tab cursor indexes into this).
     pub fn albums_flat(&self) -> Vec<&AlbumRow> {
-        self.album_groups.iter().flat_map(|g| g.albums.iter()).collect()
+        self.album_groups
+            .iter()
+            .flat_map(|g| g.albums.iter())
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -568,7 +581,11 @@ impl Library {
                 sensme: 1 | (1 << (i % 4 + 1)) | if i % 3 == 0 { 1 << 4 } else { 0 },
                 album_artist: String::new(),
                 // Mostly FLAC with some MP3, so a saved view's FORMAT rule has something to split.
-                format: if i % 4 == 3 { Format::Mp3 } else { Format::Flac },
+                format: if i % 4 == 3 {
+                    Format::Mp3
+                } else {
+                    Format::Flac
+                },
             })
             .collect();
         let album_groups = data::ALBUM_GROUPS
@@ -644,26 +661,42 @@ impl Library {
         // Sample genres matching the ids the sample songs carry, so the host preview's picker and
         // filter are exercisable without a device.
         let genres = vec![
-            GenreRow { id: 1, name: "Alternative".into(), tracks: songs.iter().filter(|s| s.genre_id == 1).count() as u32 },
-            GenreRow { id: 2, name: "Electronic".into(), tracks: songs.iter().filter(|s| s.genre_id == 2).count() as u32 },
+            GenreRow {
+                id: 1,
+                name: "Alternative".into(),
+                tracks: songs.iter().filter(|s| s.genre_id == 1).count() as u32,
+            },
+            GenreRow {
+                id: 2,
+                name: "Electronic".into(),
+                tracks: songs.iter().filter(|s| s.genre_id == 2).count() as u32,
+            },
         ];
         let hires_tracks = songs.iter().filter(|s| s.is_hires).count() as u32;
         // The sample data has no paths behind it, so the host preview's folder tree is a small
         // hand-built one rather than a derived one — enough to exercise both row kinds.
         let folders = vec![
             FolderRow {
-                path: "/contents/Music".into(), name: "/contents/Music".into(),
-                parent: None, subdirs: vec![1, 2], tracks: Vec::new(),
+                path: "/contents/Music".into(),
+                name: "/contents/Music".into(),
+                parent: None,
+                subdirs: vec![1, 2],
+                tracks: Vec::new(),
                 total: songs.len() as u32,
             },
             FolderRow {
-                path: "/contents/Music/Hollow Pines".into(), name: "Hollow Pines".into(),
-                parent: Some(0), subdirs: Vec::new(),
-                tracks: songs.iter().take(4).cloned().collect(), total: 4,
+                path: "/contents/Music/Hollow Pines".into(),
+                name: "Hollow Pines".into(),
+                parent: Some(0),
+                subdirs: Vec::new(),
+                tracks: songs.iter().take(4).cloned().collect(),
+                total: 4,
             },
             FolderRow {
-                path: "/contents/Music/Vesper Lane".into(), name: "Vesper Lane".into(),
-                parent: Some(0), subdirs: Vec::new(),
+                path: "/contents/Music/Vesper Lane".into(),
+                name: "Vesper Lane".into(),
+                parent: Some(0),
+                subdirs: Vec::new(),
                 tracks: songs.iter().skip(4).cloned().collect(),
                 total: songs.len().saturating_sub(4) as u32,
             },
@@ -717,7 +750,11 @@ impl Library {
                 .map(|(i, _)| i as u32)
                 .collect();
             if !tracks.is_empty() {
-                self.channels.push(ChannelRow { id: id as u8, name, tracks });
+                self.channels.push(ChannelRow {
+                    id: id as u8,
+                    name,
+                    tracks,
+                });
             }
         }
     }
@@ -741,5 +778,10 @@ const SAMPLE_CHANNELS: [&str; 4] = ["Active", "Emotional", "Lounge", "Dance"];
 /// The time-of-day channels' ids and names, for the SensMe grid's "Now: Evening" line. The names
 /// are `cinder_db::SENSME_CHANNELS`'s, which this crate cannot depend on; a test in `cinder-ffi`
 /// holds the two tables together.
-pub const SENSME_TIME_NAMES: [(u8, &str); 5] =
-    [(8, "Morning"), (9, "Daytime"), (10, "Evening"), (11, "Night"), (12, "Midnight")];
+pub const SENSME_TIME_NAMES: [(u8, &str); 5] = [
+    (8, "Morning"),
+    (9, "Daytime"),
+    (10, "Evening"),
+    (11, "Night"),
+    (12, "Midnight"),
+];

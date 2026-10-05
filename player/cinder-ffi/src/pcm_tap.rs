@@ -183,7 +183,11 @@ pub fn stereo(slot: &Slot, payload: &[u8], offset: usize, n: usize) -> (Vec<f32>
     for f in from..to {
         let base = f * fb;
         let a = i16::from_le_bytes([payload[base], payload[base + 1]]) as f32 / 32768.0;
-        let b = if ch > 1 { i16::from_le_bytes([payload[base + 2], payload[base + 3]]) as f32 / 32768.0 } else { a };
+        let b = if ch > 1 {
+            i16::from_le_bytes([payload[base + 2], payload[base + 3]]) as f32 / 32768.0
+        } else {
+            a
+        };
         l.push(a);
         r.push(b);
     }
@@ -240,12 +244,22 @@ pub struct Tap {
 
 impl Tap {
     pub fn new(dir: impl Into<PathBuf>) -> Tap {
-        Tap { dir: dir.into(), hist: Default::default(), seen: [-1; SLOTS], fresh_at: None, file: None, searched: None }
+        Tap {
+            dir: dir.into(),
+            hist: Default::default(),
+            seen: [-1; SLOTS],
+            fresh_at: None,
+            file: None,
+            searched: None,
+        }
     }
 
     fn open(&mut self) -> Option<&File> {
         if self.file.is_none() {
-            if self.searched.is_some_and(|t| t.elapsed().as_millis() < 1000) {
+            if self
+                .searched
+                .is_some_and(|t| t.elapsed().as_millis() < 1000)
+            {
                 return None;
             }
             self.searched = Some(std::time::Instant::now());
@@ -269,7 +283,10 @@ impl Tap {
         // (PlayerService restarted; the old one stays readable through the open handle). Look
         // again, without throwing away what was kept. A MISS is not a reason to: until 2026-10-04
         // every miss closed the file, and the second it then took to reopen was a hole.
-        if self.fresh_at.is_some_and(|t| t.elapsed().as_millis() > 2000) {
+        if self
+            .fresh_at
+            .is_some_and(|t| t.elapsed().as_millis() > 2000)
+        {
             self.file = None;
             self.fresh_at = None;
         }
@@ -291,7 +308,8 @@ impl Tap {
                     continue;
                 }
                 let mut payload = vec![0u8; s.bytes];
-                f.read_exact_at(&mut payload, (k * SLOT_BYTES + HEADER_BYTES) as u64).ok()?;
+                f.read_exact_at(&mut payload, (k * SLOT_BYTES + HEADER_BYTES) as u64)
+                    .ok()?;
                 // A slot refilled while it was being copied is half one packet and half the next:
                 // leave it for the next call, when its header has settled.
                 f.read_exact_at(&mut hdr, (k * SLOT_BYTES) as u64).ok()?;
@@ -300,7 +318,9 @@ impl Tap {
                 }
             }
         }
-        let Some(newest) = fresh.iter().map(|(_, s, _)| s.pts_us).max() else { return Some(()) };
+        let Some(newest) = fresh.iter().map(|(_, s, _)| s.pts_us).max() else {
+            return Some(());
+        };
         self.fresh_at = Some(std::time::Instant::now());
         for (k, s, payload) in fresh {
             self.seen[k] = s.pts_us;
@@ -311,7 +331,8 @@ impl Tap {
         }
         // Keep what leads up to the newest packet. A seek or a new track lands its packets outside
         // that span on one side or the other, and the old ones go.
-        self.hist.retain(|(h, _)| h.pts_us > newest - HIST_US && h.pts_us <= newest + HIST_US);
+        self.hist
+            .retain(|(h, _)| h.pts_us > newest - HIST_US && h.pts_us <= newest + HIST_US);
         Some(())
     }
 
@@ -321,12 +342,20 @@ impl Tap {
         let (s, payload) = &self.hist[k];
         let s = *s;
         // A packet that does not cover the position is read from its start.
-        let offset = if off_us == 0 { ((t_us - s.pts_us) * s.rate as i64 / 1_000_000).max(0) as usize } else { 0 };
+        let offset = if off_us == 0 {
+            ((t_us - s.pts_us) * s.rate as i64 / 1_000_000).max(0) as usize
+        } else {
+            0
+        };
         let (mut left, mut right) = stereo(&s, payload, offset, n);
         let mut last = s.pts_us + s.span_us();
         // Carry on into the packets that follow without a gap, until the window is full.
         for (o, p2) in self.hist.iter().skip(k + 1) {
-            if left.len() >= n || o.rate != s.rate || o.channels != s.channels || (o.pts_us - last).abs() > 1_000 {
+            if left.len() >= n
+                || o.rate != s.rate
+                || o.channels != s.channels
+                || (o.pts_us - last).abs() > 1_000
+            {
                 break;
             }
             let (l2, r2) = stereo(o, p2, 0, n - left.len());
@@ -334,8 +363,21 @@ impl Tap {
             right.extend(r2);
             last = o.pts_us + o.span_us();
         }
-        let samples: Vec<f32> = left.iter().zip(&right).map(|(a, b)| (a + b) * 0.5).collect();
-        (!samples.is_empty()).then_some(Window { rate: s.rate, samples, left, right, slot: k, first_us: s.pts_us, last_us: last, off_us })
+        let samples: Vec<f32> = left
+            .iter()
+            .zip(&right)
+            .map(|(a, b)| (a + b) * 0.5)
+            .collect();
+        (!samples.is_empty()).then_some(Window {
+            rate: s.rate,
+            samples,
+            left,
+            right,
+            slot: k,
+            first_us: s.pts_us,
+            last_us: last,
+            off_us,
+        })
     }
 
     /// What the tap holds right now, as `(earliest start, latest end)` in µs — for the log line
@@ -347,7 +389,6 @@ impl Tap {
         Some((a, b))
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -377,7 +418,15 @@ mod tests {
         let d = tmp("history");
         let name = "MappedShmHolderTK_MUSIC_PID_478_PKT_131072_QUE_5_2_packet";
         let step = 46_439u32;
-        let at = |first: u32| [first, first + step, first + 2 * step, first + 3 * step, first + 4 * step];
+        let at = |first: u32| {
+            [
+                first,
+                first + step,
+                first + 2 * step,
+                first + 3 * step,
+                first + 4 * step,
+            ]
+        };
         queue(&d, name, at(10_000_000), [(8192, 8192); 5]);
         let mut tap = Tap::new(&d);
         // What is heard now is 600 ms before anything in the queue: nothing exact to draw yet, so
@@ -392,7 +441,10 @@ mod tests {
         assert_eq!(tap.held().map(|(a, _)| a), Some(10_000_000));
         // A seek back to the start: the kept packets are from another place and go.
         queue(&d, name, at(1_000_000), [(0, 0); 5]);
-        assert!(tap.window(10_000_100, 2048).is_none(), "the old place is gone after a seek");
+        assert!(
+            tap.window(10_000_100, 2048).is_none(),
+            "the old place is gone after a seek"
+        );
         assert_eq!(tap.held().map(|(a, _)| a), Some(1_000_000));
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -426,22 +478,34 @@ mod tests {
     fn the_devices_header_parses() {
         let s = Slot::parse(&header(44100, 16, 2, 130_127_526, 8192)).unwrap();
         assert_eq!((s.rate, s.channels, s.frames()), (44100, 2, 2048));
-        assert_eq!(s.span_us(), 46_439, "2048 / 44100 s, as the timestamps step");
-        assert!(s.covers(130_127_526) && s.covers(130_127_526 + 46_000) && !s.covers(130_127_526 + 46_439));
+        assert_eq!(
+            s.span_us(),
+            46_439,
+            "2048 / 44100 s, as the timestamps step"
+        );
+        assert!(
+            s.covers(130_127_526)
+                && s.covers(130_127_526 + 46_000)
+                && !s.covers(130_127_526 + 46_439)
+        );
     }
 
     #[test]
     fn anything_not_seen_on_the_device_is_refused() {
         for (rate, bits, ch, bytes) in [
-            (44100, 24, 2, 8192),   // 24-bit: layout not seen
-            (44100, 1, 2, 8192),    // DSD-like
-            (44100, 16, 6, 8196),   // six channels
-            (0, 16, 2, 8192),       // no rate
-            (44100, 16, 2, 0),      // empty
+            (44100, 24, 2, 8192),    // 24-bit: layout not seen
+            (44100, 1, 2, 8192),     // DSD-like
+            (44100, 16, 6, 8196),    // six channels
+            (0, 16, 2, 8192),        // no rate
+            (44100, 16, 2, 0),       // empty
             (44100, 16, 2, 200_000), // past the slot
-            (44100, 16, 2, 8190),   // not whole frames
+            (44100, 16, 2, 8190),    // not whole frames
         ] {
-            assert_eq!(Slot::parse(&header(rate, bits, ch, 0, bytes)), None, "{rate} {bits} {ch} {bytes}");
+            assert_eq!(
+                Slot::parse(&header(rate, bits, ch, 0, bytes)),
+                None,
+                "{rate} {bits} {ch} {bytes}"
+            );
         }
         assert_eq!(Slot::parse(&[0u8; 20]), None, "a short read");
     }
@@ -451,18 +515,47 @@ mod tests {
     #[test]
     fn the_slot_covering_the_position_is_chosen() {
         let at = |pts: u32| Slot::parse(&header(44100, 16, 2, pts, 8192));
-        let slots = [at(1_000_000), at(1_139_319), at(1_046_439), at(1_092_879), None];
+        let slots = [
+            at(1_000_000),
+            at(1_139_319),
+            at(1_046_439),
+            at(1_092_879),
+            None,
+        ];
         assert_eq!(choose(&slots, 1_050_000), Some(2));
         assert_eq!(choose(&slots, 1_000_000), Some(0));
         assert_eq!(choose(&slots, 1_185_757), Some(1));
-        assert_eq!(choose(&slots, 999_999), None, "already played and overwritten");
+        assert_eq!(
+            choose(&slots, 999_999),
+            None,
+            "already played and overwritten"
+        );
         assert_eq!(choose(&slots, 2_000_000), None, "not decoded yet");
         // The nearest slot stands in when nothing covers the position, inside NEAR_US only.
-        assert_eq!(choose_near(&slots, 1_050_000), Some((2, 0)), "a covering slot is not 'near'");
-        assert_eq!(choose_near(&slots, 999_999).map(|(k, _)| k), Some(0), "just behind the queue");
+        assert_eq!(
+            choose_near(&slots, 1_050_000),
+            Some((2, 0)),
+            "a covering slot is not 'near'"
+        );
+        assert_eq!(
+            choose_near(&slots, 999_999).map(|(k, _)| k),
+            Some(0),
+            "just behind the queue"
+        );
         assert_eq!(choose_near(&slots, 999_999).map(|(_, g)| g), Some(1));
-        let far = slots.iter().flatten().map(|s| s.pts_us + s.span_us()).max().unwrap() + NEAR_US + 1;
-        assert_eq!(choose_near(&slots, far), None, "a seek away: nothing true to draw");
+        let far = slots
+            .iter()
+            .flatten()
+            .map(|s| s.pts_us + s.span_us())
+            .max()
+            .unwrap()
+            + NEAR_US
+            + 1;
+        assert_eq!(
+            choose_near(&slots, far),
+            None,
+            "a seek away: nothing true to draw"
+        );
         assert_eq!(choose_near(&slots, 1_000_000 - NEAR_US - 1), None);
     }
 
@@ -487,26 +580,35 @@ mod tests {
     #[test]
     fn a_window_is_read_from_the_queue_file_and_runs_on_into_the_next_slot() {
         let d = tmp("window");
-        std::fs::write(d.join("MappedShmHolderTK_MUSIC_PID_478_PKT_131072_QUE_5_2"), [0u8; 216]).unwrap();
+        std::fs::write(
+            d.join("MappedShmHolderTK_MUSIC_PID_478_PKT_131072_QUE_5_2"),
+            [0u8; 216],
+        )
+        .unwrap();
         std::fs::write(d.join("bt.oppc.shm"), [0u8; 16]).unwrap();
         let pts = [2_000_000, 2_046_439, 1_860_000, 1_906_000, 1_953_000];
-        queue(&d, "MappedShmHolderTK_MUSIC_PID_478_PKT_131072_QUE_5_2_packet", pts, [
-            (8192, 8192),
-            (-8192, -8192),
-            (0, 0),
-            (0, 0),
-            (0, 0),
-        ]);
+        queue(
+            &d,
+            "MappedShmHolderTK_MUSIC_PID_478_PKT_131072_QUE_5_2_packet",
+            pts,
+            [(8192, 8192), (-8192, -8192), (0, 0), (0, 0), (0, 0)],
+        );
         let mut tap = Tap::new(&d);
         // 1000 frames before slot 0 ends: 1000 of slot 0, then 1048 of slot 1.
         let t = 2_000_000 + (1048i64 * 1_000_000 / 44100) + 1;
         let w = tap.window(t, 2048).expect("a window");
         // `slot` is the packet's place in the tap's history, which is in time order: three older
         // packets come before this one.
-        assert_eq!((w.rate, w.slot, w.samples.len(), w.off_us), (44100, 3, 2048, 0));
+        assert_eq!(
+            (w.rate, w.slot, w.samples.len(), w.off_us),
+            (44100, 3, 2048, 0)
+        );
         assert_eq!(w.samples[0], 0.25);
         assert_eq!(w.samples[2047], -0.25, "the tail came from the next slot");
-        assert!(tap.window(5_000_000, 2048).is_none(), "a moment the queue does not hold");
+        assert!(
+            tap.window(5_000_000, 2048).is_none(),
+            "a moment the queue does not hold"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -524,7 +626,13 @@ mod tests {
     /// The stereo read is the mono read, channel by channel: their mean is exactly `mono`.
     #[test]
     fn stereo_channels_average_to_mono() {
-        let s = Slot { rate: 44100, bits: 16, channels: 2, pts_us: 0, bytes: 40 };
+        let s = Slot {
+            rate: 44100,
+            bits: 16,
+            channels: 2,
+            pts_us: 0,
+            bytes: 40,
+        };
         let mut p = Vec::new();
         for i in 0..10i16 {
             p.extend_from_slice(&(i * 300).to_le_bytes());
@@ -537,7 +645,11 @@ mod tests {
         }
         assert_eq!(l[2], 600.0 / 32768.0);
         assert_eq!(r[2], -200.0 / 32768.0);
-        let one = Slot { channels: 1, bytes: 20, ..s };
+        let one = Slot {
+            channels: 1,
+            bytes: 20,
+            ..s
+        };
         let (a, b) = stereo(&one, &p[..20], 0, 10);
         assert_eq!(a, b, "one channel is both sides");
     }

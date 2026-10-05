@@ -436,7 +436,10 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
             FreeConsole();
         }
         SetProcessDPIAware();
-        let icc = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: 0x0000_00FF };
+        let icc = INITCOMMONCONTROLSEX {
+            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: 0x0000_00FF,
+        };
         InitCommonControlsEx(&icc);
     }
 
@@ -488,12 +491,19 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
             let dc = GetDC(std::ptr::null_mut());
             let d = GetDeviceCaps(dc, LOGPIXELSX);
             ReleaseDC(std::ptr::null_mut(), dc);
-            if d <= 0 { 96u32 } else { d as u32 }
+            if d <= 0 {
+                96u32
+            } else {
+                d as u32
+            }
         };
         let sc = |px: i32| px * dpi as i32 / 96;
         // Taller than it was (620), for the Options page's description panel — but never taller
         // than the work area, or the Continue button would open below the taskbar.
-        let (ww, wh) = (sc(760), sc(680).min(GetSystemMetrics(SM_CYMAXIMIZED)).max(sc(560)));
+        let (ww, wh) = (
+            sc(760),
+            sc(680).min(GetSystemMetrics(SM_CYMAXIMIZED)).max(sc(560)),
+        );
         // MEASURED FROM THE LAYOUT, not guessed: the Home page needs the band (84), the drive
         // row and the state line (74), three 72 px cards, two lines of footer and the bottom
         // button row with its padding. At the old 460 the cards, the footer and the buttons were
@@ -507,7 +517,11 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
             let right = GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN);
             (right + sc(40), 0, WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
         } else {
-            ((GetSystemMetrics(SM_CXSCREEN) - ww) / 2, ((GetSystemMetrics(SM_CYSCREEN) - wh) / 2).max(0), 0)
+            (
+                (GetSystemMetrics(SM_CXSCREEN) - ww) / 2,
+                ((GetSystemMetrics(SM_CYSCREEN) - wh) / 2).max(0),
+                0,
+            )
         };
         let title = w(&format!(
             "Cinder installer {}{}",
@@ -537,7 +551,22 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
 
         let mk = |px: i32, weight: i32, face: &str| -> HFONT {
             let f = w(face);
-            CreateFontW(-(px * dpi as i32 / 96), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, f.as_ptr())
+            CreateFontW(
+                -(px * dpi as i32 / 96),
+                0,
+                0,
+                0,
+                weight,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                5,
+                0,
+                f.as_ptr(),
+            )
         };
 
         let mut app = Box::new(App {
@@ -626,7 +655,15 @@ extern "system" {
     fn CreateCompatibleDC(dc: HDC) -> HDC;
     fn CreateCompatibleBitmap(dc: HDC, w: i32, h: i32) -> *mut c_void;
     fn DeleteDC(dc: HDC) -> i32;
-    fn GetDIBits(dc: HDC, bmp: *mut c_void, start: u32, lines: u32, bits: *mut c_void, info: *mut BITMAPINFO, usage: u32) -> i32;
+    fn GetDIBits(
+        dc: HDC,
+        bmp: *mut c_void,
+        start: u32,
+        lines: u32,
+        bits: *mut c_void,
+        info: *mut BITMAPINFO,
+        usage: u32,
+    ) -> i32;
 }
 
 const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
@@ -686,7 +723,10 @@ pub fn screenshots(dir: &std::path::Path) -> i32 {
         // PPM: a one-line header and the pixels. render_installer_screenshots.sh makes the PNG.
         let path = dir.join(format!("{name}.ppm"));
         match capture(hwnd) {
-            Some((wd, ht, rgb)) => match std::fs::write(&path, [format!("P6\n{wd} {ht}\n255\n").as_bytes(), &rgb].concat()) {
+            Some((wd, ht, rgb)) => match std::fs::write(
+                &path,
+                [format!("P6\n{wd} {ht}\n255\n").as_bytes(), &rgb].concat(),
+            ) {
                 Ok(()) => println!("wrote {} ({wd}x{ht})", path.display()),
                 Err(e) => {
                     eprintln!("screenshots: {}: {e}", path.display());
@@ -762,14 +802,25 @@ fn capture_with(hwnd: HWND, flags: u32) -> Option<(u32, u32, Vec<u8>)> {
             masks: [0; 3],
         };
         let mut bgra = vec![0u8; wd as usize * ht as usize * 4];
-        let lines = GetDIBits(mem, bmp, 0, ht as u32, bgra.as_mut_ptr().cast(), &mut info, 0);
+        let lines = GetDIBits(
+            mem,
+            bmp,
+            0,
+            ht as u32,
+            bgra.as_mut_ptr().cast(),
+            &mut info,
+            0,
+        );
         DeleteObject(bmp);
         DeleteDC(mem);
         ReleaseDC(std::ptr::null_mut(), screen);
         if printed == 0 || lines != ht {
             return None;
         }
-        let rgb = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0]]).collect();
+        let rgb = bgra
+            .chunks_exact(4)
+            .flat_map(|p| [p[2], p[1], p[0]])
+            .collect();
         Some((wd as u32, ht as u32, rgb))
     }
 }
@@ -804,7 +855,10 @@ fn confirm_and_clean(parent: HWND, target: &std::path::Path, names: &[String]) {
         .filter_map(|(n, r)| r.err().map(|e| format!("{n}: {e}")))
         .collect();
     if !failed.is_empty() {
-        let t = w(&format!("Some files could not be removed:\n\n{}", failed.join("\n")));
+        let t = w(&format!(
+            "Some files could not be removed:\n\n{}",
+            failed.join("\n")
+        ));
         unsafe { MessageBoxW(parent, t.as_ptr(), c.as_ptr(), MB_ICONWARNING) };
     }
 }
@@ -880,7 +934,14 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
             // SAFETY: both strings are NUL-terminated locals held across the call.
             if MessageBoxW(h, t.as_ptr(), c.as_ptr(), flags) == IDYES && !url.is_empty() {
                 let (verb, file) = (w("open"), w(&url));
-                ShellExecuteW(h, verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOW);
+                ShellExecuteW(
+                    h,
+                    verb.as_ptr(),
+                    file.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    SW_SHOW,
+                );
             }
             0
         }
@@ -998,7 +1059,13 @@ impl App {
         let fb = self.font_bold;
         match self.page {
             Page::Home => {
-                self.drive = self.mk("COMBOBOX", "", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, ID_DRIVE, f);
+                self.drive = self.mk(
+                    "COMBOBOX",
+                    "",
+                    CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL,
+                    ID_DRIVE,
+                    f,
+                );
                 for p in &self.players.clone() {
                     let t = w(&p.display().to_string());
                     // SAFETY: t outlives the message.
@@ -1012,24 +1079,59 @@ impl App {
                 self.b_rescan = self.mk("BUTTON", "Rescan", WS_TABSTOP, ID_RESCAN, f);
 
                 let status = self.state.summary();
-                self.status = self.mk("STATIC", &status, SS_NOPREFIX | SS_ENDELLIPSIS, ID_STATUS, f);
+                self.status = self.mk(
+                    "STATIC",
+                    &status,
+                    SS_NOPREFIX | SS_ENDELLIPSIS,
+                    ID_STATUS,
+                    f,
+                );
 
                 let have = self.target.is_some();
                 let present = self.state.present();
-                self.b_install = self.mk("BUTTON", "Install Cinder\nFresh install: choose the optional parts, then flash.", BS_MULTILINE | WS_TABSTOP, ID_INSTALL, fb);
-                self.b_update = self.mk("BUTTON", "Update Cinder\nSame components as last time, new build.", BS_MULTILINE | WS_TABSTOP, ID_UPDATE, fb);
-                self.b_uninstall = self.mk("BUTTON", "Uninstall\nPut the stock Sony player back.", BS_MULTILINE | WS_TABSTOP, ID_UNINSTALL, fb);
+                self.b_install = self.mk(
+                    "BUTTON",
+                    "Install Cinder\nFresh install: choose the optional parts, then flash.",
+                    BS_MULTILINE | WS_TABSTOP,
+                    ID_INSTALL,
+                    fb,
+                );
+                self.b_update = self.mk(
+                    "BUTTON",
+                    "Update Cinder\nSame components as last time, new build.",
+                    BS_MULTILINE | WS_TABSTOP,
+                    ID_UPDATE,
+                    fb,
+                );
+                self.b_uninstall = self.mk(
+                    "BUTTON",
+                    "Uninstall\nPut the stock Sony player back.",
+                    BS_MULTILINE | WS_TABSTOP,
+                    ID_UNINSTALL,
+                    fb,
+                );
                 // SAFETY: all three handles were just created by `mk`.
                 unsafe {
                     EnableWindow(self.b_install, i32::from(have));
                     EnableWindow(self.b_update, i32::from(have && present));
                     EnableWindow(self.b_uninstall, i32::from(have));
                 }
-                self.b_check = self.mk("BUTTON", "Check for a newer release", WS_TABSTOP, ID_CHECK, f);
+                self.b_check = self.mk(
+                    "BUTTON",
+                    "Check for a newer release",
+                    WS_TABSTOP,
+                    ID_CHECK,
+                    f,
+                );
                 if !self.state.leftovers.is_empty() {
                     let n = self.state.leftovers.len();
-                    self.b_clean =
-                        self.mk("BUTTON", &format!("Clean up {n} staged files"), WS_TABSTOP, ID_CLEAN, f);
+                    self.b_clean = self.mk(
+                        "BUTTON",
+                        &format!("Clean up {n} staged files"),
+                        WS_TABSTOP,
+                        ID_CLEAN,
+                        f,
+                    );
                 }
                 // What the drive says about this player outranks the generic hint: Walkman One
                 // (the install cannot take), or why the last start landed on Sony's player.
@@ -1053,14 +1155,27 @@ impl App {
                     let mut label: HWND = std::ptr::null_mut();
                     let h = match &c.kind {
                         Kind::Bool => {
-                            let h = self.mk("BUTTON", &c.title, BS_AUTOCHECKBOX | WS_TABSTOP, id, f);
+                            let h =
+                                self.mk("BUTTON", &c.title, BS_AUTOCHECKBOX | WS_TABSTOP, id, f);
                             // SAFETY: h is live.
                             unsafe { SendMessageW(h, BM_SETCHECK, usize::from(c.is_on()), 0) };
                             h
                         }
                         Kind::Enum(vals) => {
-                            label = self.mk("STATIC", &format!("{}:", c.title), SS_NOPREFIX | SS_ENDELLIPSIS, id + 1000, f);
-                            let h = self.mk("COMBOBOX", "", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, id, f);
+                            label = self.mk(
+                                "STATIC",
+                                &format!("{}:", c.title),
+                                SS_NOPREFIX | SS_ENDELLIPSIS,
+                                id + 1000,
+                                f,
+                            );
+                            let h = self.mk(
+                                "COMBOBOX",
+                                "",
+                                CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL,
+                                id,
+                                f,
+                            );
                             // The choice's LABEL, not its value: `wm1a` and `pv2` mean nothing to
                             // the person choosing. The index still maps to `vals`.
                             for v in vals {
@@ -1091,7 +1206,13 @@ impl App {
                     f,
                 );
                 self.back = self.mk("BUTTON", "Back", WS_TABSTOP, ID_BACK, f);
-                self.next = self.mk("BUTTON", "Continue", BS_DEFPUSHBUTTON | WS_TABSTOP, ID_NEXT, f);
+                self.next = self.mk(
+                    "BUTTON",
+                    "Continue",
+                    BS_DEFPUSHBUTTON | WS_TABSTOP,
+                    ID_NEXT,
+                    f,
+                );
                 self.show_desc(0);
             }
             Page::Confirm => {
@@ -1123,7 +1244,12 @@ impl App {
                 self.log = self.mk(
                     "EDIT",
                     "",
-                    ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
+                    ES_MULTILINE
+                        | ES_READONLY
+                        | ES_AUTOVSCROLL
+                        | WS_VSCROLL
+                        | WS_BORDER
+                        | WS_TABSTOP,
                     ID_LOG,
                     self.font_mono,
                 );
@@ -1144,7 +1270,11 @@ impl App {
     }
 
     fn confirm_text(&self) -> String {
-        let target = self.target.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+        let target = self
+            .target
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         if self.action.is_removal() {
             let mut s = String::from(
                 "UNINSTALL\r\n\r\n\
@@ -1171,7 +1301,10 @@ impl App {
         }
 
         let plan = stage::plan(self.action, &self.comps, crate::CHANNEL);
-        let mut s = format!("{}\r\n\r\nPlayer:  {target}\r\n\r\n", self.action.verb().to_uppercase());
+        let mut s = format!(
+            "{}\r\n\r\nPlayer:  {target}\r\n\r\n",
+            self.action.verb().to_uppercase()
+        );
         for c in &self.comps {
             s.push_str(&format!("    {}:  {}\r\n", c.title, c.shown()));
         }
@@ -1260,7 +1393,11 @@ impl App {
                         crate::catalogue::apply_saved(&mut self.comps, &text);
                     }
                 }
-                self.go(if self.action.is_removal() { Page::Confirm } else { Page::Options });
+                self.go(if self.action.is_removal() {
+                    Page::Confirm
+                } else {
+                    Page::Options
+                });
             }
             ID_CHECK => self.check_release(),
             ID_BACK => match self.page {
@@ -1347,7 +1484,9 @@ impl App {
     }
 
     fn start(&mut self) {
-        let Some(target) = self.target.clone() else { return };
+        let Some(target) = self.target.clone() else {
+            return;
+        };
         let action = self.action;
         let comps = self.comps.clone();
         let dry = self.dry;
@@ -1368,7 +1507,10 @@ impl App {
         if self.log.is_null() {
             return;
         }
-        let lines: Vec<String> = QUEUE.lock().map(|mut q| q.drain(..).collect()).unwrap_or_default();
+        let lines: Vec<String> = QUEUE
+            .lock()
+            .map(|mut q| q.drain(..).collect())
+            .unwrap_or_default();
         for line in lines {
             self.log_text.push_str(&line);
             self.log_text.push_str("\r\n");
@@ -1422,14 +1564,29 @@ impl App {
             Page::Home => {
                 let mut y = head + pad;
                 mv(self.drive, pad, y, wd - pad * 2 - self.s(108), self.s(240));
-                mv(self.b_rescan, wd - pad - self.s(100), y, self.s(100), self.s(26));
+                mv(
+                    self.b_rescan,
+                    wd - pad - self.s(100),
+                    y,
+                    self.s(100),
+                    self.s(26),
+                );
                 y += row + self.s(4);
                 mv(self.status, pad, y, wd - pad * 2, row);
                 y += row + self.s(10);
 
                 let card = self.s(62);
-                for (n, h) in [self.b_install, self.b_update, self.b_uninstall].into_iter().enumerate() {
-                    mv(h, pad, y + n as i32 * (card + self.s(10)), wd - pad * 2, card);
+                for (n, h) in [self.b_install, self.b_update, self.b_uninstall]
+                    .into_iter()
+                    .enumerate()
+                {
+                    mv(
+                        h,
+                        pad,
+                        y + n as i32 * (card + self.s(10)),
+                        wd - pad * 2,
+                        card,
+                    );
                 }
                 let cards_end = y + 3 * (card + self.s(10));
                 let bottom = ht - pad - btn_h;
@@ -1439,9 +1596,19 @@ impl App {
                 // at the old minimum window size it was drawn across it, which put grey body text
                 // over a button's own label and made both unreadable.
                 // three lines when there is an advisory to say — the Walkman One one wraps
-                let hint_rows = if self.state.advisory().is_some() { 3 } else { 2 };
+                let hint_rows = if self.state.advisory().is_some() {
+                    3
+                } else {
+                    2
+                };
                 let hint_top = (bottom - row * hint_rows - self.s(8)).max(cards_end + self.s(4));
-                mv(self.hint, pad, hint_top, wd - pad * 2, (bottom - hint_top - self.s(4)).max(row));
+                mv(
+                    self.hint,
+                    pad,
+                    hint_top,
+                    wd - pad * 2,
+                    (bottom - hint_top - self.s(4)).max(row),
+                );
             }
             Page::Options => {
                 let mut y = head + pad;
@@ -1458,11 +1625,15 @@ impl App {
                 // rows take what remains, and the step tightens before anything overlaps.
                 let n = self.comp_ctl.len().max(1) as i32;
                 let rows_h = n * self.s(30);
-                let hint_h = (bottom - self.s(10) - (y + rows_h + self.s(8)))
-                    .clamp(self.s(52), self.s(260));
+                let hint_h =
+                    (bottom - self.s(10) - (y + rows_h + self.s(8))).clamp(self.s(52), self.s(260));
                 let hint_top = bottom - hint_h - self.s(10);
                 let space = (hint_top - y - self.s(8)).max(self.s(24));
-                let step = if rows_h > space { (space / n).max(self.s(22)) } else { self.s(30) };
+                let step = if rows_h > space {
+                    (space / n).max(self.s(22))
+                } else {
+                    self.s(30)
+                };
 
                 for (_, h, label) in self.comp_ctl.clone() {
                     if label.is_null() {
@@ -1471,20 +1642,44 @@ impl App {
                         // An enum row is "Label:  [combo]" — the label takes the left, the combo a
                         // fixed slot on the right so the drop-downs line up down the page.
                         let cw = self.s(210);
-                        mv(label, pad + self.s(4), y + self.s(4), wd - pad * 2 - cw - self.s(16), self.s(20));
+                        mv(
+                            label,
+                            pad + self.s(4),
+                            y + self.s(4),
+                            wd - pad * 2 - cw - self.s(16),
+                            self.s(20),
+                        );
                         mv(h, wd - pad - cw, y, cw, self.s(240));
                     }
                     y += step;
                 }
                 mv(self.hint, pad, hint_top, wd - pad * 2, hint_h);
                 mv(self.back, pad, bottom, self.s(110), btn_h);
-                mv(self.next, wd - pad - self.s(150), bottom, self.s(150), btn_h);
+                mv(
+                    self.next,
+                    wd - pad - self.s(150),
+                    bottom,
+                    self.s(150),
+                    btn_h,
+                );
             }
             Page::Confirm => {
                 let bottom = ht - pad - btn_h;
-                mv(self.body, pad, head + pad, wd - pad * 2, bottom - head - pad * 2);
+                mv(
+                    self.body,
+                    pad,
+                    head + pad,
+                    wd - pad * 2,
+                    bottom - head - pad * 2,
+                );
                 mv(self.back, pad, bottom, self.s(110), btn_h);
-                mv(self.next, wd - pad - self.s(190), bottom, self.s(190), btn_h);
+                mv(
+                    self.next,
+                    wd - pad - self.s(190),
+                    bottom,
+                    self.s(190),
+                    btn_h,
+                );
             }
             Page::Working | Page::Done => {
                 let bottom = ht - pad - btn_h;
@@ -1492,10 +1687,22 @@ impl App {
                 // Cinder", or where it stopped. `paint` drew it from head+4 to head+28 while the
                 // log started at head+22, so the sentence that reports the OUTCOME of the whole
                 // install was half-covered by the control on top of it. The log starts below it.
-                let top = head + pad + if self.page == Page::Done { self.s(26) } else { 0 };
+                let top = head
+                    + pad
+                    + if self.page == Page::Done {
+                        self.s(26)
+                    } else {
+                        0
+                    };
                 mv(self.log, pad, top, wd - pad * 2, bottom - top - pad);
                 mv(self.back, pad, bottom, self.s(130), btn_h);
-                mv(self.next, wd - pad - self.s(130), bottom, self.s(130), btn_h);
+                mv(
+                    self.next,
+                    wd - pad - self.s(130),
+                    bottom,
+                    self.s(130),
+                    btn_h,
+                );
             }
         }
     }
@@ -1510,9 +1717,19 @@ impl App {
             FillRect(dc, &rc, self.brush_bg);
 
             let head = self.s(84);
-            let band = RECT { left: 0, top: 0, right: rc.right, bottom: head };
+            let band = RECT {
+                left: 0,
+                top: 0,
+                right: rc.right,
+                bottom: head,
+            };
             FillRect(dc, &band, self.brush_panel);
-            let rule = RECT { left: 0, top: head - self.s(2), right: rc.right, bottom: head };
+            let rule = RECT {
+                left: 0,
+                top: head - self.s(2),
+                right: rc.right,
+                bottom: head,
+            };
             let accent = CreateSolidBrush(C_ACCENT);
             FillRect(dc, &rule, accent);
             DeleteObject(accent);
@@ -1522,22 +1739,41 @@ impl App {
 
             SelectObject(dc, self.font_big);
             SetTextColor(dc, C_BAND_TEXT);
-            let mut r = RECT { left: pad, top: self.s(14), right: rc.right - pad, bottom: self.s(52) };
+            let mut r = RECT {
+                left: pad,
+                top: self.s(14),
+                right: rc.right - pad,
+                bottom: self.s(52),
+            };
             let t = w("Cinder");
             DrawTextW(dc, t.as_ptr(), -1, &mut r, DT_LEFT);
 
             SelectObject(dc, self.font);
             SetTextColor(dc, C_BAND_DIM);
-            let mut r = RECT { left: pad, top: self.s(50), right: rc.right - pad, bottom: head - self.s(6) };
+            let mut r = RECT {
+                left: pad,
+                top: self.s(50),
+                right: rc.right - pad,
+                bottom: head - self.s(6),
+            };
             let sub = w("Custom firmware for the Sony NW-A50 series");
             DrawTextW(dc, sub.as_ptr(), -1, &mut r, DT_LEFT | DT_END_ELLIPSIS);
 
             let stamp = w(&if self.dry {
-                format!("{}  ·  {} channel  ·  DRY RUN", crate::VERSION, crate::CHANNEL)
+                format!(
+                    "{}  ·  {} channel  ·  DRY RUN",
+                    crate::VERSION,
+                    crate::CHANNEL
+                )
             } else {
                 format!("{}   ·   {} channel", crate::VERSION, crate::CHANNEL)
             });
-            let mut r = RECT { left: rc.right / 2, top: self.s(52), right: rc.right - pad, bottom: head - self.s(6) };
+            let mut r = RECT {
+                left: rc.right / 2,
+                top: self.s(52),
+                right: rc.right - pad,
+                bottom: head - self.s(6),
+            };
             SetTextColor(dc, C_ACCENT);
             DrawTextW(dc, stamp.as_ptr(), -1, &mut r, 0x0002 | DT_END_ELLIPSIS); // DT_RIGHT
 
@@ -1557,7 +1793,12 @@ impl App {
                     "That did not finish. The log below says where it stopped."
                 };
                 let t = w(msg);
-                let mut r = RECT { left: pad, top: head + self.s(8), right: rc.right - pad, bottom: head + self.s(34) };
+                let mut r = RECT {
+                    left: pad,
+                    top: head + self.s(8),
+                    right: rc.right - pad,
+                    bottom: head + self.s(34),
+                };
                 DrawTextW(dc, t.as_ptr(), -1, &mut r, DT_LEFT | DT_END_ELLIPSIS);
             }
         }
@@ -1568,7 +1809,13 @@ impl App {
 
 /// Runs off the UI thread. Every line it produces goes through `push_log` + `WM_APP_LOG`, so the
 /// window shows progress live instead of freezing until the flash is over.
-fn carry_out(action: Action, comps: &[Comp], target: &std::path::Path, dry: bool, hwnd: usize) -> bool {
+fn carry_out(
+    action: Action,
+    comps: &[Comp],
+    target: &std::path::Path,
+    dry: bool,
+    hwnd: usize,
+) -> bool {
     let tick = || {
         // SAFETY: posting to a window that has gone away fails; it does not execute anything.
         unsafe { PostMessageW(hwnd as HWND, WM_APP_LOG, 0, 0) };
@@ -1619,9 +1866,15 @@ fn carry_out(action: Action, comps: &[Comp], target: &std::path::Path, dry: bool
             if action.is_removal() {
                 push_log("It comes back on the stock Sony player by itself.");
             } else {
-                push_log("It comes back on Cinder with the cable still in: the first start after an");
-                push_log("install ignores the cable. After that, a cable at power-on starts the stock");
-                push_log("player (the recovery escape), so unplug before restarting. See RECOVERY.md.");
+                push_log(
+                    "It comes back on Cinder with the cable still in: the first start after an",
+                );
+                push_log(
+                    "install ignores the cable. After that, a cable at power-on starts the stock",
+                );
+                push_log(
+                    "player (the recovery escape), so unplug before restarting. See RECOVERY.md.",
+                );
             }
             tick();
             true
