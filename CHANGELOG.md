@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.15] — 2026-10-05
+
 *Everything below was built host-only with no player attached: host-tested, in the golden
 previews, and **not yet run on a device**. The library items are in
 `docs/DEVICE_CHECKLIST.md` §25, the sound items in §26, soundscapes in §28 and the new visualisers in §29.*
@@ -2602,7 +2604,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.14...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.15-rc1...HEAD
+[0.3.15]: https://github.com/superwilso/Cinder/compare/v0.3.14...v0.3.15-rc1
 [0.3.14]: https://github.com/superwilso/Cinder/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/superwilso/Cinder/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/superwilso/Cinder/compare/v0.3.11...v0.3.12
