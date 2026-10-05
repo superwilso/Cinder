@@ -81,6 +81,14 @@ static int cpu_verb(const char *verb)
         if (n <= 0) return 4;
         return put(CPUFREQ "scaling_max_freq", buf) ? 0 : 4;
     }
+    /* usbid0..usbid4 — the board ID the USB driver reads at resume (2026-10-05). On every resume
+     * `musb_bus_resume` switches the port to HOST unless icx_pm_helper's bid2 is 3; the port then
+     * sits powered in a_idle, `mt_usb_connect` returns early for a cable plugged in later, and USB
+     * is dead until a restart. cinder-home writes 3 just before a suspend to RAM and the player's
+     * own value straight after. Five verbs, one per valid ID: still no number from the caller.
+     * The other readers: the display PHY (only == 4) and the USB-DAC rate limit at setup. */
+    if (strncmp(verb, "usbid", 5) == 0 && verb[5] >= '0' && verb[5] <= '4' && !verb[6])
+        return put("/sys/module/icx_pm_helper/parameters/icx_bid2", verb + 5) ? 0 : 4;
     return 2;
 }
 

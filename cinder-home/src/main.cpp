@@ -3983,6 +3983,29 @@ int threshold_s() {
 // wake path can leave at once instead of waiting up to a second for the next tick.
 bool g_early = false;
 
+// RESUME AS A USB DEVICE, NOT A HOST (2026-10-05, analysis/RE_usb_after_resume.md). The kernel's
+// `musb_bus_resume` switches the port to host on every resume unless the board ID `icx_bid2` is 3.
+// As a host it is powered with nobody attached, so the driver ignores a cable plugged in later and
+// USB stays dead until a restart (checklist 33.2). So: 3 while suspended, the player's own value
+// back within a second of waking. Nothing else reads the ID in that window (cinder-power.c).
+const char kBid2[] = "/sys/module/icx_pm_helper/parameters/icx_bid2";
+long g_bid2_own = -1;   // the value to put back; -1 = not swapped
+void resume_as_device(bool on) {
+    char cmd[80];
+    if (on) {
+        const long own = read_node_long(kBid2);
+        if (own < 0 || own > 4 || own == 3 || g_bid2_own >= 0) return;
+        if (std::system("/system/vendor/unknown321/bin/cinder-power usbid3") != 0) {
+            clog_("suspend: could not set the USB board ID — USB will need a restart after this suspend");
+            return;
+        }
+        g_bid2_own = own;
+    } else if (g_bid2_own >= 0) {
+        std::snprintf(cmd, sizeof cmd, "/system/vendor/unknown321/bin/cinder-power usbid%ld", g_bid2_own);
+        if (std::system(cmd) == 0) g_bid2_own = -1;   // else: try again next tick
+    }
+}
+
 } // namespace socsusp
 
 // Leave stage 1 NOW, from the wake path. The tick would get there within a second, but the panel
@@ -4039,6 +4062,7 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
     static long last_rc   = -1;
     static int  idle_secs = 0;
     bool& early           = g_early;  // stage 1 active: `mem` written, wakelock held
+    if (!early) resume_as_device(false);   // any way out of stage 1 or 2 puts the board ID back
 
     // Detect a resume FIRST, before deciding anything else: the tick that observes a resume is the
     // one running in the awake window, and it may be the only one we get.
@@ -4147,6 +4171,7 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
     if (++ram_dwell < kRamDwellS) return;
     ram_dwell = 0;
     clog_("suspend: idle and off the cable -> releasing the wakelock (suspend to RAM; Power wakes it)");
+    resume_as_device(true);
     write_node(kWakeUnlock, kLockName);
 }
 
