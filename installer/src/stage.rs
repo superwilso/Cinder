@@ -680,6 +680,8 @@ mod tests {
     const SAMPLE: &str = "\
 power | CINDER_POWER | bool | 1 | Power menu
 signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
+    = stock | Sony standard | No change.
+    = pv1   | Plus v1       | Walkman One's first.
 ";
 
     #[test]
