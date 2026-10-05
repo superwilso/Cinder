@@ -36,6 +36,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   audio library at every start, which undid the signature chosen in Cinder's installer. The choice
   is now written to that copy as well. Players on stock firmware are unaffected. *Host-tested (16
   cases), device-unverified.*
+- **Installer option: Walkman One external tuning** (off by default, Walkman One players only).
+  Applies the tuning that matches the sound signature in your Walkman One settings, from the copy
+  Walkman One keeps on the player, so its Plus mode, gain, DAC and colour settings take effect
+  without the Windows tool. Your player's own factory data is saved to its drive first as
+  `cinder_nvram_backup.img`, the new data is checked before and after it is written, and the
+  bootloader is never touched. *Host-tested (17 cases); never run on a player.*
 - **One file for the advanced switches.** The switches that were each an empty file on the
   player's storage (`cinder_ram_suspend`, `cinder_no_suspend`, `cinder_no_scrobble` and six more)
   can now be lines in a single `cinder_advanced.conf`;
