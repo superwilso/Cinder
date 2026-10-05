@@ -98,7 +98,7 @@ pub const BT_IDLE_OFF_SUB: &str = "After 10 min silent with the screen off";
 /// screen and what the release is called cannot drift apart. It is a macro rather than a `const`
 /// because `concat!` takes literals only.
 #[macro_export]
-macro_rules! cinder_version { () => { "0.3.14" } }
+macro_rules! cinder_version { () => { "0.3.15" } }
 
 /// Firmware/build label shown on the Settings "Firmware" row. The `dev` feature (development
 /// channel, built from the same tree) makes the two builds visually distinguishable on-device.
