@@ -2,7 +2,7 @@ name: release
 
 # Builds the end-user installer and attaches it to a GitHub release.
 #
-# Only the INSTALLER is built here. The device binaries it embeds (cinder-home, cinder-probe, the
+# Only the INSTALLER is built here. The device binaries it embeds (cinder-home, the
 # setuid helpers, the .UPG) are committed under cinder-home/dist/ because building them needs a
 # glibc-2.23 + libc++-3.9.0 cross toolchain matched to the player's own runtime — see
 # cinder-home/build.sh. Reproducing that on a hosted runner would be a lot of machinery to
@@ -154,24 +154,12 @@ jobs:
       # with `gh attestation verify <file> -R superwilso/Cinder` and cannot be minted outside a run.
       #
       # One step over SHA256SUMS rather than one per build job: every published file, the two
-      # .UPGs included, is covered by the same list the release body inlines. It says nothing about
+      # .UPGs included, is covered by the same list attached as SHA256SUMS. It says nothing about
       # where the committed ARM payload came from — that is D4's manifest, checked above.
       - name: Attest build provenance for every published file
         uses: actions/attest-build-provenance@v4
         with:
           subject-checksums: dist/SHA256SUMS
-
-      # The sums are INLINED INTO THE RELEASE PAGE, not merely attached. Verifying a download
-      # against a checksum file fetched from beside it is close to circular: whoever could swap
-      # one could swap the other. The release body is the rendered record of what the workflow
-      # built, so that is where the hashes belong. `SHA256SUMS` stays attached as a copy for
-      # `sha256sum -c`.
-      #
-      # tools/render_release_notes.sh is the same renderer this step runs, so the body can be
-      # previewed locally instead of being discovered after publication — the rule this repo
-      # keeps relearning (see tools/shell_check.sh).
-      - name: Compose the release notes, with the checksums inlined
-        run: tools/render_release_notes.sh dist/SHA256SUMS RELEASE_BODY.md
 
       - uses: softprops/action-gh-release@v3
         with:
@@ -184,4 +172,4 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          body_path: RELEASE_BODY.md
+          body_path: .github/release-notes.md

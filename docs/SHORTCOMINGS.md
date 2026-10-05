@@ -215,6 +215,10 @@ without a decay process**:
 `AUDIT_2026-08-16.md` "the current gap list"; `PRODUCTION_READINESS.md` for what is missing). A
 reader cannot know which is current without reading all of them and comparing dates.
 
+> **2026-10-05:** `ROADMAP.md`, `PRODUCTION_READINESS.md`, `FLASH_NEXT.md`, `audit_notes.md` and
+> `open-questions.md` are deleted (git keeps them), and [`NEXT.md`](NEXT.md) is the one next-steps
+> list, with feature state in `STATUS.md` and procedures in `DEVICE_CHECKLIST.md`.
+
 ### C2. The commit history carries none of the reasoning
 
 This is the sharpest contrast in the project. In-code comments routinely explain the measurement,

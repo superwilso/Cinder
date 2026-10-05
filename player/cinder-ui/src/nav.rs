@@ -1,6 +1,6 @@
 //! nav — the navigation state machine that turns hardware button presses into screen
 //! transitions + playback actions. Keymap-AGNOSTIC: it speaks logical `Button`s; the
-//! backend (cinder-device / cinder-ffi) maps raw evdev `/dev/input/hoge` key codes to
+//! backend (cinder-ffi) maps raw evdev `/dev/input/hoge` key codes to
 //! these (that raw map needs on-device `getevent` calibration — it isn't in any extracted
 //! DTB). `App` owns *navigation* state (which screen, cursor positions, theme); live
 //! now-playing data is passed into `render` by the shell. `press` returns `Action`s the

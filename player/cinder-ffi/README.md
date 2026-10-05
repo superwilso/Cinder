@@ -4,8 +4,7 @@ The retarget that makes Option-B a single process. The Cinder UI stays in **Rust
 rewrite — same `cinder-ui` render core, embedded-graphics + fontdue), but is built for
 **`arm-unknown-linux-gnueabihf` (glibc)** as a `staticlib` exposing a **C ABI**, so it links
 into the C++ easel shell [`cinder-home`](../../cinder-home/) alongside Sony's glibc/libc++
-libraries. (The musl-static [`cinder-device`](../cinder-device/) — the SIGSTOP-overlay safe
-build — is unchanged and still builds for `armv7-unknown-linux-musleabihf`.)
+libraries.
 
 ## Why
 - **Performance:** none lost — Rust is native, no GC; a 2D 480×800 panel is memcpy/glyph

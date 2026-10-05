@@ -23,10 +23,8 @@
 //!    done). The shell gates its "first frame painted" health signal on that counter, so an
 //!    async present can never claim health for a frame that hasn't reached the glass.
 //!
-//! The presenter itself is CONSTRUCTED ON the present thread (`start` takes an opener closure):
-//! an EGL context is thread-affine, so the GPU path only works if `eglMakeCurrent` happens on the
-//! thread that will call `eglSwapBuffers`. The software framebuffer doesn't care, but gets the
-//! same treatment for one code path.
+//! The presenter is constructed on the present thread (`start` takes an opener closure), so a
+//! failed open is reported before any frame is queued.
 //!
 //! Escape: `/contents/cinder_nothread` (or `CINDER_NOTHREAD=1`) keeps the old synchronous present
 //! (see `cinder_render_init`) — strictly less machinery, per the ladder rule.
@@ -35,8 +33,8 @@ use crate::FRAMES_PRESENTED;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, Mutex};
 
-/// Anything that can push a finished frame to the panel. `Presenter` (fb blit / EGL swap) on
-/// device; mocks in the tests below.
+/// Anything that can push a finished frame to the panel. `Framebuffer` on device; mocks in the
+/// tests below.
 pub(crate) trait PresentTarget: Send {
     fn present(&mut self, buf: &[u32]);
 }
@@ -61,7 +59,7 @@ struct Slot {
 }
 
 impl PresentThread {
-    /// Spawn the thread and construct the presenter ON it (EGL thread affinity). Blocks until the
+    /// Spawn the thread and construct the presenter on it. Blocks until the
     /// opener reports; a failed open joins the thread and returns its error, so the caller can
     /// fall back exactly as if it had called the opener itself.
     pub(crate) fn start<P, F>(open: F) -> Result<PresentThread, String>
@@ -160,7 +158,7 @@ impl Drop for PresentThread {
         }
         self.shared.cv.notify_all();
         if let Some(h) = self.handle.take() {
-            let _ = h.join(); // presenter drops on its own thread (EGL teardown affinity)
+            let _ = h.join(); // the presenter drops on its own thread
         }
     }
 }

@@ -4,14 +4,12 @@
 # Three routes, tried in order (or force one with --route):
 #
 #   app    Ask the running cinder-home to save its own frame. Drops a trigger file, waits for the
-#          PNG, pulls it. This is the ONLY faithful route when the GPU/EGL present path is active,
-#          because under EGL the Mali swapchain owns the panel and /dev/graphics/fb0 no longer
-#          reflects what's displayed. Requires cinder-home to be running and painting.
+#          PNG, pulls it. The exact frame, before presentation. Requires cinder-home to be running
+#          and painting.
 #   sony   Sony's own stock tool /system/vendor/sony/bin/screenshot (mmaps fb0, writes a timestamped
-#          PNG via QImage). Works even when cinder isn't running — e.g. on the stock UI. Reads fb0,
-#          so same GPU caveat as `raw`.
+#          PNG via QImage). Works even when cinder isn't running — e.g. on the stock UI. Reads fb0.
 #   raw    Read /dev/graphics/fb0 directly and convert host-side. Last resort; needs no on-device
-#          tooling at all, so it works on a wedged device. Same GPU caveat.
+#          tooling at all, so it works on a wedged device.
 #
 # Usage:  tools/screenshot.sh [out.png] [--route app|sony|raw|auto]
 set -uo pipefail
@@ -95,8 +93,8 @@ case "$ROUTE" in
     raw)  try_raw  && { echo "$OUT (route: raw)";  exit 0; }; exit 1 ;;
 esac
 
-# auto: app first (only route that is correct under the GPU path), then the fb0-based fallbacks.
+# auto: app first (the exact frame), then the fb0-based fallbacks.
 try_app  && { echo "$OUT (route: app)";  exit 0; }
-try_sony && { echo "$OUT (route: sony — NOTE: reads fb0, may be stale under the GPU path)"; exit 0; }
-try_raw  && { echo "$OUT (route: raw — NOTE: reads fb0, may be stale under the GPU path)";  exit 0; }
+try_sony && { echo "$OUT (route: sony)"; exit 0; }
+try_raw  && { echo "$OUT (route: raw)";  exit 0; }
 echo "ERROR: all screenshot routes failed." >&2; exit 1

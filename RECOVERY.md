@@ -123,9 +123,7 @@ code falls through to the old reboot-and-count behaviour rather than disabling t
 
 Escalation: **3 consecutive crashes inside 30 s**, or **10 crashes in one boot**, hands that boot
 to the Sony player. Deliberately **not** a latch — the next boot tries Cinder again, because
-latching on a runtime crash is how a device ends up stuck on stock forever. From the first respawn
-onward the GPU present path is dropped (`CINDER_GPU=0`), since the Mali fbdev EGL stack is the
-least proven code in the process and the software framebuffer is the proven one.
+latching on a runtime crash is how a device ends up stuck on stock forever.
 
 **Kill switch** — restores the pre-supervisor `exec`, and depends on strictly less than the
 supervisor it disables:
@@ -142,9 +140,8 @@ alone for ~4 boot attempts.
 If it's stable enough to mount as USB-MSC:
 ```bash
 tools/flash.sh --clear-latch             # arms cinderhome_clear -> retry the installed build
-: > /tmp/cinderhome_off; : > /tmp/ldac_off
+: > /tmp/cinderhome_off
 tools/flash.sh --push /tmp/cinderhome_off  # stock UI on next boot
-tools/flash.sh --push /tmp/ldac_off        # stop the LDAC bridge supervisor
 ```
 
 ## Step 2 — flash the uninstaller
@@ -178,27 +175,16 @@ image was: **no `cinder-home`, no launcher, no `/contents` flags**, `.appcfg` st
 library rolled back to whatever the image held. Nothing of Cinder survives — there is no latch to
 clear and no counter to reset.
 
-Reinstalling is therefore a full install, and it needs **three** pushes, not one — the installer
-stages each helper from the storage root and only *warns* if one is missing, so a partial push
-degrades silently (no `cinder-umount` → USB-MSC cannot unmount `/contents` as uid 100; no
-`cinder-gpunode` → the GPU path can never be enabled):
+Reinstalling is therefore a full install. Run the installer (`cinder-installer --install`; on
+Linux with `sudo`): it stages every file the install needs and sends the update command itself.
+Then boot with the cable OUT — a cable at boot is itself the escape to stock.
 
-```bash
-tools/flash.sh --push cinder-home/dist/stable/cinder-home
-tools/flash.sh --push cinder-home/dist/stable/cinder-umount
-tools/flash.sh --push cinder-home/dist/stable/cinder-power
-tools/flash.sh --push cinder-home/dist/stable/cinder-msc
-tools/flash.sh --push cinder-home/dist/stable/cinder-clock
-tools/flash.sh --push cinder-home/dist/stable/cinder-fm
-tools/flash.sh --push cinder-home/dist/stable/cinder-gpunode   # dev channel only
-tools/flash.sh cinder-home/dist/stable/cinder_home_install.upg
-# then boot with the cable OUT — a cable at boot is itself the escape to stock
-```
-
-Every one of those is a separate `SRC_*` the installer stages from the storage root and only
-*warns* about if missing, so anything left out degrades silently: no `cinder-power` → no Power off
-or Restart; no `cinder-msc` → no USB mass storage; no `cinder-clock` → the clock cannot be set;
-no `cinder-fm` → the radio loses its signal meter and its one-second scan.
+By hand, every file is a separate `SRC_*` the device script stages from the storage root and only
+*warns* about if missing, so a partial push degrades silently: no `cinder-umount` → USB-MSC cannot
+unmount `/contents`; no `cinder-power` → no Power off or Restart; no `cinder-msc` → no USB mass
+storage; no `cinder-clock` → the clock cannot be set; no `cinder-fm` → the radio loses its signal
+meter and its one-second scan. Push each file in `installer/build.rs`'s `FILES`, then
+`tools/flash.sh cinder-home/dist/stable/cinder_home_install.upg`.
 
 ### Getting a stubborn looping device into MediaTek mode (hard-won notes)
 - **Detach usbipd first.** If the device is bound to WSL it's invisible to Windows/wbrt:

@@ -9,7 +9,7 @@
 #   ./tools/configure.sh                      interactive picker (default channel: stable)
 #   ./tools/configure.sh dev                  interactive picker for the dev channel
 #   ./tools/configure.sh --defaults           write the defaults, no prompting
-#   ./tools/configure.sh --set signature=pv2 --disable gpunode --defaults
+#   ./tools/configure.sh --set signature=pv2 --disable search --defaults
 #   ./tools/configure.sh --show               print the current selection and exit
 #   ./tools/configure.sh -o /path/out.conf    write somewhere else
 #

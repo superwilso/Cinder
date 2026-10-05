@@ -1,18 +1,6 @@
 <!--
-  The GitHub release body. Rendered by .github/workflows/release.yml, which replaces the
-  {{SHA256SUMS}} line below with the real checksums of the files it is about to publish.
-
-  WHY THIS IS A FILE AND NOT A `body:` BLOCK IN THE WORKFLOW. It used to be inline YAML, and
-  inline YAML cannot contain anything computed — which is how the workflow ended up carrying the
-  comment "the sums go in the release body so a download can be checked without trusting the
-  download itself" above a step that only ever wrote them to an attached file. Nobody could see
-  the mismatch because nobody reads a release body until it is published. As a file it can be
-  read, diffed and previewed locally:
-
-      tools/preview_release_notes.sh
-
-  Keep the {{SHA256SUMS}} line exactly as it is, on a line of its own. The workflow FAILS if it
-  cannot find it, rather than publishing a release whose checksum section is silently empty.
+  The GitHub release body, published as-is by .github/workflows/release.yml (body_path). GitHub's
+  generated commit list is appended below it.
 -->
 ## What changed
 
@@ -79,21 +67,12 @@ DFU/EDL recovery path.
 
 ## Verifying the download
 
-GitHub shows its own `sha256:` digest beside each file in the assets list above. That is computed
-by GitHub when the file is uploaded, and it proves your download matches what GitHub stores.
-
-The sums below are a different link in the same chain: they are computed on the build runner,
-before upload, so they say what was actually built. They should agree with GitHub's digests — if
-they ever do not, something happened between the build and the release, and that is worth knowing.
-
-```
-{{SHA256SUMS}}
-```
-
-On Linux or macOS, save that block as `SHA256SUMS` next to the downloads and run:
+GitHub shows a `sha256:` digest beside each file in the assets list above, computed when the file
+was uploaded. `SHA256SUMS`, attached, holds the same sums as the build runner computed them before
+upload; they should agree. On Linux or macOS, next to the downloads:
 
 ```bash
-sha256sum -c SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 On Windows:

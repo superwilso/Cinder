@@ -157,16 +157,6 @@ jobs:
       - name: Payload is safe from line-ending rewrites
         run: tools/check_payload_attrs.sh
 
-      # The release body is rendered from .github/release-notes.md at tag time. If the template
-      # loses its {{SHA256SUMS}} marker, the renderer fails — and it would fail for the first time
-      # DURING a release, which is the failure mode this repo keeps hitting. Render it here, on
-      # every push, against a stand-in checksum file.
-      - name: Release notes still render
-        run: |
-          printf '%s  cinder-installer-linux-x64\n' \
-            "$(printf 0%.0s $(seq 64) | tr 0 a)" > /tmp/fake-sums
-          tools/render_release_notes.sh /tmp/fake-sums /tmp/body.md
-
       # The app itself, BOOTED. Everything above checks pieces in isolation; this links the real
       # main.cpp against fake Sony services and a virtual clock, runs the easel lifecycle, and
       # asserts on the call trace — that the paired list and the notification listener are set up
@@ -265,36 +255,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Every file the installer embeds must be committed
-        shell: bash
-        run: |
-          # The installer's build.rs fails on a missing payload, but it fails with a build error
-          # deep in a cross-platform matrix. Checking it here names the file directly.
-          missing=0
-          while read -r f; do
-            [ -n "$f" ] || continue
-            if [ -f "$f" ]; then
-              printf '  ok      %8s  %s\n' "$(stat -c%s "$f")" "$f"
-            else
-              printf '  MISSING           %s\n' "$f"; missing=1
-            fi
-          done <<'PAYLOAD'
-          cinder-home/dist/stable/cinder-home
-          cinder-home/dist/stable/cinder-probe
-          cinder-home/dist/stable/cinder-umount
-          cinder-home/dist/stable/cinder-power
-          cinder-home/dist/stable/cinder-msc
-          cinder-home/dist/stable/cinder-clock
-          cinder-home/dist/stable/cinder-fm
-          cinder-home/dist/stable/cinder-voltable
-          cinder-home/dist/stable/cinder-battery
-          cinder-home/dist/stable/cinder-signature.sh
-          cinder-home/dist/stable/libcinder_mono.so
-          cinder-home/dist/stable/cinder_components.conf
-          cinder-home/dist/stable/cinder_home_install.upg
-          cinder-home/dist/stable/cinder_home_uninstall.upg
-          PAYLOAD
-          [ "$missing" = 0 ] || { echo "::error::dist/stable is incomplete — the installer cannot be built"; exit 1; }
+      # PAYLOAD.sha256 is the list (tools/release.sh writes it from the files it verified), so this
+      # checks every file is present AND is the byte content that was verified.
+      - name: The committed payload is the one release.sh verified
+        run: bash tools/verify_payload_manifest.sh
 
       # Architecture, glibc floor, allowed libraries, static helpers. A script, so it runs locally
       # exactly as here. It is NOT a link check: the link needs Sony's libraries, so that gate is

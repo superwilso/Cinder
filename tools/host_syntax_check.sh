@@ -30,8 +30,7 @@ command -v "$CXX" >/dev/null 2>&1 || CXX=clang++
 command -v "$CXX" >/dev/null 2>&1 || CXX=g++
 CC="${CC:-gcc}"
 
-INC=(-I cinder-home/src -I player/cinder-ffi/include -I cinder-audio/include -I cinder-audio/src
-     -I ldac-bridge/include)
+INC=(-I cinder-home/src -I player/cinder-ffi/include -I cinder-audio/include -I cinder-audio/src)
 
 # CINDER_HOST_SYNTAX_ONLY drops the two static_asserts that state DEVICE layout facts (32-bit
 # libc++ 3.9: vector 12 B, string 12 B). They cannot hold on a 64-bit libstdc++ host and they still
@@ -86,19 +85,14 @@ done
 
 echo
 echo "setuid helpers and C sources:"
-for f in cinder-home/src/*.c ldac-bridge/src/*.c; do
+for f in cinder-home/src/*.c; do
     [ -f "$f" ] || continue
     # glibc223_compat.c is EXCLUDED, and not because it is broken. It calls __xstat(_STAT_VER, …),
     # and _STAT_VER was removed from glibc's headers in 2.33 — the file exists precisely to target
     # the device's glibc 2.23, so it can only compile against that sysroot. Checking it here would
     # report a permanent, meaningless failure.
     case "$f" in *glibc223_compat.c) continue;; esac
-    check "$CC" "${f#cinder-home/}" "$f" "${CFLAGS[@]}" -I cinder-home/src -I ldac-bridge/include
-done
-
-for f in ldac-bridge/src/*.cpp; do
-    [ -f "$f" ] || continue
-    check "$CXX" "${f#ldac-bridge/}" "$f" "${CXXFLAGS[@]}" "${INC[@]}"
+    check "$CC" "${f#cinder-home/}" "$f" "${CFLAGS[@]}" -I cinder-home/src
 done
 
 echo

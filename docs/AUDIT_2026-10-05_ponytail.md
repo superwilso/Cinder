@@ -227,7 +227,8 @@ The lazy answer was considered and refused for each of these.
 
 ## Part G — Ordered next list
 
-Smallest diff first; each stands alone.
+Smallest diff first; each stands alone. **Worked through the same day: see Part H.** What is left
+is in [`NEXT.md`](NEXT.md).
 
 1. D3's one-line `sha256sum -c` in CI.
 2. C3 `ldac-bridge/`, C4 `cinder-device`, C5 the old `cinder-sim` binary — pure deletions, gated by `cargo test` and the syntax check.
@@ -236,3 +237,50 @@ Smallest diff first; each stands alone.
 5. C2 the GPU path — needs a release; removes a setuid helper from the dev channel.
 6. D1 Flint's sync core; D2 the shared palette crate.
 7. C6, C7, D4–D7 as each file is next touched.
+
+---
+
+## Part H — The second pass, 2026-10-05: Parts C–E carried out
+
+Code, scripts and config across the change, documentation aside: **−3,018 / +145 lines** in Cinder.
+Every gate re-run afterwards: 794 player tests (3 ignored), 51 installer, 79 harness scenarios, 22
+C/C++ files syntax-clean, 13 self-tests, launcher 108, guard 32, preload 39, hagowrap 11, cable pass
+19, install mounts 18, shellcheck clean over 49 scripts, golden pixels and the text audit unmoved.
+`/verify`: 84 frames driven through the real navigator (Sound, Advanced, Tone, DAC EQ, profiles,
+Folders, FM, EQ, Soundscape, Settings, Menu, Bluetooth) byte-identical to `origin/main`'s, and the
+same 55 actions.
+
+| Item | Done |
+|---|---|
+| **C1** | `cinder-probe` is dev-only: `build.sh` stages it on dev and removes it from `dist/stable`, `build.rs` no longer requires it, `release.sh`'s list and `check_arm_payload.sh` drop it. Takes effect at the next release, which rebuilds `dist/stable`. The installer offers an old copy on the drive as a leftover |
+| **C2** | `gpu.rs`, `cinder-gpunode.c`, the `gpunode` component and install branch, `cinder_gpu_on`, `CINDER_GPU`, the launcher's respawn override, `cinder-probe --gpu` and `--bench gpu`, and `-l:libMali_linux.so` on both links. The install removes an old `cinder-gpunode` from the player |
+| **C3** | `ldac-bridge/` deleted; its one live file, the ALSA declaration header `cinder-probe` includes, moved to `cinder-audio/include/alsa/` |
+| **C4, C5** | `player/cinder-device`, `player/deploy/`, `cinder-sim`'s old browser, and the two `data.rs` tables only it read |
+| **C6** | The installer writes PPM; `render_installer_screenshots.sh` makes the PNG (tested with whitespace-valued first pixels, which a whitespace split would eat) |
+| **C7** | `log_proc_file`, `ldac_dump_pcm` and the reference dump; one state line on a stall stays |
+| **D1** | Flint: one `sync::prepare` with a progress callback under the command line and the window; `flint sync --no-extras` is the window's extras switch, the divergence the audit found. With one core, Flint's E2 was a few lines: Copy refuses a plan whose copies or removals moved since Show (test fails without the check) |
+| **D3** | CI runs `tools/verify_payload_manifest.sh`: presence and content, from `PAYLOAD.sha256` |
+| **D5** | Cinder's release-notes renderer is gone. GitHub shows each asset's digest, the attestation proves provenance, and `SHA256SUMS` stays attached; the template is the body |
+| **D7** | cinder-themes' checker prints `id_for(NAME)`; `accept.yml` asks it. The Python copy had already drifted: `CON` became `con.palette`, which Flint would never download (it says `con-2`) |
+| **E1** | The rule is in `CONTRIBUTING.md` ▸ Style. Existing comments were left: a mass rewrite of `main.cpp` is churn with no gate to check it |
+| **E2** | `CLAUDE.md` drops the July history block and Part G's progress notes; `ROADMAP.md`, `PRODUCTION_READINESS.md`, `FLASH_NEXT.md`, `audit_notes.md` and `open-questions.md` deleted; [`NEXT.md`](NEXT.md) is the one next list and the others say so |
+| Found on the way | Balance writes go through the codec ioctl instead of a shell per step; Flint E8 (playlist lines relative to the playlist, a Windows-1252 `.m3u` read rather than failing the sync), E10 (CI ran every PR push twice) and E11 (`lastfm.conf` created owner-only) |
+
+**Considered again and kept**, each for a reason the first pass did not have:
+
+* **D2, one palette crate.** Cinder's device build would compile code fetched from Flint's
+  repository by branch, and every palette-rule change would need a commit in Flint before Cinder
+  could use it. That coupling costs more than the ~500 lines it would save. The two agreed over
+  200,000 random palettes in Flint's 10-01 audit (F3), but nothing pins that; G1.7's shared
+  fixtures (`NEXT.md` §3) are the cheaper guard.
+* **D4, folding `idle_probe.sh` into `btpower.sh`.** They are measuring instruments with results
+  on record (`BATTERY_BT.md`, `RE_sony_idle_baseline.md`); merging changes the instrument mid-series
+  and cannot be checked without the player. With the player, on the next power session.
+* **D6, `tools/flash.sh`.** It is more than the installer's last step: `--clear-latch`,
+  `--cable-off` and `--push` are `RECOVERY.md`'s procedures, and it flashes any `.UPG`, which the
+  installer does not. RECOVERY.md now sends a reinstall to the installer instead of eight pushes.
+* **E3, the history rewrite.** Not a lazy-versus-not question: it is what takes Sony's files out of
+  a public history, and running it is a force-push only the owner can make. It is decision 2 in
+  `NEXT.md`.
+* **`AUDIT_2026-07-26.md`** stays: code and `SECURITY.md` cite it as evidence, like the other audits.
+

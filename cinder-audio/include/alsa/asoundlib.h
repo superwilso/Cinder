@@ -1,14 +1,9 @@
-/* Minimal ALSA declaration shim for cross-building ldac-bridge WITHOUT the full
- * libasound2-dev package. It declares only the symbols capture.c uses, with the
- * stable ALSA ABI constant values, and links the DEVICE's libasound.so at link
- * time (arm-linux-gnueabihf, from artifacts/rootfs_mnt/lib/libasound.so).
- *
- * build.sh uses the real <alsa/asoundlib.h> automatically if libasound2-dev is
- * installed; this file is the fallback so the build needs no apt/sudo. If you
- * extend capture.c, either install libasound2-dev or add the new decls here.
+/* Minimal ALSA declaration shim, so cinder-probe cross-builds WITHOUT an armhf libasound2-dev.
+ * It declares only the symbols probe.cpp uses, with the stable ALSA ABI constant values; the
+ * DEVICE's libasound.so is what gets linked. Add a declaration here before using a new call.
  */
-#ifndef LDAC_BRIDGE_ALSA_SHIM_H
-#define LDAC_BRIDGE_ALSA_SHIM_H
+#ifndef CINDER_ALSA_SHIM_H
+#define CINDER_ALSA_SHIM_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -66,4 +61,4 @@ const char *snd_strerror(int errnum);
 #ifdef __cplusplus
 }
 #endif
-#endif /* LDAC_BRIDGE_ALSA_SHIM_H */
+#endif /* CINDER_ALSA_SHIM_H */

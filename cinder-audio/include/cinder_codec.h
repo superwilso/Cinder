@@ -109,6 +109,10 @@ int cinder_codec_get_jack_se(void);
 int cinder_codec_get_master_volume(void);
 int cinder_codec_set_master_volume(int v);
 
+/* The jack's balance: `l balance volume` and `r balance volume`, raw half-dB of cut (0 = none).
+ * Two ioctls back to back, so both channels move inside one call with no fork. 0 = both applied. */
+int cinder_codec_set_balance(int l_att, int r_att);
+
 /* --- Which headphone amplifier drives the jack --------------------------------------------
  *
  * The CXD3778GF has two. `headphone amp` item 1 `smaster-se` is S-Master, the class-D stage Sony

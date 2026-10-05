@@ -2253,18 +2253,19 @@ static void apply_balance(int pos) {
     static int s_l = -1, s_r = -1;
     if (l_att == s_l && r_att == s_r) return;
 
-    // ONE shell, ONE amixer. It was two `system()` calls, i.e. two forks, two dynamic loads and two
-    // separate codec writes with a scheduling gap between them — which is what the user heard as
-    // "a bit of stutter when it does". amixer's batch mode (-s) reads commands from stdin, so both
-    // channels move inside a single process. Names, not numids: a numid is a firmware-build detail
-    // and this control's name is stable.
-    char cmd[288];
-    std::snprintf(cmd, sizeof cmd,
-                  "{ echo \"cset name='l balance volume' %d\"; "
-                  "echo \"cset name='r balance volume' %d\"; } "
-                  "| amixer -c 0 -s >/dev/null 2>&1",
-                  l_att, r_att);
-    const int rc = std::system(cmd);
+    // Two ioctls back to back, no fork (the shim, by control name). Two separate `system()` calls
+    // were what the user heard as "a bit of stutter"; the shell is kept only as the fallback, one
+    // amixer in batch mode (-s) so both channels still move inside a single process.
+    int rc = cinder_codec_set_balance(l_att, r_att);
+    if (rc != 0) {
+        char cmd[288];
+        std::snprintf(cmd, sizeof cmd,
+                      "{ echo \"cset name='l balance volume' %d\"; "
+                      "echo \"cset name='r balance volume' %d\"; } "
+                      "| amixer -c 0 -s >/dev/null 2>&1",
+                      l_att, r_att);
+        rc = std::system(cmd);
+    }
     if (rc == 0) { s_l = l_att; s_r = r_att; }
     char m[160];
     std::snprintf(m, sizeof m, "sound: balance pos=%d -> l_att=%d r_att=%d (raw half-dB) rc=%d",
@@ -4137,10 +4138,9 @@ void write_bt_pref() {
 
 // USB-DAC → LDAC (the headline feature): engage USB-DAC input and route it to 3.5mm + BT/LDAC at
 // once, WITHOUT tearing down Bluetooth (we simply never call IBtTransmitterService::Request-
-// Disconnection, which is what stock does). Engaging = start the LDAC bridge supervisor (it watches
-// /contents/ldac_on; see deploy/ldac-run.sh) + switch the USB gadget to UAC. The setprop USB-mode
-// switch is device-gated (disruptive; validate live) — run_guarded + best-effort so it can't wedge
-// the UI. The codec/quality the bridge uses comes from /contents/cinder_bt.conf (write_bt_pref).
+// Disconnection, which is what stock does). Engaging = switch the USB gadget to UAC; the bridge is
+// ldac_start(). run_guarded + best-effort so it can't wedge the UI. The codec/quality the bridge
+// uses comes from /contents/cinder_bt.conf (write_bt_pref).
 // Engage / release USB-DAC mode (the Walkman as a USB sound card for a PC).
 //
 // THROUGH THE SETUID HELPER, NOT setprop DIRECTLY. This used to run `setprop sys.sony.config uac`
@@ -6750,9 +6750,6 @@ static volatile sig_atomic_t g_uac_host_fmt = 0;
 static volatile sig_atomic_t g_uac_host_freq = 0;
 static volatile sig_atomic_t g_uac_host_bits = 0;
 
-// One-shot latch for the "what does a WORKING capture look like?" dump — see the render loop.
-static bool g_uac_ref_dumped = false;
-
 // Which output the USB-DAC session is currently rendering to: 1 = the LDAC bridge, 0 = the jack,
 // -1 = not in DAC mode. Kept because the route can change WITHOUT the toggle being touched — the
 // headphones can be switched off, run flat, or walk out of range in the middle of a session — and
@@ -7277,51 +7274,11 @@ static unsigned uac_stream_format() {
     return (unsigned)g_uac_host_fmt;
 }
 
-// ── bridge diagnostics ──────────────────────────────────────────────────────────────────────────
-// A blocking snd_pcm_readi that never returns tells you nothing at all, and that is exactly what the
-// first on-device run produced: "streaming", then ~30 s of silence, then -EIO with zero frames. The
-// kernel already publishes everything needed to tell "the stream never started" apart from "the
-// stream started and starved" — so read it and put it in the log rather than inferring.
+// One line of PCM state on a stall: whether the stream never started or started and starved.
 static const char* pcm_state_name(int s) {
     static const char* n[] = { "OPEN", "SETUP", "PREPARED", "RUNNING", "XRUN",
                                "DRAINING", "PAUSED", "SUSPENDED", "DISCONNECTED" };
     return (s >= 0 && s < (int)(sizeof n / sizeof n[0])) ? n[s] : "?";
-}
-
-// Log the first `max` non-empty lines of a /proc file, prefixed. Cheap and bounded.
-static void log_proc_file(const char* path, const char* tag, int max) {
-    FILE* f = std::fopen(path, "r");
-    if (!f) {
-        char m[192];
-        std::snprintf(m, sizeof m, "ldac: %s %s — not readable", tag, path);
-        clog_(m);
-        return;
-    }
-    char line[160];
-    int n = 0;
-    while (n < max && std::fgets(line, sizeof line, f)) {
-        size_t l = std::strlen(line);
-        while (l && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = 0;
-        if (!l) continue;
-        char m[224];
-        std::snprintf(m, sizeof m, "ldac: %s | %s", tag, line);
-        clog_(m);
-        n++;
-    }
-    std::fclose(f);
-}
-
-// Dump what the driver thinks of the capture substream. `dev` is "hw:<card>,<device>".
-static void ldac_dump_pcm(const char* dev, const char* when) {
-    int card = 0, device = 0;
-    if (std::sscanf(dev, "hw:%d,%d", &card, &device) != 2) return;
-    char p[128], tag[64];
-    std::snprintf(tag, sizeof tag, "%s hw_params", when);
-    std::snprintf(p, sizeof p, "/proc/asound/card%d/pcm%dc/sub0/hw_params", card, device);
-    log_proc_file(p, tag, 12);
-    std::snprintf(tag, sizeof tag, "%s status", when);
-    std::snprintf(p, sizeof p, "/proc/asound/card%d/pcm%dc/sub0/status", card, device);
-    log_proc_file(p, tag, 10);
 }
 
 static void ldac_log_state(snd_pcm_t* pcm, const char* when) {
@@ -7415,8 +7372,7 @@ enum ldac_end {
 
 // The pump. 512 frames × 8 bytes = 4 KB a go, which is ~11.6 ms of audio — small enough to keep
 // latency sane, large enough that the syscall rate stays negligible on one ARMv7 core.
-static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev, unsigned rate,
-                          unsigned long long* frames_out) {
+static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, unsigned rate, unsigned long long* frames_out) {
     static unsigned char buf[512 * 8];
     unsigned long long frames = 0;
     int err_streak   = 0;      // consecutive recoverable errors in this stall
@@ -7446,7 +7402,6 @@ static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev, unsigned rate
                     std::snprintf(m, sizeof m, "ldac: no capture data for %d s", dry_waits);
                     clog_(m);
                     ldac_log_state(pcm, "dry");
-                    ldac_dump_pcm(dev, "dry");
                 }
                 if (dry_waits >= 5 && uac_stream_format() == 0) {
                     clog_("ldac: the host stopped streaming — closing the capture and waiting");
@@ -7479,7 +7434,6 @@ static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev, unsigned rate
                               alsa_err((int)got));
                 clog_(m);
                 ldac_log_state(pcm, "stalled");
-                ldac_dump_pcm(dev, "stalled");
             }
             g_alsa.prepare(pcm);
             usleep(20000);
@@ -7749,7 +7703,6 @@ static void* ldac_thread(void*) {
                     if (fd < 0) { g_alsa.close(pcm); break; }
                     fd_rate = rate;
                 }
-                ldac_dump_pcm(dev, "after set_params");
                 ldac_log_state(pcm, "after set_params");
 
                 // START EXPLICITLY. snd_pcm_set_params leaves start_threshold at 1, so the first
@@ -7767,7 +7720,7 @@ static void* ldac_thread(void*) {
                 std::snprintf(m, sizeof m, "ldac: streaming %u Hz %u ch", rate, chans);
                 clog_(m);
                 unsigned long long frames = 0;
-                ldac_end why = ldac_pump(fd, pcm, dev, rate, &frames);
+                ldac_end why = ldac_pump(fd, pcm, rate, &frames);
                 g_alsa.close(pcm);
                 total += frames;
                 std::snprintf(m, sizeof m, "ldac: session ended after %llu frames (%llu s at %u Hz)",
@@ -7886,7 +7839,7 @@ static void* fmbt_thread(void*) {
         return nullptr;
     }
     unsigned long long frames = 0;
-    ldac_end why = ldac_pump(fd, pcm, "hw:0,1", RATE, &frames);
+    ldac_end why = ldac_pump(fd, pcm, RATE, &frames);
     char m[192];
     std::snprintf(m, sizeof m, "fm-bt: pump ended (%d) after %llu frames", (int)why, frames);
     clog_(m);
@@ -8100,7 +8053,6 @@ void apply_usb_dac() {
                 // readers on one gadget capture is the -EBUSY case, and it is the bridge that loses.
                 clog_("usb-dac: headphones connected — bridging the capture to LDAC");
                 g_uac_playing = false;
-                g_uac_ref_dumped = false;
                 g_uac_route = 1;
                 uac_listener_start();
                 ldac_start();
@@ -8114,7 +8066,6 @@ void apply_usb_dac() {
                 // at all, silently. The log said "SetUsbFunction ok, Start() kFormatNone" and then
                 // went quiet forever, which read like a service problem and was ours.
                 g_uac_playing = false;
-                g_uac_ref_dumped = false;
                 g_uac_route = 0;
                 uac_listener_start();
                 if (!uac_render(true)) {
@@ -12447,18 +12398,6 @@ void* render_driver(void*) {
             // once a real format has been opened, or when not in DAC mode — and is throttled inside
             // (200 ms bridging, 1 s otherwise) for the frames where neither of those is true.
             if (cinder_get_usb_dac()) run_guarded("loop: USB-DAC status", 8, uac_poll_status);
-            // REFERENCE DUMP. When the DAC renders to the jack, Sony's own service is holding the
-            // same capture substream our bridge fails on — so this is the known-good configuration,
-            // printed once per session. Diffing it against the bridge's "after set_params" dump is
-            // the shortest path to whatever we are setting differently. One shot, and only in the
-            // non-bridging case, where it costs a couple of small /proc reads.
-            if (g_uac_playing && !cinder_get_bt_route() && !g_uac_ref_dumped) {
-                g_uac_ref_dumped = true;
-                run_guarded("loop: USB-DAC reference dump", 6, []() {
-                    char dev[32] = {0};
-                    if (ldac_find_capture(dev, sizeof dev)) ldac_dump_pcm(dev, "SONY-REFERENCE");
-                });
-            }
             // What A2DP actually agreed on. Called every frame but THROTTLED INSIDE (2 s, or at once
             // on a connect / codec write) — it is a synchronous IPC round trip, not a scalar read,
             // and the earlier "self-limiting" claim here confused suppressing the log with
@@ -12510,7 +12449,6 @@ void* render_driver(void*) {
                 g_uac_want_jack = false;
                 run_guarded("loop: DAC jack handover", 8, []() {
                     g_uac_playing = false;
-                    g_uac_ref_dumped = false;
                     if (!uac_render(true))
                         clog_("usb-dac: jack handover — Start() failed, waiting for the next format "
                               "notify");
@@ -13352,7 +13290,7 @@ void* render_driver(void*) {
             volume_limit_tick();              // the safe-listening cap, applied when it is flipped
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
             // Screenshot-on-demand: drop /tmp/cinder_screenshot.req and the next frame is written
-            // to /tmp/cinder_screen.png. Same polled-flag idiom as ldac_on above (no new IPC
+            // to /tmp/cinder_screen.png. A polled flag file (no new IPC
             // primitive — the safety model here is best-effort polled file I/O).
             //   /tmp, NOT /contents: /tmp is tmpfs, so it survives USB-MSC (which unmounts
             //   /contents and hands it to the PC), needs no sync (/contents is vfat — unsynced

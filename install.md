@@ -141,15 +141,15 @@ description underneath.
   Cinder install  (channel: stable)
   player: D:\
   ------------------------------------------------------------
-    1  [x]     Power off / Restart menu                   power
-    2  [x]     USB mass storage (put music on the device) msc
-    3  [x]     Set the clock and RTC                      clock
-    4  [x]     Unmount helper for USB mass storage        umount
-    5  [ ]     GPU present path (experimental, dev only)  gpunode
-    6  [x]     FM signal meter, fast scan, hardware seek  fm
-    7  [x]     Battery / charger detail                   battery
-    8  <stock> Wired volume curve                         voltable
-    9  <stock> Audio "sound signature"                    signature
+    1  [x]     FM signal meter, fast scan and hardware seek fm
+    2  [x]     Battery / charger detail                   battery
+    3  [ ]     Library search (new, off by default)       search
+    4  [ ]     SensMe channels (new, off by default)      sensme
+    5  [x]     Scrobble log (.scrobbler.log)              scrobble
+    6  <stock> Wired volume curve                         voltable
+    7  <stock> Audio "sound signature"                    signature
+    8  [x]     Mono and soundscapes over music, jack and Bluetooth (needs Wampy) mono
+    9  [ ]     Mono and soundscapes over music WITHOUT Wampy (new, off by default) preload
   ------------------------------------------------------------
    <number> toggle/cycle   ?<number> describe   i install   q quit
 ```
@@ -214,15 +214,14 @@ removes something the player cannot do without (`components.conf` explains the d
 |---|---|---|
 | `fm` | on | The radio still plays, but without a real signal meter, and a band scan takes about a minute instead of seconds. Installs `cinder-fm`, which opens the FM chip's two register files and nothing else on the bus. |
 | `battery` | on | The battery screen omits the charger detail (charge state, fault code, currents, the voltage it charges to). Installs `cinder-battery`, which only READS the charger's registers. |
-| `gpunode` | **off** | Nothing. Dev channel only. It is setuid-root purely to make four kernel graphics nodes world-writable, for a GPU present path that is default-off and measured **4.7× slower** than the software one. |
 | `search` | **off** | The Library's search button. Installs nothing: a flag file in `/data/cinder`. New, so off for now. |
 | `scrobble` | on | The `.scrobbler.log` of what you listen to. Installs nothing: turning it off leaves a flag file in `/data/cinder` and keeps any log you have. **You do not need to turn it off if you use unknown321's scrobbler** (the one installed with Wampy): Cinder checks for it at every start and writes nothing while it runs, so each play is logged once. |
 | `mono` | on | Sound ▸ MONO then reaches only USB-DAC → LDAC. With it, mono reaches the headphone jack and Bluetooth too; the MONO switch itself still starts off. **Needs Wampy**: it goes in place of Wampy's `libsound_service_fw.so`, the one library Sony's boot already loads into the sound service, keeps Wampy's file as `libsound_service_fw.wampy.so` and loads it back, so Wampy keeps working. Without Wampy nothing is installed. Turning it off or uninstalling puts Wampy's file back; reinstalling Wampy replaces it, so install Cinder again afterwards. |
 | `voltable` | `stock` | Nothing to lose: `stock` is your player's own curve without Sony's regional volume limit. Choose `region` to keep the limit. See [The volume curve tables](#the-volume-curve-tables). |
 | `signature` | `stock` | See below. |
 
-Eight setuid-root helpers exist, and a stable install carries seven of them (`cinder-gpunode` is
-dev-only). The three that are choices are choices for the reason the helpers are listed at all:
+Seven setuid-root helpers exist (an eighth, `cinder-gpunode`, went with the GPU present path on
+2026-10-05). The two that are choices, `fm` and `battery`, are choices for the reason the helpers are listed at all:
 each buys one feature with one piece of attack surface, and where the player works without it you
 should be able to decline it.
 
@@ -332,7 +331,7 @@ thing from redistributing it.
 
 ```bash
 cinder-home/tools/configure.sh                                   # interactive
-cinder-home/tools/configure.sh --set signature=pv2 --disable gpunode --defaults
+cinder-home/tools/configure.sh --set signature=pv2 --disable search --defaults
 cinder-home/tools/configure.sh --show                            # print current selection
 ```
 
@@ -595,7 +594,7 @@ for iteration. `stable` exists for daily-use builds with no adb.
 (`-stdlib=libc++ -fno-rtti`) → glibc-2.23 compat shim → link against xenial
 2.23 crt + device shared libs → GLIBC ≤2.23 ceiling gate + guard self-test +
 qemu construction preflight + 44-case launcher recovery matrix → static setuid
-helpers (`cinder-umount`, `cinder-gpunode`, `cinder-power`, `cinder-msc`).
+helpers (`cinder-umount`, `cinder-power`, `cinder-msc`, …).
 Everything lands in `cinder-home/dist/dev/`.
 
 ### 2.2 Put the device in USB-MSC mode
@@ -632,13 +631,11 @@ sudo tools/flash.sh --push cinder-home/dist/dev/cinder-home
 sudo tools/flash.sh --push cinder-home/dist/dev/cinder-umount
 sudo tools/flash.sh --push cinder-home/dist/dev/cinder-power
 sudo tools/flash.sh --push cinder-home/dist/dev/cinder-msc
-sudo tools/flash.sh --push cinder-home/dist/dev/cinder-gpunode   # dev-only helper
 ```
 
 `flash.sh --push` mounts the device's FAT partition, copies the file to its
 root, syncs, and unmounts. If you skip a helper, the installer silently
-degrades (no `cinder-umount` → USB-MSC cannot unmount `/contents` as uid 100;
-no `cinder-gpunode` → the GPU path can never be enabled).
+degrades (no `cinder-umount` → USB-MSC cannot unmount `/contents` as uid 100).
 
 ### 2.4 Flash the install payload
 
@@ -699,8 +696,8 @@ runs.
 
 | Channel | Use | adb | Notes |
 |---|---|---|---|
-| `dev` (default for iteration) | Active development | **Enabled at boot** | Adds a visible "CINDER DEV" marker; `cinder-gpunode` ships (dev-only, setuid-root, GPU node permissions) |
-| `stable` | Daily use | **Never** | No adb, no gpunode, no dev marker |
+| `dev` (default for iteration) | Active development | **Enabled at boot** | Adds a visible "CINDER DEV" marker; `cinder-probe` (the RE workbench) ships |
+| `stable` | Daily use | **Never** | No adb, no probe, no dev marker |
 
 ```bash
 bash cinder-home/build.sh dev        # dev channel
@@ -821,7 +818,7 @@ rebuilding:
 ### 4.4 When to use `--full`
 
 Use `--full` when you've changed any of the setuid helpers
-(`cinder-umount`, `cinder-power`, `cinder-msc`, `cinder-gpunode`). It pushes
+(`cinder-umount`, `cinder-power`, `cinder-msc`, …). It pushes
 each helper, atomically swaps it in, and restores the `4755 root:root`
 permissions. Without `--full`, helpers stay at whatever's on the device —
 they only change when you do a full `.UPG` reinstall.
@@ -1045,7 +1042,6 @@ sudo tools/flash.sh --push cinder-home/dist/dev/cinder-home
 sudo tools/flash.sh --push cinder-home/dist/dev/cinder-umount
 sudo tools/flash.sh --push cinder-home/dist/dev/cinder-power
 sudo tools/flash.sh --push cinder-home/dist/dev/cinder-msc
-sudo tools/flash.sh --push cinder-home/dist/dev/cinder-gpunode
 sudo tools/flash.sh cinder-home/dist/dev/cinder_home_install.upg
 # → unplug USB, boot, wait 20s
 
@@ -1071,7 +1067,7 @@ sudo tools/flash.sh uninstall                # full uninstall (rung 4)
 - [`UNINSTALL.md`](UNINSTALL.md) — uninstall procedure
 - [`CLAUDE.md`](CLAUDE.md) — full environment setup, host pipeline, device procedure writeup
 - [`docs/adb_setup.md`](docs/adb_setup.md) — adb setup details (Windows + WSL2)
-- [`docs/FLASH_NEXT.md`](docs/FLASH_NEXT.md) — run sheet for the next hardware session
+- [`docs/NEXT.md`](docs/NEXT.md) — what to do next; [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — the device run sheet
 - [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — feature status matrix, what works / what doesn't
 - [`cinder-home/build.sh`](cinder-home/build.sh) — the build script itself (heavily commented)
 - [`tools/flash.sh`](tools/flash.sh) — the MSC + UPG flasher (heavily commented)

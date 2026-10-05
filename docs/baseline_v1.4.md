@@ -445,7 +445,7 @@ Cross-compilation is done on the WSL2 host; the output binary is deployed via `.
 
 ## §10 Open Questions
 
-See `docs/open-questions.md` for the full tracked list.
+The questions still open are in `docs/NEXT.md` §7.
 
 - [x] **OQ1 — What is the SoC?**
   - **CLOSED (v1.4).** MediaTek MT8590, confirmed by `unknown321/wbrt` and Wampy
