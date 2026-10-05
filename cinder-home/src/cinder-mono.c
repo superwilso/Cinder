@@ -577,6 +577,42 @@ static void bt_mix_frames(void* ctx, uint8_t* p, size_t n, uint32_t rate)
     (void)amb_mix(&g_amb_bt, p, n, CM_FMT_S16_LE, 2, rate, "bt");
 }
 
+/* ── Bluetooth: does the PCM reach the transmitter on time? (2026-10-05) ───────────────────────
+ * Nothing between Sony's sound service and the headphones reports a dropout: the MediaTek stack
+ * logs nothing, and an underrun on A2DP is heard, not recorded. This is the one place every byte
+ * of it passes through, so it keeps the time: a PCM write issued more than its own length plus
+ * 40 ms after the one before it is late (the service fell behind), and a send that took more
+ * than 40 ms was held (the stack was not taking it). Either is written to the log with the
+ * monotonic clock, which is what lets a noise somebody heard be matched to what the player was
+ * doing in that second. A gap of two seconds or more is a pause or a new stream, not a late write.
+ * Two clock reads per write and no file access unless something was late. */
+static struct { long long prev_ms; long long late; long long since_said; int have; } g_btt;
+static int g_btt_lines = 0;
+static long long ts_ms(const struct timespec* t) { return (long long)t->tv_sec * 1000 + t->tv_nsec / 1000000L; }
+static void bt_timing(size_t n, uint32_t rate, uint32_t ch, const struct timespec* t0, const struct timespec* t1)
+{
+    if (!rate || !ch) return;
+    const long long a = ts_ms(t0);
+    const long gap = g_btt.have ? (long)(a - g_btt.prev_ms) : -1;
+    const long took = (long)(ts_ms(t1) - a);
+    const long chunk = (long)((unsigned long long)(n / (2u * ch)) * 1000u / rate);
+    g_btt.prev_ms = a;
+    g_btt.have = 1;
+    if (gap < 0 || gap >= 2000) return;
+    if (gap <= chunk + 40 && took <= 40) return;
+    g_btt.late++;
+    g_btt.since_said++;
+    /* The first three hundred one by one; after that one line a hundred, so a link that is late
+     * all evening cannot fill /tmp. */
+    if (g_btt_lines < 300 || g_btt.since_said >= 100) {
+        g_btt_lines++;
+        g_btt.since_said = 0;
+        if (g_log_lines > 0) g_log_lines--;   /* its own budget: never spends the session's 200 lines */
+        mlog("bt: late — %ld ms since the write before (a write is %ld ms of audio), the send took %ld ms; %lld so far",
+             gap, chunk, took, g_btt.late);
+    }
+}
+
 /* The shared body of write/send/sendto: build the bytes to send, send them, commit. */
 static ssize_t bt_send(int fd, const void* buf, size_t n, ssize_t (*sendfn)(int, const void*, size_t, void*), void* ctx)
 {
@@ -602,8 +638,17 @@ static ssize_t bt_send(int fd, const void* buf, size_t n, ssize_t (*sendfn)(int,
             }
         }
     }
+    struct timespec t0, t1;
+    const int timed = st.mode == CM_BT_PCM;
+    if (timed) clock_gettime(CLOCK_MONOTONIC, &t0);
     const ssize_t r = sendfn(fd, to_send, n, ctx);
     if (r > 0) {
+        if (timed) {
+            const int e = errno;
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            bt_timing((size_t)r, st.rate, st.channels, &t0, &t1);
+            errno = e;
+        }
         bt_commit(fd, gen, in, n, (size_t)r, to_send != buf ? mono : 0, said_now, (const uint8_t*)to_send);
         if (st.mode == CM_BT_PCM) load_proved_good();
     }

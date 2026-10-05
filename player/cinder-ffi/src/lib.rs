@@ -6712,6 +6712,7 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
     }
     let path = db_path.to_string();
     std::thread::spawn(move || {
+        lower_thread_priority();
         // The thread opens its OWN read-only DB handle rather than sharing the renderer's: no
         // lifetime plumbing, no lock held across a 365 ms decode, and a read-only SQLite handle
         // per thread is exactly what rusqlite wants.
@@ -6838,6 +6839,22 @@ pub extern "C" fn cinder_font_probe(cp: u32) -> libc::c_int {
     FONTS.with(|f| cinder_ui::text::probe_glyph(f, ch) as libc::c_int)
 }
 
+/// Put the calling thread behind everything that makes sound.
+///
+/// The cover decoder and the thumbnail builder each take about a third of a second of CPU at a
+/// time, and with the screen off there is one core online: the same core Sony's decoder and the
+/// Bluetooth encoder run on, at the same priority these threads were born with. Nice 10 gives them
+/// about a tenth of a contended core and all of an idle one, so a cover is as quick as before on a
+/// lit screen and can no longer hold up audio on a dark one. A thread can always lower its own
+/// priority; on Linux `setpriority` with a thread id moves that one thread.
+fn lower_thread_priority() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
+        libc::setpriority(libc::PRIO_PROCESS as _, tid, 10);
+    }
+}
+
 static COVER_REQ: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
 static COVER_WAKE: std::sync::Condvar = std::sync::Condvar::new();
 static COVER_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -6851,6 +6868,7 @@ fn request_cover(r: &Render, object_id: i64) {
         return; // already running
     }
     std::thread::spawn(move || {
+        lower_thread_priority();
         // Own read-only handle, exactly as the thumbnail builder does: no lifetime plumbing, and
         // no chance of holding the renderer's DB across a long decode.
         let db = match cinder_db::Db::open(&path) {

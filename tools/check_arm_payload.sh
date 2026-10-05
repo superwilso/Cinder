@@ -35,6 +35,9 @@ DYNAMIC=(cinder-home cinder-probe)
 HELPERS=(cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery)
 # cinder-gpunode is dev-channel only; checked when present.
 [ -f "$DIR/cinder-gpunode" ] && HELPERS+=(cinder-gpunode)
+# cinder-hagowrap (the `preload` component) stands in front of every Sony service: static, like the
+# helpers. In dist/stable from the release after 0.3.14; checked when present.
+[ -f "$DIR/cinder-hagowrap" ] && HELPERS+=(cinder-hagowrap)
 
 # Every shared library the dynamic binaries may need: Sony's service clients from vendor/sony/lib,
 # the firmware's libc++ 3.9 runtime, the Mali driver, ALSA, and glibc 2.23 itself.
@@ -44,7 +47,7 @@ libPlayerServiceClient.so libPlayerServiceClientUtil.so libEffectCtrlDmp.so libP
 libUsbDeviceAudioPlayerService.so libBtCommonService.so libBtTransmitterService.so libVolumeService.so
 libMediaStoreServiceClient.so libNfcService.so libTunerPlayerService.so libAudioInPlayerService.so
 libBtPlayerService.so libDisplayService.so libUsbMgrServiceFw.so libConnMgrService.so
-libUsbDeviceConnectionService.so libFuncMgrService.so
+libUsbDeviceConnectionService.so libFuncMgrService.so libSoundServiceSettingsDmp.so
 libc++.so.1 libcxxrt.so.1 libgcc_s.so.1 libMali_linux.so libasound.so
 libpthread.so.0 libdl.so.2 libm.so.6 libc.so.6 ld-linux-armhf.so.3
 "

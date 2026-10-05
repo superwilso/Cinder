@@ -99,3 +99,7 @@ cinder-home/dist/*/cinder-installer*
 # a ~19k-line source tree clones as hundreds of MB. Nothing reads them from the repo; only build.sh
 # writes them. Untracked 2026-08-26 — the local copies stay, so symbolising a crash still works.
 *.unstripped
+
+# Agent worktrees: each is a whole checkout with its own uncommitted work. Two were committed as
+# gitlinks on 2026-10-04 by accident; `git rm --cached` takes those out of the index.
+.claude/worktrees/

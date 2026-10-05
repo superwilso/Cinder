@@ -49,6 +49,14 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     // device installer then puts it in place of Wampy's preloaded library, or skips it when Wampy
     // is not installed.
     ("dist/{ch}/libcinder_mono.so", "libcinder_mono.so", "mono", true),
+    // The `preload` component: the hagodaemon wrapper, the boot guard it is never installed
+    // without, and the script that puts both on and takes both off (deploy/cinder-preload.sh).
+    // Staged only when `preload` is selected. NOT `required` yet: dist/stable is rebuilt at a
+    // release and the one committed today (0.3.14) predates all three, so a build from `main`
+    // must not fail on them — tools/release.sh is what refuses to cut a release without them.
+    ("dist/{ch}/cinder-hagowrap", "cinder-hagowrap", "preload", false),
+    ("dist/{ch}/cinder-guard.sh", "cinder-guard.sh", "preload", false),
+    ("dist/{ch}/cinder-preload.sh", "cinder-preload.sh", "preload", false),
     // The .UPG the Sony updater actually runs. It MUST land on the player as NW_WM_FW.UPG —
     // that filename is what the device's own "update firmware" flow looks for.
     ("dist/{ch}/cinder_home_install.upg", "NW_WM_FW.UPG", "", true),
