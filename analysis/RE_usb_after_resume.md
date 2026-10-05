@@ -63,3 +63,19 @@ survive. Next step: have `usb-resume` log `functions` and `idProduct`, then re-r
 composition after a resume.
 
 Not checked: the write back to the player's own ID (the restart that followed reset it anyway).
+
+## Correction, later the same evening: the port enumerates but does not stay up
+
+The PC's own kernel log (WSL, usbip) for that run: two attaches reached `USB Mass Storage device
+detected` and dropped after 3 and 6 seconds; the third got as far as `SetAddress` and then every
+control transfer timed out (`urb->status -104`) until it was abandoned. Windows kept listing the
+device throughout. So with the ID at 3 the port is back on the bus and answers a first
+enumeration, and fails after a host reset or under transfers. `0B8B` is init's plain `adb`
+configuration (init.usbcfg.rc), so that product ID was not itself a fault.
+
+The dead storage device also left the PC's Linux side unable to `sync` (every later harness and
+launcher-test run hung on it) until `wsl --shutdown`.
+
+Next: `scratchpad/resume_probe.sh`, armed on the player, saves dmesg, `/sys/kernel/debug/musb/regdump`,
+the PLL table and the gadget state at the resume and 4, 20 and 60 s after the plug. Healthy
+values to compare: `Power 71`, `DevCtl 99`, `MISC 0f`.

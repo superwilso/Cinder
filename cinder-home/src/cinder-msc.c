@@ -564,44 +564,6 @@ static int usb_resume(void)
     return ok ? 0 : 1;
 }
 
-/* adb-kick — DEV CHANNEL, after a resume from RAM (2026-10-05). The port comes back (see
- * analysis/RE_usb_after_resume.md) but adb did not: the PC saw the player `offline` until a
- * restart. This writes what the gadget and adbd look like into the log, since with adb down the
- * log is the only witness, puts the adb function back if it is gone, restarts adbd, and writes
- * the same lines again. */
-#define FUNCS_NODE "/sys/class/android_usb/android0/functions"
-static void adb_snapshot(const char *when)
-{
-    char fn[64], pid[16], st[32];
-    read_line(FUNCS_NODE, fn, sizeof fn);
-    read_line("/sys/class/android_usb/android0/idProduct", pid, sizeof pid);
-    read_line(USB_STATE_NODE, st, sizeof st);
-    fprintf(stderr, "cinder-msc: adb-kick %s: functions=%s idProduct=%s state=%s\n", when, fn, pid, st);
-    fflush(stderr);
-    (void)system("echo \"cinder-msc: adb-kick: adbd=$(" GETPROP "init.svc.adbd) "
-                 "config=$(" GETPROP "sys.usb.config) usb.state=$(" GETPROP "sys.usb.state) "
-                 "sony=$(" GETPROP "sys.sony.config)\" >&2");
-}
-
-static int adb_kick(void)
-{
-    char fn[64];
-    adb_snapshot("before");
-    (void)system("/system/bin/dmesg | /xbin/busybox tail -n 200 > " RESUME_DMESG " 2>/dev/null");
-    read_line(FUNCS_NODE, fn, sizeof fn);
-    if (!strstr(fn, "adb")) {
-        write_node(ENABLE_NODE, "0");
-        write_node(FUNCS_NODE, "mass_storage,adb");
-        write_node(ENABLE_NODE, "1");
-    }
-    (void)system(SETPROP "ctl.stop adbd");
-    usleep(500000);
-    (void)system(SETPROP "ctl.start adbd");
-    sleep(3);
-    adb_snapshot("after");
-    return 0;
-}
-
 int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
@@ -634,6 +596,5 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "dac-off") == 0) return dac_off();
     if (strcmp(argv[1], "usb-rescue") == 0) return usb_rescue();
     if (strcmp(argv[1], "usb-resume") == 0) return usb_resume();
-    if (strcmp(argv[1], "adb-kick") == 0) return adb_kick();
     return 2;
 }

@@ -51,7 +51,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
-- **USB after a suspend to RAM.** The port came back as a host and ignored a cable until a restart (the kernel switches it on every resume unless a board ID reads 3). Cinder now sets that ID for the length of the suspend and puts the player's own value back on waking. *Device-verified 2026-10-05 on Walkman One: the PC saw the player after a resume with no restart.* On the dev channel adb still needs a restart afterwards. (`analysis/RE_usb_after_resume.md`)
+- **USB after a suspend to RAM.** The port came back as a host and ignored a cable until a restart (the kernel switches it on every resume unless a board ID reads 3). Cinder now sets that ID for the length of the suspend and puts the player's own value back on waking. *Device-run 2026-10-05 on Walkman One, partly working: the PC listed the player after a resume with no restart, then the port stopped answering when the PC re-enumerated it. Not reliable yet.* (`analysis/RE_usb_after_resume.md`)
 - **The first start after an install is no longer logged as a failed one.** The installer removed
   the boot counter, which the boot guard reads as "the launcher never ran", so every install cost
   one of the guard's three tries. It now leaves the counter at 0. *Host-tested.*

@@ -4040,9 +4040,6 @@ static void usb_after_resume_tick() {
     clog_("usb: a cable is in after a resume from RAM -> cinder-msc usb-resume");
     run_watchdog_only("usb: resume", 20, []() {   // system()
         (void)std::system("/system/vendor/unknown321/bin/cinder-msc usb-resume");
-#ifdef CINDER_DEV
-        (void)std::system("/system/vendor/unknown321/bin/cinder-msc adb-kick");   // adb is offline after a resume
-#endif
     });
 }
 
