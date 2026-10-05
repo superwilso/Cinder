@@ -23,10 +23,8 @@ use crate::canvas::W;
 use crate::eq::band_db;
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::widgets::{center, fill_rect, hline, right, sty};
+use crate::widgets::{center, disc, fill_rect, hline, right, sty};
 use crate::Canvas;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Circle, PrimitiveStyle};
 
 /// Band order is the helper's argument order (`cinder-voltable eq G1..G5`), and the frequencies are
 /// fixed in `codec_eq.h`: a low shelf at 100 Hz, peaks at 400 Hz, 1.5 kHz and 4 kHz, a high shelf
@@ -93,13 +91,6 @@ pub fn reset_at(x: i32, y: i32) -> bool {
 /// write.
 pub fn clamp(v: i8) -> i8 {
     v.clamp(BAND_MIN, BAND_MAX)
-}
-
-fn disc(c: &mut Canvas, cx: i32, cy: i32, d: u32, col: embedded_graphics::pixelcolor::Rgb888) {
-    Circle::with_center(Point::new(cx, cy), d)
-        .into_styled(PrimitiveStyle::with_fill(col))
-        .draw(c)
-        .ok();
 }
 
 /// What the screen draws.

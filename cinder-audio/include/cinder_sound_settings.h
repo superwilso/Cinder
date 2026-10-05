@@ -26,19 +26,14 @@ extern "C" {
 /* DSD -> PCM conversion. Catalogue labels: filter "Slow Roll-Off" / "Sharp Roll-Off",
  * gain "0 dB" / "-3 dB". Which label is which value is UNSETTLED. */
 int cinder_sound_settings_get_dsd_filter(void);
-int cinder_sound_settings_set_dsd_filter(int type);
 int cinder_sound_settings_get_dsd_gain(void);
-int cinder_sound_settings_set_dsd_gain(int mode);
 
 /* How the built-in output handles DSD, and what the USB output sends for it. */
 int cinder_sound_settings_get_dsd_processing(void);
-int cinder_sound_settings_set_dsd_processing(int mode);
 int cinder_sound_settings_get_uac_dsd_output(void);
-int cinder_sound_settings_set_uac_dsd_output(int mode);
 
 /* LPCM playback mode. Meaning unrecovered. */
 int cinder_sound_settings_get_lpcm_mode(void);
-int cinder_sound_settings_set_lpcm_mode(int mode);
 
 /* Headphone model (Sony's NC headphones). READ ONLY: the setter also reconfigures the
  * noise-cancelling service and is deliberately not wrapped. */

@@ -267,12 +267,6 @@ int cinder_audio_pump_start(int interval_ms) {
     return 0;
 }
 
-void cinder_audio_pump_stop(void) {
-    if (!g_pump_run) return;
-    g_pump_run = false;
-    if (g_pump_th) { pthread_join(g_pump_th, nullptr); g_pump_th = 0; }
-}
-
 void cinder_audio_pump_set_interval(int interval_ms) {
     if (interval_ms > 0) g_pump_interval_ms = interval_ms;
 }
@@ -428,7 +422,6 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
 
 int cinder_audio_play(void)  { return change_state(pl::playstate_t::Play); }
 int cinder_audio_pause(void) { return change_state(pl::playstate_t::Pause); }
-int cinder_audio_stop(void)  { return change_state(pl::playstate_t::Stop); }
 
 // Stop playback AND drop our pinned track sequence, so PlayerService releases the current
 // track's file descriptor. Needed before handing /contents to the PC over USB-MSC: a paused

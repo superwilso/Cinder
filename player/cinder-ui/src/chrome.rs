@@ -5,22 +5,12 @@
 use crate::canvas::Canvas;
 use crate::icons;
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::text::{self, Family, FontSet, TextStyle, Weight};
+use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
+use crate::widgets::{fill_rect, sty};
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
-
-fn fill_rect(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col: Rgb888) {
-    Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32))
-        .into_styled(PrimitiveStyle::with_fill(col))
-        .draw(c)
-        .ok();
-}
-
-fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32) -> TextStyle {
-    TextStyle { fam, weight, size, color, tracking }
-}
 
 /// Height of the status strip. It is one big touch target (see [`status_hit`]), so this is a
 /// TOUCH dimension first and a layout one second: 44px is the smallest comfortable target, and the

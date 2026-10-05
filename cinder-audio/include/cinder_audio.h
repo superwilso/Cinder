@@ -24,7 +24,6 @@ extern "C" {
  * the app. 0 = started (or already was), -1 = it did not come up. */
 int  cinder_audio_framework_start(void);
 int  cinder_audio_pump_start(int interval_ms);
-void cinder_audio_pump_stop(void);
 /* Change the pump period while running. The shell slows it down when the panel goes dark: nothing
  * on screen needs sub-100 ms IPC latency, and this thread otherwise wakes 50x/second for hours
  * while a track plays in a pocket. Takes effect on the next iteration. */
@@ -65,7 +64,6 @@ void cinder_audio_shutdown(void);
 /* Transport (ChangePlayState). 0 = ok, <0 = error. */
 int  cinder_audio_play(void);
 int  cinder_audio_pause(void);
-int  cinder_audio_stop(void);
 /* Stop playback AND drop the shim's pinned track sequence so PlayerService closes the current
  * media file (required before USB-MSC hands /contents to the PC — an open fd under /contents
  * makes the umount fail EBUSY and the PC sees no medium). Playback resumes only via a fresh

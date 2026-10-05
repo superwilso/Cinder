@@ -117,7 +117,6 @@ int cinder_codec_set_standby(int on) {
 int cinder_codec_get_gain_mode(void)            { return get_enum(kSeGainCtl); }
 int cinder_codec_set_gain_mode(int high)        { return set_enum(kSeGainCtl, high != 0 ? 1 : 0); }
 int cinder_codec_get_playback_latency(void)     { return get_enum(kLatencyCtl); }
-int cinder_codec_set_playback_latency(int low)  { return set_enum(kLatencyCtl, low != 0 ? 1 : 0); }
 int cinder_codec_get_jack_se(void)              { return get_enum(kJackSeCtl); }
 int cinder_codec_get_master_volume(void)        { return get_int(kMasterVolCtl); }
 int cinder_codec_set_master_volume(int v)       { return set_int(kMasterVolCtl, v); }
