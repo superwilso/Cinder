@@ -74,23 +74,9 @@ pub const TOOLBAR_TOP: i32 = 744;
 pub const TOOLBAR_SLOTS: usize = 4;
 pub const TOOLBAR_CX: [i32; TOOLBAR_SLOTS] = [60, 180, 300, 420];
 
-/// Which toolbar slot a tap lands on, or None if the tap is above the bar.
-pub fn hit_toolbar(x: i32, y: i32) -> Option<usize> {
-    if y <= TOOLBAR_TOP {
-        return None;
-    }
-    let slot = (x / (crate::canvas::W as i32 / TOOLBAR_SLOTS as i32)) as usize;
-    Some(slot.min(TOOLBAR_SLOTS - 1))
-}
-
 pub const HEART_CX: i32 = 432;
 pub const HEART_CY: i32 = 548;
 pub const HEART_HALF: i32 = 30;
-
-/// Did a tap land on the like heart?
-pub fn hit_heart(x: i32, y: i32) -> bool {
-    (x - HEART_CX).abs() <= HEART_HALF && (y - HEART_CY).abs() <= HEART_HALF
-}
 
 /// Map a UI x coordinate to a 0..1 position along the rail (clamped). Used by the scrub.
 pub fn rail_fraction(x: i32) -> f32 {

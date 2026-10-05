@@ -7,9 +7,7 @@ use crate::canvas::Canvas;
 use crate::icons;
 use crate::text::{self, Family, FontSet, TextStyle, Weight};
 use crate::theme::Theme;
-use embedded_graphics::pixelcolor::Rgb888;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
+use crate::widgets::{fill_rect, sty};
 
 pub struct Lock<'a> {
     pub clock: &'a str,      // status-bar clock
@@ -19,17 +17,6 @@ pub struct Lock<'a> {
     pub badge: &'a str,
     pub battery: u8,
     pub progress: f32,
-}
-
-fn fill_rect(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col: Rgb888) {
-    Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32))
-        .into_styled(PrimitiveStyle::with_fill(col))
-        .draw(c)
-        .ok();
-}
-
-fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32) -> TextStyle {
-    TextStyle { fam, weight, size, color, tracking }
 }
 
 /// Screen margin the centred text may not cross. The lock screen has no controls to hide, so this

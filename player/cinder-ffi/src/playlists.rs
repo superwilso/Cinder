@@ -566,12 +566,9 @@ fn write_file(list: &mut Playlist) -> std::io::Result<()> {
         body.push_str(&entry.uri);
         body.push('\n');
     }
-    // Temp file + rename: this volume is exFAT on removable flash that gets unplugged, and a
-    // half-written playlist would be a list of tracks with the tail missing rather than an
+    // A half-written playlist would be a list of tracks with the tail missing rather than an
     // obvious failure.
-    let tmp = list.file.with_extension("tmp");
-    fs::write(&tmp, body)?;
-    fs::rename(&tmp, &list.file)
+    crate::write_atomic(&list.file, body)
 }
 
 #[cfg(test)]

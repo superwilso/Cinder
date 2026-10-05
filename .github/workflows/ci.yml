@@ -120,22 +120,11 @@ jobs:
       - name: C/C++ syntax check
         run: tools/host_syntax_check.sh
 
-      # The thirteen pure-logic rules that decide whether the device pauses, reconnects, reboots,
-      # notices new music or believes its own battery gauge. They live in build.sh, which needs the cross toolchain and which only
-      # tools/release.sh ever calls — so until now they ran when somebody remembered. They compile
-      # with plain cc in milliseconds and have no business being opt-in.
+      # The pure-logic rules that decide whether the device pauses, reconnects, reboots, notices new
+      # music or believes its own battery gauge. Every *_selftest.cpp, globbed — the same script
+      # build.sh and .githooks/pre-push run.
       - name: C++ self-tests
-        run: |
-          fail=0
-          for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange mono battslew codeceq soundscape; do
-            src="cinder-home/tools/${t}_selftest.cpp"
-            if [ ! -f "$src" ]; then echo "::error::missing self-test $src"; fail=1; continue; fi
-            if ! cc -O2 -o "/tmp/$t" "$src" -lstdc++ -lm; then
-              echo "::error::$t failed to build"; fail=1; continue
-            fi
-            if ! "/tmp/$t"; then echo "::error::$t FAILED"; fail=1; fi
-          done
-          exit $fail
+        run: bash cinder-home/tools/selftests.sh
 
       # 5,288 lines of shell across 33 scripts — the launcher, the crash supervisor, the bad-boot
       # counter, the USB-MSC ordering. All root-privileged, all on the boot path, and none of it

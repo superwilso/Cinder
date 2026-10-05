@@ -191,9 +191,7 @@ impl Store {
             }
         }
         let body = serialize(&self.by_path);
-        let tmp = self.path.with_extension("tsv.tmp");
-        std::fs::write(&tmp, &body)?;
-        std::fs::rename(&tmp, &self.path)?;
+        crate::write_atomic(&self.path, &body)?;
         self.disk_sig = sig(body.as_bytes());
         self.touched.clear();
         self.rated.clear();

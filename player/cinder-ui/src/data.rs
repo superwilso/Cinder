@@ -97,26 +97,6 @@ pub const PAIRED: &[Paired] = &[
     Paired { name: "Car · CX-30", kind: "Car unit · SBC" },
 ];
 
-// Artist page (Benjamin Francis Leftwich)
-pub const ARTIST_NAME: &str = "Benjamin Francis Leftwich";
-pub const ARTIST_STATS: &str = "3 ALBUMS · 34 TRACKS · 2 HR 14 MIN";
-pub const ARTIST_ALBUMS: &[Album] = &[
-    Album { n: "Last Smoke Before the Snowstorm", k: 12, y: "2011", art: "kind" },
-    Album { n: "After the Rain", k: 10, y: "2016", art: "atlas" },
-    Album { n: "Gratitude", k: 11, y: "2019", art: "cassette" },
-];
-pub struct TopSong {
-    pub t: &'static str,
-    pub al: &'static str,
-    pub d: &'static str,
-}
-pub const ARTIST_TOP: &[TopSong] = &[
-    TopSong { t: "Atlas Hands", al: "Last Smoke Before…", d: "4:32" },
-    TopSong { t: "Box of Stones", al: "Last Smoke Before…", d: "3:58" },
-    TopSong { t: "Tilikum", al: "After the Rain", d: "4:14" },
-    TopSong { t: "Gratitude", al: "Gratitude", d: "3:47" },
-];
-
 // EQ — 10 bands, presets (dB per band)
 pub const EQ_BANDS: [&str; 10] = ["32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
 // RAW half-dB units (see eq::BAND_MAX): the curves below were authored as decibels, so each value

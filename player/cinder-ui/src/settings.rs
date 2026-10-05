@@ -100,9 +100,6 @@ pub const BT_IDLE_OFF_SUB: &str = "After 10 min silent with the screen off";
 #[macro_export]
 macro_rules! cinder_version { () => { "0.3.14" } }
 
-/// The version on its own, for anything that wants it without the channel decoration.
-pub const CINDER_VERSION: &str = cinder_version!();
-
 /// Firmware/build label shown on the Settings "Firmware" row. The `dev` feature (development
 /// channel, built from the same tree) makes the two builds visually distinguishable on-device.
 ///

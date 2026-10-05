@@ -89,7 +89,6 @@ int cinder_codec_set_gain_mode(int high);
  * changes it. Unlike the gain mode this is harmless either way; whether it is audible or
  * measurable on this hardware is untested. */
 int cinder_codec_get_playback_latency(void);
-int cinder_codec_set_playback_latency(int low);
 
 /* Is anything in the headphone jack? 0 = empty, >0 = occupied (the codec's own plug detect, which
  * distinguishes 3pin/4pin/5pin/antenna), -1 = unavailable.
