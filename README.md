@@ -103,12 +103,12 @@ drive) to any issue.
 ## Coming from Walkman One
 
 - **Sound:** Walkman One's plus modes are a 3-byte change to Sony's audio library. Cinder's
-  `signature` install option makes the same change to your own stock files, no flashing. Its
+  *Sound signature* install option makes the same change to your own stock files, no flashing. Its
   external tunings are other models' firmware and can't be reproduced. Measured at the jack, neither
   changes the signal ([unknown321's measurements](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md#there-is-more)).
-- **Volume curve:** Cinder removes Sony's regional volume limit by default; the `region` install
-  option keeps it. The NW-WM1A curve is an install option if you supply Sony's table file
-  ([how](install.md#the-volume-curve-tables)).
+- **Volume curve:** Cinder removes Sony's regional volume limit by default; the *Headphone volume
+  curve* option **Sony, with region limit** keeps it. **Smooth (NW-WM1A)** is a choice there too, if
+  you supply Sony's table file ([how](install.md#the-volume-curve-tables)).
 - **Installing over Walkman One:** not with a release package yet. To help, run `nvpstr kas` on your
   player and post the output in an issue.
 - **Reverting to stock first** works; Cinder installs on stock 1.02. If it then doesn't start,

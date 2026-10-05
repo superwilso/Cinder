@@ -7,7 +7,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::catalogue::Comp;
+use crate::catalogue::{Comp, Kind};
 use crate::device::{self, Installed};
 use crate::stage::{self, Action};
 
@@ -27,18 +27,57 @@ fn show(comps: &[Comp], target: &Path, action: Action) {
     println!("  player: {}", target.display());
     println!("  ------------------------------------------------------------");
     for (i, c) in comps.iter().enumerate() {
-        println!("   {:>2}  {:<7} {:<42} {}", i + 1, c.render(), c.title, c.id);
-    }
-    println!("  ------------------------------------------------------------");
-    println!("\n  What the options do:");
-    for (i, c) in comps.iter().enumerate() {
-        println!("\n   {}. {}  [default: {}]", i + 1, c.title, c.default);
-        for line in c.desc.lines() {
-            println!("      {line}");
+        match c.kind {
+            Kind::Bool => println!("   {:>2}  [{}]  {}", i + 1, if c.is_on() { 'x' } else { ' ' }, c.title),
+            Kind::Enum(_) => println!("   {:>2}       {}: {}", i + 1, c.title, c.shown()),
         }
     }
+    println!("  ------------------------------------------------------------");
     let go = if action == Action::Update { "u update" } else { "i install" };
-    println!("\n   <number> toggle/cycle   ?<number> repeat one description   {go}   q quit");
+    println!("\n   <number> switch on/off or change   ?<number> read about it   {go}   q quit");
+}
+
+/// One option, the way the window's description panel shows it.
+fn describe(c: &Comp, n: usize) {
+    println!("\n   {n}. {}", c.title);
+    print!("{}", wrap(&c.explain("(*)", "( )"), 72, "      "));
+}
+
+/// Wrap to `width` columns, every line indented by `indent`. Blank lines are kept, and the
+/// continuation lines of a choice or a bullet hang under its text rather than its mark.
+fn wrap(text: &str, width: usize, indent: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            out.push('\n');
+            continue;
+        }
+        let hang = match line {
+            l if l.starts_with("(*) ") || l.starts_with("( ) ") => "    ",
+            l if l.starts_with("- ") => "  ",
+            _ => "",
+        };
+        out.push_str(indent);
+        let (mut col, mut fresh) = (0, true);
+        for word in line.split_whitespace() {
+            let n = word.chars().count();
+            if !fresh && col + 1 + n > width {
+                out.push('\n');
+                out.push_str(indent);
+                out.push_str(hang);
+                (col, fresh) = (hang.len(), true);
+            }
+            if !fresh {
+                out.push(' ');
+                col += 1;
+            }
+            out.push_str(word);
+            col += n;
+            fresh = false;
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// Pick components, then carry the action out. Returns the process exit code.
@@ -68,6 +107,12 @@ pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bo
     }
 
     if !assume_yes {
+        // Every description once, up front. They used to be reprinted under the list after
+        // every keypress, which scrolled the list itself off the screen.
+        println!("\n  What the options do:");
+        for (i, c) in comps.iter().enumerate() {
+            describe(c, i + 1);
+        }
         loop {
             show(&comps, &target, action);
             let a = prompt("  > ");
@@ -85,13 +130,7 @@ pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bo
             if let Some(rest) = a.strip_prefix('?') {
                 if let Ok(n) = rest.trim().parse::<usize>() {
                     if n >= 1 && n <= comps.len() {
-                        let c = &comps[n - 1];
-                        println!("\n  {}  ({} -> {})", c.title, c.id, c.var);
-                        println!("  allowed: {}   default: {}", c.allowed().join(" "), c.default);
-                        println!();
-                        for l in c.desc.lines() {
-                            println!("    {l}");
-                        }
+                        describe(&comps[n - 1], n);
                     }
                 }
                 continue;
@@ -112,7 +151,7 @@ pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bo
         };
         println!("\n  About to write to {}:", target.display());
         for c in &comps {
-            println!("    {:<10} {}", c.id, c.value);
+            println!("    {}: {}", c.title, c.shown());
         }
         println!("\n  {} files ({} KB) will be copied to the player's storage root.",
                  plan.count(), plan.total_bytes() / 1024);
@@ -291,4 +330,18 @@ pub fn confirm_odd_target(p: &Path) -> bool {
     eprintln!("WARNING: {} does not look like a Walkman's storage", p.display());
     eprintln!("         (no DevIcon.fil, no MUSIC + PC_Application).");
     prompt("         Use it anyway? [y/N] ").to_lowercase() == "y"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap;
+
+    #[test]
+    fn wrap_keeps_paragraphs_and_hangs_choices() {
+        let w = wrap("one two three four\n\n(*) Label — five six seven", 12, "  ");
+        assert_eq!(w, "  one two\n  three four\n\n  (*) Label —\n      five six\n      seven\n");
+        for line in w.lines() {
+            assert!(line.chars().count() <= 2 + 12, "{line:?} is wider than asked");
+        }
+    }
 }
