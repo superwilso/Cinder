@@ -240,6 +240,7 @@ const BM_SETCHECK: u32 = 0x00F1;
 const CB_ADDSTRING: u32 = 0x0143;
 const CB_SETCURSEL: u32 = 0x014E;
 const CB_GETCURSEL: u32 = 0x0147;
+const CB_SETDROPPEDWIDTH: u32 = 0x0160;
 const EM_SETSEL: u32 = 0x00B1;
 const EM_REPLACESEL: u32 = 0x00C2;
 
@@ -253,6 +254,8 @@ const DT_END_ELLIPSIS: u32 = 0x8000;
 const LOGPIXELSX: i32 = 88;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
+/// The height a maximised window gets: the work area, i.e. the screen less the taskbar.
+const SM_CYMAXIMIZED: i32 = 62;
 
 fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -488,7 +491,9 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
             if d <= 0 { 96u32 } else { d as u32 }
         };
         let sc = |px: i32| px * dpi as i32 / 96;
-        let (ww, wh) = (sc(760), sc(620));
+        // Taller than it was (620), for the Options page's description panel — but never taller
+        // than the work area, or the Continue button would open below the taskbar.
+        let (ww, wh) = (sc(760), sc(680).min(GetSystemMetrics(SM_CYMAXIMIZED)).max(sc(560)));
         // MEASURED FROM THE LAYOUT, not guessed: the Home page needs the band (84), the drive
         // row and the state line (74), three 72 px cards, two lines of footer and the bottom
         // button row with its padding. At the old 460 the cards, the footer and the buttons were
@@ -1036,9 +1041,9 @@ impl App {
             }
             Page::Options => {
                 let title = if self.action == Action::Update {
-                    "Update — these are the choices already on the player. Change any of them."
+                    "These are the choices already on your player. Change any you like."
                 } else {
-                    "Choose the optional parts. Everything not listed here is part of every install."
+                    "Choose the extras you want. Click one to read what it does."
                 };
                 self.body = self.mk("STATIC", title, SS_NOPREFIX | SS_ENDELLIPSIS, ID_BODY, fb);
 
@@ -1056,10 +1061,15 @@ impl App {
                         Kind::Enum(vals) => {
                             label = self.mk("STATIC", &format!("{}:", c.title), SS_NOPREFIX | SS_ENDELLIPSIS, id + 1000, f);
                             let h = self.mk("COMBOBOX", "", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, id, f);
+                            // The choice's LABEL, not its value: `wm1a` and `pv2` mean nothing to
+                            // the person choosing. The index still maps to `vals`.
                             for v in vals {
-                                let t = w(v);
+                                let t = w(&c.label_of(v));
                                 unsafe { SendMessageW(h, CB_ADDSTRING, 0, t.as_ptr() as LPARAM) };
                             }
+                            // The open list may be wider than the closed box, so a long label is
+                            // read whole where it is picked.
+                            unsafe { SendMessageW(h, CB_SETDROPPEDWIDTH, self.s(300) as usize, 0) };
                             let sel = vals.iter().position(|v| *v == c.value).unwrap_or(0);
                             unsafe { SendMessageW(h, CB_SETCURSEL, sel, 0) };
                             h
@@ -1163,11 +1173,7 @@ impl App {
         let plan = stage::plan(self.action, &self.comps, crate::CHANNEL);
         let mut s = format!("{}\r\n\r\nPlayer:  {target}\r\n\r\n", self.action.verb().to_uppercase());
         for c in &self.comps {
-            let mark = match c.kind {
-                Kind::Bool => if c.is_on() { "on ".to_string() } else { "off".to_string() },
-                Kind::Enum(_) => c.value.clone(),
-            };
-            s.push_str(&format!("    {:<7}  {}\r\n", mark, c.title));
+            s.push_str(&format!("    {}:  {}\r\n", c.title, c.shown()));
         }
         match plan {
             Ok(p) => s.push_str(&format!(
@@ -1192,8 +1198,11 @@ impl App {
         if self.hint.is_null() {
             return;
         }
+        // What is on screen, not what the page opened with: the description marks the choice
+        // the drop-down holds now, and a change to it comes through here.
+        self.read_controls();
         let Some(c) = self.comps.get(i) else { return };
-        let text = format!("{} — {}\r\n{}", c.title, c.id, c.desc.replace('\n', " ").trim());
+        let text = format!("{}\n\n{}", c.title, c.explain("●", "○")).replace('\n', "\r\n");
         let t = w(&text);
         // SAFETY: t outlives the call and the handle is live.
         unsafe { SetWindowTextW(self.hint, t.as_ptr()) };
@@ -1450,7 +1459,7 @@ impl App {
                 let n = self.comp_ctl.len().max(1) as i32;
                 let rows_h = n * self.s(30);
                 let hint_h = (bottom - self.s(10) - (y + rows_h + self.s(8)))
-                    .clamp(self.s(52), self.s(150));
+                    .clamp(self.s(52), self.s(260));
                 let hint_top = bottom - hint_h - self.s(10);
                 let space = (hint_top - y - self.s(8)).max(self.s(24));
                 let step = if rows_h > space { (space / n).max(self.s(22)) } else { self.s(30) };
@@ -1461,7 +1470,7 @@ impl App {
                     } else {
                         // An enum row is "Label:  [combo]" — the label takes the left, the combo a
                         // fixed slot on the right so the drop-downs line up down the page.
-                        let cw = self.s(150);
+                        let cw = self.s(210);
                         mv(label, pad + self.s(4), y + self.s(4), wd - pad * 2 - cw - self.s(16), self.s(20));
                         mv(h, wd - pad - cw, y, cw, self.s(240));
                     }

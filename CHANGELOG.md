@@ -16,6 +16,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **The installer explains its options in plain words.** Every option was rewritten for the person
+  installing: what it does, what you lose without it, and anything you have to do yourself. The
+  technical detail moved into notes for developers that the installer never shows. Drop-downs show
+  names instead of internal IDs (**Smooth (NW-WM1A)** rather than `wm1a`, **Walkman One Plus v2**
+  rather than `pv2`). Each choice gets one sentence, with the current one marked. The description
+  keeps its paragraphs, and the window is taller so more of it fits. The text installer explains each
+  option once instead of reprinting everything after every keypress. `configure.sh` shows the same
+  names. A test fails if an option's text grows past 180 words or mentions internals such as paths,
+  `setuid` or ALSA devices.
+
 ## [0.3.15] — 2026-10-05
 
 *Everything below was built host-only with no player attached: host-tested, in the golden

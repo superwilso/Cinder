@@ -133,26 +133,32 @@ downloading a newer installer. Everything else works with no connection at all.
 
 ### A.0.3 The component picker
 
-Type a number to toggle or cycle it, `?6` to read the full description of item 6, `i` to install
-(or `u` to update). The window shows the same catalogue as checkboxes and drop-downs with the
-description underneath.
+Each option is explained once, then listed. Type a number to switch it on or off (or to step
+through its choices), `?6` to read about item 6 again, `i` to install (or `u` to update). The
+window shows the same options as checkboxes and drop-downs, with the explanation of the one you
+clicked underneath.
 
 ```
   Cinder install  (channel: stable)
   player: D:\
   ------------------------------------------------------------
-    1  [x]     FM signal meter, fast scan and hardware seek fm
-    2  [x]     Battery / charger detail                   battery
-    3  [ ]     Library search (new, off by default)       search
-    4  [ ]     SensMe channels (new, off by default)      sensme
-    5  [x]     Scrobble log (.scrobbler.log)              scrobble
-    6  <stock> Wired volume curve                         voltable
-    7  <stock> Audio "sound signature"                    signature
-    8  [x]     Mono and soundscapes over music, jack and Bluetooth (needs Wampy) mono
-    9  [ ]     Mono and soundscapes over music WITHOUT Wampy (new, off by default) preload
+    1  [x]  FM radio: signal meter and fast scan
+    2  [x]  Charger details on the battery screen
+    3  [ ]  Library search (new)
+    4  [ ]  SensMe channels (new)
+    5  [x]  Scrobble log (for Last.fm)
+    6       Headphone volume curve: Sony standard (default)
+    7       Sound signature (Walkman One modes): Sony standard (default)
+    8  [x]  Mono and soundscapes over music (with Wampy)
+    9  [ ]  Mono and soundscapes over music (without Wampy, new)
   ------------------------------------------------------------
-   <number> toggle/cycle   ?<number> describe   i install   q quit
+
+   <number> switch on/off or change   ?<number> read about it   i install   q quit
 ```
+
+Every word of it comes from [`cinder-home/deploy/components.conf`](cinder-home/deploy/components.conf).
+To change what an option says, change it there; the reasons behind each option are kept there too,
+as `#` notes the installer never shows.
 
 It finds the player on its own; if you have several drives it asks.
 
@@ -208,17 +214,22 @@ removes something the player cannot do without (`components.conf` explains the d
 | `cinder-clock` | Setting the clock. Nothing in Sony's libraries exposes a clock setter, so the kernel is the only route and that needs `CAP_SYS_TIME`. |
 | `cinder-voltable` | Loads the chosen volume curve at every boot. With `voltable` set to `region` it is never run. |
 
-**The choices:**
+**The choices** — the name the installer shows, then its id for `configure.sh --set`:
 
-| id | default | what saying no costs you |
-|---|---|---|
-| `fm` | on | The radio still plays, but without a real signal meter, and a band scan takes about a minute instead of seconds. Installs `cinder-fm`, which opens the FM chip's two register files and nothing else on the bus. |
-| `battery` | on | The battery screen omits the charger detail (charge state, fault code, currents, the voltage it charges to). Installs `cinder-battery`, which only READS the charger's registers. |
-| `search` | **off** | The Library's search button. Installs nothing: a flag file in `/data/cinder`. New, so off for now. |
-| `scrobble` | on | The `.scrobbler.log` of what you listen to. Installs nothing: turning it off leaves a flag file in `/data/cinder` and keeps any log you have. **You do not need to turn it off if you use unknown321's scrobbler** (the one installed with Wampy): Cinder checks for it at every start and writes nothing while it runs, so each play is logged once. |
-| `mono` | on | Sound ▸ MONO then reaches only USB-DAC → LDAC. With it, mono reaches the headphone jack and Bluetooth too; the MONO switch itself still starts off. **Needs Wampy**: it goes in place of Wampy's `libsound_service_fw.so`, the one library Sony's boot already loads into the sound service, keeps Wampy's file as `libsound_service_fw.wampy.so` and loads it back, so Wampy keeps working. Without Wampy nothing is installed. Turning it off or uninstalling puts Wampy's file back; reinstalling Wampy replaces it, so install Cinder again afterwards. |
-| `voltable` | `stock` | Nothing to lose: `stock` is your player's own curve without Sony's regional volume limit. Choose `region` to keep the limit. See [The volume curve tables](#the-volume-curve-tables). |
-| `signature` | `stock` | See below. |
+| option (id) | default | what it does | without it |
+|---|---|---|---|
+| FM radio: signal meter and fast scan (`fm`) | on | A signal-strength meter and a station scan that takes about a second | The radio still plays; no meter, and a scan takes about a minute |
+| Charger details on the battery screen (`battery`) | on | The charger's own readings: charging state, faults, charge current and voltage | The battery screen still shows level, health, voltage and temperatures |
+| Library search (`search`) | **off** | A search button in the Library | — (new, so off for now) |
+| SensMe channels (`sensme`) | **off** | Play the library by mood, like radio stations. Needs your music analysed on a PC first, by [Flint](https://github.com/superwilso/flint) or Sony's Music Center | — |
+| Scrobble log (`scrobble`) | on | Logs the songs you finish to `.scrobbler.log` for a Last.fm uploader | Nothing logged; an existing log is kept. **Leave it on with Wampy's scrobbler**: Cinder steps aside while that one runs, so nothing is logged twice |
+| Headphone volume curve (`voltable`) | Sony standard | How much each volume step changes the loudness. See [The volume curve tables](#the-volume-curve-tables) | — |
+| Sound signature (`signature`) | Sony standard | Walkman One's Plus modes, to compare by ear. See [below](#the-sound-signature) | — |
+| Mono and soundscapes over music, with Wampy (`mono`) | on | The Mono switch works on the jack and Bluetooth, and soundscapes play over music. **Needs Wampy**; reinstalling Wampy removes it, so install Cinder again afterwards | Mono works only for USB-DAC → Bluetooth, and a soundscape pauses while music plays |
+| Mono and soundscapes over music, without Wampy (`preload`) | **off** | The same, on a player without Wampy. It puts a small program in front of Sony's audio services and edits Sony's start-up script, with a guard that undoes it if a start fails | As above |
+
+How each one works, and why it is optional, is in the `#` notes in
+[`components.conf`](cinder-home/deploy/components.conf).
 
 Seven setuid-root helpers exist (an eighth, `cinder-gpunode`, went with the GPU present path on
 2026-10-05). The two that are choices, `fm` and `battery`, are choices for the reason the helpers are listed at all:
@@ -227,7 +238,20 @@ should be able to decline it.
 
 ### The "sound signature"
 
-This patches **three bytes** of the stock audio HAL (`libaudiohal-adleralsa.so`). The bytes are
+**In short:** this recreates Walkman One's "Plus" sound modes from your own player's files, so you
+can compare them by ear. Measured at the headphone jack, none of them changes the sound. The ones
+that hold the processor at a higher speed use more battery while music plays.
+
+| the installer shows | id | what changes | battery |
+|---|---|---|---|
+| Sony standard (default) | `stock` | nothing | — |
+| Walkman One Plus v1 | `pv1` | audio path and processor speed, as Walkman One ships it | more while playing |
+| Walkman One Plus v2 | `pv2` | the other audio path and processor speed, as Walkman One ships it | more while playing |
+| Faster processor only | `clock` | processor speed only | more while playing |
+| Plus v1 audio path only | `hw1` | Plus v1's audio path only | no change |
+| Plus v2 audio path only | `hw2` | Plus v2's audio path only | no change |
+
+**How it works.** This patches **three bytes** of the stock audio HAL (`libaudiohal-adleralsa.so`). The bytes are
 ASCII digits inside string literals — no code changes. They control two things: **which ALSA PCM
 device** the output stream opens, and **the CPU clock floor** held during playback.
 
@@ -268,21 +292,25 @@ exact. Takes effect on the next reboot, because the HAL is loaded at play time.
 
 ### The volume curve tables
 
-The `voltable` choice picks the table that maps each volume step to the headphone amplifier's gain.
+**In short:** the *Headphone volume curve* option decides how much each step of the volume control
+changes the loudness at the jack. **Sony standard** is the default. **Smooth (NW-WM1A)** makes every
+step count, but you copy one of Sony's files to the player first (below).
 
-| choice | what loads |
-|---|---|
-| `stock` (default) | The NW-A50's own curve, **without Sony's regional volume limit** |
-| `region` | Whatever your player's firmware picks for its region, limit included |
-| `wm1a`, `w1` | Curves from other Sony models, also without the limit. You bring the file (below) |
+| the installer shows | id | what you get |
+|---|---|---|
+| Sony standard (default) | `stock` | Your player's own curve, **without Sony's regional volume limit**. Steps 40–60 and 100–120 change nothing ([measured](analysis/RE_volume_pop.md)) |
+| Smooth (NW-WM1A) | `wm1a` | Every step changes the volume, in smaller steps near the top. Same maximum. You bring the file |
+| Walkman One | `w1` | Walkman One's curve. It measured the same as Sony standard. You bring the file |
+| Sony, with region limit | `region` | Whatever your player used before Cinder, including the quieter regional limit if it has one |
 
 **The regional limit.** Players sold where Sony restricts headphone volume (Wampy measured the EU
 `CEW2` and Korean `KR3` regions) load a quieter table at boot. Cinder replaces it on every boot
-unless you choose `region`, so on those players **the same volume number is louder than on Sony's
+unless you choose **Sony, with region limit**, so on those players **the same volume number is louder than on Sony's
 firmware. Turn the volume down before the first boot.** Elsewhere `stock` is the table you already
 had. Settings ▸ Volume limit, Sony's safe-listening cap, is separate and still works.
 
-`wm1a` and `w1` **are not part of the NW-A50's firmware** — so for those two, you bring the table.
+The Smooth and Walkman One tables **are not part of the NW-A50's firmware**, so for those two you
+bring the table.
 
 > **Needs the release after v0.3.4.** The v0.3.4 installer does not look for your copy; with it,
 > `wm1a` and `w1` still leave the stock curve in place and say so in the log.
@@ -301,7 +329,7 @@ had. Settings ▸ Volume limit, Sony's safe-listening cap, is separate and still
   where they are kept with their checksums and an explanation of why they live there.
 
 **How.** Copy the file to the **top of the player's drive**, next to the `MUSIC` folder, choose
-`wm1a` (or `w1`), and install or update. The install log then says
+**Smooth (NW-WM1A)** (or **Walkman One**), and install or update. The install log then says
 `volume table: installed ov_127x.tbl from /contents/ov_127x.tbl (SHA-256 matches Sony's)`, and after
 the reboot `cinderhome.log` says `volume curve: wm1a applied`. You can delete the file from the
 drive afterwards — the installer keeps its own copy in `/system`.
@@ -321,9 +349,9 @@ Sony's UI assets and decompilations out of the tree (`docs/HISTORY_REWRITE.md`).
 from a firmware you own onto a player you own, for it to work with other software, is a different
 thing from redistributing it.
 
-> **Every choice except `region` lifts the regional limit.** The EU tables (`ov_*_cew`) set the
+> **Every choice except *Sony, with region limit* lifts the regional limit.** The EU tables (`ov_*_cew`) set the
 > analogue amplifier exactly like the others but lower two digital stages, which is why they measure
-> quieter at the jack. `wm1a` also reaches high output sooner on every player, so start low.
+> quieter at the jack. Smooth (`wm1a`) is also louder than Sony standard around 60–80 on every player, so start low.
 
 ### Choosing components without the GUI
 

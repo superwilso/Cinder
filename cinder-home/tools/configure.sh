@@ -44,10 +44,18 @@ done
 [ -n "$OUT" ] || OUT="$CH/dist/$CHANNEL/cinder_components.conf"
 
 # ── parse the catalogue ────────────────────────────────────────────────────────────────────
-IDS=(); declare -A VAR TYPE DEF TITLE DESC
-cur=""
+# The grammar is in the catalogue's own header. Description lines are kept as written (the file
+# is wrapped for a terminal already); the first paragraph goes in DESC, the rest in MORE, so the
+# choices can be shown between them. `= value | label | help` lines go in LABEL/HELP.
+IDS=(); declare -A VAR TYPE DEF TITLE DESC MORE LABEL HELP
+trim() { sed 's/^[[:space:]]*//;s/[[:space:]]*$//' <<<"$1"; }
+cur=""; para=0
 while IFS= read -r line; do
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" =~ ^[[:space:]]*$ ]]; then
+        if [ -n "$cur" ] && [ -n "${DESC[$cur]}" ]; then para=1; fi
+        continue
+    fi
     if [[ "$line" =~ ^[^[:space:]] ]] && [[ "$line" == *"|"* ]]; then
         IFS='|' read -r f_id f_var f_type f_def f_title <<<"$line"
         f_id="$(echo "$f_id" | xargs)"; f_var="$(echo "$f_var" | xargs)"
@@ -56,10 +64,21 @@ while IFS= read -r line; do
         [[ "$f_id"  =~ ^[a-z][a-z0-9-]*$   ]] || { echo "ERR: bad id '$f_id' in catalogue" >&2; exit 1; }
         [[ "$f_var" =~ ^[A-Z][A-Z0-9_]*$   ]] || { echo "ERR: bad varname '$f_var' in catalogue" >&2; exit 1; }
         IDS+=("$f_id"); VAR[$f_id]="$f_var"; TYPE[$f_id]="$f_type"
-        DEF[$f_id]="$f_def"; TITLE[$f_id]="$f_title"; DESC[$f_id]=""
-        cur="$f_id"
+        DEF[$f_id]="$f_def"; TITLE[$f_id]="$f_title"; DESC[$f_id]=""; MORE[$f_id]=""
+        cur="$f_id"; para=0
+    elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+=[[:space:]] ]]; then
+        IFS='|' read -r c_val c_label c_help <<<"${line#*=}"
+        c_val="$(trim "$c_val")"
+        LABEL[$cur.$c_val]="$(trim "$c_label")"; HELP[$cur.$c_val]="$(trim "$c_help")"
     elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+[^[:space:]] ]]; then
-        DESC[$cur]+="${line#"${line%%[![:space:]]*}"}"$'\n'
+        text="${line#"${line%%[![:space:]]*}"}"
+        if [ "$para" = 0 ] && [ -z "${MORE[$cur]}" ]; then
+            DESC[$cur]+="$text"$'\n'
+        else
+            if [ "$para" = 1 ] && [ -n "${MORE[$cur]}" ]; then MORE[$cur]+=$'\n'; fi
+            MORE[$cur]+="$text"$'\n'
+        fi
+        para=0
     fi
 done < "$CATALOGUE"
 [ ${#IDS[@]} -gt 0 ] || { echo "ERR: catalogue has no components" >&2; exit 1; }
@@ -95,13 +114,10 @@ for k in "${!PRESET[@]}"; do
     SEL[$k]="${PRESET[$k]}"
 done
 
-render_value() {  # pretty value for the list
-    local id="$1" v="${SEL[$1]}"
-    if [ "${TYPE[$id]}" = bool ]; then
-        [ "$v" = 1 ] && echo "[x]" || echo "[ ]"
-    else
-        printf '<%s>' "$v"
-    fi
+label() {  # label <id> <value> — what the person choosing reads for a value
+    local l="${LABEL[$1.$2]:-$2}"
+    [ "$2" = "${DEF[$1]}" ] && l+=" (default)"
+    printf '%s' "$l"
 }
 
 show_list() {
@@ -110,11 +126,30 @@ show_list() {
     echo "  ────────────────────────────────────────────────────────────"
     local i=1
     for id in "${IDS[@]}"; do
-        printf "   %2d  %-7s %-42s %s\n" "$i" "$(render_value "$id")" "${TITLE[$id]}" "$id"
+        if [ "${TYPE[$id]}" = bool ]; then
+            local m="[ ]"; [ "${SEL[$id]}" = 1 ] && m="[x]"
+            printf "   %2d  %s  %s\n" "$i" "$m" "${TITLE[$id]}"
+        else
+            printf "   %2d       %s: %s\n" "$i" "${TITLE[$id]}" "$(label "$id" "${SEL[$id]}")"
+        fi
         i=$((i+1))
     done
     echo "  ────────────────────────────────────────────────────────────"
-    echo "   <number> toggle/cycle    ?<number> describe    s save    q quit"
+    echo "   <number> switch on/off or change    ?<number> read about it    s save    q quit"
+}
+
+describe() {  # describe <id> — the first paragraph, the choices with the current one marked, the rest
+    local id="$1" v m
+    echo; echo "  ${TITLE[$id]}   (--set $id=…)"; echo
+    printf '%s' "${DESC[$id]}" | sed 's/^/    /'
+    if [ "${TYPE[$id]}" != bool ]; then
+        echo
+        for v in $(allowed "$id"); do
+            m="( )"; [ "$v" = "${SEL[$id]}" ] && m="(*)"
+            printf '    %s %s [%s] — %s\n' "$m" "$(label "$id" "$v")" "$v" "${HELP[$id.$v]:-}"
+        done
+    fi
+    if [ -n "${MORE[$id]}" ]; then echo; printf '%s' "${MORE[$id]}" | sed 's/^./    &/'; fi
 }
 
 cycle() {  # advance an id to its next allowed value
@@ -146,11 +181,7 @@ if [ "$INTERACTIVE" = 1 ]; then
                 s|S) break ;;
                 \?*) n="${ans#\?}"
                      if [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le ${#IDS[@]} ]; then
-                         id="${IDS[$((n-1))]}"
-                         echo; echo "  ${TITLE[$id]}  ($id -> ${VAR[$id]})"
-                         echo "  allowed: $(allowed "$id")   default: ${DEF[$id]}"
-                         echo
-                         printf '%s' "${DESC[$id]}" | sed 's/^/    /'
+                         describe "${IDS[$((n-1))]}"
                      fi ;;
                 '')  ;;
                 *)   if [ "$ans" -ge 1 ] 2>/dev/null && [ "$ans" -le ${#IDS[@]} ]; then
