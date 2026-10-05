@@ -48,24 +48,19 @@ its line and record the result where its procedure lives.
    scrobble log, byte-identical in both repositories, each read by that side's tests;
    `tools/check_contracts.sh` compares the copies (run it before a release of either). Still to
    add: the palette corpus (F3), a `#TZ/UTC` log, playlist forms (F5), a SensMe chunk (F6).
-2. **The one-off `cargo fmt`** (owner, a commit of its own): the gate is in `ci.yml` and fails
-   until it is run. `cd player && cargo fmt --all; cd ../installer && cargo fmt --all`, commit
-   nothing else with it, then put that commit's hash in a new `.git-blame-ignore-revs`. Rehearsed
-   on a copy 2026-10-05: 797 + 56 tests and every golden hash unchanged, and `release.sh`'s
-   version line is fenced with `#[rustfmt::skip]`.
-3. **`/data` headroom, the visible half:** `tools/cinder-install.sh` now refuses an install that
+2. **`/data` headroom, the visible half:** `tools/cinder-install.sh` now refuses an install that
    would leave under 1 MB (2026-10-05); G1.2's status card makes the number visible from the PC.
-4. **Tests for `cinder-audio`** (`SHORTCOMINGS.md` A2): grow `fake_pst.cpp` a service at a time,
+3. **Tests for `cinder-audio`** (`SHORTCOMINGS.md` A2): grow `fake_pst.cpp` a service at a time,
    BtTransmitter first.
-5. **The redesign's remaining phases** ([`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md)
+4. **The redesign's remaining phases** ([`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md)
    Part F): R3's Library view bar, Search scopes and the sideways page swipe; then R4's saved views
    (*show as*, *pin*, opening from the bar); R7 the installer's window.
-6. Search results for albums and artists; offer Play next on long-press as well as the swipe.
-7. **2038 (goal 10):** an i64 audit of Cinder's own timestamps (scrobbler, likes, playlists,
+5. Search results for albums and artists; offer Play next on long-press as well as the swipe.
+6. **2038 (goal 10):** an i64 audit of Cinder's own timestamps (scrobbler, likes, playlists,
     library).
-8. A host benchmark with a 10,000-line playlist before promising big playlists.
-9. Discovering an **unpaired** Bluetooth device (the Devices screen's one missing part).
-10. A Windows installer smoke test per release (Install → Update → Uninstall → Install, log kept).
+7. A host benchmark with a 10,000-line playlist before promising big playlists.
+8. Discovering an **unpaired** Bluetooth device (the Devices screen's one missing part).
+9. A Windows installer smoke test per release (Install → Update → Uninstall → Install, log kept).
 
 **Flint**
 
@@ -164,7 +159,11 @@ differ, ignores `PMD`/`PMV`/`GMD`/`DIM`/`COL` and reloads `normal_nt` every boot
 installer's signature choice survives W1's boot without flashing another player's NVRAM and
 bootloader (`tools/test_signature.sh`, 16 cases; **not yet applied on a player** — it changes the
 audio library the next boot loads). The gain half was already covered (`voltable=wm1a` finds
-`gain_l` by content). Left: the analyser parameter set that goes with each signature
+`gain_l` by content). The tuning itself is an installer option, off by default (`w1tuning`, 2026-10-05): it unpacks
+W1's own package in the updater, checks the image, saves the player's NVRAM to
+`/contents/cinder_nvram_backup.img`, writes `p3` only and reads it back
+(`tools/test_w1tuning.sh`, 17 cases; **never run on a player** — first run belongs with a current
+`wbrt` backup). Left: the analyser parameter set that goes with each signature
 (`.mod/anls/<mode>`), and naming W1's mode and settings in Cinder's own screens.
 
 ## 7. Research with no deadline

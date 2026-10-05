@@ -104,6 +104,7 @@ WANT_SENSME="$(comp_bool CINDER_SENSME 0)"
 WANT_SCROBBLE="$(comp_bool CINDER_SCROBBLE 1)"
 WANT_MONO="$(comp_bool CINDER_MONO 1)"
 WANT_PRELOAD="$(comp_bool CINDER_PRELOAD 0)"
+WANT_W1TUNING="$(comp_bool CINDER_W1_TUNING 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
 
@@ -112,7 +113,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE"
+echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE w1tuning=$WANT_W1TUNING"
 
 # ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
 # Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
@@ -601,6 +602,67 @@ if [ -s "$SRC_SIGNATURE" ]; then
 elif [ "$WANT_SIGNATURE" != stock ]; then
     echo "WARN: $SRC_SIGNATURE not staged but signature=$WANT_SIGNATURE requested — NOT applied."
 fi
+
+# 4j. WALKMAN ONE'S EXTERNAL TUNING (the `w1tuning` component, off by default).
+#     W1's boot script honours its PMD/PMV/GMD/DIM/COL settings only when md5(mmcblk0p3) equals a
+#     constant per sound signature; the "tuning" is the NVRAM image that makes it so, plus another
+#     model's bootloader that the script never checks and this never writes
+#     (analysis/RE_walkmanone_installers.md). W1 keeps the three packages on /system.
+#
+#     NOTHING UNVERIFIED REACHES THE PARTITION. The image is unpacked to a file first and its md5
+#     compared with the one W1 expects; the player's own NVRAM is saved to /contents before the
+#     write (the first such copy is kept for good — it is the only one with this player's own
+#     data); the partition is read back, and a mismatch restores the saved copy.
+#     fwpup takes a short path (it truncated a 70-character one, 2026-10-05) and reads md5.txt from
+#     its working directory, as W1's own tuning script arranges. Wholly non-fatal.
+# >>> w1-tuning — tools/test_w1tuning.sh runs these lines as they are
+if [ "$WANT_W1TUNING" = 1 ]; then
+    W1T_SIG="$("$BB" cat /opt2/sig 2>/dev/null)"
+    case "$W1T_SIG" in
+        wm1z)         W1T_DIR="WM1Z_external_tuning";           W1T_MD5=ccb29dd20d0116042d7f02f85208693c ;;
+        bright)       W1T_DIR="Bright_external_tuning";         W1T_MD5=d7d0878020c38e869ec88577a0a001f7 ;;
+        neutral|warm) W1T_DIR="Neutral_&_Warm_external_tuning"; W1T_MD5=d7d0878020c38e869ec88577a0a001f7 ;;
+        *)            W1T_DIR="" ;;
+    esac
+    W1T_UPG="/system/etc/.mod/tunings/$W1T_DIR/Data/Device/NW_WM_FW.UPG"
+    W1T_PART=/dev/block/mmcblk0p3
+    W1T_WORK=/contents/cinder_w1t
+    W1T_KEEP=/contents/cinder_nvram_backup.img
+    w1t_md5() { "$BB" md5sum "$1" 2>/dev/null | "$BB" cut -d' ' -f1; }
+    if [ -z "$W1T_DIR" ] || [ ! -s "$W1T_UPG" ]; then
+        echo "w1-tuning: this player is not running Walkman One, or its tuning files are gone — nothing done"
+    elif [ "$(w1t_md5 "$W1T_PART")" = "$W1T_MD5" ]; then
+        echo "w1-tuning: the [$W1T_SIG] tuning is already applied"
+    else
+        "$BB" rm -rf "$W1T_WORK" 2>/dev/null
+        "$BB" mkdir -p "$W1T_WORK" 2>/dev/null
+        "$BB" cat "$W1T_UPG" > "$W1T_WORK/t.upg" 2>/dev/null
+        ( cd "$W1T_WORK" && echo "5242880 $W1T_MD5 index_2.bin" > md5.txt \
+            && fwpup -z -f "$W1T_WORK/t.upg" -2 "$W1T_WORK/nv.img" ) >/dev/null 2>&1
+        if [ "$(w1t_md5 "$W1T_WORK/nv.img")" != "$W1T_MD5" ]; then
+            echo "WARN: w1-tuning: the [$W1T_SIG] package did not unpack to the expected image — NOTHING was written"
+        else
+            "$BB" cat "$W1T_PART" > "$W1T_WORK/before.img" 2>/dev/null
+            w1t_kept() { [ -f "$W1T_KEEP" ] && [ -s "$W1T_KEEP" ]; }
+            w1t_kept || "$BB" cat "$W1T_WORK/before.img" > "$W1T_KEEP" 2>/dev/null
+            if [ "$(w1t_md5 "$W1T_WORK/before.img")" != "$(w1t_md5 "$W1T_PART")" ] || ! w1t_kept; then
+                echo "WARN: w1-tuning: could not save the player's own data first — NOTHING was written"
+            else
+                "$BB" dd if="$W1T_WORK/nv.img" of="$W1T_PART" bs=4096 2>/dev/null
+                sync
+                if [ "$(w1t_md5 "$W1T_PART")" = "$W1T_MD5" ]; then
+                    echo "w1-tuning: the [$W1T_SIG] tuning is applied (the player's own data is kept as $W1T_KEEP)"
+                else
+                    "$BB" dd if="$W1T_WORK/before.img" of="$W1T_PART" bs=4096 2>/dev/null
+                    sync
+                    echo "WARN: w1-tuning: the write did not read back — the player's own data was put back"
+                fi
+            fi
+        fi
+        "$BB" rm -rf "$W1T_WORK" 2>/dev/null
+    fi
+fi
+# <<< w1-tuning
 
 # 1g2) system-wide mono: libcinder_mono.so inside Sony's SoundServiceFw (src/cinder-mono.c).
 #      The jack and Bluetooth are both fed from that one service, and Cinder never edits the boot

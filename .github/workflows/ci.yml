@@ -204,6 +204,8 @@ jobs:
         run: bash cinder-home/tools/test_preload.sh
       - name: sound signature (patch, revert, Walkman One's boot copy)
         run: bash cinder-home/tools/test_signature.sh
+      - name: Walkman One tuning step (nothing unverified is written)
+        run: bash cinder-home/tools/test_w1tuning.sh
       - name: boot guard (wrapper trial, Home app backstop)
         run: bash cinder-home/tools/test_guard.sh
 
