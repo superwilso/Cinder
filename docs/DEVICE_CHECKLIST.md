@@ -841,7 +841,8 @@ the first 180 s of a boot, for the first 60 s of idle, or at all while playing o
 
 ## 32 — 2026-10-04 — The hagodaemon wrapper (a preload on a player without Wampy)
 
-Installed by hand over adb on the owner's Walkman One player; not in any package. `/proc/clkmgr`
+Installed by hand over adb on the owner's Walkman One player on 2026-10-04; since 2026-10-05 it
+is the `preload` component (§35), which is what installs and removes it. `/proc/clkmgr`
 is not involved. Measured that day: 28 services start through it, `/proc/<SoundServiceFw>/environ`
 holds the `LD_PRELOAD` and no other service's does, `/tmp/cinder_mono.log` reads `loaded into
 SoundServiceFw`, `audio flowed — load count cleared`, and `mono ON` / `jack: … summing` when the
@@ -864,7 +865,7 @@ flag is set. Framebuffer blank (31.4) was also run: it changes nothing on this k
 | 32.2 | **Soundscape over music, jack** | Play a song, Menu ▸ Soundscapes ▸ Beach, With music 30% | The beach under the song; strip OVER THE MUSIC; `/tmp/cinder_mono.log`: `jack: soundscape mixed in` | Strip still says SILENT WHILE MUSIC PLAYS = Cinder did not see `/tmp/cinder_mono_shim` |
 | 32.3 | **The same over Bluetooth** | 32.1 and 32.2 with headphones linked over LDAC | As on the jack; the stream stays up. Log: `bt: …` lines | A dropout or a restart: `touch /data/cinder/mono_shim_off`, reboot, report the log |
 | 32.4 | **Off switch** | `touch /data/cinder/preload_off`, reboot | No `LD_PRELOAD` on SoundServiceFw, no `/tmp/cinder_mono_shim`; everything else as before | — |
-| 32.5 | **Removing it** | `mount -o remount,rw /system; mv /system/vendor/sony/bin/hagodaemon.real /system/vendor/sony/bin/hagodaemon`, reboot | Stock again: `md5sum` of `hagodaemon` is Sony's | — |
+| 32.5 | **Removing it** | `sh /system/vendor/unknown321/bin/cinder-preload.sh remove` as root with `/system` writable, reboot (by hand: `mv hagodaemon.real hagodaemon`) | `cinder-preload.sh status` says `wrapper: not installed` and `bootswitcher.sh: Sony's` | — |
 
 ## 33 — 2026-10-04 — Suspend to RAM (stage 2), Sony's idle state
 
@@ -889,3 +890,47 @@ player in hand:** if it does not wake, hold Power until it restarts. Keep `cable
 | 34.4 | **Auto power off and Bluetooth auto off under the radio** | Both on, FM playing, screen off, 35 minutes | Still playing; the player and Bluetooth still on | Either acted = the source was not counted |
 | 34.5 | **Bluetooth auto off** — **RUN 2026-10-04, PASS** | Bluetooth on, nothing playing, screen off 10 minutes | Log `bt: idle 10 min with the screen off -> radio off`, then `bt: toggle OFF` (seen at 632.9 s, ten minutes after the blank) | — |
 
+
+
+## 35 — 2026-10-05 — The `preload` component (the wrapper, packaged) and its trial
+
+`deploy/cinder-preload.sh` installs the wrapper, the guard and the six lines in
+`/system/bin/bootswitcher.sh`; `deploy/cinder-guard.sh` decides at every boot whether Sony's
+`hagodaemon` goes back. Host cases: `tools/test_preload.sh` (42), `tools/test_guard.sh` (32).
+**Have the player in hand** for anything below that has not been run: if a boot hangs, hold Power.
+
+**Run on the owner's Walkman One player 2026-10-05, over adb (`tools/cinder-install.sh --preload`):**
+the boot script was already the patched one and was left alone; guard log `first boot of this
+build - on trial until it has played audio`; Cinder log `wrapper: this boot came up through
+cinder-hagowrap`; `/data/cinder/hago_play` appeared on Play and became `hago_ok` five seconds
+later; the next boot logged `confirmed - the last boot played audio through it` and
+`/db/cinder-guard/hago_ok` holds the wrapper's checksum; the boot after that said nothing.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 35.1 | **The trial confirms itself** — **RUN 2026-10-05, PASS** | Install with the component on, boot, play 10 s, reboot | Guard log (`/db/cinder-guard/log`): `on trial` then `confirmed`; mono still reaches the jack | `putting Sony's binary back` = the proof files were not there: read `/data/cinder/hago_*` and the Cinder log |
+| 35.2 | **From the `.UPG`, on a player with no Wampy and no guard** | Tick `preload` in the installer, install, boot | Install log: `preload: bootswitcher.sh now calls the guard`, `installed: wrapper …`; the player boots to Cinder; `mono: libcinder_mono.so is loaded` | Install log says which step refused; Sony's `hagodaemon` is unchanged in every refusal |
+| 35.3 | **The guard puts Sony's program back** | Install with the component on and boot once, playing nothing. Power off, plug the cable in and power on so it lands on Sony's player (cable escape armed), then restart once | Guard log: `the last boot came up, nothing played yet - still on trial` for the boot onto Sony's player, then `the last boot never reached Cinder - putting Sony's binary back`. `cinder-preload.sh status`: `wrapper: not installed` | Still a wrapper = the guard is not being called: `sha256sum /system/bin/bootswitcher.sh` and send it |
+| 35.4 | **Turned off, it comes off** | Install again with `preload` unticked | Install log: `Sony's hagodaemon is back in place`, `bootswitcher.sh is Sony's again`, `guard removed`; boots normally | — |
+| 35.5 | **On stock firmware 1.02** | 35.2 on a player that is not Walkman One | As 35.2 | `bootswitcher.sh is not the script this was written for` = a third variant of the file exists: send its sha256 |
+
+## 36 — 2026-10-05 — What is powered during playback, and the Bluetooth disturbance
+
+The owner's report: the player feels warmer during playback, and a slight disturbance about three
+minutes into untouched Bluetooth listening. Measured that day on the jack (no Bluetooth sink was
+available): screen-off playback in stage 1 is 10% of one core, 94 interrupts/s, 26 °C at the CPU
+sensor; `/sys/devices/platform/mt-pmic/*_STATUS` shows which supplies are on
+(`analysis/RE_sony_idle_baseline.md` has the table). A thread at normal priority is woken up to
+46 ms late during playback whether or not stage 1 is entering; one at the sound service's priority
+never more than 8 ms. So stage 1 does not stall the CPU on entry. The first stage 1 entry of the
+logged Bluetooth session was at 193.8 s after boot (the 180 s boot grace), and the owner pressed
+Previous on the headphones 7 s later: the disturbance is most likely that entry, on the radio's
+side. Not proven.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 36.1 | **The disturbance, with the log** | Boot, link headphones, play, screen off, do not touch it for 5 minutes. When you hear it, press Vol+ then Vol− at once | `/tmp/cinder_mono.log` has `bt: late` lines at that second, or none. Match against `suspend: idle 5 s -> early suspend` in `cinderhome.log` | Lines at stage 1 entry = the entry is the cause: `/contents/cinder_no_suspend_bt` stops stage 1 on Bluetooth. No lines at all = the stall is past the sound service, in the radio |
+| 36.2 | **Pause from the headphones** | Playing over Bluetooth, press pause on the headphones; press again | Pauses, then plays. Log: `input: KEY code=201` then `carry_out: play/pause` | Nothing = the key arrives on a node Cinder does not read: send the log |
+| 36.3 | **Codec standby with the screen lit** | Playing over Bluetooth, screen on for a minute | Log: `codec: … DAC/amp to standby` once, and not again at every wake | Repeats at each wake = the route flag dropped: send the log |
+| 36.4 | **NFC after a wake** — pause and resume **RUN 2026-10-05, PASS** (log) | Screen dark for a minute, wake it, hold NFC headphones to the mark | They pair or connect as before. Log: `nfc: polling stopped while the screen is dark`, `nfc: polling again, Start(1) rc=0` | No reaction to a tag = Start without Open does not re-arm the reader: report it; the old behaviour is one line (`nfc_dark`) |
+| 36.5 | **Warmth** | A normal hour of Bluetooth listening in a pocket | Not warmer than before | Still warm: run `tools/idle_probe.sh arm` during playback off the cable and send the result |

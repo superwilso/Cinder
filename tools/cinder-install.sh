@@ -12,6 +12,8 @@
 #   tools/cinder-install.sh --no-build     # skip build, install existing dist/dev/
 #   tools/cinder-install.sh --stable       # use stable channel (NO adb next boot!)
 #   tools/cinder-install.sh --full         # also push + chmod 4755 the setuid helpers
+#   tools/cinder-install.sh --preload      # also the `preload` component: hagodaemon wrapper,
+#                                          #   boot guard and mono shim (deploy/cinder-preload.sh)
 #   tools/cinder-install.sh --rollback     # restore previous binary from /data/cinder/
 #   tools/cinder-install.sh --logs         # tail /contents/cinderhome.log
 #   tools/cinder-install.sh --status       # device + install health check
@@ -53,12 +55,14 @@ CHANNEL="dev"
 DO_BUILD=1
 MODE="install"
 FULL=0
+PRELOAD=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-build) DO_BUILD=0; shift;;
         --stable)   CHANNEL="stable"; shift;;
         --dev)      CHANNEL="dev"; shift;;
         --full)     FULL=1; shift;;
+        --preload)  PRELOAD=1; shift;;
         --logs)     MODE="logs"; shift;;
         --status)   MODE="status"; shift;;
         --rollback) MODE="rollback"; shift;;
@@ -261,6 +265,27 @@ if [ "\$FULL" = "1" ]; then
     done
 fi
 
+#    the preload component if --preload staged it. Everything it does is in that script, which has
+#    its own host test; a failure in there leaves Sony's hagodaemon running and is not this
+#    script's failure, so its status is not allowed to stop the swap.
+if [ -f /data/local/tmp/cinder-preload.sh.new ]; then
+    # A guard put on by hand before 2026-10-05 always ran the Home app backstop; the packaged one
+    # runs it only where it was asked for. A player that had it keeps it.
+    if [ -f /system/bin/cinder-guard.sh ] && ! grep -q backstop_on /system/bin/cinder-guard.sh 2>/dev/null; then
+        mkdir -p /db/cinder-guard 2>/dev/null || true
+        echo 1 > /db/cinder-guard/backstop_on 2>/dev/null && echo "[swap] guard: the Home app backstop was on before - kept on"
+    fi
+    sh /data/local/tmp/cinder-preload.sh.new install /data/local/tmp/cinder-hagowrap.new \\
+        /data/local/tmp/libcinder_mono.so.new /data/local/tmp/cinder-guard.sh.new 2>&1 \\
+        | while read -r line; do echo "[swap] \$line"; done
+    cp /data/local/tmp/cinder-preload.sh.new "\$HELPERS_DIR/cinder-preload.sh.tmp" \\
+        && chmod 755 "\$HELPERS_DIR/cinder-preload.sh.tmp" \\
+        && mv "\$HELPERS_DIR/cinder-preload.sh.tmp" "\$HELPERS_DIR/cinder-preload.sh" || true
+    for h in cinder-preload.sh cinder-hagowrap libcinder_mono.so cinder-guard.sh; do
+        rm "/data/local/tmp/\$h.new" 2>/dev/null || true
+    done
+fi
+
 # 3b. install the LAUNCHER, still in the calm phase — before anything is killed.
 #
 # The launcher is the recovery ladder, so this is the most dangerous single write this script
@@ -428,6 +453,17 @@ if [ "$FULL" = 1 ]; then
         adb push "$DIST/cinder-gpunode" "/data/local/tmp/cinder-gpunode.new" >/dev/null
         ok "  staged cinder-gpunode (dev-only)"
     fi
+fi
+
+# 4b. the `preload` component if --preload. Staged under .new names; the swap script hands them
+#     to deploy/cinder-preload.sh, the same script the .UPG installer runs, while /system is rw.
+if [ "$PRELOAD" = 1 ]; then
+    info "pushing the preload component (--preload)…"
+    for h in cinder-preload.sh cinder-hagowrap cinder-guard.sh libcinder_mono.so; do
+        [ -f "$DIST/$h" ] || die "$DIST/$h is missing — build first (cinder-home/build.sh $CHANNEL)"
+        adb push "$DIST/$h" "/data/local/tmp/$h.new" >/dev/null
+        ok "  staged $h"
+    done
 fi
 
 # 5. upload + run the swap script

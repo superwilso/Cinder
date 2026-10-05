@@ -9,8 +9,9 @@
 >
 > - **Soundscapes** (Menu ▸ Soundscapes) — ten procedural sounds, nothing recorded or looped, with
 >   a level on its own and a level with music. Over library music through `libcinder_mono.so`
->   (needs Wampy's preload — **not on Walkman One**, where the page says it is silent while music
->   plays); on its own through the shell's player on the jack or Bluetooth; over USB-DAC → LDAC and
+>   (needs Wampy's preload, or on a player without Wampy the `preload` component, off by default —
+>   run on the owner's Walkman One player 2026-10-05, checklist §35; without either the page says
+>   it is silent while music plays); on its own through the shell's player on the jack or Bluetooth; over USB-DAC → LDAC and
 >   FM → Bluetooth in the bridge. *Host-tested only* —
 >   [`../docs/SPEC_soundscapes.md`](../docs/SPEC_soundscapes.md), checklist §28.
 > - **Visualisers** — Scope, Stereo field, Spectrogram, Meters and Radial, from the PCM tap's

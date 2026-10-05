@@ -117,15 +117,59 @@ previews, and **not yet run on a device**. The library items are in
   touch can wake the screen. Left dark for five minutes it now behaves as if Power had been
   pressed: touch sleeps and only Power wakes it, so a pocket cannot keep lighting the screen.
 
-- **Mono and soundscapes over music on Walkman One, by hand for now.** `src/cinder-hagowrap.c`
-  stands in for Sony's `hagodaemon` (kept as `hagodaemon.real`) and gives SoundServiceFw alone an
-  `LD_PRELOAD` of `libcinder_mono.so`; every other service is one plain exec. No boot image is
-  edited. `cinder-guard.sh` gained a one-boot trial: unless the trial marker is removed, the next
-  boot puts Sony's binary back before any service starts. *Run on the owner's Walkman One player
-  2026-10-04: 28 services up, shim in SoundServiceFw only, music playing, `mono ON … summing` on the
-  jack. Installed over adb; in no package yet. Bluetooth and soundscapes over music not yet heard.*
+- **Mono and soundscapes over music without Wampy: the `preload` component, off by default.**
+  On a player with no Wampy, Sony's sound service has nowhere to be given a library. This
+  component puts a small program in Sony's `hagodaemon`'s place (Sony's kept beside it as
+  `hagodaemon.real`): it starts every Sony service exactly as before and adds
+  `libcinder_mono.so` for the sound service alone. No boot image is edited. Because that program
+  stands in front of every Sony service, it is only ever installed together with a boot guard,
+  and only if Sony's boot script (`bootswitcher.sh`) is byte for byte the file Cinder knows — the
+  same on stock 1.02 and Walkman One 3.02. On any other, nothing is installed.
+  **It is on trial until the player has played five seconds of music.** The guard runs before
+  any service starts: a boot that never reaches Cinder, or one where playback was started and
+  never ran, and the next boot puts Sony's program back. Cinder leaves the proof itself, so
+  nothing has to be confirmed from a PC. While it is on trial, a boot that lands on Sony's player
+  (the cable in at power-on) counts as not reaching Cinder: play something once after installing.
+  Turning the component off, or uninstalling, puts Sony's program and boot script back.
+  `tools/cinder-install.sh --preload` installs it over adb through the same script.
+  *Device-verified on the owner's Walkman One player 2026-10-05, over adb: first boot logged "on
+  trial", Cinder left its proof, five seconds of music confirmed it, the next boot logged
+  "confirmed" and the boot after said nothing. Not yet run: an install from the `.UPG`, a player
+  on stock firmware, and the guard actually putting Sony's program back on a real boot (42 + 32
+  host cases cover those paths). Bluetooth and soundscapes over music still not heard.*
+
+- **A log of late audio on Bluetooth.** Nothing between Sony's sound service and the headphones
+  records a dropout. The mono library sees every byte on its way to the transmitter, so it now
+  keeps the time: a write issued more than its own length plus 40 ms after the one before, or a
+  send that took more than 40 ms, is written to `/tmp/cinder_mono.log` with the clock. That is
+  what lets a noise somebody heard be matched to what the player was doing in that second.
+  *Host-tested (the shim suite); no Bluetooth link was available to run it against.*
 
 ### Changed
+
+- **NFC stops looking for a tag while the screen is dark.** The reader polled for as long as
+  Bluetooth was on, including every hour of screen-off listening. Thirty seconds after the screen
+  goes dark the polling stops; it starts again within a frame of the screen lighting. The reader
+  is kept open and only the poll is stopped, because closing it cost 0.78 s of frozen input at
+  every wake. *Device-verified 2026-10-05 from the log: stopped 31 s after dark, back in 23 ms on
+  wake, Power release read 160 ms after the press. A tap-to-pair after a wake has not been tried.*
+- **On Bluetooth the codec goes to standby with the screen on too.** Standby waited for a dark
+  screen whatever the route, and every wake brought the DAC and headphone amplifier back up: nine
+  standbys in twenty minutes of one logged walk, the amplifier driving an empty jack for most of
+  the first eleven. When music leaves over Bluetooth the codec is not in the path, lit screen or
+  not. The jack is unchanged. Measured on the player: standby is what switches the codec's 2.8 V
+  supply off. *Host-tested (harness); not yet run with headphones linked.*
+- **Covers are decoded behind the audio.** The cover decoder and the thumbnail builder each take
+  about a third of a second of CPU, and with the screen off there is one core online: the one the
+  decoder and the Bluetooth encoder run on. Both threads now run at low priority.
+  *Host-tested; not measured on the player.*
+- **The boot guard's Home app backstop is opt-in.** `cinder-guard.sh` reverted the `.appcfg` to
+  Sony's player after three boots that did not prove healthy. The launcher takes the cable escape
+  before it touches its counter, so a counter left at 1 by a boot that was switched off early
+  stayed at 1 through every boot with the cable in — three of those would have taken Cinder off
+  the player with no file on the drive to bring it back. It now runs only where
+  `/db/cinder-guard/backstop_on` exists (kept on for a player that had the guard already). The
+  wrapper's trial is separate and always on. The guard's log is also bounded now.
 
 - **The display powers down 5 seconds after the screen goes off, not 60.** A dark panel is only
   the backlight: the display clocks and its power domain stay up until then. Waking takes about a
@@ -166,6 +210,12 @@ previews, and **not yet run on a device**. The library items are in
   no listener the poll stays at 3 s. *Host-tested (`btpoll_selftest`); the saving is not measured.*
 
 ### Fixed
+
+- **Pause from the headphones.** Bluetooth headphones that track the player's state send PLAY
+  when they think it is paused and PAUSE when they think it is playing. Only PLAY was mapped, so
+  a pause from the headphones did nothing: six presses in a row in the owner's log, and then the
+  headphones were switched off. PAUSE and STOP now pause, and never start a paused player.
+  *Host-tested (harness); not yet pressed on real headphones.*
 
 - **The FM radio and USB-DAC count as sound.** Every "is the player idle?" decision used its own
   copy of the test, and the copies knew about library music, the Bluetooth receiver and a
