@@ -309,6 +309,11 @@ T0=$(date +%s)
 scenario "a helper that hangs does not hold stock"  stock  "$CABLE"'; : > $R/data/cinder/eq_owned; : > $R/eqhang'
 check "  stock started in under 5 s" "$([ $(( $(date +%s) - T0 )) -lt 5 ] && echo yes || echo no)" yes
 
+# The installer leaves the counter at 0 rather than absent: absent is the guard's "launcher never
+# ran" reading (cinder-guard.sh), and an install is not that.
+check "installer writes bootcount 0, never removes it" \
+  "$(grep -c '^echo 0 > /data/cinder/bootcount$' "$SRC"; awk "/<<'LAUNCH_EOF'/{f=1} /^LAUNCH_EOF\$/{f=0} !f" "$SRC" | grep -c 'rm -f.*/data/cinder/bootcount')" "1
+0"
 rm -rf "$SP"/lt.*
 echo
 echo "$PASS passed, $FAIL failed"

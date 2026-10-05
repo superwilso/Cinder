@@ -1,0 +1,24 @@
+# Like keys: the contract between Cinder (player/cinder-ffi/src/likes.rs) and Flint
+# (crates/flint-core/src/likes.rs, mod keys). Both test suites read their own copy of this file,
+# and Cinder's tools/check_contracts.sh fails when the two copies differ.
+# artist<TAB>title<TAB>norm_artist<TAB>norm_title<TAB>primary_artist
+Daft Punk	Get Lucky (feat. Pharrell Williams) - Radio Edit	daft punk	get lucky	daft punk
+Beyoncé	Halo (Remastered 2011)	beyoncé	halo	beyoncé
+AC/DC	Back In Black	ac/dc	back in black	ac
+Simon & Garfunkel	The Sound of Silence	simon & garfunkel	the sound of silence	simon
+Queen	Bohemian Rhapsody - Remastered 2011	queen	bohemian rhapsody	queen
+Björk	Jóga	björk	jóga	björk
+  The  Beatles 	Hey Jude  	the beatles	hey jude	the beatles
+Jay-Z feat. Alicia Keys	Empire State of Mind	jay-z	empire state of mind	jay-z
+Calvin Harris, Rihanna	We Found Love	calvin harris, rihanna	we found love	calvin harris
+坂本龍一	Merry Christmas Mr. Lawrence	坂本龍一	merry christmas mr. lawrence	坂本龍一
+Guns N’ Roses	Sweet Child O’ Mine	guns n' roses	sweet child o' mine	guns n' roses
+Tyler, The Creator	EARFQUAKE	tyler, the creator	earfquake	tyler
+M83	Midnight City (Live)	m83	midnight city (live)	m83
+Massive Attack	Teardrop [2019 Remaster]	massive attack	teardrop	massive attack
+Run The Jewels x DJ Shadow	Nobody Speak	run the jewels x dj shadow	nobody speak	run the jewels
+Sigur Rós	Hoppípolla - Live	sigur rós	hoppípolla - live	sigur rós
+Mogwai	(Live)	mogwai	(live)	mogwai
+“Weird Al” Yankovic	Amish Paradise — Single Version	"weird al" yankovic	amish paradise	"weird al" yankovic
+Kendrick Lamar vs. Drake	Not Like Us (Explicit)	kendrick lamar vs. drake	not like us	kendrick lamar
+The xx	Intro	the xx	intro	the xx

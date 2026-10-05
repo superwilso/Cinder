@@ -411,6 +411,18 @@ This script can only UPDATE an existing install (adb only exists once the
 dev channel is running). For the one-time first install, put the device in
 MSC mode and run:  sudo tools/flash.sh install"
 
+# 2b. /data headroom. The staged binary and the rollback copy both land on /data (35 MB), and a
+# full /data makes the launcher's own state write fail, which is an escape to stock. The rollback
+# copy replaces the one already there, so that one's size counts as free. Floor: 1 MB left over.
+DATA_FLOOR_KB=1024
+read -r FREE_KB OLD_KB CUR_KB <<<"$(adb shell "/xbin/busybox df -k /data | /xbin/busybox awk 'END{print \$4}'; /xbin/busybox stat -c %s $BACKUP 2>/dev/null || echo 0; /xbin/busybox stat -c %s $INSTALL_PATH" 2>/dev/null | tr -d '\r' | tr '\n' ' ')"
+case "$FREE_KB$OLD_KB$CUR_KB" in ''|*[!0-9]*) die "could not read /data free space from the player (got '$FREE_KB' '$OLD_KB' '$CUR_KB')";; esac
+NEED_KB=$(( BIN_SIZE / 1024 + CUR_KB / 1024 - OLD_KB / 1024 + DATA_FLOOR_KB ))
+[ "$FREE_KB" -ge "$NEED_KB" ] || die "/data has $FREE_KB kB free and this install needs $NEED_KB kB.
+Rollback copies made by hand are the usual cause:  adb shell ls -la /data/cinder/
+Remove the ones you no longer want (*.prev), then run this again."
+ok "/data: $FREE_KB kB free, $NEED_KB kB needed"
+
 # 3. push binary to /data/local/tmp (ext4, safe from MSC mode)
 info "pushing binary to $STAGE…"
 adb push "$BIN" "$STAGE" >/dev/null

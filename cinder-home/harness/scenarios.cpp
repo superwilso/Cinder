@@ -1309,6 +1309,19 @@ static void s_ram_suspend_opt_in(void) {
     cinder_harness_run();
     check(ram_unlocked(), "file present, idle, off the cable: the wakelock is released");
 }
+// The same switch as a line in the one settings file, and a longer key that must not match it.
+static void s_ram_suspend_conf(void) {
+    suspend_fixture();
+    cinder_harness_fs_write("/contents/cinder_advanced.conf", "# switches\nram_suspend_x\nram_suspend = on\n");
+    cinder_harness_run();
+    check(ram_unlocked(), "ram_suspend = on in cinder_advanced.conf: the wakelock is released");
+}
+static void s_ram_suspend_conf_off(void) {
+    suspend_fixture();
+    cinder_harness_fs_write("/contents/cinder_advanced.conf", "ram_suspend_x\nram_suspend=off\n");
+    cinder_harness_run();
+    check(!ram_unlocked(), "ram_suspend=off, and ram_suspend_x is another key: stage 2 does not run");
+}
 static void s_ram_suspend_default_off(void) {
     suspend_fixture();
     cinder_harness_run();
@@ -1737,6 +1750,8 @@ static const Scenario kScenarios[] = {
     {"library-touched",   s_library_touched_not_changed, "a scan that changes no row does not rebuild the library"},
     {"suspend-default",   s_suspend_by_default,      "stage 1 early suspend runs by default, under a wakelock"},
     {"ram-suspend",       s_ram_suspend_opt_in,      "stage 2: file present, idle, off the cable -> wakelock released"},
+    {"ram-suspend-conf",  s_ram_suspend_conf,        "stage 2 from a line in cinder_advanced.conf"},
+    {"ram-suspend-conf-off", s_ram_suspend_conf_off,  "an off value and a longer key do not switch it on"},
     {"ram-suspend-off",   s_ram_suspend_default_off, "stage 2 never runs without the file"},
     {"ram-suspend-cable", s_ram_suspend_not_on_cable, "stage 2 never runs on the cable"},
     {"ram-suspend-playing", s_ram_suspend_not_while_playing, "stage 2 never runs while music plays"},

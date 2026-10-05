@@ -2598,14 +2598,19 @@ impl Rng {
 /// `set_play_context` drops `pre_shuffle` for the new context anyway. This only has to make the
 /// indicator tell the truth and stop the NEXT sequence being permuted behind the user's back.
 fn play_in_order(r: &mut Render) {
-    if !r.np.shuffle {
+    if !shuffle_off(&mut r.np) {
         return;
     }
-    r.np.shuffle = false;
     // Written NOW rather than at the next settings change: `cinder_tap` calls `save_settings`
     // BEFORE it carries the action, so without this the new value would survive only until the
     // next power-off — which is the same stickiness this function exists to fix.
     save_settings(r);
+}
+
+/// The rule itself, apart from `Render` (which owns the present path and cannot be built in a
+/// test): shuffle ends off, and the answer is whether that changed anything worth saving.
+fn shuffle_off(np: &mut Np) -> bool {
+    std::mem::replace(&mut np.shuffle, false)
 }
 
 /// Is a release-year label worth printing? Sony's `releaseyears` table spells "unknown" as `"0"`.
@@ -7622,6 +7627,17 @@ mod repeat_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Tapping an album, playlist or channel plays it in order: shuffle goes off, and only a
+    /// change is saved (`play_in_order`).
+    #[test]
+    fn playing_in_order_turns_shuffle_off_once() {
+        let mut np = super::Np { shuffle: true, ..Default::default() };
+        assert!(super::shuffle_off(&mut np), "a change must be reported so it is saved");
+        assert!(!np.shuffle);
+        assert!(!super::shuffle_off(&mut np), "already off: nothing to save");
+        assert!(!np.shuffle);
+    }
+
     use super::*;
     use crate::likes::liked_load;
 

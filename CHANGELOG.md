@@ -28,6 +28,27 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   names. A test fails if an option's text grows past 180 words or mentions internals such as paths,
   `setuid` or ALSA devices.
 
+- **Settings is short.** It opens as ten rows that fit the screen: Display, Brightness, Screen-off
+  timer, Sleep timer, Shuffle, Date & time, Device, USB mode, Power off, and **More settings**,
+  which unfolds everything else below it (library, power saving, system, about) and folds it away
+  again. No row was removed or changed. *On the owner's player 2026-10-05; rows not yet walked.*
+- **A sound signature now survives a Walkman One boot.** Walkman One reloads its own copy of the
+  audio library at every start, which undid the signature chosen in Cinder's installer. The choice
+  is now written to that copy as well. Players on stock firmware are unaffected. *Host-tested (16
+  cases), device-unverified.*
+- **One file for the advanced switches.** The switches that were each an empty file on the
+  player's storage (`cinder_ram_suspend`, `cinder_no_suspend`, `cinder_no_scrobble` and six more)
+  can now be lines in a single `cinder_advanced.conf`;
+  [`cinder-home/deploy/cinder_advanced.conf.example`](cinder-home/deploy/cinder_advanced.conf.example)
+  lists every one with a sentence each. The old files still work. *Host-tested (two harness
+  scenarios), device-unverified.*
+
+### Fixed
+
+- **The first start after an install is no longer logged as a failed one.** The installer removed
+  the boot counter, which the boot guard reads as "the launcher never ran", so every install cost
+  one of the guard's three tries. It now leaves the counter at 0. *Host-tested.*
+
 ## [0.3.15] — 2026-10-05
 
 *Everything below was built host-only with no player attached: host-tested, in the golden

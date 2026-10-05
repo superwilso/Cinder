@@ -44,28 +44,28 @@ its line and record the result where its procedure lives.
 
 **Cinder**
 
-1. **09-23 C2:** write `0` to `/data/cinder/bootcount` instead of deleting it, so the first boot
-   after every install stops being logged as the 09-21 failure (launcher matrix row with it).
-2. **09-23 C3:** the shuffle rule (`play_in_order`) as a pure function with a test.
-3. **09-23 C4:** fence the installer's mount block and extract it in `test_cable_pass.sh` and
-   `test_install_mounts.sh`, as `test_launcher.sh` already does for the launcher.
-4. **G1.7 contract fixtures shared with Flint:** the palette corpus, likes key vectors, scrobble
-   logs with both `#TZ` headers. F1 and F2 were both drift between two codebases with no test across
-   them.
-5. **A `cargo fmt --check` gate** in Cinder's CI (Flint has one).
-6. **`/data` headroom (10-01 C5):** the dev deploy keeps one rollback binary and refuses below a
-   floor; then G1.2's status card makes the number visible from the PC.
-7. **Tests for `cinder-audio`** (`SHORTCOMINGS.md` A2): grow `fake_pst.cpp` a service at a time,
+1. **G1.7 contract fixtures, the rest.** `contracts/` now holds the likes key vectors and a
+   scrobble log, byte-identical in both repositories, each read by that side's tests;
+   `tools/check_contracts.sh` compares the copies (run it before a release of either). Still to
+   add: the palette corpus (F3), a `#TZ/UTC` log, playlist forms (F5), a SensMe chunk (F6).
+2. **The one-off `cargo fmt`** (owner, a commit of its own): the gate is in `ci.yml` and fails
+   until it is run. `cd player && cargo fmt --all; cd ../installer && cargo fmt --all`, commit
+   nothing else with it, then put that commit's hash in a new `.git-blame-ignore-revs`. Rehearsed
+   on a copy 2026-10-05: 797 + 56 tests and every golden hash unchanged, and `release.sh`'s
+   version line is fenced with `#[rustfmt::skip]`.
+3. **`/data` headroom, the visible half:** `tools/cinder-install.sh` now refuses an install that
+   would leave under 1 MB (2026-10-05); G1.2's status card makes the number visible from the PC.
+4. **Tests for `cinder-audio`** (`SHORTCOMINGS.md` A2): grow `fake_pst.cpp` a service at a time,
    BtTransmitter first.
-8. **The redesign's remaining phases** ([`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md)
+5. **The redesign's remaining phases** ([`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md)
    Part F): R3's Library view bar, Search scopes and the sideways page swipe; then R4's saved views
    (*show as*, *pin*, opening from the bar); R7 the installer's window.
-9. Search results for albums and artists; offer Play next on long-press as well as the swipe.
-10. **2038 (goal 10):** an i64 audit of Cinder's own timestamps (scrobbler, likes, playlists,
+6. Search results for albums and artists; offer Play next on long-press as well as the swipe.
+7. **2038 (goal 10):** an i64 audit of Cinder's own timestamps (scrobbler, likes, playlists,
     library).
-11. A host benchmark with a 10,000-line playlist before promising big playlists.
-12. Discovering an **unpaired** Bluetooth device (the Devices screen's one missing part).
-13. A Windows installer smoke test per release (Install → Update → Uninstall → Install, log kept).
+8. A host benchmark with a 10,000-line playlist before promising big playlists.
+9. Discovering an **unpaired** Bluetooth device (the Devices screen's one missing part).
+10. A Windows installer smoke test per release (Install → Update → Uninstall → Install, log kept).
 
 **Flint**
 
@@ -77,6 +77,17 @@ its line and record the result where its procedure lives.
    lint, G1.3 device-aware transfer, G2.1 per-headphone profiles, G1.4 LRCLIB lyrics, G2.2 resume.
 4. R6 / Flint 0.3: Setup, convert-on-transfer, Copying, the palette preview and ticking, SensMe
    reasons; the SensMe MP3 path.
+
+**Streamlining (the owner's direction, 2026-10-05: one Cinder, short by default, the power kept)**
+
+1. *Done 2026-10-05, on the owner's player:* Settings opens as ten everyday rows and **More
+   settings** unfolds the rest; nine empty-file switches are also lines in one
+   `cinder_advanced.conf` (`cinder-home/deploy/cinder_advanced.conf.example`).
+2. Next: the three value files (`cinder_suspend_s`, `cinder_cpufloor.conf`,
+   `cinder_mediastore.conf`) as keys of the same file; the same fold for Sound (Advanced already is
+   one) and Bluetooth; remember the fold across restarts if it is opened every time.
+3. Not started: ship `cinder_advanced.conf.example` to the player's storage from the installer, and
+   name it on Help.
 
 **cinder-themes, cinder-sony-analysis:** nothing open beyond decision 9.
 
@@ -146,9 +157,15 @@ Walkman One:
 | FM (dead under W1's mock tuner library) | Cinder drives the Si4708 directly |
 | The model swap itself | not wanted: it is what hides FM, VPT, ClearAudio+, Language Study and line-out in Sony's app |
 
-Left, all small and only for people already on Walkman One: W1's boot script copies its own HAL
-over Cinder's Plus-mode patch each boot (point `cinder-signature.sh` at W1's source copy too), and
-naming W1's mode and settings in Cinder's own screens.
+**Walkman One stays supported** (owner, 2026-10-05: people on it can stay). Its "external tuning"
+is a gate, not a sound: the boot script compares `md5(mmcblk0p3)` with a constant and, when they
+differ, ignores `PMD`/`PMV`/`GMD`/`DIM`/`COL` and reloads `normal_nt` every boot. Since 2026-10-05
+`cinder-signature.sh` writes its verified library to that `normal_nt` copy as well, so the
+installer's signature choice survives W1's boot without flashing another player's NVRAM and
+bootloader (`tools/test_signature.sh`, 16 cases; **not yet applied on a player** — it changes the
+audio library the next boot loads). The gain half was already covered (`voltable=wm1a` finds
+`gain_l` by content). Left: the analyser parameter set that goes with each signature
+(`.mod/anls/<mode>`), and naming W1's mode and settings in Cinder's own screens.
 
 ## 7. Research with no deadline
 

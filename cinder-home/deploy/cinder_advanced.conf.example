@@ -1,0 +1,28 @@
+# cinder_advanced.conf — the switches most people never need, in one file.
+#
+# Copy this to the top of the player's storage as  cinder_advanced.conf  and remove the # in front
+# of a line to switch it on. Everything is off (commented) by default, and deleting the file puts
+# every switch back. A line is  name  or  name=on ; name=off is the same as leaving it out.
+# Changes to the power switches take effect within a second; the rest are read at start.
+#
+# (Each of these also still works the old way, as an empty file called cinder_<name>.)
+
+# ── Power ────────────────────────────────────────────────────────────────────────────────────
+# Sleep fully (suspend to RAM) when paused, screen off, off the cable, for a minute.
+#ram_suspend
+# Never enter the light sleep Cinder uses behind a dark screen.
+#no_suspend
+# Keep the light sleep, but not while music plays on the headphone jack / over Bluetooth.
+#no_suspend_playing
+#no_suspend_bt
+# Leave the processor's speed alone behind a dark screen.
+#no_cpu_tune
+
+# ── Other ────────────────────────────────────────────────────────────────────────────────────
+# Do not write /contents/.scrobbler.log (for players that run another scrobbler).
+#no_scrobble
+
+# ── Diagnostics (for bug reports; leave off) ─────────────────────────────────────────────────
+#no_fbsync
+#async_library
+#automsc_on
