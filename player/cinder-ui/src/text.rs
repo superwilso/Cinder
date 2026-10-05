@@ -413,26 +413,11 @@ impl FontSet {
         self.unresolved.borrow().iter().copied().collect()
     }
 
-    /// The same set, formatted for a test failure.
-    pub fn unresolved_report(&self) -> String {
-        self.unresolved
-            .borrow()
-            .iter()
-            .map(|c| format!("U+{:04X} {c:?}", *c as u32))
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-
     /// How many times a glyph lookup has reached the DEVICE font chain (i.e. past both bundled
     /// families). Zero for anything the bundled fonts cover. Tests assert on it; nothing else
     /// reads it.
     pub fn chain_walks(&self) -> u32 {
         self.chain_walks.get()
-    }
-
-    /// The distinct characters that reached the device chain.
-    pub fn chain_char_list(&self) -> Vec<char> {
-        self.chain_chars.borrow().iter().copied().collect()
     }
 
     /// The distinct characters that reached the device chain, formatted for a test failure.

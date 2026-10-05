@@ -151,15 +151,6 @@ pub fn range_from_index(i: u8) -> f32 {
     }
 }
 
-pub fn range_index_of(db: f32) -> u8 {
-    for i in 0..RANGE_COUNT {
-        if (range_from_index(i) - db).abs() < 0.5 {
-            return i;
-        }
-    }
-    0
-}
-
 /// Detector-window presets (SetCalcSamples), in milliseconds — the analyzer's averaging time, the
 /// same knob a desktop analyser calls "time window". Converted to samples by the shell, which is
 /// the only side that knows the stream's sample rate.

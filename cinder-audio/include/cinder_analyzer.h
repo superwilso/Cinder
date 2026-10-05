@@ -86,9 +86,8 @@ int  cinder_analyzer_set_window(unsigned calc_samples);
  * current when each arrived. This is what makes band placement, Q, window and update rate
  * MEASURABLE on device instead of guessed: the timestamps give the true emit rate, and the
  * generation tag says how many frames after a SetPassband are still filter transients. */
-int  cinder_analyzer_log_count(void);              /* frames captured since the last reset */
+int  cinder_analyzer_log_count(void);              /* frames captured so far */
 int  cinder_analyzer_log_get(int idx, unsigned *ts_ms, int *gen, int *vals, int max);
-void cinder_analyzer_log_reset(void);
 
 /* Copy up to min(max,16) raw band values from the MOST RECENT frame into `out`; returns that
  * frame's true band count (n). Lets the probe print Sony's actual range/units so spectrum::from_bands

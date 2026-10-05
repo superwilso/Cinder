@@ -76,43 +76,6 @@ fn pow2_floor(n: usize) -> usize {
     p
 }
 
-/// Compute `bars` normalised (0..1) levels from a PCM window (mono i16 samples). Empty input ->
-/// empty output. Hann window, log-spaced bands, dB mapping over `cfg.range_db`, then the same
-/// attack/decay pair as `from_bands` — one visual behaviour whichever source is feeding it.
-pub fn levels(pcm: &[i16], bars: usize, prev: &[f32], cfg: &VizCfg, dt_ms: f32) -> Vec<f32> {
-    if pcm.is_empty() || bars == 0 {
-        return Vec::new();
-    }
-    let n = pow2_floor(pcm.len()).min(1024); // cap FFT size for cost
-    let start = pcm.len() - n; // most recent n samples
-    let mut re = vec![0.0f32; n];
-    let mut im = vec![0.0f32; n];
-    for i in 0..n {
-        // Hann window + normalise i16 -> -1..1
-        let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n - 1).max(1) as f32).cos();
-        re[i] = (pcm[start + i] as f32 / 32768.0) * w;
-    }
-    fft(&mut re, &mut im);
-
-    let half = n / 2;
-    let mut out = vec![0.0f32; bars];
-    // log-spaced band edges across [1, half)
-    for (b, slot) in out.iter_mut().enumerate() {
-        let lo = band_edge(b, bars, half);
-        let hi = band_edge(b + 1, bars, half).max(lo + 1);
-        let mut mag = 0.0f32;
-        for k in lo..hi {
-            mag += (re[k] * re[k] + im[k] * im[k]).sqrt();
-        }
-        mag /= (hi - lo) as f32;
-        // dB against digital full scale, over the configured window — the same curve the analyzer
-        // path uses, so switching source does not change how loud the display looks.
-        let v = to_frac(mag, 1.0, cfg.range_db);
-        *slot = smooth_dt(v, prev, bars, b, cfg, dt_ms);
-    }
-    out
-}
-
 /// The lowest and highest frequencies the PCM bands span. 40 Hz: a 2048-point FFT at 44.1 kHz has
 /// 21.5 Hz bins, so below this a band is one bin of mostly window leakage. 16 kHz: above it most
 /// lossy sources have nothing, and a column that never moves reads as broken.
@@ -123,7 +86,7 @@ pub const PCM_FFT: usize = 2048;
 
 /// `bars` levels (0..1) from mono samples at `rate`, for the PCM tap (`pcm_tap.rs`).
 ///
-/// Unlike `levels` (bin-indexed, for the host harness), the bands here are placed in HERTZ, log
+/// The bands are placed in HERTZ, log
 /// spaced from `PCM_LO_HZ` to `PCM_HI_HZ`, and each band is the ENERGY of the bins inside it. Summed
 /// energy is what makes pink noise — the rough shape of music — read level across the display,
 /// instead of the treble always sitting low. A band narrower than a bin (the bottom of a 64-band
@@ -181,13 +144,6 @@ pub fn from_pcm(
         *slot = smooth_dt(to_frac(mag[b], reference, cfg.range_db), prev, bars, b, cfg, dt_ms);
     }
     out
-}
-
-fn band_edge(b: usize, bars: usize, half: usize) -> usize {
-    // log scale from bin 1 to `half`
-    let t = b as f32 / bars as f32;
-    let e = (1.0f32).max((half as f32).powf(t));
-    (e as usize).clamp(1, half)
 }
 
 /// The magnitude that maps to the top of the display in `Scale::Fixed`.
@@ -401,37 +357,6 @@ mod tests {
         for k in 1..8 {
             assert!(re[k].abs() < 1e-3 && im[k].abs() < 1e-3);
         }
-    }
-
-    #[test]
-    fn pure_tone_lands_in_a_band() {
-        // a 1 kHz-ish sine (relative): energy should be concentrated, not flat
-        let n = 512;
-        let mut pcm = vec![0i16; n];
-        let freq_bin = 40.0; // cycles across the window
-        for (i, s) in pcm.iter_mut().enumerate() {
-            let v = (2.0 * std::f32::consts::PI * freq_bin * i as f32 / n as f32).sin();
-            *s = (v * 20000.0) as i16;
-        }
-        let lv = levels(&pcm, 36, &[], &cfg(), DT);
-        assert_eq!(lv.len(), 36);
-        let max = lv.iter().cloned().fold(0.0f32, f32::max);
-        let sum: f32 = lv.iter().sum();
-        assert!(max > 0.0, "should have non-zero energy");
-        // concentrated: the peak bar is well above the average bar
-        assert!(max > sum / 36.0 * 2.0, "energy should be concentrated, not flat");
-    }
-
-    #[test]
-    fn silence_is_flat_zero() {
-        let lv = levels(&vec![0i16; 256], 24, &[], &cfg(), DT);
-        assert_eq!(lv.len(), 24);
-        assert!(lv.iter().all(|&v| v < 0.01));
-    }
-
-    #[test]
-    fn empty_input_empty_output() {
-        assert!(levels(&[], 36, &[], &cfg(), DT).is_empty());
     }
 
     #[test]

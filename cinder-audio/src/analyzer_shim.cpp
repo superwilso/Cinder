@@ -311,8 +311,6 @@ int cinder_analyzer_set_window(unsigned calc_samples) {
 
 int cinder_analyzer_log_count(void) { return g_log_write; }
 
-void cinder_analyzer_log_reset(void) { g_log_write = 0; }
-
 int cinder_analyzer_log_get(int idx, unsigned* ts_ms, int* gen, int* vals, int max) {
     const int total = g_log_write;
     if (idx < 0 || idx >= total) return 0;

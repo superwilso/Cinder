@@ -553,7 +553,7 @@ struct Render {
     // settable from the Settings screen); cinder-ffi only owns the animation timing.
     viz_phase: f32,
     last_viz: std::time::Instant, // throttle the visualiser repaint to ~20fps (battery)
-    viz_levels: Vec<f32>, // real spectrum bars (0..1) from the last set_pcm/set_spectrum; empty = synthetic
+    viz_levels: Vec<f32>, // real spectrum bars (0..1) from the PCM tap or set_spectrum; empty = synthetic
     viz_peak: f32,        // slow-decaying auto-gain peak for Scale::Dynamic
     // Peak-hold markers and how long each has been sitting where it is. Only populated while the
     // user has the markers switched on; `hold_peaks` clears both when they are off, so the render
@@ -1101,12 +1101,16 @@ impl ProfileLoad {
     }
 }
 
-fn write_atomic(path: &str, body: &str) -> std::io::Result<()> {
+/// Temp file + fsync + rename, for settings, views, stats, likes and playlists. `/contents` is
+/// removable flash a user unplugs, so a torn write must leave the previous file, never half of one.
+pub(crate) fn write_atomic(path: impl AsRef<std::path::Path>, body: impl AsRef<[u8]>) -> std::io::Result<()> {
     use std::io::Write;
-    let tmp = format!("{path}.tmp");
+    let path = path.as_ref();
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
     let res = (|| {
         let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(body.as_bytes())?;
+        f.write_all(body.as_ref())?;
         f.sync_all()?;
         drop(f);
         std::fs::rename(&tmp, path)
@@ -1304,8 +1308,7 @@ fn save_views(r: &mut Render) {
         }
     }
     let body = r.app.views_body();
-    let tmp = format!("{path}.tmp");
-    if std::fs::write(&tmp, &body).and_then(|_| std::fs::rename(&tmp, &path)).is_ok() {
+    if write_atomic(&path, &body).is_ok() {
         r.views_saved = body;
     }
 }
@@ -5012,13 +5015,6 @@ pub extern "C" fn cinder_get_volume_limit() -> libc::c_int {
     cell().lock().unwrap().as_ref().map_or(0, |r| r.app.volume_limit() as libc::c_int)
 }
 
-#[no_mangle]
-pub extern "C" fn cinder_set_volume_limit(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_volume_limit(on != 0);
-    }
-}
-
 /// Read the current UI volume as the raw 0..120 step level. The shell writes it 1:1 to the device
 /// mixer ('master volume', also 0..120) after a VOLUP/VOLDOWN action.
 #[no_mangle]
@@ -5134,11 +5130,6 @@ pub extern "C" fn cinder_bt_found_add(name: *const libc::c_char, kind: *const li
     }
 }
 
-#[no_mangle]
-pub extern "C" fn cinder_bt_found_count() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_found_len() as libc::c_int)
-}
-
 /// Raise a pairing prompt on the Devices screen. `kind`: 1 = numeric comparison (yes/no),
 /// 2 = passkey (display only — nothing to accept), 3 = SSP request. The shell pushes whatever the
 /// listener reported; the UI answers with CONFIRM/CANCEL and never sees the address.
@@ -5161,12 +5152,6 @@ pub extern "C" fn cinder_bt_prompt_clear() {
     }
 }
 
-/// Which prompt is up (0 = none). Lets the shell avoid re-pushing one it already showed.
-#[no_mangle]
-pub extern "C" fn cinder_bt_prompt_kind() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_prompt_kind() as libc::c_int)
-}
-
 /// Scan state. The shell reads this after a CINDER_ACT_BT_SCAN_TOGGLE to know which way to drive
 /// SetSearchMode, and writes it when the radio's own search window ends.
 #[no_mangle]
@@ -5179,12 +5164,6 @@ pub extern "C" fn cinder_set_bt_scanning(on: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_bt_scanning(on != 0);
     }
-}
-
-/// How many paired devices the UI is currently showing.
-#[no_mangle]
-pub extern "C" fn cinder_bt_paired_count() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_paired_len() as libc::c_int)
 }
 
 /// Drain the row index that came with the last CINDER_ACT_BT_CONNECT_DEVICE / _BT_FORGET_DEVICE.
@@ -5487,67 +5466,12 @@ pub extern "C" fn cinder_scrobble_open(path: *const c_char, client: *const c_cha
     0
 }
 
-/// Enable/disable the Now Playing visualiser animation (1 = on, 0 = off). Off keeps the device
-/// idle while watching a playing track (battery). Default on.
-#[no_mangle]
-pub extern "C" fn cinder_set_visualizer(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_viz_on(on != 0);
-        r.dirty = true;
-    }
-}
-
-/// Select the visualiser TYPE (0..cinder_visualizer_count()-1): Bars/Mirror/Segments/Dots/Wave.
-#[no_mangle]
-pub extern "C" fn cinder_set_visualizer_type(kind: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_viz_kind(kind.max(0) as u8);
-        r.dirty = true;
-    }
-}
-
-/// Number of visualiser types available.
-#[no_mangle]
-pub extern "C" fn cinder_visualizer_count() -> libc::c_int {
-    cinder_ui::viz::COUNT as libc::c_int
-}
-
-/// Feed a mono PCM window (i16 samples) for a REAL audio-reactive visualiser: we FFT it into the
-/// 36 spectrum bars the Now Playing visualiser draws. Call from the pump while playing (the shell
-/// taps PCM from Sony's AudioAnalyzerService). No-op on null/empty. This is the only thing needed
-/// to turn the visualiser from synthetic motion into real spectrum — no other change.
-#[no_mangle]
-pub extern "C" fn cinder_set_pcm(samples: *const i16, n: libc::c_int) {
-    if samples.is_null() || n <= 0 {
-        return;
-    }
-    let pcm = unsafe { std::slice::from_raw_parts(samples, n as usize) };
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        let cfg = r.app.viz_cfg();
-        let dt = frame_dt_ms(r);
-        let prev = std::mem::take(&mut r.viz_levels);
-        r.viz_levels = spectrum::levels(pcm, cfg.bands, &prev, &cfg, dt);
-        r.sig.push_hist(&r.viz_levels);
-        let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
-        spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
-        r.viz_peaks = peaks;
-        r.viz_held_ms = held;
-        r.viz_at = std::time::Instant::now();
-        // Only force a repaint when the visualiser is actually on screen — the audio source may
-        // stream continuously, but off Now Playing the new levels are unused, so don't burn a frame.
-        if r.app.viz_visible() {
-            r.dirty = true;
-        }
-    }
-}
-
 /// Feed PRE-COMPUTED spectrum bands (Sony's `AudioAnalyzerService::OnSpectrumUpdate` gives a
 /// `vector<int>` of band magnitudes) for a real audio-reactive visualiser. This is the PREFERRED
 /// real-data path: Sony already did the FFT, so there is no FFT cost on our side. We resample the
 /// `n` source bands into the 36 bars the visualiser draws and auto-normalise (see
 /// spectrum::from_bands). No-op on null/empty. The analyzer shim (cinder_analyzer.h) calls this
-/// from its listener callback, behind the shell's guard. Use cinder_set_pcm instead only when you
-/// have raw PCM and no analyzer (e.g. the USB-DAC tap).
+/// from its listener callback, behind the shell's guard.
 #[no_mangle]
 pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int) {
     if bands.is_null() || n <= 0 {
@@ -5995,15 +5919,6 @@ pub extern "C" fn cinder_scrobble_tick(playing: libc::c_int) {
             }
         }
         flush_stats(r, false);
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn cinder_set_theme_night(night: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.night = night != 0;
-        r.app.night = r.night; // the navigator's render() is the source of truth for theme
-        r.dirty = true;
     }
 }
 
@@ -7427,10 +7342,7 @@ fn liked_save(r: &Render) {
     for path in likes::LIKED_PATHS {
         if let Some(parent) = std::path::Path::new(path).parent() {
             if parent.exists() {
-                let tmp = format!("{path}.tmp");
-                if std::fs::write(&tmp, &body).is_ok() {
-                    let _ = std::fs::rename(&tmp, path);
-                }
+                let _ = write_atomic(path, &body);
             }
         }
     }
@@ -7458,23 +7370,9 @@ fn liked_export_tsv(r: &Render) {
         let tsv = path.replace("cinder_liked.conf", "cinder_loved.tsv");
         if let Some(parent) = std::path::Path::new(&tsv).parent() {
             if parent.exists() {
-                let tmp = format!("{tsv}.tmp");
-                if std::fs::write(&tmp, &body).is_ok() {
-                    let _ = std::fs::rename(&tmp, &tsv);
-                }
+                let _ = write_atomic(&tsv, &body);
             }
         }
-    }
-}
-
-/// Is the CURRENTLY PLAYING track liked? 1/0. (-1 if the renderer isn't up.)
-#[no_mangle]
-pub extern "C" fn cinder_is_liked() -> libc::c_int {
-    let guard = cell().lock().unwrap();
-    let Some(r) = guard.as_ref() else { return -1 };
-    match r.last_track.as_ref() {
-        Some(t) => r.liked.contains(&t.object_id) as libc::c_int,
-        None => 0,
     }
 }
 
@@ -7494,21 +7392,6 @@ fn liked_toggle_current(r: &mut Render) -> libc::c_int {
     r.app.set_liked_count(n);
     liked_save(r);
     now_liked as libc::c_int
-}
-
-/// Toggle the liked state of the currently playing track and persist. Returns the NEW state
-/// (1 liked, 0 not), or -1 when nothing is playing / no renderer.
-#[no_mangle]
-pub extern "C" fn cinder_toggle_liked() -> libc::c_int {
-    let mut guard = cell().lock().unwrap();
-    let Some(r) = guard.as_mut() else { return -1 };
-    liked_toggle_current(r)
-}
-
-/// How many tracks are liked (for the Library's "Liked songs" row).
-#[no_mangle]
-pub extern "C" fn cinder_liked_count() -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| r.liked.len() as libc::c_int)
 }
 
 /// Push the REAL play position/duration from PlayerService's PlayEventListener
@@ -7776,32 +7659,6 @@ pub extern "C" fn cinder_set_now_playing_uri(
             }
             -1
         }
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn cinder_set_now_playing(
-    title: *const c_char,
-    artist: *const c_char,
-    codec: *const c_char,
-    elapsed: *const c_char,
-    remaining: *const c_char,
-    progress: f32,
-    playing: libc::c_int,
-    battery: libc::c_int,
-) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        unsafe {
-            r.np.title = cstr(title);
-            r.np.artist = cstr(artist);
-            r.np.codec = cstr(codec);
-            r.np.elapsed = cstr(elapsed);
-            r.np.remaining = cstr(remaining);
-        }
-        r.np.progress = progress.clamp(0.0, 1.0);
-        r.np.playing = playing != 0;
-        r.np.battery = battery.clamp(0, 100) as u8;
-        r.dirty = true;
     }
 }
 
@@ -8307,6 +8164,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn build_library_from_db() {
         let db = fixture_db();
         let lib = build_library(&db);

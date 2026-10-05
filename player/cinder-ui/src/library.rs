@@ -21,10 +21,6 @@ pub enum Tab {
     Playlists,
 }
 
-/// Conservative rows-per-page used by `nav` to keep the cursor on screen (the actual render
-/// clips at the pixel budget, so this only needs to be ≤ the smallest tab's visible count).
-pub const PAGE: usize = 7;
-
 /// Bottom y of the scrollable list area — the top of the Now Playing return bar, which is pinned
 /// to the bottom of every library screen. Derived, not a literal, so the list and the bar can't
 /// overlap if the bar's height changes.
@@ -461,11 +457,7 @@ pub fn new_playlist_rect() -> (i32, i32, i32, i32) {
     (0, filter_top() + 8, W as i32, NEW_PLAYLIST_H)
 }
 
-pub fn hit_new_playlist(tab: Tab, x: i32, y: i32) -> bool {
-    hit_new_playlist_at(tab, x, y, 0)
-}
-
-/// [`hit_new_playlist`] with the band slid `hide` px up — the row rides up with it.
+/// Is (`x`, `y`) on the New playlist row, with the band slid `hide` px up — the row rides up with it.
 pub fn hit_new_playlist_at(tab: Tab, x: i32, y: i32, hide: i32) -> bool {
     hit_new_at(tab, x, y, hide) == Some(NewKind::Playlist)
 }
@@ -957,18 +949,6 @@ pub fn az_scroll_for(
     Some(top_px.clamp(0, max))
 }
 
-/// Does this tab have any row in `letter`'s bucket? Drives the rail's greying.
-pub fn az_has(
-    tab: Tab,
-    lib: &Library,
-    letter: u8,
-    sort: usize,
-    album_sort: usize,
-    album_expanded: Option<usize>,
-) -> bool {
-    az_scroll_for(tab, lib, letter, sort, album_sort, album_expanded).is_some()
-}
-
 /// Which field the A–Z rail indexes for a tab under its ACTIVE ordering — or `None` when that
 /// ordering is not alphabetical at all, in which case the rail is hidden.
 ///
@@ -1380,7 +1360,7 @@ pub fn tab_hit_bottom(hide: i32) -> i32 {
 }
 
 /// Where each tab label is DRAWN: (tab, x, width) in screen coords. Both `tabs()` (render) and
-/// `tab_at()` (hit test) read this, so the two can't disagree.
+/// the navigator's hit test (`lib_tab_zones`) read this, so the two can't disagree.
 ///
 /// They used to. `tabs()` laid the labels out from their MEASURED widths starting at x=22, while
 /// the navigator hit-tested against hardcoded thresholds (x<120 → Songs, <220 → Albums, <330 →
@@ -1398,24 +1378,6 @@ pub fn tab_layout(f: &FontSet) -> Vec<(Tab, f32, f32)> {
         x += w + 22.0;
     }
     out
-}
-
-/// Which tab is at screen-x `x` in the tab strip? Splits the inter-label gaps down the middle so
-/// every pixel of the strip belongs to its nearest label (no dead zones between tabs).
-pub fn tab_at(f: &FontSet, x: i32) -> Option<Tab> {
-    let zones = tab_layout(f);
-    let x = x as f32;
-    for (i, &(tab, tx, tw)) in zones.iter().enumerate() {
-        let left = if i == 0 { 0.0 } else { let (_, px, pw) = zones[i - 1]; (px + pw + tx) / 2.0 };
-        let right = match zones.get(i + 1) {
-            Some(&(_, nx, _)) => (tx + tw + nx) / 2.0,
-            None => W as f32,
-        };
-        if x >= left && x < right {
-            return Some(tab);
-        }
-    }
-    None
 }
 
 fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab) -> i32 {

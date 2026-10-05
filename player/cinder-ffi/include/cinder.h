@@ -35,8 +35,6 @@ int  cinder_request_screenshot(const char *path);
 int  cinder_show_usb_storage(void);
 /* Unmap + tear down. */
 void cinder_render_shutdown(void);
-/* 0 = day theme, non-zero = night. */
-void cinder_set_theme_night(int night);
 /* Load + apply persisted UI preferences (theme + visualiser + EQ + sound effects + volume) from
  * `path`, and remember it so later changes auto-save. Call once at boot after cinder_render_init.
  * Returns a bitmask: bit0 = file read (re-apply EQ/sound to the DSP), bit1 = a persisted volume
@@ -324,17 +322,6 @@ unsigned long long cinder_db_content_signature(const char *path);
  * title/artist/codec/duration from the DB and derives elapsed/remaining from progress (0..1).
  * 0 = resolved, -1 = not found (falls back to filename), -2 = renderer not initialised. */
 int  cinder_set_now_playing_uri(const char *uri, float progress, int playing, int battery);
-/* Liked songs (the Now Playing heart). The set and its persistence live in cinder-ffi, so the
- * shell has nothing to carry out — the toggle is handled in-process when the heart is tapped.
- * cinder_toggle_liked returns the NEW state (1/0), or -1 if nothing is playing.
- * Two files are written beside the music on /contents: cinder_liked.conf (object ids, the real
- * state) and cinder_loved.tsv (artist<TAB>title). The TSV exists because this device has no WiFi,
- * so Last.fm can only ever be reached by a PC tool after a USB connection — and the AS/1.1
- * scrobble log can't carry loves (its rating column is Listened/Skipped). artist+title is exactly
- * what Last.fm's track.love takes. */
-int  cinder_is_liked(void);
-int  cinder_toggle_liked(void);
-int  cinder_liked_count(void);
 /* Drag-to-seek on the Now Playing progress rail. On finger-DOWN the shell asks cinder_scrub_hit;
  * if it returns 1 the whole contact belongs to the scrub (no tap / list-drag / swipe). Then
  * cinder_scrub_to(x, y) on down and on every move makes the control follow the finger, and
@@ -391,10 +378,6 @@ int  cinder_scrub_action(void);
  * the progress bar follow seeks and mid-track starts. `cur_ms` < 0 = no update yet (ignored);
  * `total_ms` <= 0 keeps the DB duration. 0 = ok, -2 = renderer not initialised. */
 int  cinder_set_play_position(int cur_ms, int total_ms, int playing);
-/* Push the currently-playing track explicitly (progress 0..1, playing 0/1, battery 0..100). */
-void cinder_set_now_playing(const char *title, const char *artist, const char *codec,
-                            const char *elapsed, const char *remaining,
-                            float progress, int playing, int battery);
 
 /* Enable the built-in scrobbler: appends an Audioscrobbler/1.1 `.scrobbler.log` at `path`
  * (e.g. the storage root). `client` is the #CLIENT id. Call after cinder_db_open.
@@ -541,7 +524,6 @@ void cinder_bt_debug_log_stopped(void);
 /* Is the user's volume limit switched on? The CAP itself is Sony's (below); this is only the
  * on/off the Settings row owns. Persisted with the rest of the settings. */
 int  cinder_get_volume_limit(void);
-void cinder_set_volume_limit(int on);
 /* Sony's AVLS threshold for the CURRENT output device, in the same 0..120 units as the UI level,
  * or -1 if the service has no usable number. Implemented in cinder-audio/src/volume_shim.cpp, NOT
  * in Rust: it is a binder call into pst::services::volume::VolumeService.
@@ -567,20 +549,17 @@ long long cinder_get_clock_epoch(void);
  * returns -1 when there is none (never replay a forget against whatever later occupies that row). */
 void cinder_bt_paired_clear(void);
 void cinder_bt_paired_add(const char* name, const char* kind, int connected);
-int  cinder_bt_paired_count(void);
 int  cinder_pending_bt_device(void);
 /* Discovered-device list for the Devices screen's FOUND section — same index-is-the-handle contract as
  * the paired list. Clear when a scan starts, then one _add per device the listener reports. */
 void cinder_bt_found_clear(void);
 void cinder_bt_found_add(const char* name, const char* kind);
-int  cinder_bt_found_count(void);
 /* Scan state: the shell reads it to know which way to drive SetSearchMode, and writes it when the
  * radio's own search window expires (the UI does not assume its tap stuck). */
 /* Pairing prompt: kind 1 = numeric comparison (yes/no), 2 = passkey (display only), 3 = SSP request.
- * _clear() takes the panel down. _kind() reports what is showing (0 = nothing). */
+ * _clear() takes the panel down. */
 void cinder_bt_prompt_set(int kind, const char* name, unsigned code);
 void cinder_bt_prompt_clear(void);
-int  cinder_bt_prompt_kind(void);
 int  cinder_get_bt_scanning(void);
 void cinder_set_bt_scanning(int on);
 /* Top of the Bluetooth volume scale (must match cinder_ui::overlay::BT_VOL_MAX). A step count, not
@@ -731,13 +710,6 @@ void cinder_set_bt_negotiated_codec(int raw);
 /* Read the Sound A/B compare state (1 = B/bypassed, 0 = A/active). Call after a
  * CINDER_ACT_SOUND_BYPASS action, then apply via cinder_effects_set_bypass. */
 int  cinder_get_sound_bypass(void);
-/* Visualiser: enable/disable the animation, select the type, and query how many types exist. */
-void cinder_set_visualizer(int on);
-void cinder_set_visualizer_type(int kind);
-int  cinder_visualizer_count(void);
-/* Feed a mono PCM window (i16) for a REAL audio-reactive visualiser (FFT'd into the bars).
- * Use only for a raw-PCM tap with no analyzer (e.g. the USB-DAC path). */
-void cinder_set_pcm(const short *samples, int n);
 /* PREFERRED real-data path: feed Sony's already-FFT'd spectrum bands (the int vector from
  * AudioAnalyzerService::OnSpectrumUpdate) — no FFT cost on our side. `n` source bands are
  * resampled into the visualiser bars and auto-normalised. The analyzer shim calls this. */

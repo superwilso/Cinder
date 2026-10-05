@@ -2937,11 +2937,6 @@ impl App {
         self.current() == Screen::NowPlaying
     }
 
-    /// Whether the playback state says we're playing (the visualiser animates only when playing).
-    pub fn is_playing(&self) -> bool {
-        self.playing
-    }
-
     pub fn menu_index(&self) -> usize {
         self.menu_idx
     }
@@ -4832,12 +4827,6 @@ impl App {
         self.rebuild_smart(None);
     }
 
-    /// Replace every track's stats (the shell, after it has read its store against a library).
-    pub fn set_stats(&mut self, stats: std::collections::HashMap<i64, crate::model::TrackStat>) {
-        self.lib.stats = stats;
-        self.rebuild_smart(None);
-    }
-
     /// One track's stats changed (a play was counted). The default value removes the entry.
     pub fn set_track_stat(&mut self, object_id: i64, st: crate::model::TrackStat) {
         if st == crate::model::TrackStat::default() {
@@ -5997,13 +5986,6 @@ impl App {
         acts
     }
 
-    /// Is a scrub in progress?
-    pub fn is_scrubbing(&self) -> bool {
-        self.scrub != Scrub::None
-    }
-
-    /// Is the in-flight scrub the UI-scale slider? The shell branches on this: a Progress scrub
-    /// is resolved to milliseconds in cinder-ffi, a UiScale one is applied and persisted here.
     /// Is the live scrub the NOW-PLAYING PROGRESS RAIL — the only one whose gesture means a seek?
     ///
     /// The FFI used to ask the inverse question ("is it the UI-scale slider?") and treat everything
@@ -7303,16 +7285,6 @@ impl App {
     /// back to something it can query the DB with.
     pub fn artist_name_at(&self, idx: usize) -> Option<&str> {
         self.lib.artists.get(idx).map(|a| a.name.as_str())
-    }
-
-    /// Resolve the currently-highlighted library row to a track object_id to play, if any.
-    /// (Albums/Artists/Playlists return None for now — they need a drill-in; Songs play
-    /// directly.) The shell turns this into a PlayerService play call.
-    pub fn current_song_object_id(&self) -> Option<i64> {
-        match self.lib_tab {
-            Tab::Songs => self.lib.songs.get(self.lib_idx).map(|s| s.object_id),
-            _ => None,
-        }
     }
 
     /// Handle a button press; returns any actions for the shell to perform.
@@ -9384,10 +9356,6 @@ impl App {
         self.bt_connecting_ms = 0;
     }
 
-    pub fn bt_paired_len(&self) -> usize {
-        self.bt_paired.len()
-    }
-
     /// Replace the discovered-device list. Cleared when a scan starts, then appended to as the
     /// listener reports devices; the shell keeps the addresses in the same order.
     pub fn bt_found_clear(&mut self) {
@@ -9400,10 +9368,6 @@ impl App {
             kind: kind.to_string(),
             connected: false,
         });
-    }
-
-    pub fn bt_found_len(&self) -> usize {
-        self.bt_found.len()
     }
 
     /// Scan state. The shell owns the truth (the radio stops on its own when the search window
@@ -9431,10 +9395,6 @@ impl App {
         if kind != 0 && self.current() != Screen::Pairing && self.current() != Screen::Receiver {
             self.push(Screen::Pairing);
         }
-    }
-
-    pub fn bt_prompt_kind(&self) -> u8 {
-        self.bt_prompt.as_ref().map_or(0, |p| p.kind)
     }
 
     /// The BT Receiver switch, as the shell should apply it: on only while the Receiver page is
@@ -10235,10 +10195,6 @@ impl App {
     /// happen when the PC stops.
     pub fn set_usb_dac_format(&mut self, rate: u32, bits: u32, chans: u32) {
         self.usb_dac_fmt = if rate == 0 { None } else { Some((rate, bits, chans)) };
-    }
-
-    pub fn usb_dac_format(&self) -> Option<(u32, u32, u32)> {
-        self.usb_dac_fmt
     }
 
     /// The raw negotiated-codec word from `GetSoundStatus`. 0 = not known.

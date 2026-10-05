@@ -95,13 +95,10 @@ namespace { using namespace pst::services::sound; }
 // Source Direct — bypasses the whole chain. Overrides everything below it, exactly like
 // ClearAudioPlus does, which is why the UI has to grey out what it hides.
 int cinder_effects_set_source_direct(int on)      { auto* e = fxc(); if (!e) return -1; e->SetSourceDirect(on != 0); return 0; }
-int cinder_effects_is_source_direct(void)         { auto* e = fxc(); if (!e) return -1; return e->IsSourceDirectOn() ? 1 : 0; }
 
 int cinder_effects_set_clear_phase(int on)        { auto* e = fxc(); if (!e) return -1; e->SetClearPhaseHeadphone(on != 0); return 0; }
-int cinder_effects_is_clear_phase(void)           { auto* e = fxc(); if (!e) return -1; return e->IsClearPhaseHeadphoneOn() ? 1 : 0; }
 
 int cinder_effects_set_dsee_ai(int on)            { auto* e = fxc(); if (!e) return -1; e->SetDseeAi(on != 0); return 0; }
-int cinder_effects_is_dsee_ai(void)               { auto* e = fxc(); if (!e) return -1; return e->IsDseeAiOn() ? 1 : 0; }
 
 int cinder_effects_set_dsee_hx_custom(int on)     { auto* e = fxc(); if (!e) return -1; e->SetDseeHxCustom(on != 0); return 0; }
 int cinder_effects_is_dsee_hx_custom(void)        { auto* e = fxc(); if (!e) return -1; return e->IsDseeHxCustomOn() ? 1 : 0; }
@@ -114,7 +111,6 @@ int cinder_effects_set_vinylizer_type(int type)   { auto* e = fxc(); if (!e) ret
 // Tone Control: three bands, each with a selectable centre frequency. Mutually exclusive with the
 // 10-band EQ — SetSelectUsingEq decides which one is actually in the path.
 int cinder_effects_set_tone_control(int on)       { auto* e = fxc(); if (!e) return -1; e->SetToneControl(on != 0); return 0; }
-int cinder_effects_is_tone_control(void)          { auto* e = fxc(); if (!e) return -1; return e->IsToneControlOn() ? 1 : 0; }
 int cinder_effects_set_tone_value(int band, int gain) { auto* e = fxc(); if (!e) return -1; e->SetToneValue(static_cast<ToneType>(band), gain); return 0; }
 int cinder_effects_get_tone_value(int band)       { auto* e = fxc(); if (!e) return -1; return e->GetToneValue(static_cast<ToneType>(band)); }
 float cinder_effects_get_tone_value_db(int band)  { auto* e = fxc(); if (!e) return 0.0f; return e->GetToneValuedB(static_cast<ToneType>(band)); }
@@ -124,7 +120,6 @@ int cinder_effects_get_tone_freq(int band)        { auto* e = fxc(); if (!e) ret
 // 6-band EQ — where Sony's NAMED presets live (Bright/Excited/Mellow/Relaxed/Vocal/Custom 1/2).
 // The ten-band Cinder already drives has no presets of its own.
 int cinder_effects_set_eq6(int on)                { auto* e = fxc(); if (!e) return -1; e->SetEq6Band(on != 0); return 0; }
-int cinder_effects_is_eq6(void)                   { auto* e = fxc(); if (!e) return -1; return e->IsEq6BandOn() ? 1 : 0; }
 int cinder_effects_set_eq6_preset(int p)          { auto* e = fxc(); if (!e) return -1; e->SetEq6BandPreset(static_cast<Eq6BandPreset>(p)); return 0; }
 int cinder_effects_get_eq6_preset(void)           { auto* e = fxc(); if (!e) return -1; return static_cast<int>(e->GetEq6BandPreset()); }
 int cinder_effects_set_eq6_band(int b, int gain)  { auto* e = fxc(); if (!e) return -1; e->SetEq6BandValue(static_cast<Eq6Band>(b), gain); return 0; }
@@ -134,8 +129,5 @@ float cinder_effects_get_eq6_band_db(int b)       { auto* e = fxc(); if (!e) ret
 // Sony's own two saved setups.
 int cinder_effects_save_user_preset(int no)       { auto* e = fxc(); if (!e) return -1; e->SaveUserPreset(static_cast<UserPresetNo>(no)); return 0; }
 int cinder_effects_load_user_preset(int no)       { auto* e = fxc(); if (!e) return -1; e->LoadUserPreset(static_cast<UserPresetNo>(no)); return 0; }
-
-// Read-backs used to grey out rows that something upstream is overriding.
-int cinder_effects_is_clearaudio_plus(void)       { auto* e = fxc(); if (!e) return -1; return e->IsClearAudioPlusOn() ? 1 : 0; }
 
 } // extern "C"

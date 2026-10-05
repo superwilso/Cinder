@@ -77,11 +77,9 @@ cinder-home/dist/dev/
 # === C++ build intermediates + linked binaries (rebuild: bash cinder-home/build.sh) ===
 # .crt223/*.o stay tracked — they are glibc-2.23 toolchain INPUTS, not outputs.
 cinder-home/*.o
-cinder-home/cinder-home
-cinder-home/cinder-probe
-# The mono shim is copied into dist/<channel>/ by build.sh; that copy is the committed one.
+# Every linked output build.sh writes here; it copies them into dist/<channel>/, the committed copy.
+/cinder-home/cinder-*
 cinder-home/libcinder_mono.so
-cinder-home/cinder-hagowrap
 ldac-bridge/*.o
 ldac-bridge/cinder-ldac-bridge
 

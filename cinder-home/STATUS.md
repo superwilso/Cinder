@@ -1456,11 +1456,12 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 >   `tap()` branch, and since 2026-09-06 the screen SAYS SO instead of drawing a switch that cannot
 >   move — see the UI audit banner at the top.
 > - ~~`NowPlaying.liked` is threaded through four crates and `icons::heart` exists, but the heart is
->   **never drawn**.~~ **FIXED.** The glyph is drawn and tappable (`hit_heart`), and liked songs
+>   **never drawn**.~~ **FIXED.** The glyph is drawn and tappable (`now_playing::layout`), and liked songs
 >   persist to `/contents/cinder_liked.conf`.
-> - FFI exports the shell never calls: `cinder_set_now_playing` (superseded by `_uri`),
+> - ~~FFI exports the shell never calls: `cinder_set_now_playing` (superseded by `_uri`),
 >   `cinder_set_theme_night`, `cinder_set_visualizer`, `cinder_set_visualizer_type`,
->   `cinder_visualizer_count`, `cinder_set_pcm` (the analyzer path uses `cinder_set_spectrum`).
+>   `cinder_visualizer_count`, `cinder_set_pcm` (the analyzer path uses `cinder_set_spectrum`).~~
+>   **Deleted 2026-10-05** with seven more the shell never called (`docs/AUDIT_2026-10-05_ponytail.md` B1).
 >
 > One transient worth knowing: `App` starts with `Library::sample()` (6 demo albums), replaced when
 > `cinder_db_open` runs in `deferred_up`. A DB failure substitutes an **empty** library, so the demo
