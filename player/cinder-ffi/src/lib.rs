@@ -7111,6 +7111,7 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
         }
     }
     r.art_cache_keys = sources.iter().map(|(aid, _, k)| (*aid, *k)).collect();
+    art_cache::set_live_keys(sources.iter().map(|(_, _, k)| *k));
     let cached = art_cache::load_all(sources.iter().map(|(aid, _, k)| (*aid, *k)));
     let have = cached.len();
     r.app.library_mut().thumbs = cached;

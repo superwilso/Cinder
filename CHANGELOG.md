@@ -51,6 +51,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Settings ▸ Database now finishes a large library in one press.** *Host-built; device-unverified.*
+  A newly synced 4,585-track card took nine presses: the rescan stopped after 12 rounds of about
+  170 tracks, and also stopped whenever Sony's scanner paused between batches. It now runs up to
+  60 rounds, and a quiet store earns another scan; only two scans in a row that find nothing end
+  it. A library with nothing new still settles after those two.
+- **Album covers went missing after the music moved to a new card.** *Host-tested;
+  device-unverified.* Thumbnails are filed under the cover's file path, so every one from the old
+  location was left behind for good: 1,015 dead files filled the 35 MB data partition and 118
+  albums drew as gradients ("No space left on device" in the log). When a thumbnail cannot be
+  written for want of space, the ones no album uses any more are now removed and the write is
+  tried again.
 - **USB after a suspend to RAM.** The port came back as a host and ignored a cable until a restart (the kernel switches it on every resume unless a board ID reads 3). Cinder now sets that ID for the length of the suspend and puts the player's own value back on waking. *Device-run 2026-10-05 on Walkman One, partly working: the PC listed the player after a resume with no restart, then the port stopped answering when the PC re-enumerated it. Not reliable yet.* (`analysis/RE_usb_after_resume.md`)
 - **The first start after an install is no longer logged as a failed one.** The installer removed
   the boot counter, which the boot guard reads as "the launcher never ran", so every install cost
