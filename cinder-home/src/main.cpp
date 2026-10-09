@@ -8572,15 +8572,24 @@ static void rx_tick() {
 // Declared HERE, ahead of exit_usb_msc(), because both arms of the campaign are above the code
 // that runs it: the USB-MSC exit path (new music has just landed) and Settings ▸ Database. The
 // full rationale — why one Scan() is not a scan of the library — is on media_rescan() below.
-static const int  RESCAN_MAX_ROUNDS = 12;
-static const int  RESCAN_MAX_CHECKS = 36;   // 6 minutes of watching, whatever the store does
+// SIZED FOR A WHOLE LIBRARY, measured 2026-10-09 on a freshly synced 4,585-track card: one Scan()
+// indexed ~170 tracks, so the old budget of 12 rounds stopped at 2,008 and it took nine presses of
+// Settings ▸ Database to finish. 60 rounds is ~10,000 tracks; a library with nothing new still ends
+// after the confirming scans below, so the larger budget costs nothing there.
+static const int  RESCAN_MAX_ROUNDS = 60;
+static const int  RESCAN_MAX_CHECKS = 180;  // 30 minutes of watching, whatever the store does
 static const long RESCAN_ROUND_MS   = 10000;
+// A quiet store is not a finished scan: the same run went quiet at 3,963 and at 4,133 with files
+// still unindexed, and the next Scan() found them. So quiet earns another Scan(), and only this
+// many in a row that find nothing end the campaign.
+static const int  RESCAN_CONFIRM_SCANS = 2;
 static int  g_rescan_rounds_left = 0;   // follow-up scans still in budget
 static int  g_rescan_checks_left = 0;   // checks still in budget (a busy store must not pin it open)
 static long g_rescan_next_ms     = 0;   // earliest time for the next round
 static unsigned long long g_rescan_sig  = 0;  // CONTENT signature when the last round was issued
 static unsigned long long g_rescan_stat = 0;  // file signature at the last check
 static int  g_rescan_quiet       = 0;   // consecutive checks that saw no change
+static int  g_rescan_confirms    = 0;   // consecutive scans issued on a quiet store that found nothing
 static void media_rescan();             // defined with the MediaStore block, far below
 
 // Arm the campaign right after a Scan() has been requested. Both signatures are taken now, before
@@ -8592,6 +8601,7 @@ static void rescan_campaign_arm() {
     g_rescan_sig         = cinder_db_content_signature(DB_LIVE);
     g_rescan_stat        = cinder_db_signature("/db/MTPDB.dat", "/db/MTPDB.dat-wal", "/db/MTPDB.dat-journal");
     g_rescan_quiet       = 0;
+    g_rescan_confirms    = 0;
 }
 
 static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
@@ -13611,13 +13621,15 @@ void* render_driver(void*) {
             // every time. Now:
             //   content moved              -> the last scan found something: ask for another;
             //   content still, file moved  -> a scan is still writing: wait, it is not settled;
-            //   neither moved              -> quiet; two quiet checks in a row and we are done.
+            //   neither moved              -> quiet; two quiet checks in a row earn one more Scan(),
+            //                                 and RESCAN_CONFIRM_SCANS of those finding nothing ends it.
             // A store we cannot read (0) counts as busy, never as quiet.
             const unsigned long long content = cinder_db_content_signature(DB_LIVE);
             const unsigned long long stat    = db_signature();
             g_rescan_next_ms = house_now + RESCAN_ROUND_MS;
             if (content != 0 && content != g_rescan_sig) {
                 g_rescan_quiet = 0;
+                g_rescan_confirms = 0;
                 g_rescan_sig   = content;
                 --g_rescan_rounds_left;
                 char rm[128];
@@ -13628,18 +13640,26 @@ void* render_driver(void*) {
                 run_guarded("pump: library rescan round", 20, media_rescan);
                 if (g_rescan_rounds_left == 0) {
                     clog_("rescan: campaign budget spent — press Settings ▸ Database again if "
-                          "albums are still missing");
+                          "albums are still missing (a library this large needs more than one go)");
                 }
             } else if (content == 0 || stat != g_rescan_stat) {
                 g_rescan_quiet = 0;          // a scan is still writing (or the store is busy)
             } else if (++g_rescan_quiet >= 2) {
-                g_rescan_rounds_left = 0;
-                clog_("rescan: the library store has stopped changing — campaign finished");
+                g_rescan_quiet = 0;
+                if (g_rescan_confirms >= RESCAN_CONFIRM_SCANS) {
+                    g_rescan_rounds_left = 0;
+                    clog_("rescan: the library store has stopped changing — campaign finished");
+                } else {
+                    ++g_rescan_confirms;
+                    --g_rescan_rounds_left;
+                    clog_("rescan: the store went quiet — scanning once more to be sure");
+                    run_guarded("pump: library rescan round", 20, media_rescan);
+                }
             }
             g_rescan_stat = stat;
             if (g_rescan_rounds_left > 0 && --g_rescan_checks_left <= 0) {
                 g_rescan_rounds_left = 0;
-                clog_("rescan: the store never settled in 6 minutes — campaign stopped; "
+                clog_("rescan: the store never settled in 30 minutes — campaign stopped; "
                       "Settings ▸ Database scans again on request");
             }
         }

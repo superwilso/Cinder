@@ -101,9 +101,75 @@ pub fn load(key: u64, edge: usize) -> Option<Image> {
 /// Write one thumbnail. Temp file + rename, so a reader can never see a half-written cover and an
 /// interrupted write leaves the old file (or none) rather than a corrupt one.
 fn store(key: u64, img: &Image) -> std::io::Result<()> {
+    match write_thumb(key, img) {
+        // The volume is full. /data is 35 MB on this player and nothing else ever removes a
+        // thumbnail, so make room from the covers the library no longer has and try once more.
+        Err(e) if e.raw_os_error() == Some(ENOSPC) && prune_orphans() > 0 => write_thumb(key, img),
+        r => r,
+    }
+}
+
+const ENOSPC: i32 = 28;
+
+/// The keys the library has a cover for now. Empty until the library has been built once.
+static LIVE: std::sync::Mutex<Option<std::collections::HashSet<u64>>> = std::sync::Mutex::new(None);
+
+/// Tell the cache which covers the library still wants; everything else is an orphan.
+pub fn set_live_keys(keys: impl IntoIterator<Item = u64>) {
+    if let Ok(mut live) = LIVE.lock() {
+        *live = Some(keys.into_iter().collect());
+    }
+}
+
+/// Delete the thumbnails no album in the library points at, and any half-written file. Returns how
+/// many files went.
+///
+/// WHY: the name is a hash of the cover's file path (`key_of`), so moving the music orphans every
+/// thumbnail it had and nothing ever looked for them again. Measured 2026-10-09 after a library
+/// moved from internal memory to a new card: 1,015 dead files, 17 MB of the 35 MB volume, and
+/// every new cover failing with "No space left on device" — 118 albums drawn as gradients.
+///
+/// Called only when a write has just failed for want of space, never on a schedule: mid-rescan the
+/// library holds a fraction of its albums, and pruning then would throw away covers that are about
+/// to be wanted again. With no library built yet (`LIVE` unset or empty) it removes nothing.
+pub fn prune_orphans() -> usize {
+    let live = match LIVE.lock() {
+        Ok(g) => g.clone().unwrap_or_default(),
+        Err(_) => return 0,
+    };
+    if live.is_empty() {
+        return 0;
+    }
+    let mut n = 0;
+    if let Ok(rd) = std::fs::read_dir(dir()) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let orphan = match name.rsplit_once('.') {
+                Some((_, "part")) => true,
+                Some((stem, ext)) if ext == format!("t{T48}") || ext == format!("t{T96}") => {
+                    u64::from_str_radix(stem, 16).map_or(true, |k| !live.contains(&k))
+                }
+                _ => false, // `version`, and anything that is not ours
+            };
+            if orphan && std::fs::remove_file(e.path()).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    if n > 0 {
+        eprintln!("cinder-ffi: art cache: out of space — removed {n} thumbnails no album uses any more");
+    }
+    n
+}
+
+fn write_thumb(key: u64, img: &Image) -> std::io::Result<()> {
     let final_path = path(key, img.w);
     let tmp = format!("{final_path}.part");
-    std::fs::write(&tmp, &img.rgb)?;
+    if let Err(e) = std::fs::write(&tmp, &img.rgb) {
+        // A full volume leaves a short `.part` behind, which is space the retry needs.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     // World-readable ON PURPOSE. cinder-home runs as uid 100, but cinder-probe (and anything else
     // run over adb) runs as root, so whichever builds the cache first decides who can use it —
     // and root's default 0600 locks the app out of its own covers. Same reason ensure_dir opens
@@ -276,6 +342,30 @@ mod tests {
             h: edge,
             rgb: vec![fill; edge * edge * 3],
         }
+    }
+
+    /// The 2026-10-09 failure: a library that moved leaves every old thumbnail behind.
+    #[test]
+    fn orphans_go_and_live_covers_the_version_stamp_and_an_unbuilt_library_are_safe() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tmp("prune");
+        std::env::set_var("CINDER_ART_CACHE", &d);
+        assert!(ensure_dir());
+        for key in [1u64, 2] {
+            store(key, &img(T48, 1)).unwrap();
+            store(key, &img(T96, 1)).unwrap();
+        }
+        std::fs::write(format!("{d}/0000000000000003.t48.part"), b"half").unwrap();
+        *LIVE.lock().unwrap() = None;
+        assert_eq!(prune_orphans(), 0, "no library built yet: nothing is an orphan");
+        set_live_keys([]);
+        assert_eq!(prune_orphans(), 0, "an empty library is a failed open, not a reason to wipe");
+        set_live_keys([1]);
+        assert_eq!(prune_orphans(), 3);
+        assert!(is_cached(1) && !is_cached(2));
+        assert!(std::path::Path::new(&format!("{d}/version")).exists());
+        *LIVE.lock().unwrap() = None;
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
