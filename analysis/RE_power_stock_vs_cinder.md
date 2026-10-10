@@ -170,13 +170,50 @@ its PLL only for a full-screen visualiser running at 60 Hz, and that needs a mea
 **The renderer was not built for this CPU.** `readelf -A` on `libcinder_ffi.a`: ARMv6, VFPv2,
 Thumb-1, and not one NEON instruction; ARMv6 also has no divide instruction. That is the baseline
 of Rust's `arm-unknown-linux-gnueabihf` triple. The player is a Cortex-A7 (NEON, VFPv4, hardware
-divide). `player/.cargo/config.toml` now passes `-C target-cpu=cortex-a7`. The size of the win is
-the `raster — frames …` line in the log: 4.8 to 6.5 ms a frame before.
+divide). `-C target-cpu=cortex-a7` was built and run on the player: boot raster 6.39 / 4.77 ms a frame
+against 6.50 / 4.83 before. No gain (the frame is fills and copies, which libc already does
+with NEON), so the flag was taken out again.
 
-**The codec has an equalizer that costs no CPU.** Its five biquads (Cinder's DAC EQ) run in the
-chip. Sony's 10-band EQ and the other effects run in the sound service, which is most of the
-playback CPU. A curve moved to the DAC EQ with Sony's effects off should be the cheapest way to
-listen with EQ; unmeasured.
+**Sony's effects are not the playback cost (measured 2026-10-10, jack, 16/44.1 FLAC from the
+exFAT card, stage 1, cable in, 60 s each).**
+
+| | 10-band EQ on | Source direct |
+|---|---|---|
+| Sound service | 6.5 % of a core | 7.5 % |
+| Decoder (PlayerService) | 2.4 % | 2.3 % |
+| cinder-home | 0.3 % | 0.35 % |
+| exfatfuse | 0.1 % | 0.1 % |
+| Total | 9.8 %, 177 wakeups/s | 10.8 %, 180 wakeups/s |
+| PCM format | S16_LE | S32_LE |
+
+Source direct is no cheaper: the sound service's one busy thread costs the same with the chain
+bypassed, and the output goes to 32-bit. So the 6 to 7 % is the service's own pipeline, not the
+EQ, and moving a curve to the codec's hardware EQ would save nothing. The exFAT FUSE driver is
+not a cost either. What that thread does per buffer is the next thing to read.
+
+**Found the same evening:** headphones plugged in while the screen was dark (stage 1, codec in
+standby) were not detected: `cxd3778gf_h2w` read 0 until a Power press, then 2. Cause not read.
+
+## 10. Suspend to RAM and USB afterwards: run on the player, 2026-10-10 23:50
+
+Dev build of the same day, Walkman One, Bluetooth radio on with no peer, 10 s dwell.
+
+```
+195.8 early suspend            202.2 cable pulled -> out for ~15 s
+215.9 early suspend            225.9 wakelock released (suspend to RAM)
+228.5 resumed, r12=0x7fffffff  <- 2.6 s later, nobody touched it
+233.2 early suspend            242.3 wakelock released
+248.7 resumed, r12=0x20        <- the owner's Power press, about a minute of wall clock later
+255.8 cable in 5 s: gadget state=CONFIGURED already, usb-resume did nothing
+```
+
+Windows listed the player (`054c:0b8d`, storage and adb), adb answered through usbip, a 5 MB
+push ran at 4 MB/s and the host kernel logged no reset or `-104`. So checklist 33.2 passes with
+the board-ID write alone; Sony's `0` then `1` was not needed and so was not exercised after a
+resume. `musb-hdrc.0/mode` reads `a_idle` while the gadget is `CONFIGURED`; cosmetic.
+
+Open: the first suspend ended after 2.6 s with every bit of `r12` set. The second held. One
+extra suspend and resume, not a fault, but its cause is not known.
 
 ## Not established
 

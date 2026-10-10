@@ -207,11 +207,11 @@ d192833d7f854264 library_artists_grid_night
 950663098198cf80 viz_size_0_off
 2864fac45dfb0e69 viz_size_1_veil
 2513c2d1b1efb6b5 viz_size_2_full
-c6157aad088e3968 confirm_restart
-3e8d83dc27bf20aa confirm_poweroff
+d5fbc66107315f7a confirm_restart
+b435f7704da91ef4 confirm_poweroff
 df456a0eb0f0e9bc settings_scrolled
 5dd66b36c95c03b2 device
-e8cb7c4c4a92e22d device_scrolled
+bbc107d690495f73 device_scrolled
 3f4281c899b9c2bd device_degraded
 2864fac45dfb0e69 np_page_0
 a66c9cc1931a6351 np_page_1

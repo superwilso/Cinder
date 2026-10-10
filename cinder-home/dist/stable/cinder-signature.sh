@@ -24,6 +24,14 @@
 #     matching copy is moved into place. An interrupted run leaves the live library untouched.
 #   * every write goes through mv (atomic within a filesystem) + sync
 #
+# ON WALKMAN ONE the live library is not the whole story. Its boot script (/sbin/boot_complete.sh)
+# deletes the live library on EVERY boot and copies one of its own over it, and on a player with no
+# "external tuning" applied — the usual case, and the only one where W1's own PMD/PMV settings are
+# ignored — that copy is always /system/etc/.mod/adler/normal_nt/. So a signature set here lasted
+# until the next boot: measured 2026-10-05, the installer's `pv2` on a W1 player whose live library
+# read stock. `set` and `revert` therefore write the same verified bytes to that copy as well.
+# A tuned W1 player loads normal/pv1/pv2 by its own settings; those copies are never touched.
+#
 # A change takes effect when the HAL is next LOADED — i.e. after a reboot. Nothing here restarts
 # the audio service or reboots; that is deliberate, and left to the caller.
 #
@@ -35,6 +43,7 @@ set -u
 LIB=/system/vendor/sony/lib/libaudiohal-adleralsa.so
 BAK=$LIB.stock
 TMP=$LIB.new
+W1_NT=/system/etc/.mod/adler/normal_nt/libaudiohal-adleralsa.so
 
 # busybox anchor — the updater's ambient tools are unreliable (see install_cinderhome.sh).
 BB=/xbin/busybox
@@ -108,6 +117,10 @@ do_status() {
         echo "signature: active  UNRECOGNISED — not a hash this script knows."
         echo "signature:         Refusing to patch. Restore with 'revert' if a backup exists."
     fi
+    if [ -f "$W1_NT" ]; then
+        w1nm="$(name_of_md5 "$(bb md5sum "$W1_NT" 2>/dev/null | bb cut -d' ' -f1)")"
+        echo "signature: Walkman One reloads  ${w1nm:-UNRECOGNISED}  at every boot (no tuning applied)"
+    fi
     if [ -f "$BAK" ]; then
         echo "signature: backup  present ($(bb md5sum "$BAK" 2>/dev/null | bb cut -d' ' -f1))"
     else
@@ -117,6 +130,31 @@ do_status() {
 }
 
 remount_rw() { mount -o rw,remount /system 2>/dev/null; }
+
+# Walkman One only: make the copy its boot script reloads hold what the live library now holds.
+# $1 = the md5 both must have. Same rules as the live library: an unrecognised file is left alone,
+# and the write is a verified temp copy moved into place.
+mirror_w1() {
+    [ -f "$W1_NT" ] || return 0
+    w1cur="$(bb md5sum "$W1_NT" 2>/dev/null | bb cut -d' ' -f1)"
+    [ "$w1cur" = "$1" ] && return 0
+    if [ -z "$(name_of_md5 "$w1cur")" ]; then
+        echo "signature: WARN — Walkman One's copy ($W1_NT) is not a library this script knows;"
+        echo "signature:        left alone, so Walkman One will load it over this choice at boot."
+        return 1
+    fi
+    remount_rw
+    bb rm -f "$W1_NT.new"
+    bb cat "$LIB" > "$W1_NT.new" 2>/dev/null
+    if [ "$(bb md5sum "$W1_NT.new" 2>/dev/null | bb cut -d' ' -f1)" != "$1" ]; then
+        echo "signature: WARN — could not write Walkman One's copy; it will load its own at boot."
+        bb rm -f "$W1_NT.new"; return 1
+    fi
+    bb chmod 755 "$W1_NT.new"; bb chown root:shell "$W1_NT.new" 2>/dev/null
+    mv "$W1_NT.new" "$W1_NT" || { bb rm -f "$W1_NT.new"; return 1; }
+    sync
+    echo "signature: Walkman One's own copy matches, so its boot script keeps this choice."
+}
 
 do_set() {
     want="$1"
@@ -133,6 +171,7 @@ do_set() {
     fi
     if [ "$cur" = "$exp" ]; then
         echo "signature: already $want — nothing to do."
+        mirror_w1 "$exp"
         return 0
     fi
 
@@ -187,6 +226,7 @@ do_set() {
     sync
     echo "signature: set $want  ($(describe "$want"))"
     echo "signature: takes effect on the next REBOOT (the HAL is loaded at play time)."
+    mirror_w1 "$exp"
     return 0
 }
 
@@ -204,6 +244,7 @@ do_revert() {
     mv "$TMP" "$LIB" || { echo "signature: FAIL — mv failed"; bb rm -f "$TMP"; return 1; }
     sync
     echo "signature: reverted to stock. Takes effect on the next REBOOT."
+    mirror_w1 "$MD5_STOCK"
     return 0
 }
 

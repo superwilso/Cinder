@@ -157,7 +157,9 @@ pub fn prune_orphans() -> usize {
         }
     }
     if n > 0 {
-        eprintln!("cinder-ffi: art cache: out of space — removed {n} thumbnails no album uses any more");
+        eprintln!(
+            "cinder-ffi: art cache: out of space — removed {n} thumbnails no album uses any more"
+        );
     }
     n
 }
@@ -357,9 +359,17 @@ mod tests {
         }
         std::fs::write(format!("{d}/0000000000000003.t48.part"), b"half").unwrap();
         *LIVE.lock().unwrap() = None;
-        assert_eq!(prune_orphans(), 0, "no library built yet: nothing is an orphan");
+        assert_eq!(
+            prune_orphans(),
+            0,
+            "no library built yet: nothing is an orphan"
+        );
         set_live_keys([]);
-        assert_eq!(prune_orphans(), 0, "an empty library is a failed open, not a reason to wipe");
+        assert_eq!(
+            prune_orphans(),
+            0,
+            "an empty library is a failed open, not a reason to wipe"
+        );
         set_live_keys([1]);
         assert_eq!(prune_orphans(), 3);
         assert!(is_cached(1) && !is_cached(2));

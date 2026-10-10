@@ -16,11 +16,21 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.16] — 2026-10-11
+
 ### Changed
 
+- **Suspend to RAM now follows 10 seconds after the screen-off stage** (it was 60), the delay
+  Sony's own firmware uses. Still only with `ram_suspend` switched on.
+- **Dev builds suspend to RAM when paused off the cable, as Sony's firmware does.** About 15
+  seconds after the screen goes dark with nothing playing and no Bluetooth device linked. Power
+  wakes it. `no_ram_suspend` in `cinder_advanced.conf` turns it off. Stable builds still need
+  `ram_suspend`.
 - **USB after a suspend to RAM is restarted the way Sony's firmware does it.** Only for players
   with `ram_suspend` switched on. Sony's USB service resets the port with two writes after a
-  resume; Cinder's helper made only the first. Not yet confirmed on a player.
+  resume; Cinder's helper made only the first, and now makes both if the port has not come back
+  by itself. *On the owner's player 2026-10-10: suspended, woke on Power, and USB worked after
+  the cable went in, without needing the second write.*
 - **The installer explains its options in plain words.** Every option was rewritten for the person
   installing: what it does, what you lose without it, and anything you have to do yourself. The
   technical detail moved into notes for developers that the installer never shows. Drop-downs show
@@ -2658,7 +2668,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.15-rc1...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.16...HEAD
+[0.3.16]: https://github.com/superwilso/Cinder/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/superwilso/Cinder/compare/v0.3.14...v0.3.15-rc1
 [0.3.14]: https://github.com/superwilso/Cinder/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/superwilso/Cinder/compare/v0.3.12...v0.3.13

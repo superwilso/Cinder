@@ -8,6 +8,5 @@ linker = "arm-linux-musleabihf-gcc"
 # Only used with `--target arm-unknown-linux-gnueabihf`.
 [target.arm-unknown-linux-gnueabihf]
 linker = "arm-linux-gnueabihf-gcc"
-# The triple's baseline is ARMv6 + VFPv2 with no NEON and a software divide (readelf -A on the
-# built library, 2026-10-10). The player is a Cortex-A7: NEON, VFPv4, hardware divide.
-rustflags = ["-C", "target-cpu=cortex-a7"]
+# `-C target-cpu=cortex-a7` was tried 2026-10-10 (the triple's baseline is ARMv6 + VFPv2, no NEON):
+# boot raster 6.39 / 4.77 ms a frame against 6.50 / 4.83 without it. No gain, so not kept.

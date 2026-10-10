@@ -4176,7 +4176,14 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
     // (analysis/RE_power_stock_vs_cinder.md section 3). The file is read each time, so deleting
     // it stops it.
     static int ram_dwell = 0;
-    if (!ram_idle || !adv_on("ram_suspend")) { ram_dwell = 0; return; }
+    // Dev channel: on unless `no_ram_suspend` (checklist 33.2 passed on the owner's player
+    // 2026-10-10). Stable stays opt-in until that has had some days of use.
+#ifdef CINDER_DEV
+    const bool ram_on = !adv_on("no_ram_suspend");
+#else
+    const bool ram_on = adv_on("ram_suspend");
+#endif
+    if (!ram_idle || !ram_on) { ram_dwell = 0; return; }
     if (++ram_dwell < kRamDwellS) return;
     ram_dwell = 0;
     clog_("suspend: idle and off the cable -> releasing the wakelock (suspend to RAM; Power wakes it)");
