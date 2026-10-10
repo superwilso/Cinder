@@ -122,6 +122,62 @@ player (checklist §33.2).
 Not levers, checked: Sony's suspend callbacks (section 2), the CPU governor, the audio front
 end's `AFE_ON`, the "Bluetooth PLL" (it was the USB PHY).
 
+## 7. Sony's port reset, run live (2026-10-10, later)
+
+From a healthy port, on the owner's player, detached from adb:
+
+```
+before        role=b_peripheral state=CONFIGURED
+after `0`     role=b_idle       state=DISCONNECTED     dmesg: BQWMP: PHY off
+after `1`     (1 s later)       state=CONFIGURED       dmesg: BQWMP: PHY off, PHY on, high-speed config #1
+```
+
+`BQWMP: PHY on` is the line that never appeared after a resume on 2026-10-05. Still to run: the
+same writes from the post-resume host state (§33.2). cinder-home now also writes `0` when the
+cable leaves after the helper forced the role, as Sony's `SetOtgIdle` does. Stage 2's dwell is
+10 s (was 60), Sony's own delay.
+
+## 8. Services Cinder does not use cost no battery
+
+60 s, per thread, cable in, stage 1, paused: 72 wakeups a second and 0.75 % of a core in total.
+
+| Thread | Wakeups/s | What |
+|---|---|---|
+| `kworker/0:1` | 13.5 | `hp_dbs_timer`, the CPU governor's sampler (workqueue trace). Deferrable: it does not wake an idle core |
+| `WMPortService` x2 | 20 | KeyService and the LED thread, 10 Hz each |
+| `khubd_poll` | 9 | kernel, no switch |
+| `rcu_preempt` | 7 | kernel |
+| `btif_rxd`, BtCommonService, `6620_launcherA` | 5 | the Bluetooth radio being on |
+| `file-storage` | 2 | the USB gadget (cable) |
+| cinder-home, all threads | 4 | 0.3 % of a core |
+
+Every other Sony service — UpdateService, RecorderService, RemoteCmdInjCtrlDaemon, MemmonService,
+NcServiceFw, OneTrackPlayerService, AudioInPlayerService, the Bluetooth LE pair, NfcService,
+StorageMgr, FuncMgr, PathMgr, ConnMgr — recorded **zero** wakeups and zero CPU. Together they hold
+about 60 MB of 467 MB with 169 MB free. Stopping them saves no power, and stopping a pst service
+has restarted this player before (the hang checker). Not a lever.
+
+## 9. The GPU, and the rest of the hardware
+
+**Stock draws everything with the GPU.** `HgrmMediaPlayerApp` is Qt 5 Quick and the only Qt
+platform plugin on the player is `libqeglfs.so`: every frame is a QML scene graph rendered by
+the Mali-450 through `libEGL` / `libMali_linux.so`, with the GPU's 500 MHz PLL (MMPLL) running.
+Cinder draws in software straight to `fb0` and MMPLL reads off the whole time. At about 5 ms a
+frame, and no frames when nothing moves, software with the GPU powered down is the cheaper
+arrangement; the GPU path (`player/cinder-ffi/src/gpu.rs`, `/contents/cinder_gpu_on`) is worth
+its PLL only for a full-screen visualiser running at 60 Hz, and that needs a measurement.
+
+**The renderer was not built for this CPU.** `readelf -A` on `libcinder_ffi.a`: ARMv6, VFPv2,
+Thumb-1, and not one NEON instruction; ARMv6 also has no divide instruction. That is the baseline
+of Rust's `arm-unknown-linux-gnueabihf` triple. The player is a Cortex-A7 (NEON, VFPv4, hardware
+divide). `player/.cargo/config.toml` now passes `-C target-cpu=cortex-a7`. The size of the win is
+the `raster — frames …` line in the log: 4.8 to 6.5 ms a frame before.
+
+**The codec has an equalizer that costs no CPU.** Its five biquads (Cinder's DAC EQ) run in the
+chip. Sony's 10-band EQ and the other effects run in the sound service, which is most of the
+playback CPU. A curve moved to the DAC EQ with Sony's effects off should be the cheapest way to
+listen with EQ; unmeasured.
+
 ## Not established
 
 * What the 27 auto-sleep conditions are by name, and whether a linked Bluetooth peer is one.

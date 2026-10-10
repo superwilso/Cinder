@@ -3888,7 +3888,7 @@ const char kLockName[]    = "cinder";
 // a known state, and the failure mode of a spurious wake is one extra idle countdown rather than a
 // device stuck cycling with a dark screen.
 
-const int kRamDwellS  = 60;    // stage 1 this long, with ram_idle true throughout, before stage 2
+const int kRamDwellS  = 10;    // stage 1 this long before stage 2: stock's AutoSleepTimer default (was 60)
 const int kBootGraceS = 180;   // never suspend in the first 3 minutes of an app start
 
 bool write_node(const char* path, const char* val) {
@@ -4032,10 +4032,19 @@ static void soc_suspend_leave_now(const char* why) {
 static bool g_usb_after_resume = false;
 static void usb_after_resume_tick() {
     static int plugged_s = 0;
+    static bool forced = false;   // usb-resume wrote `1` (device) to mt_usb/mode
+    const bool cable = socsusp::read_node_long("/sys/class/power_supply/usb/online") == 1;
+    if (forced && !cable) {
+        // Sony's SetOtgIdle on the way out, so the forced role does not outlive the cable.
+        forced = false;
+        socsusp::write_node("/sys/devices/platform/mt_usb/mode", "0");
+        clog_("usb: cable out after a forced device role -> role released");
+    }
     if (!g_usb_after_resume) { plugged_s = 0; return; }
-    if (socsusp::read_node_long("/sys/class/power_supply/usb/online") != 1) { plugged_s = 0; return; }
+    if (!cable) { plugged_s = 0; return; }
     if (++plugged_s < 5) return;
     g_usb_after_resume = false;
+    forced = true;
     plugged_s = 0;
     clog_("usb: a cable is in after a resume from RAM -> cinder-msc usb-resume");
     run_watchdog_only("usb: resume", 20, []() {   // system()
@@ -4163,9 +4172,9 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
     // drive, and off both the cable and the charger. The cable test is belt and braces: the charger
     // driver holds its own wakelock while VBUS is present, so the kernel would refuse anyway.
     //
-    // A FULL MINUTE of stage 1 first. With the threshold at 5 s the old `2 x threshold` put a
-    // player to RAM ten seconds after the screen went dark, which is "Power, glance, Power" turned
-    // into a suspend/resume cycle. The file is read each time, so deleting it stops it.
+    // kRamDwellS of stage 1 first: 10 s, the delay Sony's own app uses before its cold sleep
+    // (analysis/RE_power_stock_vs_cinder.md section 3). The file is read each time, so deleting
+    // it stops it.
     static int ram_dwell = 0;
     if (!ram_idle || !adv_on("ram_suspend")) { ram_dwell = 0; return; }
     if (++ram_dwell < kRamDwellS) return;
