@@ -18,6 +18,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **USB after a suspend to RAM is restarted the way Sony's firmware does it.** Only for players
+  with `ram_suspend` switched on. Sony's USB service resets the port with two writes after a
+  resume; Cinder's helper made only the first. Not yet confirmed on a player.
 - **The installer explains its options in plain words.** Every option was rewritten for the person
   installing: what it does, what you lose without it, and anything you have to do yourself. The
   technical detail moved into notes for developers that the installer never shows. Drop-downs show

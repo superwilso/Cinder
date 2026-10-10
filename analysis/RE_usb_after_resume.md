@@ -79,3 +79,14 @@ launcher-test run hung on it) until `wsl --shutdown`.
 Next: `scratchpad/resume_probe.sh`, armed on the player, saves dmesg, `/sys/kernel/debug/musb/regdump`,
 the PLL table and the gadget state at the resume and 4, 20 and 60 s after the plug. Healthy
 values to compare: `Power 71`, `DevCtl 99`, `MISC 0f`.
+
+## 2026-10-10: what Sony's firmware does about it
+
+`libUsbMgrServiceFw.so` has a `UsbResumeMonitor` (the `icx_pm_helper` resume uevent, and the USB
+supply coming online) that runs `UsbMgrImplWmport::SetOtgDevice`: write `0` to
+`/sys/devices/platform/mt_usb/mode`, wait for `musb-hdrc.0/mode` to read `idle`, write `1`. In
+`mt_usb_store_mode`, `1` runs `musb_id_pin_sw_work(0)` and `mt_usb20_sw_connect(1)`: the controller
+stopped and started as a device. The service runs under Cinder but acts only once the app has set
+the role, which Cinder never does. `cinder-msc usb-resume` wrote `0` and never `1`; it now does
+Sony's two writes as its first step. Not yet run on a player. Detail:
+`RE_power_stock_vs_cinder.md` section 4.

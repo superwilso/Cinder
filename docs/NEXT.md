@@ -128,6 +128,10 @@ when its content moves. What is left needs the player:
    mass storage worked, no restart. Left: dev-channel adb is offline after a resume (the gadget
    comes back as `0B8B`, not the composite), 33.3 and 33.5 are not run, and the write back of
    the ID was not observed.
+   **2026-10-10, from Sony's own USB manager:** on a resume it writes `0` then `1` to
+   `mt_usb/mode` (`analysis/RE_power_stock_vs_cinder.md` section 4). `cinder-msc usb-resume`
+   only ever wrote `0`; it now does both first. Re-run 33.2 with a `--full` install.
+   Stock's own delay before this suspend is 10 s; Cinder's is 65 s.
    Also by design and worth a decision: with headphones still linked it does not suspend until
    Bluetooth auto off has fired, about 11 minutes after a pause.
 3. **The CPU cap under Bluetooth.** Stage 1 runs there now; the 1040 MHz cap does not, because LDAC

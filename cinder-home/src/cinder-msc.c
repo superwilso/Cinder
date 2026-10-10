@@ -544,7 +544,14 @@ static int usb_resume(void)
      * buffer does not survive the restart this fault has always ended in. */
     (void)system("/system/bin/dmesg | /xbin/busybox tail -n 200 > " RESUME_DMESG " 2>/dev/null");
 
-    int ok = usb_resume_step("step 1, musb role", MUSB_MODE, "peripheral")
+    /* Step 0 is what Sony's own UsbMgrServiceFw does on the resume uevent (SetOtgDevice, read
+     * 2026-10-10): `0` (drop any role), then `1`, which in mt_usb_store_mode runs
+     * musb_id_pin_sw_work(0) + mt_usb20_sw_connect(1) — the controller stopped and started as a
+     * device. Nobody tells that service the mode under Cinder, so it never does it for us. */
+    write_node(MTUSB_MODE, "0");
+    usleep(1000);
+    int ok = usb_resume_step("step 0, Sony's SetOtgDevice", MTUSB_MODE, "1")
+          || usb_resume_step("step 1, musb role", MUSB_MODE, "peripheral")
           || usb_resume_step("step 2, MediaTek override cleared", MTUSB_MODE, "0");
     if (!ok) {
         write_node(ENABLE_NODE, "0");
