@@ -29,6 +29,13 @@ int main() {
     check(cinder_bt_should_pause(1, 0, 1) == 1 && cinder_bt_should_pause(1, 0, 1) == 1,
           "a later drop pauses again");
 
+    // "Turn off when idle": is the radio carrying nothing?
+    check(cinder_bt_radio_unused(0, 1, 0) == 1, "silence: unused, linked or not");
+    check(cinder_bt_radio_unused(1, 0, 0) == 1, "music on the jack with no link: unused");
+    check(cinder_bt_radio_unused(1, 1, 0) == 0, "music with a link up: in use");
+    check(cinder_bt_radio_unused(1, -1, 0) == 0, "link not read yet this boot: not unused");
+    check(cinder_bt_radio_unused(1, 0, 1) == 0, "receiver or a Bluetooth soundscape: in use");
+
     std::printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

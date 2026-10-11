@@ -139,3 +139,87 @@ Music is too uneven for this; use the noise file.
    Custom 1's band 0 with the other five bands flat, re-asserted like the rest of the chain.
 3. Map the preset names to rows (the stock QML never drew the six-band; Media Go / Music Center
    or an A40 UI would).
+
+## 6. On Walkman One: where it went and how to get it back (2026-10-11)
+
+Read 2026-10-11 from Walkman One's `libSoundServiceFw.so` (`artifacts/w1_rootfs/sony/lib`, listing
+in `artifacts/decomp_w1`). Nothing in this file has been run on a player. Addresses are file
+offsets; add 0x10000 for the Ghidra listing. Background: [`RE_sound_service.md`](RE_sound_service.md).
+
+### 6.1 What the module is
+
+Clear Bass is band 0 of Sony's six-band EQ. The effect is one module, `CB_6bandEQ`, with three
+parts (exported symbols of the library):
+
+| part | symbols | job |
+|---|---|---|
+| bass band | `CB_6bandEQchsep_*`, `CB_6bandEQ_chsep_coef`, `CB_6bandEQ_iir2order_flt_2ch_asm`, `CB_6bandEQ_iir_coef` | splits the low band off and boosts it |
+| limiter | `CB_6bandEQ_alc`, `CB_6bandEQ_ln_approx_asm` | holds the boosted band under full scale; this is why Clear Bass does not clip where a plain bass boost does |
+| five-band EQ | `CB_6bandEQ_geq_*`, `CB_6bandEQ_geq_coef` | the other five bands |
+
+The filter object that drives it is `pst::services::sound::mobile::Eq6band` (`Eq6band.cc`), named
+`eq6band` in the effect chain.
+
+### 6.2 Why it does nothing on Walkman One
+
+The whole module is still in Walkman One's library: `EffectExecuteCB_6bandEQ` 0x159cec,
+`CreateEq6band`, and `CreateFilter` 0xfd830 still knows the name `eq6band`. What changed is the
+chain. The chain is a vector of eleven names built once, in the static initialiser `_INIT_19`:
+
+    i2f dseehxcustom heq dynamicnormalizer attn eq10band eqtone alc dcphaselinear vinylizer f2i
+
+`eq6band` is not in it, so no `Eq6band` object exists and every Clear Bass setting has nowhere to
+land. The stock A50 list has `eq6band` in the slot after `attn`.
+
+### 6.3 Putting it back: a one-byte patch
+
+Each of the eleven entries is copied from a global string through its own PC-relative literal. The
+name globals sit 0x10 apart (`eq6band` 0x329d90, `eq10band` 0x329da0, `eqtone` 0x329db0), so
+pointing an entry at `eq6band` is a change to one literal:
+
+| entry to give up | literal at | now | for `eq6band` |
+|---|---|---|---|
+| `eqtone` (Tone Control) | 0x6f910 | `ce a8 2b 00` | `ae a8 2b 00` |
+| `dcphaselinear` | 0x6f918 | `be a8 2b 00` | `8e a8 2b 00` |
+| `vinylizer` | 0x6f91c | `e0 a8 2b 00` | `80 a8 2b 00` |
+
+The vector is allocated for exactly eleven entries, so an entry is replaced, not added. The
+`eqtone` slot is the nearest to where stock keeps `eq6band` (after `attn`, before `alc`).
+
+It would ship the way the sound signature does (`cinder-home/deploy/cinder-signature.sh`): verify
+the live library's md5, patch a copy, verify the result, move it into place, keep the original,
+take effect at the next boot. Walkman One's boot script may copy its own library over the live one
+as it does for the output library; check before relying on it.
+
+**Checked on the player 2026-10-11:** the live library is this one (md5 `845e27e9…`) and the
+service prints exactly the eleven names above at start, no `eq6band`. The 2026-09-17 run in
+section 4 was on stock firmware, where `eq6band` is in the chain and still measured no effect, so
+**being in the chain is necessary and not known to be sufficient**. `no desired value, skip` is
+not the cause: Tone Control logs the same line and works, because a live write is only staged and
+the coefficients are computed when a track is configured (`docs/DEVICE_TESTS.md`).
+
+**Not established, needs the player:**
+
+* That the service then accepts the six-band calls. `SelectUsingEq` picks which tone system
+  processes (1 six-band, 2 ten-band, 3 Tone Control); with `eq6band` in the chain, type 1 should
+  give Clear Bass plus the five-band EQ **instead of** the ten-band EQ, not beside it.
+* What a library with `eq6band` in place of a filter the service expects does at start-up. The
+  sound service failing to start is the risk; stopping it at run time rebooted the player
+  (2026-09), so the trial needs the original kept beside it and the boot guard armed.
+* The CPU cost. Any enabled filter makes the whole chain run, conversion to float and back
+  included (`RE_sound_service.md` section 3 there). Measure with `tools/ssfw_cost.sh`, Clear Bass on
+  against everything off.
+
+### 6.4 The cheaper alternative: bass in the codec
+
+The codec chip has its own five-biquad EQ, which Cinder's DAC EQ already writes. A low shelf there
+costs no CPU, leaves Sony's chain skipped whole, and so keeps deep idle intact. It is jack only,
+and it has no limiter: the boost has to be paid for with the same number of decibels of
+attenuation ahead of it, which is what Clear Bass's limiter avoids.
+
+| | real Clear Bass (6.3) | bass shelf in the codec |
+|---|---|---|
+| sound | Sony's, with its limiter | a plain low shelf, level dropped by the boost |
+| outputs | jack and Bluetooth | jack only |
+| CPU | the whole software chain runs | none |
+| risk | a patched system library | none new: DAC EQ is shipped |

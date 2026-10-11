@@ -227,9 +227,18 @@ when its content moves. What is left needs the player:
      on to the key callback and the clock check. So the 10-04 "key driver veto" was this, and the
      10-05 run that entered deep idle 294 times had the radio off. Source direct was on for this
      run and the output was still 16-bit, so the 6 to 7 % sound-service figure did not reproduce.
-     **Next: the same off-cable run with Bluetooth off**, to get the saving as a share of time
-     asleep. If it is large, the lever is the radio's state during jack playback (Bluetooth auto
-     off today waits for a pause).
+     **Confirmed the same day with Bluetooth off, same track:** 291 deep idle entries in 181 s,
+     `by_oth` 0, interrupts 84 -> 17 a second, the tick 65 -> 9.5, every 10 Hz poller firing 2.1
+     times a second (so the SoC was in deep idle for roughly four fifths of the window; an
+     inference from the poller rate, not a measured current). The lever is the radio's state
+     during jack playback: "Turn off when idle" waits for nothing audible, so music on the jack
+     keeps an unused radio up for hours. Owner decision: let that switch also fire when the
+     screen is dark, music is on the jack and no Bluetooth link is up.
+   * **Clear Bass on Walkman One** ([`../analysis/RE_clear_bass.md`](../analysis/RE_clear_bass.md)
+     section 6): Sony's module is still in the library and the chain list is a static vector, so
+     a one-byte patch puts `eq6band` back in place of one other filter. It conflicts with the
+     09-17 log, which needs the live library's md5 and printed chain first. The no-risk
+     alternative is a bass shelf in the codec's own EQ (jack only, no CPU).
    * **About 170 wakeups a second during playback on the cable**, by thread: sound service 54
      (one thread 43), the WM-PORT/Key/Configuration process 20 (two threads at exactly 10 Hz, a
      poll), the decoder process 25 (one at 10 Hz, the read-ahead cache), `khubd_poll` 9 (the

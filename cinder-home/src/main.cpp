@@ -12959,21 +12959,26 @@ void* render_driver(void*) {
                 // and about 13% of a core for a link that is up and carrying nothing (measured
                 // 2026-08-11). Nothing ever switched it off but the user, so a player left with
                 // Bluetooth on paid that until the battery was flat. With the switch on: ten
-                // minutes of a dark screen with nothing audible — no music, no soundscape, not
-                // receiving — and the radio goes off, through the very path a tap on the switch
+                // minutes of a dark screen with the radio carrying nothing — silence, or music on
+                // the jack with no link — and the radio goes off, through the very path a tap on the switch
                 // takes, so the UI, the reconnect ladder and the route all hear about it.
                 //   * Never in USB-DAC mode: the bridge to LDAC is audio this test cannot see.
                 //   * Never while a connect the user asked for is still pending.
                 //   * It does not come back on by itself. That is the price, and why it is opt-in.
                 {
                     static int bt_idle_secs = 0;
-                    const bool bt_idle = idle && cinder_get_bt_idle_off() != 0 && cinder_get_bt_on() != 0
+                    // Music on the jack with no link counts too (cinder_bt_radio_unused, bt_edge.h).
+                    const bool bt_unused = cinder_bt_radio_unused(audible, g_bt_link_last,
+                                                                  src.receiver || g_amb_bt_alive);
+                    const bool bt_idle = !g_screen_on && bt_unused
+                                         && cinder_get_bt_idle_off() != 0 && cinder_get_bt_on() != 0
                                          && !g_bt_user_pending && !gadget_in_dac_mode() && !g_msc_active;
                     if (!bt_idle) {
                         bt_idle_secs = 0;
                     } else if (++bt_idle_secs >= kBtIdleOffS) {
                         bt_idle_secs = 0;
-                        clog_("bt: idle 10 min with the screen off -> radio off (Turn off when idle)");
+                        clog_(audible ? "bt: 10 min dark, music on the jack, no link -> radio off (Turn off when idle)"
+                                      : "bt: idle 10 min with the screen off -> radio off (Turn off when idle)");
                         cinder_set_bt_on(0);
                         run_guarded("bt: idle off", 8, apply_bt_toggle);
                     }
