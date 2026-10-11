@@ -28,23 +28,35 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline, sty, toggle};
 use crate::Canvas;
 
-/// Rows: Source Direct, Clear Phase, DSEE AI, DSEE HX Custom, Vinyl character, Tone Control,
-/// the route to the Tone Control band editor, which headphone amplifier drives the jack, and the
-/// route to the DAC EQ.
-pub const ROWS: usize = 9;
-pub const ROW_SOURCE_DIRECT: usize = 0;
-pub const ROW_CLEAR_PHASE: usize = 1;
-pub const ROW_DSEE_AI: usize = 2;
-pub const ROW_DSEE_CUSTOM: usize = 3;
-pub const ROW_VINYL_TYPE: usize = 4;
-pub const ROW_TONE: usize = 5;
-pub const ROW_TONE_BANDS: usize = 6;
+/// Rows: Clear Phase, DSEE AI, DSEE HX Custom, Vinyl character, Tone Control, the route to the
+/// Tone Control band editor, which headphone amplifier drives the jack, and the route to the DAC
+/// EQ. Source Direct was row 0 until 2026-10-11; it is the Direct segment of the Sound screen's
+/// mode control now.
+pub const ROWS: usize = 8;
+pub const ROW_CLEAR_PHASE: usize = 0;
+pub const ROW_DSEE_AI: usize = 1;
+pub const ROW_DSEE_CUSTOM: usize = 2;
+pub const ROW_VINYL_TYPE: usize = 3;
+pub const ROW_TONE: usize = 4;
+pub const ROW_TONE_BANDS: usize = 5;
 /// The codec's linear headphone amp instead of Sony's S-Master class-D. Hardware, not an effect:
-/// Source Direct and ClearAudio+ do not take it out of the path, so it is never dimmed.
-pub const ROW_HP_AMP: usize = 7;
+/// Direct mode and ClearAudio+ do not take it out of the path, so it is never dimmed.
+pub const ROW_HP_AMP: usize = 6;
 /// The route to the codec's own EQ (`dac_eq.rs`). Not dimmed under ClearAudio+, which does not
-/// reach the DAC; Source Direct holds it flat, and the row says so rather than greying out.
-pub const ROW_DAC_EQ: usize = 8;
+/// reach the DAC; Direct mode holds it flat, and the row says so rather than greying out.
+pub const ROW_DAC_EQ: usize = 7;
+/// Sony's Clear Bass. Drawn only on a player whose sound library has the six-band EQ in its
+/// chain (Walkman One after `cinder-chain.sh set clearbass`; `analysis/RE_clear_bass.md`).
+pub const ROW_CLEAR_BASS: usize = 8;
+
+/// Clear Bass steps. The index times two is the gain handed to the six-band's band 0. Measured at
+/// the jack 2026-10-11: +10 is about +7 dB from 35 to 90 Hz.
+pub const CLEAR_BASS: [&str; 6] = ["Off", "+2", "+4", "+6", "+8", "+10"];
+
+/// How many rows are drawn: the Clear Bass row exists only where the firmware can run it.
+pub fn rows(clear_bass: bool) -> usize {
+    ROWS + usize::from(clear_bass)
+}
 
 /// Row pitch and list top — SINGLE SOURCE for the render below and `nav`'s hit test. The banner
 /// sits BELOW the rows so it cannot shift them: a row that moves when an unrelated toggle flips is
@@ -53,12 +65,12 @@ pub const ROW_H: i32 = crate::scale::SETTING_ROW_H;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
 /// Which row is under `y`, or None if the point is outside the list.
-pub fn row_at(y: i32) -> Option<usize> {
+pub fn row_at(y: i32, rows: usize) -> Option<usize> {
     if y < TOP {
         return None;
     }
     let r = ((y - TOP) / ROW_H) as usize;
-    (r < ROWS).then_some(r)
+    (r < rows).then_some(r)
 }
 
 /// DSEE HX Custom modes, catalogue order — the index IS the value handed to `SetDseeHxCustomMode`.
@@ -105,6 +117,8 @@ pub struct Advanced {
     pub hp_linear: bool,
     /// The DAC EQ has at least one band off zero.
     pub dac_eq_on: bool,
+    /// One of [`CLEAR_BASS`], or None where the firmware has no six-band EQ in its chain.
+    pub clear_bass: Option<&'static str>,
     /// Name of whatever upstream control is currently overriding the rest of the chain, if any.
     pub overridden_by: Option<&'static str>,
 }
@@ -112,7 +126,7 @@ pub struct Advanced {
 /// Is this row one of the ones an upstream override hides? Source Direct itself never dims — it is
 /// the thing doing the overriding, so greying it out would strand the user with no way back.
 fn dimmed(a: &Advanced, row: usize) -> bool {
-    a.overridden_by.is_some() && row != ROW_SOURCE_DIRECT && row != ROW_HP_AMP && row != ROW_DAC_EQ
+    a.overridden_by.is_some() && row != ROW_HP_AMP && row != ROW_DAC_EQ
 }
 
 /// A row drawn dim, for when something upstream has taken it out of the path. Same geometry as
@@ -190,19 +204,6 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         a,
         y0,
         sel == 0,
-        ROW_SOURCE_DIRECT,
-        "Source Direct",
-        "Shortest path — bypasses every effect",
-    );
-    toggle(c, t, 418, cy - 11, 40, 22, 14, a.source_direct);
-
-    let cy = a_row(
-        c,
-        t,
-        f,
-        a,
-        y0 + rh,
-        sel == 1,
         ROW_CLEAR_PHASE,
         "Clear Phase",
         "Correct headphone phase response",
@@ -231,8 +232,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         t,
         f,
         a,
-        y0 + rh * 2,
-        sel == 2,
+        y0 + rh,
+        sel == 1,
         ROW_DSEE_AI,
         "DSEE AI",
         aidesc,
@@ -251,8 +252,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         t,
         f,
         a,
-        y0 + rh * 3,
-        sel == 3,
+        y0 + rh * 2,
+        sel == 2,
         ROW_DSEE_CUSTOM,
         "DSEE HX Custom",
         cdesc,
@@ -269,8 +270,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         t,
         f,
         a,
-        y0 + rh * 4,
-        sel == 4,
+        y0 + rh * 3,
+        sel == 3,
         ROW_VINYL_TYPE,
         "Vinyl Character",
         vdesc,
@@ -282,8 +283,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         t,
         f,
         a,
-        y0 + rh * 5,
-        sel == 5,
+        y0 + rh * 4,
+        sel == 4,
         ROW_TONE,
         "Tone Control",
         "Bass / mid / treble — alternative to the EQ",
@@ -304,8 +305,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         t,
         f,
         a,
-        y0 + rh * 6,
-        sel == 6,
+        y0 + rh * 5,
+        sel == 5,
         ROW_TONE_BANDS,
         "Adjust bands",
         bdesc,
@@ -332,8 +333,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         t,
         f,
         a,
-        y0 + rh * 7,
-        sel == 7,
+        y0 + rh * 6,
+        sel == 6,
         ROW_HP_AMP,
         "Linear headphone amp",
         hdesc,
@@ -343,7 +344,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
     // The DAC EQ. A route, like "Adjust bands". Source Direct holds it flat, and says so here
     // instead of dimming: the row stays the way in.
     let edesc = if a.source_direct {
-        "Five bands in the DAC chip — flat under Source Direct"
+        "Five bands in the DAC chip — flat in Direct mode"
     } else if a.dac_eq_on {
         "Five bands in the DAC chip — on"
     } else {
@@ -354,17 +355,40 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         t,
         f,
         a,
-        y0 + rh * 8,
-        sel == 8,
+        y0 + rh * 7,
+        sel == 7,
         ROW_DAC_EQ,
         "DAC EQ",
         edesc,
     );
     crate::widgets::right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
 
+    // Clear Bass. Sony's six-band EQ is a third alternative beside the 10-band EQ and Tone
+    // Control (measured 2026-10-11: with it selected a 10-band change does nothing), so the row
+    // says what it displaces instead of leaving that to be discovered by ear.
+    if let Some(level) = a.clear_bass {
+        let desc = if level == CLEAR_BASS[0] {
+            "Sony's bass boost — takes the place of the EQ"
+        } else {
+            "On — the EQ and Tone Control are out of the path"
+        };
+        let cy = a_row(
+            c,
+            t,
+            f,
+            a,
+            y0 + rh * 8,
+            sel == 8,
+            ROW_CLEAR_BASS,
+            "Clear Bass",
+            desc,
+        );
+        crate::sound::value_pill(c, f, t, 458, cy, level);
+    }
+
     // ── the override banner ─────────────────────────────────────────────────────────────────
     // Below the rows, so nothing above it moves when it appears.
-    let by = y0 + rh * ROWS as i32 + 18;
+    let by = y0 + rh * rows(a.clear_bass.is_some()) as i32 + 18;
     // Every line here goes through `fit`: the banner carries a control's NAME, so its width is not
     // something this file gets to assume, and at 140% UI scale the one-line version ran 156 px past
     // the margin — caught by tests/ui_overflow.rs, which is why it sweeps this screen with the
@@ -410,6 +434,7 @@ mod tests {
             tone_control: false,
             hp_linear: false,
             dac_eq_on: false,
+            clear_bass: None,
             overridden_by: None,
         }
     }
@@ -420,25 +445,22 @@ mod tests {
     fn every_row_is_hittable_at_its_own_band() {
         for r in 0..ROWS {
             let top = TOP + ROW_H * r as i32;
-            assert_eq!(row_at(top), Some(r), "top edge of row {r}");
-            assert_eq!(row_at(top + ROW_H / 2), Some(r), "middle of row {r}");
-            assert_eq!(row_at(top + ROW_H - 1), Some(r), "bottom edge of row {r}");
+            assert_eq!(row_at(top, ROWS), Some(r), "top edge of row {r}");
+            assert_eq!(row_at(top + ROW_H / 2, ROWS), Some(r), "middle of row {r}");
+            assert_eq!(row_at(top + ROW_H - 1, ROWS), Some(r), "bottom edge of row {r}");
         }
-        assert_eq!(row_at(TOP - 1), None, "above the list");
-        assert_eq!(row_at(TOP + ROW_H * ROWS as i32), None, "below the list");
+        assert_eq!(row_at(TOP - 1, ROWS), None, "above the list");
+        assert_eq!(row_at(TOP + ROW_H * ROWS as i32, ROWS), None, "below the list");
     }
 
-    /// Source Direct is the control DOING the overriding, so it must never be dimmed — greying it
-    /// out would leave the user looking at the one switch that undoes the state, drawn as if it
-    /// were inert.
+    /// An upstream mode dims every effect row; the two hardware rows stay live.
     #[test]
-    fn source_direct_never_dims_itself() {
+    fn an_override_dims_the_effects_and_not_the_hardware_rows() {
         let a = Advanced {
-            overridden_by: Some("Source Direct"),
+            overridden_by: Some("Direct mode"),
             ..sample()
         };
-        assert!(!dimmed(&a, ROW_SOURCE_DIRECT));
-        for r in 1..ROWS {
+        for r in 0..ROWS {
             if r == ROW_HP_AMP || r == ROW_DAC_EQ {
                 continue;
             }

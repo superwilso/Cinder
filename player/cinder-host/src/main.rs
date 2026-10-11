@@ -271,9 +271,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         // Bluetooth is live in these previews (the path ends in BT·LDAC), so the Profile row says so.
         profile_map: [0, 0, 1],
         output: cinder_ui::profile::Output::Bluetooth,
+        more: false,
+        dc_gone: false,
     };
-    // The Balance row and Advanced are below the fold since the ENHANCE / SPACE / LEVEL grouping.
-    let snd_end = sound::max_scroll();
+    // Folded, the everyday rows fit the glass; this is 0 unless a text size pushes them past it.
+    let snd_end = sound::max_scroll(false);
     let bt = Bt {
         on: true,
         connected: Some("WH-1000XM5"),
@@ -1236,6 +1238,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("sound", &|c: &mut Canvas| {
                 sound::render(c, &theme, &fonts, &snd, 0, 0, 0)
+            }),
+            // More effects unfolded, scrolled to its end: the rows the fold hides.
+            ("sound_more", &|c: &mut Canvas| {
+                let s = Sound { more: true, ..snd };
+                sound::render(c, &theme, &fonts, &s, sound::ROW_MORE, 0, sound::max_scroll(true))
             }),
             ("sound_setup_b", &|c: &mut Canvas| {
                 sound::render(c, &theme, &fonts, &snd, 5, 1, 0)

@@ -463,6 +463,10 @@ int  cinder_get_adv_flags(void);
 /* DSEE HX Custom mode 0..=4, and Vinylizer character 0..=3. */
 int  cinder_get_dsee_mode(void);
 int  cinder_get_vinyl_type(void);
+/* Clear Bass: gain for the six-band EQ's band 0, 0 (off) to 10. Reads 0 until the shell has said
+ * the six-band is in this player's chain (Walkman One needs cinder-chain.sh; RE_clear_bass.md). */
+int  cinder_get_clear_bass(void);
+void cinder_set_clear_bass_available(int on);
 /* Tone Control band gains, RAW HALF-DECIBELS (+-20 = +-10 dB), Sony order BASS/MIDDLE/TREBLE.
  * Writes up to 3 bytes into `out` and returns how many. Past +-20 the sound service ZEROES the
  * band instead of clamping it, so never widen this range without re-measuring. */

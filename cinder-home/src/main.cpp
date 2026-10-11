@@ -2307,7 +2307,31 @@ static void apply_balance(int pos) {
     clog_(m);
 }
 
+// Is Sony's six-band EQ (Clear Bass) in this player's effect chain? On Walkman One 3.02 it is
+// there only after cinder-chain.sh has pointed one chain entry at it: one byte, 0x8e at 0x6f918 of
+// a 3306868-byte library (analysis/RE_clear_bass.md 6.3). Anything else reads as "no", and the
+// Clear Bass row is then never drawn.
+static bool clear_bass_in_chain() {
+    static int known = -1;
+    if (known < 0) {
+        known = 0;
+        struct stat st;
+        const char* lib = "/system/vendor/sony/lib/libSoundServiceFw.so";
+        int fd = ::open(lib, O_RDONLY | O_CLOEXEC);
+        unsigned char b = 0;
+        if (fd >= 0) {
+            if (::fstat(fd, &st) == 0 && st.st_size == 3306868 && ::pread(fd, &b, 1, 0x6f918) == 1 && b == 0x8e)
+                known = 1;
+            ::close(fd);
+        }
+        clog_(known ? "sound: Clear Bass available (six-band EQ is in the chain)"
+                    : "sound: Clear Bass not available on this sound library");
+    }
+    return known == 1;
+}
+
 void apply_sound_fn() {
+    cinder_set_clear_bass_available(clear_bass_in_chain());
     // Slot numbers are local to this function and only have to be unique; see fx_dirty's note for
     // why the calls are skipped at all. Order is unchanged — only the "has it moved" guard is new.
     enum { S_DSEE, S_VINYL, S_VPT, S_VPTMODE, S_DC, S_DCTYPE, S_CLEARPH, S_DSEEAI, S_DSEECUST,
@@ -2362,7 +2386,20 @@ void apply_sound_fn() {
     // path, and a cached selector would keep quietly agreeing that everything was fine. That is the
     // exact bug this whole selector fix exists to kill; re-introducing it through a cache would be
     // a poor trade for ~3 ms on an apply that already only runs when something changed.
-    cinder_effects_set_tone_system(((af >> 4) & 1) ? CINDER_TONE_SYS_TONE : CINDER_TONE_SYS_EQ10);
+    // Clear Bass is band 0 of the six-band's Custom 1, and the six-band is a THIRD alternative:
+    // measured 2026-10-11, with the selector on it a 10-band change does nothing at the jack, and
+    // with the selector on the 10-band Clear Bass does nothing. So a level above 0 takes the
+    // selector, and 0 gives it back. Band 0 is only written back to 0 after this process raised
+    // it, so a player that never used the row keeps whatever the stock UI stored there.
+    const int cb = cinder_get_clear_bass();
+    static int cb_sent = 0;
+    if (cb > 0 || cb_sent > 0) {
+        if (cb > 0) { cinder_effects_set_eq6(1); cinder_effects_set_eq6_preset(9); }
+        cinder_effects_set_eq6_band(0, cb);
+        cb_sent = cb;
+    }
+    cinder_effects_set_tone_system(cb > 0 ? CINDER_TONE_SYS_EQ6
+                                   : ((af >> 4) & 1) ? CINDER_TONE_SYS_TONE : CINDER_TONE_SYS_EQ10);
     // Sent unconditionally: the device read back Vinylizer type=7, which is not a member of the
     // four-value enum at all, because nothing had ever set it.
     if (fx_dirty(S_VINYLTYPE, cinder_get_vinyl_type())) cinder_effects_set_vinylizer_type(cinder_get_vinyl_type());
@@ -2441,7 +2478,8 @@ static void fx_verify_fn(const char* why) {
     chk("dseemode",   cinder_get_dsee_mode(), cinder_effects_get_dsee_hx_mode());
     chk("tone",       (af >> 4) & 1, cinder_effects_is_tone_on());
     chk("vinyltype",  cinder_get_vinyl_type(), cinder_effects_get_vinylizer_type());
-    chk("eqsel",      ((af >> 4) & 1) ? CINDER_TONE_SYS_TONE : CINDER_TONE_SYS_EQ10,
+    chk("eqsel",      cinder_get_clear_bass() > 0 ? CINDER_TONE_SYS_EQ6
+                      : ((af >> 4) & 1) ? CINDER_TONE_SYS_TONE : CINDER_TONE_SYS_EQ10,
                       cinder_effects_get_select_using_eq());
     chk("bteffect",   1, cinder_effects_is_bt_effect_on());
     {

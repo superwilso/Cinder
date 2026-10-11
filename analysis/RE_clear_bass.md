@@ -223,3 +223,42 @@ attenuation ahead of it, which is what Clear Bass's limiter avoids.
 | outputs | jack and Bluetooth | jack only |
 | CPU | the whole software chain runs | none |
 | risk | a patched system library | none new: DAC EQ is shipped |
+
+### 6.5 Trial on the owner's player, 2026-10-11: it works
+
+`cinder-home/deploy/cinder-chain.sh set clearbass` (the `dcphaselinear` entry), one reboot. The
+service started and printed `… eqtone alc eq6band vinylizer f2i`. Jack into the PC microphone
+input, the 29 s pink-noise track on repeat, Source direct OFF, on against off folded over a 10 s
+square (`--clearbass 10 50 1 5`; control `--eq10alt 1 20 40 5`):
+
+| run | 35-56 Hz | 56-90 Hz | 90-140 Hz | 140-300 Hz | 300-3000 Hz |
+|---|---|---|---|---|---|
+| control: ten-band band 1 +10 dB | +3.7 | +5.7 | +1.4 | +0.2 | +0.1 |
+| **Clear Bass +10, selector 1** | **+6.9** | **+7.4** | **+4.5** | +0.5 | +0.1 |
+
+Both folds lock to the same phase (1.25 to 1.5 s). With Source direct on the same run reads flat,
+as it must: the chain is skipped. So on Walkman One the missing chain entry was the whole reason,
+and Custom 1's band 0 with selector 1 drives Sony's Clear Bass. Still open: the stock-firmware
+null of section 4 (Source direct was not recorded for that run), the CPU cost with it on, and
+whether selector 1 silences the ten-band EQ.
+
+### 6.6 The Cinder row, same day
+
+Sound ▸ Advanced ▸ Clear Bass (Off, +2 … +10), drawn only when the shell finds the patched byte
+(`clear_bass_in_chain` in `cinder-home/src/main.cpp`). A level above 0 writes Custom 1's band 0 and
+takes the selector to the six-band; Off gives the selector back. Measured through the UI (taps sent
+by `tools/dev_remote.sh`, pink noise, jack into the PC):
+
+| | 35-56 Hz | 56-90 Hz | 90-140 Hz | 140-300 Hz | 300-3000 Hz |
+|---|---|---|---|---|---|
+| +10 against Off | +8.7 | +7.9 | +5.3 | -2.3 | -2.1 |
+
+Off afterwards returned every band to within 0.3 dB of the start. The 2 dB drop above 140 Hz is
+the six-band replacing the ten-band (Sony's headroom, or the ten-band's own curve leaving the
+path); not separated yet.
+
+**The six-band and the ten-band are alternatives.** Under selector 2 Clear Bass +10 measured
+±0.4 dB; under selector 1 a ten-band band at +10 dB measured ±0.3 dB.
+
+Open: the DC Phase Linearizer row on the Sound screen still draws on a patched player and now
+does nothing; the level is one value for every output, not per sound profile; CPU cost unmeasured.

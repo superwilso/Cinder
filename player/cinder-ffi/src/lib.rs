@@ -1089,7 +1089,7 @@ pub(crate) fn write_atomic(
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nbt_on={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nmono={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nbt_on={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nmono={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\nclear_bass={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -1119,6 +1119,7 @@ fn settings_body(r: &Render) -> String {
         r.app.tone_bands().iter().map(|b| b.to_string()).collect::<Vec<_>>().join(","),
         r.app.ui_scale_pct(),
         r.app.setup_idx(),
+        r.app.clear_bass_step(),
     );
     body.push_str(&setup_body(&r.app.setup_inactive()));
     body.push_str(&profiles_body(r.app.profile_map()));
@@ -5840,6 +5841,26 @@ pub unsafe extern "C" fn cinder_fm_report_stations(khz: *const libc::c_int, n: l
     }
 }
 
+/// Clear Bass gain for the six-band's band 0, 0 (off) to 10. Always 0 until the shell has
+/// reported the six-band EQ present with `cinder_set_clear_bass_available`.
+#[no_mangle]
+pub extern "C" fn cinder_get_clear_bass() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.clear_bass() as libc::c_int,
+        None => 0,
+    }
+}
+
+/// The shell's report that this player's sound library has the six-band EQ in its chain.
+#[no_mangle]
+pub extern "C" fn cinder_set_clear_bass_available(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if r.app.set_clear_bass_available(on != 0) {
+            r.dirty = true;
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_get_vinyl_type() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {
@@ -6676,6 +6697,11 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "vinyl_type" => {
                         if let Ok(n) = v.parse::<usize>() {
                             r.app.set_vinyl_type(n);
+                        }
+                    }
+                    "clear_bass" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            r.app.set_clear_bass_step(n);
                         }
                     }
                     // Tone Control bands, RAW half-decibels. Absent in older files = flat, which

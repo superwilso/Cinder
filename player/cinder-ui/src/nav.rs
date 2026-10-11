@@ -1320,6 +1320,10 @@ pub struct App {
     /// had ever set it.
     adv_vinyl_type: usize,
     adv_tone: bool,
+    /// Index into `advanced::CLEAR_BASS`, and whether this player's firmware can run it at all.
+    // ponytail: one value for every output, not per sound profile. Join `SoundSetup` if asked.
+    adv_clear_bass: usize,
+    clear_bass_available: bool,
     /// FM radio state. Frequency in kHz — the unit `SetFrequency` takes, and it validates its own
     /// range, so an out-of-band value is rejected rather than stored.
     fm_khz: i32,
@@ -1376,6 +1380,8 @@ pub struct App {
     profile_apply: bool,
     /// Sound screen scroll offset (px). The grouped list is taller than the glass.
     sound_scroll_px: i32,
+    /// Sound ▸ More effects is unfolded. Not persisted: the screen opens on the everyday rows.
+    sound_more: bool,
     /// Wall-clock epoch (UTC seconds), pushed by the shell about once a second. 0 = never reported,
     /// in which case the Date & time row falls back to the status-bar string rather than showing a
     /// confident 1970. NOT persisted: it is the system clock, not a preference.
@@ -1784,6 +1790,8 @@ impl Default for App {
             adv_dsee_mode: 0,
             adv_vinyl_type: 0,
             adv_tone: false,
+            adv_clear_bass: 0,
+            clear_bass_available: false,
             fm_khz: 97300,
             fm_playing: false,
             fm_stations: [0; crate::fm::PRESETS],
@@ -1811,6 +1819,7 @@ impl Default for App {
             live_output: crate::profile::Output::Jack,
             profile_apply: false,
             sound_scroll_px: 0,
+            sound_more: false,
             clock_epoch: 0,
             clock_fields: [2026, 1, 1, 0, 0],
             clock_sel: 0,
@@ -3651,7 +3660,13 @@ impl App {
                 }
             }
             4 => self.snd_norm = !self.snd_norm,
-            5 => self.snd_clear = !self.snd_clear,
+            // More effects: unfolds or folds the tail of the list. A view change, not a setting.
+            crate::sound::ROW_MORE => {
+                self.sound_more = !self.sound_more;
+                self.sound_scroll_px =
+                    self.sound_scroll_px.min(crate::sound::max_scroll(true));
+                return vec![];
+            }
             // Balance is a slider, not a toggle. Select on it means "back to centre" — the one
             // thing a button can usefully do to a continuous control, and the position a user is
             // most likely to want back.
@@ -3679,16 +3694,29 @@ impl App {
         // looks like it did nothing. Same wording as the row's own dimmed subtitle.
         let bypassed = match self.sound_sel {
             0..=3 if self.adv_source_direct || self.snd_clear => true,
-            4 | 5 if self.adv_source_direct => true,
+            4 if self.adv_source_direct => true,
             _ => false,
         };
         if bypassed {
             self.notify(if self.adv_source_direct {
-                "Saved — off while Source Direct is on"
+                "Saved — off in Direct mode"
             } else {
-                "Saved — off while ClearAudio+ is on"
+                "Saved — off in ClearAudio+ mode"
             });
         }
+        vec![Action::SoundChanged]
+    }
+
+    /// Sound ▸ the Direct / Custom / ClearAudio+ control. The mode is the two flags the service
+    /// already has (Source Direct, ClearAudio+), so nothing new is stored and an older settings
+    /// file reads as the mode it always meant.
+    fn set_sound_mode(&mut self, mode: usize) -> Vec<Action> {
+        use crate::sound::{mode_of, MODE_CLEARAUDIO, MODE_DIRECT};
+        if mode == mode_of(self.adv_source_direct, self.snd_clear) {
+            return vec![];
+        }
+        self.adv_source_direct = mode == MODE_DIRECT;
+        self.snd_clear = mode == MODE_CLEARAUDIO;
         vec![Action::SoundChanged]
     }
 
@@ -3699,7 +3727,6 @@ impl App {
     fn advanced_toggle_row(&mut self) -> Vec<Action> {
         use crate::advanced as adv;
         match self.adv_sel {
-            adv::ROW_SOURCE_DIRECT => self.adv_source_direct = !self.adv_source_direct,
             adv::ROW_CLEAR_PHASE => self.adv_clear_phase = !self.adv_clear_phase,
             adv::ROW_DSEE_AI => self.adv_dsee_ai = !self.adv_dsee_ai,
             adv::ROW_DSEE_CUSTOM => {
@@ -3720,6 +3747,9 @@ impl App {
                 self.adv_vinyl_type = (self.adv_vinyl_type + 1) % adv::VINYL_TYPES.len();
             }
             adv::ROW_TONE => self.adv_tone = !self.adv_tone,
+            adv::ROW_CLEAR_BASS => {
+                self.adv_clear_bass = (self.adv_clear_bass + 1) % adv::CLEAR_BASS.len();
+            }
             adv::ROW_HP_AMP => self.adv_hp_linear = !self.adv_hp_linear,
             // A ROUTE, not a setting — same rule as the Sound screen's "Advanced ›" row: pushing a
             // screen changes nothing about the sound, and emitting SoundChanged here would
@@ -4368,7 +4398,10 @@ impl App {
                     self.snd_balance = crate::sound::BALANCE_CENTRE;
                     return vec![Action::SoundChanged];
                 }
-                if let Some(row) = crate::sound::row_at(y, self.sound_scroll_px) {
+                if let Some(mode) = crate::sound::hit_mode(x, y, self.sound_scroll_px) {
+                    return self.set_sound_mode(mode);
+                }
+                if let Some(row) = crate::sound::row_at(y, self.sound_scroll_px, self.sound_more) {
                     self.sound_sel = row;
                     // On the slider row a tap inside the grab band JUMPS the knob to the finger
                     // (the same gesture as a drag that never moved), while a tap on the label half
@@ -4446,7 +4479,9 @@ impl App {
                 vec![]
             }
             Screen::Advanced => {
-                if let Some(row) = crate::advanced::row_at(y) {
+                if let Some(row) =
+                    crate::advanced::row_at(y, crate::advanced::rows(self.clear_bass_available))
+                {
                     self.adv_sel = row;
                     return self.advanced_toggle_row();
                 }
@@ -6128,7 +6163,7 @@ impl App {
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Sound => {
-                let max = crate::sound::max_scroll();
+                let max = crate::sound::max_scroll(true);
                 self.sound_scroll_px = (self.sound_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Device => {
@@ -6304,7 +6339,7 @@ impl App {
                 _ => false,
             },
             Screen::Sound => {
-                if crate::sound::row_at(y, self.sound_scroll_px) == Some(crate::sound::ROW_BALANCE)
+                if crate::sound::row_at(y, self.sound_scroll_px, self.sound_more) == Some(crate::sound::ROW_BALANCE)
                     && crate::sound::balance_grab(y, self.sound_scroll_px)
                 {
                     self.scrub = Scrub::Balance;
@@ -8372,7 +8407,7 @@ impl App {
                 // The cursor walks the rows in the order they are DRAWN (`sound::ORDER`), which
                 // since the ENHANCE / SPACE / LEVEL grouping is not the order of their ids.
                 Button::Up | Button::Down => {
-                    let order = crate::sound::ORDER;
+                    let order = &crate::sound::ORDER[..crate::sound::shown(self.sound_more)];
                     let at = order.iter().position(|r| *r == self.sound_sel).unwrap_or(0);
                     let to = if b == Button::Up {
                         at.saturating_sub(1)
@@ -8808,6 +8843,8 @@ impl App {
             ),
             Screen::Sound => {
                 let snd = Sound {
+                    more: self.sound_more,
+                    dc_gone: self.clear_bass_available,
                     dsee: self.snd_dsee,
                     vinyl: self.snd_vinyl,
                     vpt: if self.snd_vpt {
@@ -8888,7 +8925,7 @@ impl App {
                     bands: self.tone_bands,
                     on: self.adv_tone,
                     overridden_by: if self.adv_source_direct {
-                        Some("Source Direct")
+                        Some("Direct mode")
                     } else if self.snd_clear {
                         Some("ClearAudio+")
                     } else {
@@ -8922,11 +8959,14 @@ impl App {
                     tone_control: self.adv_tone,
                     hp_linear: self.adv_hp_linear,
                     dac_eq_on: self.dac_eq != [0; crate::dac_eq::BANDS],
+                    clear_bass: self
+                        .clear_bass_available
+                        .then(|| crate::advanced::CLEAR_BASS[self.adv_clear_bass]),
                     // Which upstream control is hiding the rest, if any. Source Direct wins the
                     // naming when both are on: it is the outer bypass, so it is what you would
                     // have to turn off FIRST.
                     overridden_by: if self.adv_source_direct {
-                        Some("Source Direct")
+                        Some("Direct mode")
                     } else if self.snd_clear {
                         Some("ClearAudio+")
                     } else {
@@ -10878,6 +10918,29 @@ impl App {
         self.adv_dsee_mode = m.min(crate::advanced::DSEE_MODES.len() - 1);
     }
 
+    /// Clear Bass gain for the six-band's band 0: 0 (off) to 10, and always 0 where the firmware
+    /// cannot run it, so the shell never selects a tone system that is not in the chain.
+    pub fn clear_bass(&self) -> usize {
+        if self.clear_bass_available {
+            self.adv_clear_bass * 2
+        } else {
+            0
+        }
+    }
+    /// The stored step (an index into `advanced::CLEAR_BASS`), whatever the firmware.
+    pub fn clear_bass_step(&self) -> usize {
+        self.adv_clear_bass
+    }
+    pub fn set_clear_bass_step(&mut self, i: usize) {
+        self.adv_clear_bass = i.min(crate::advanced::CLEAR_BASS.len() - 1);
+    }
+    /// The shell's report of whether the six-band EQ is in the chain. Returns whether it changed.
+    pub fn set_clear_bass_available(&mut self, on: bool) -> bool {
+        let changed = self.clear_bass_available != on;
+        self.clear_bass_available = on;
+        changed
+    }
+
     /// Vinylizer character, 0..=3 — the value for `SetVinylizerType`.
     pub fn vinyl_type(&self) -> usize {
         self.adv_vinyl_type
@@ -12092,6 +12155,31 @@ mod tests {
         }
     }
 
+    /// Clear Bass exists only where the firmware can run it: without the shell's report the row
+    /// is not a tap target and the level reads 0 whatever the settings file held.
+    #[test]
+    fn clear_bass_needs_the_firmware_and_cycles_off_to_ten() {
+        use crate::advanced as adv;
+        let mut app = unlocked();
+        app.set_clear_bass_step(3);
+        assert_eq!(app.clear_bass(), 0, "stored, but not sent to a chain without the six-band");
+        assert_eq!(adv::row_at(adv::TOP + adv::ROW_H * 8 + 1, adv::rows(false)), None);
+
+        assert!(app.set_clear_bass_available(true));
+        assert_eq!(app.clear_bass(), 6);
+        assert_eq!(
+            adv::row_at(adv::TOP + adv::ROW_H * 8 + 1, adv::rows(true)),
+            Some(adv::ROW_CLEAR_BASS)
+        );
+        app.adv_sel = adv::ROW_CLEAR_BASS;
+        let mut seen = vec![];
+        for _ in 0..adv::CLEAR_BASS.len() {
+            assert_eq!(app.advanced_toggle_row(), vec![Action::SoundChanged]);
+            seen.push(app.clear_bass());
+        }
+        assert_eq!(seen, vec![8, 10, 0, 2, 4, 6], "wraps through Off");
+    }
+
     /// Bluetooth auto off is on out of the box (2026-10-04) and the row switches it.
     #[test]
     fn bluetooth_auto_off_is_on_by_default_and_the_row_toggles_it() {
@@ -12471,7 +12559,7 @@ mod tests {
         // The Balance row is below the fold since the ENHANCE / SPACE / LEVEL grouping: scroll to
         // the end, as a finger would, and take every coordinate at that scroll.
         a.stack = vec![Screen::Sound];
-        let sc = sound::max_scroll();
+        let sc = sound::max_scroll(true);
         a.sound_scroll_px = sc;
         let ty = sound::bal_track_y(sc);
         assert!(
@@ -12499,9 +12587,9 @@ mod tests {
         // The grab band is a real touch target, not the 3px track.
         assert!(sound::balance_grab(ty - 20, sc) && sound::balance_grab(ty + 20, sc));
         // ...and it lives inside the Balance row, so it can't steal ClearAudio+'s taps.
-        assert_eq!(sound::row_at(ty, sc), Some(sound::ROW_BALANCE));
+        assert_eq!(sound::row_at(ty, sc, true), Some(sound::ROW_BALANCE));
         assert_eq!(
-            sound::row_at(sound::balance_top(sc) - 1, sc),
+            sound::row_at(sound::balance_top(sc) - 1, sc, true),
             Some(sound::ROW_NORM)
         );
 
@@ -12514,8 +12602,8 @@ mod tests {
         // row (so it reads as belonging to the slider) but clear of the grab band (so resetting
         // cannot be mistaken for the start of a drag).
         let (rx, ry, rw, rh) = sound::balance_reset_rect(sc);
-        assert_eq!(sound::row_at(ry, sc), Some(sound::ROW_BALANCE));
-        assert_eq!(sound::row_at(ry + rh - 1, sc), Some(sound::ROW_BALANCE));
+        assert_eq!(sound::row_at(ry, sc, true), Some(sound::ROW_BALANCE));
+        assert_eq!(sound::row_at(ry + rh - 1, sc, true), Some(sound::ROW_BALANCE));
         for yy in ry..ry + rh {
             assert!(
                 !sound::balance_grab(yy, sc),
@@ -18455,7 +18543,7 @@ mod tests {
     fn mono_is_a_preference_not_part_of_the_ab_setup() {
         let mut a = unlocked();
         a.go(Screen::Sound);
-        let sc = crate::sound::max_scroll();
+        let sc = crate::sound::max_scroll(true);
         a.sound_scroll_px = sc;
         let (mx, my, mw, mh) = crate::sound::balance_mono_rect(sc);
         let (tap_x, tap_y) = (mx + mw / 2, my + mh / 2);
@@ -19076,17 +19164,32 @@ mod tests {
         let acts = a.press(Button::Select);
         assert_eq!(acts, vec![Action::SoundChanged]);
         assert_eq!(a.sound_flags() & 1, 1);
-        // ClearAudio+ is the next row DOWN in ENHANCE (the cursor walks `sound::ORDER`, the order
-        // the rows are drawn in, not the order of their ids) -> bit5 set
+        // The Dynamic Normalizer is the next row DOWN (the cursor walks `sound::ORDER`, the order
+        // the rows are drawn in, not the order of their ids) -> bit4 set
         a.press(Button::Down);
-        assert_eq!(a.sound_sel, crate::sound::ROW_CLEAR);
+        assert_eq!(a.sound_sel, crate::sound::ROW_NORM);
         a.press(Button::Select);
+        assert_eq!(a.sound_flags() & (1 << 4), 1 << 4);
+        // ClearAudio+ is a segment of the mode control now -> bit5 set, and Direct clears it.
+        let (x, y, w, h) = crate::sound::mode_rect(crate::sound::MODE_CLEARAUDIO, 0);
+        assert_eq!(a.tap(x + w / 2, y + h / 2), vec![Action::SoundChanged]);
         assert_eq!(a.sound_flags() & (1 << 5), 1 << 5);
-        // The cursor stops at both ends of the drawn order.
+        assert!(a.tap(x + w / 2, y + h / 2).is_empty(), "the live mode is a no-op");
+        let (x, y, w, h) = crate::sound::mode_rect(crate::sound::MODE_DIRECT, 0);
+        a.tap(x + w / 2, y + h / 2);
+        assert_eq!(a.sound_flags() & (1 << 5), 0);
+        assert_eq!(a.adv_flags() & 1, 1, "Direct is Source Direct");
+        // The cursor stops at both ends of the drawn order: folded, that is More effects…
         for _ in 0..crate::sound::ROWS + 2 {
             a.press(Button::Up);
         }
         assert_eq!(a.sound_sel, crate::sound::ROW_PROFILE);
+        for _ in 0..crate::sound::ROWS + 2 {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.sound_sel, crate::sound::ROW_MORE);
+        // …and Select on it unfolds the rest, so the last row is Advanced.
+        assert!(a.press(Button::Select).is_empty(), "a view change, not a sound change");
         for _ in 0..crate::sound::ROWS + 2 {
             a.press(Button::Down);
         }
@@ -19331,8 +19434,11 @@ mod tests {
     fn the_sound_list_scrolls_and_taps_follow_it() {
         let mut a = unlocked();
         a.go(Screen::Sound);
+        // Advanced is under More effects: unfold it the way a finger does.
+        a.tap(240, crate::sound::row_top(crate::sound::ROW_MORE, 0) + 20);
+        assert_eq!(a.current(), Screen::Sound, "unfolding is not a navigation");
         a.scroll_px(10_000);
-        assert_eq!(a.sound_scroll_px, crate::sound::max_scroll());
+        assert_eq!(a.sound_scroll_px, crate::sound::max_scroll(true));
         let y = crate::sound::row_top(crate::sound::ROW_ADVANCED, a.sound_scroll_px) + 20;
         a.tap(240, y);
         assert_eq!(a.current(), Screen::Advanced);
