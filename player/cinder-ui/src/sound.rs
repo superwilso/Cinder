@@ -67,7 +67,10 @@ pub fn shown(more: bool) -> usize {
     if more {
         ROWS
     } else {
-        ORDER.iter().position(|&r| r == ROW_MORE).map_or(ROWS, |i| i + 1)
+        ORDER
+            .iter()
+            .position(|&r| r == ROW_MORE)
+            .map_or(ROWS, |i| i + 1)
     }
 }
 
@@ -95,17 +98,34 @@ pub fn mode_of(source_direct: bool, clearaudio: bool) -> usize {
     }
 }
 /// Segment `seg`'s box at scroll `scroll`. SINGLE SOURCE for the render and the hit test.
-pub fn mode_rect(seg: usize, scroll: i32) -> (i32, i32, i32, i32) {
-    let w = (BAL_X1 - BAL_X0 - MODE_GAP * 2) / 3;
-    (BAL_X0 + seg as i32 * (w + MODE_GAP), TOP - scroll + 12, w, MODE_SEG_H)
+///
+/// `n` is how many modes this player has: 3, or 2 where the firmware has no ClearAudio+ (Walkman
+/// One: the service keeps the switch at 0 whatever it is sent, measured 2026-10-11).
+pub fn mode_rect(seg: usize, scroll: i32, n: usize) -> (i32, i32, i32, i32) {
+    let n = n.clamp(2, 3) as i32;
+    let w = (BAL_X1 - BAL_X0 - MODE_GAP * (n - 1)) / n;
+    (
+        BAL_X0 + seg as i32 * (w + MODE_GAP),
+        TOP - scroll + 12,
+        w,
+        MODE_SEG_H,
+    )
+}
+/// How many modes a player with or without ClearAudio+ has.
+pub fn mode_count(clearaudio_ok: bool) -> usize {
+    if clearaudio_ok {
+        3
+    } else {
+        2
+    }
 }
 /// Which segment a tap lands on. The band is the full height of the segments and splits the gaps.
-pub fn hit_mode(x: i32, y: i32, scroll: i32) -> Option<usize> {
-    let (_, y0, w, h) = mode_rect(0, scroll);
+pub fn hit_mode(x: i32, y: i32, scroll: i32, n: usize) -> Option<usize> {
+    let (_, y0, w, h) = mode_rect(0, scroll, n);
     if y < TOP || !(y0 - 6..y0 + h + 6).contains(&y) || !(BAL_X0..=BAL_X1).contains(&x) {
         return None;
     }
-    Some((((x - BAL_X0) / (w + MODE_GAP)) as usize).min(2))
+    Some((((x - BAL_X0) / (w + MODE_GAP)) as usize).min(n.clamp(2, 3) - 1))
 }
 
 /// L/R balance, 0..=100 with 50 = centre — a continuous drag slider, not the 7 discrete stops it
@@ -211,10 +231,12 @@ pub fn row_at(y: i32, scroll: i32, more: bool) -> Option<usize> {
     if y < TOP {
         return None;
     }
-    parts(scroll, more).into_iter().find_map(|(p, top)| match p {
-        Part::Row(r) if (top..top + part_h(p)).contains(&y) => Some(r),
-        _ => None,
-    })
+    parts(scroll, more)
+        .into_iter()
+        .find_map(|(p, top)| match p {
+            Part::Row(r) if (top..top + part_h(p)).contains(&y) => Some(r),
+            _ => None,
+        })
 }
 
 /// Top edge of the Balance row. Everything below it is slider.
@@ -393,6 +415,8 @@ pub struct Sound {
     pub output: crate::profile::Output,
     /// "More effects" is unfolded.
     pub more: bool,
+    /// This player's firmware has ClearAudio+. Without it the mode control has two segments.
+    pub clearaudio_ok: bool,
     /// The DC Phase Linearizer is not in this player's effect chain: Clear Bass was given its
     /// place (`cinder-chain.sh`), so the row says so instead of taking taps that do nothing.
     pub dc_gone: bool,
@@ -909,8 +933,9 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
 /// saying what the selected mode does to everything below.
 fn mode_part(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, scroll: i32, y: i32) {
     let mode = mode_of(s.source_direct, s.clearaudio);
-    for (i, label) in MODES.iter().enumerate() {
-        let (sx, sy, sw, sh) = mode_rect(i, scroll);
+    let n = mode_count(s.clearaudio_ok);
+    for (i, label) in MODES.iter().take(n).enumerate() {
+        let (sx, sy, sw, sh) = mode_rect(i, scroll, n);
         let on = i == mode;
         if on {
             fill_rect(c, sx, sy, sw, sh, t.acc);
@@ -924,7 +949,14 @@ fn mode_part(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, scroll: i32, y: 
             0.0,
         );
         let fitted = crate::widgets::fit(f, label, &st, (sw - 12) as f32);
-        center(c, f, (sx + sw / 2) as f32, (sy + sh / 2 + 5) as f32, &fitted, &st);
+        center(
+            c,
+            f,
+            (sx + sw / 2) as f32,
+            (sy + sh / 2 + 5) as f32,
+            &fitted,
+            &st,
+        );
     }
     let what = match mode {
         MODE_DIRECT => "No effects. The shortest path to the output.",
@@ -932,7 +964,7 @@ fn mode_part(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, scroll: i32, y: 
         _ => "Your equalizer and effects.",
     };
     let ds = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
-    let (_, sy, _, sh) = mode_rect(0, scroll);
+    let (_, sy, _, sh) = mode_rect(0, scroll, n);
     text::draw(
         c,
         f,
@@ -1125,10 +1157,21 @@ mod tests {
             );
         }
         // …and both are inside the Balance row, so `row_at` agrees they belong to it.
-        assert_eq!(row_at(my + mh / 2, max_scroll(true), true), Some(ROW_BALANCE));
+        assert_eq!(
+            row_at(my + mh / 2, max_scroll(true), true),
+            Some(ROW_BALANCE)
+        );
         // The gap between them belongs to neither.
-        assert!(!hit_balance_mono(mx + mw + 4, my + mh / 2, max_scroll(true)));
-        assert!(!hit_balance_reset(mx + mw + 4, my + mh / 2, max_scroll(true)));
+        assert!(!hit_balance_mono(
+            mx + mw + 4,
+            my + mh / 2,
+            max_scroll(true)
+        ));
+        assert!(!hit_balance_reset(
+            mx + mw + 4,
+            my + mh / 2,
+            max_scroll(true)
+        ));
     }
 
     /// The buttons sit ABOVE the slider's grab band, so pressing one cannot also move the knob.
@@ -1164,6 +1207,7 @@ mod tests {
             profile_map: [0; 3],
             output: crate::profile::Output::Jack,
             more: true,
+            clearaudio_ok: true,
             dc_gone: false,
         }
     }
@@ -1203,9 +1247,17 @@ mod tests {
                 }
                 match p {
                     Part::Row(r) => {
-                        assert_eq!(row_at(mid, scroll, true), Some(r), "row {r} at scroll {scroll}")
+                        assert_eq!(
+                            row_at(mid, scroll, true),
+                            Some(r),
+                            "row {r} at scroll {scroll}"
+                        )
                     }
-                    Part::Mode => assert_eq!(row_at(mid, scroll, true), None, "the mode control is not a row"),
+                    Part::Mode => assert_eq!(
+                        row_at(mid, scroll, true),
+                        None,
+                        "the mode control is not a row"
+                    ),
                     Part::Label(l) => {
                         assert_eq!(row_at(mid, scroll, true), None, "label {l} is not a target")
                     }
@@ -1286,9 +1338,7 @@ mod tests {
             source_direct: true,
             ..loud()
         };
-        for r in [
-            ROW_EQ, ROW_DSEE, ROW_VPT, ROW_DC, ROW_VINYL, ROW_NORM,
-        ] {
+        for r in [ROW_EQ, ROW_DSEE, ROW_VPT, ROW_DC, ROW_VINYL, ROW_NORM] {
             assert!(
                 row_text(&sd, r, 0).dim,
                 "row {r} is bypassed by Source Direct"
@@ -1443,10 +1493,21 @@ mod tests {
         let last = |more| parts(0, more).last().map(|(p, _)| *p);
         assert_eq!(last(false), Some(Part::Row(ROW_MORE)));
         assert_eq!(last(true), Some(Part::Row(ROW_ADVANCED)));
-        assert_eq!(max_scroll(false), 0, "the everyday rows fit the glass without scrolling");
+        assert_eq!(
+            max_scroll(false),
+            0,
+            "the everyday rows fit the glass without scrolling"
+        );
         let below = row_top(ROW_MORE, 0) + ROW_H + 10;
-        assert_eq!(row_at(below, 0, false), None, "nothing under More effects while folded");
-        assert!(parts(0, false).iter().zip(parts(0, true)).all(|(a, b)| *a == b));
+        assert_eq!(
+            row_at(below, 0, false),
+            None,
+            "nothing under More effects while folded"
+        );
+        assert!(parts(0, false)
+            .iter()
+            .zip(parts(0, true))
+            .all(|(a, b)| *a == b));
     }
 
     /// The mode control: every segment is hit across its own box, and the two flags map to the
@@ -1454,14 +1515,24 @@ mod tests {
     #[test]
     fn the_mode_control_hits_each_segment_and_names_the_mode() {
         for seg in 0..MODES.len() {
-            let (x, y, w, h) = mode_rect(seg, 0);
+            let (x, y, w, h) = mode_rect(seg, 0, 3);
             for px in [x, x + w / 2, x + w - 1] {
-                assert_eq!(hit_mode(px, y + h / 2, 0), Some(seg), "segment {seg} at x={px}");
+                assert_eq!(
+                    hit_mode(px, y + h / 2, 0, 3),
+                    Some(seg),
+                    "segment {seg} at x={px}"
+                );
             }
             assert_eq!(row_at(y + h / 2, 0, true), None, "a segment is not a row");
         }
-        let (_, y, _, h) = mode_rect(0, 0);
-        assert_eq!(hit_mode(240, y + h + 20, 0), None, "the caption is not a target");
+        let (_, y, _, h) = mode_rect(0, 0, 3);
+        assert_eq!(
+            hit_mode(240, y + h + 20, 0, 3),
+            None,
+            "the caption is not a target"
+        );
+        // Without ClearAudio+ there are two segments and the right half of the row is Custom.
+        assert_eq!(hit_mode(BAL_X1 - 4, y + h / 2, 0, 2), Some(MODE_CUSTOM));
         assert_eq!(mode_of(false, false), MODE_CUSTOM);
         assert_eq!(mode_of(false, true), MODE_CLEARAUDIO);
         assert_eq!(mode_of(true, true), MODE_DIRECT);

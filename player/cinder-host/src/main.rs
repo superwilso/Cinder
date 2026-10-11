@@ -272,6 +272,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         profile_map: [0, 0, 1],
         output: cinder_ui::profile::Output::Bluetooth,
         more: false,
+        clearaudio_ok: true,
         dc_gone: false,
     };
     // Folded, the everyday rows fit the glass; this is 0 unless a text size pushes them past it.
@@ -1242,7 +1243,15 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // More effects unfolded, scrolled to its end: the rows the fold hides.
             ("sound_more", &|c: &mut Canvas| {
                 let s = Sound { more: true, ..snd };
-                sound::render(c, &theme, &fonts, &s, sound::ROW_MORE, 0, sound::max_scroll(true))
+                sound::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &s,
+                    sound::ROW_MORE,
+                    0,
+                    sound::max_scroll(true),
+                )
             }),
             ("sound_setup_b", &|c: &mut Canvas| {
                 sound::render(c, &theme, &fonts, &snd, 5, 1, 0)

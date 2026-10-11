@@ -1382,6 +1382,8 @@ pub struct App {
     sound_scroll_px: i32,
     /// Sound ▸ More effects is unfolded. Not persisted: the screen opens on the everyday rows.
     sound_more: bool,
+    /// The firmware has ClearAudio+ (the shell says no after a write that did not take).
+    clearaudio_ok: bool,
     /// Wall-clock epoch (UTC seconds), pushed by the shell about once a second. 0 = never reported,
     /// in which case the Date & time row falls back to the status-bar string rather than showing a
     /// confident 1970. NOT persisted: it is the system clock, not a preference.
@@ -1820,6 +1822,7 @@ impl Default for App {
             profile_apply: false,
             sound_scroll_px: 0,
             sound_more: false,
+            clearaudio_ok: true,
             clock_epoch: 0,
             clock_fields: [2026, 1, 1, 0, 0],
             clock_sel: 0,
@@ -3663,8 +3666,7 @@ impl App {
             // More effects: unfolds or folds the tail of the list. A view change, not a setting.
             crate::sound::ROW_MORE => {
                 self.sound_more = !self.sound_more;
-                self.sound_scroll_px =
-                    self.sound_scroll_px.min(crate::sound::max_scroll(true));
+                self.sound_scroll_px = self.sound_scroll_px.min(crate::sound::max_scroll(true));
                 return vec![];
             }
             // Balance is a slider, not a toggle. Select on it means "back to centre" — the one
@@ -4398,7 +4400,12 @@ impl App {
                     self.snd_balance = crate::sound::BALANCE_CENTRE;
                     return vec![Action::SoundChanged];
                 }
-                if let Some(mode) = crate::sound::hit_mode(x, y, self.sound_scroll_px) {
+                if let Some(mode) = crate::sound::hit_mode(
+                    x,
+                    y,
+                    self.sound_scroll_px,
+                    crate::sound::mode_count(self.clearaudio_ok),
+                ) {
                     return self.set_sound_mode(mode);
                 }
                 if let Some(row) = crate::sound::row_at(y, self.sound_scroll_px, self.sound_more) {
@@ -6339,7 +6346,8 @@ impl App {
                 _ => false,
             },
             Screen::Sound => {
-                if crate::sound::row_at(y, self.sound_scroll_px, self.sound_more) == Some(crate::sound::ROW_BALANCE)
+                if crate::sound::row_at(y, self.sound_scroll_px, self.sound_more)
+                    == Some(crate::sound::ROW_BALANCE)
                     && crate::sound::balance_grab(y, self.sound_scroll_px)
                 {
                     self.scrub = Scrub::Balance;
@@ -8844,6 +8852,7 @@ impl App {
             Screen::Sound => {
                 let snd = Sound {
                     more: self.sound_more,
+                    clearaudio_ok: self.clearaudio_ok,
                     dc_gone: self.clear_bass_available,
                     dsee: self.snd_dsee,
                     vinyl: self.snd_vinyl,
@@ -10941,6 +10950,22 @@ impl App {
         changed
     }
 
+    /// The shell's report that the sound service kept ClearAudio+ off when asked to switch it on:
+    /// the firmware has none. The segment goes, and a stored "on" stops claiming the mode in
+    /// BOTH setups, so the path strip and the dimming stop describing a mode that is not running.
+    /// Returns whether anything changed.
+    pub fn set_clearaudio_supported(&mut self, ok: bool) -> bool {
+        if self.clearaudio_ok == ok {
+            return false;
+        }
+        self.clearaudio_ok = ok;
+        if !ok {
+            self.snd_clear = false;
+            self.setup_other.clear = false;
+        }
+        true
+    }
+
     /// Vinylizer character, 0..=3 — the value for `SetVinylizerType`.
     pub fn vinyl_type(&self) -> usize {
         self.adv_vinyl_type
@@ -12162,8 +12187,15 @@ mod tests {
         use crate::advanced as adv;
         let mut app = unlocked();
         app.set_clear_bass_step(3);
-        assert_eq!(app.clear_bass(), 0, "stored, but not sent to a chain without the six-band");
-        assert_eq!(adv::row_at(adv::TOP + adv::ROW_H * 8 + 1, adv::rows(false)), None);
+        assert_eq!(
+            app.clear_bass(),
+            0,
+            "stored, but not sent to a chain without the six-band"
+        );
+        assert_eq!(
+            adv::row_at(adv::TOP + adv::ROW_H * 8 + 1, adv::rows(false)),
+            None
+        );
 
         assert!(app.set_clear_bass_available(true));
         assert_eq!(app.clear_bass(), 6);
@@ -12603,7 +12635,10 @@ mod tests {
         // cannot be mistaken for the start of a drag).
         let (rx, ry, rw, rh) = sound::balance_reset_rect(sc);
         assert_eq!(sound::row_at(ry, sc, true), Some(sound::ROW_BALANCE));
-        assert_eq!(sound::row_at(ry + rh - 1, sc, true), Some(sound::ROW_BALANCE));
+        assert_eq!(
+            sound::row_at(ry + rh - 1, sc, true),
+            Some(sound::ROW_BALANCE)
+        );
         for yy in ry..ry + rh {
             assert!(
                 !sound::balance_grab(yy, sc),
@@ -19171,11 +19206,14 @@ mod tests {
         a.press(Button::Select);
         assert_eq!(a.sound_flags() & (1 << 4), 1 << 4);
         // ClearAudio+ is a segment of the mode control now -> bit5 set, and Direct clears it.
-        let (x, y, w, h) = crate::sound::mode_rect(crate::sound::MODE_CLEARAUDIO, 0);
+        let (x, y, w, h) = crate::sound::mode_rect(crate::sound::MODE_CLEARAUDIO, 0, 3);
         assert_eq!(a.tap(x + w / 2, y + h / 2), vec![Action::SoundChanged]);
         assert_eq!(a.sound_flags() & (1 << 5), 1 << 5);
-        assert!(a.tap(x + w / 2, y + h / 2).is_empty(), "the live mode is a no-op");
-        let (x, y, w, h) = crate::sound::mode_rect(crate::sound::MODE_DIRECT, 0);
+        assert!(
+            a.tap(x + w / 2, y + h / 2).is_empty(),
+            "the live mode is a no-op"
+        );
+        let (x, y, w, h) = crate::sound::mode_rect(crate::sound::MODE_DIRECT, 0, 3);
         a.tap(x + w / 2, y + h / 2);
         assert_eq!(a.sound_flags() & (1 << 5), 0);
         assert_eq!(a.adv_flags() & 1, 1, "Direct is Source Direct");
@@ -19189,7 +19227,10 @@ mod tests {
         }
         assert_eq!(a.sound_sel, crate::sound::ROW_MORE);
         // …and Select on it unfolds the rest, so the last row is Advanced.
-        assert!(a.press(Button::Select).is_empty(), "a view change, not a sound change");
+        assert!(
+            a.press(Button::Select).is_empty(),
+            "a view change, not a sound change"
+        );
         for _ in 0..crate::sound::ROWS + 2 {
             a.press(Button::Down);
         }

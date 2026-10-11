@@ -467,6 +467,9 @@ int  cinder_get_vinyl_type(void);
  * the six-band is in this player's chain (Walkman One needs cinder-chain.sh; RE_clear_bass.md). */
 int  cinder_get_clear_bass(void);
 void cinder_set_clear_bass_available(int on);
+/* Call with 0 when the sound service kept ClearAudio+ off after being asked to switch it on: the
+ * firmware has none (Walkman One), and the Sound screen's mode control drops that segment. */
+void cinder_set_clearaudio_supported(int on);
 /* Tone Control band gains, RAW HALF-DECIBELS (+-20 = +-10 dB), Sony order BASS/MIDDLE/TREBLE.
  * Writes up to 3 bytes into `out` and returns how many. Past +-20 the sound service ZEROES the
  * band instead of clamping it, so never widen this range without re-measuring. */

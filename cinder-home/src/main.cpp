@@ -2405,7 +2405,15 @@ void apply_sound_fn() {
     if (fx_dirty(S_VINYLTYPE, cinder_get_vinyl_type())) cinder_effects_set_vinylizer_type(cinder_get_vinyl_type());
     if (fx_dirty(S_SRCDIRECT, (af >> 0) & 1)) cinder_effects_set_source_direct((af >> 0) & 1);
     if (fx_dirty(S_NORM, (f >> 4) & 1)) cinder_effects_set_dynamic_normalizer((f >> 4) & 1);
-    if (fx_dirty(S_CLEARAUDIO, (f >> 5) & 1)) cinder_effects_set_clearaudio_plus((f >> 5) & 1);
+    if (fx_dirty(S_CLEARAUDIO, (f >> 5) & 1)) {
+        cinder_effects_set_clearaudio_plus((f >> 5) & 1);
+        // Walkman One's firmware has no ClearAudio+ (DmpFeature says 0) and its service keeps the
+        // switch at 0 whatever it is sent (read back 2026-10-11). Tell the UI, which drops the mode.
+        if (((f >> 5) & 1) && cinder_effects_is_clearaudio_on() == 0) {
+            clog_("sound: ClearAudio+ did not take; this firmware has none, the mode is withdrawn");
+            cinder_set_clearaudio_supported(0);
+        }
+    }
     // …AND LET THE WHOLE CHAIN REACH BLUETOOTH. Project goal #7, and until now a hole: the shim has
     // exported this since the effects were first wired and NOTHING EVER CALLED IT, so over A2DP the
     // EQ, DSEE HX, VPT and Vinyl were applied or bypassed according to whatever the stock player had

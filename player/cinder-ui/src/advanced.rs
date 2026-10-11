@@ -447,10 +447,18 @@ mod tests {
             let top = TOP + ROW_H * r as i32;
             assert_eq!(row_at(top, ROWS), Some(r), "top edge of row {r}");
             assert_eq!(row_at(top + ROW_H / 2, ROWS), Some(r), "middle of row {r}");
-            assert_eq!(row_at(top + ROW_H - 1, ROWS), Some(r), "bottom edge of row {r}");
+            assert_eq!(
+                row_at(top + ROW_H - 1, ROWS),
+                Some(r),
+                "bottom edge of row {r}"
+            );
         }
         assert_eq!(row_at(TOP - 1, ROWS), None, "above the list");
-        assert_eq!(row_at(TOP + ROW_H * ROWS as i32, ROWS), None, "below the list");
+        assert_eq!(
+            row_at(TOP + ROW_H * ROWS as i32, ROWS),
+            None,
+            "below the list"
+        );
     }
 
     /// An upstream mode dims every effect row; the two hardware rows stay live.

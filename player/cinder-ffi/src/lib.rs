@@ -5851,6 +5851,16 @@ pub extern "C" fn cinder_get_clear_bass() -> libc::c_int {
     }
 }
 
+/// The shell's report that a ClearAudio+ write did not take: this firmware has none.
+#[no_mangle]
+pub extern "C" fn cinder_set_clearaudio_supported(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if r.app.set_clearaudio_supported(on != 0) {
+            r.dirty = true;
+        }
+    }
+}
+
 /// The shell's report that this player's sound library has the six-band EQ in its chain.
 #[no_mangle]
 pub extern "C" fn cinder_set_clear_bass_available(on: libc::c_int) {
