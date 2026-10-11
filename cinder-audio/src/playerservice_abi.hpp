@@ -177,6 +177,10 @@ template <class T> class Node {
 public:
     ~Node();
     Node& operator=(Node&&);     // exported @0xa6cd; used only inside EditNode, under Sony's lock
+    // operator= copies the source's parent and id but leaves the moved children pointing at the
+    // SOURCE node (measured 2026-10-11: SIGSEGV in GetPathInternal walking parent links to null).
+    // ConnectToParent @0xb38d stores the parent and re-links every descendant to its real parent.
+    void ConnectToParent(Node*);
 private:
     Node() /* never constructed by us */;
     unsigned char _reserved[0x20];

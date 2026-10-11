@@ -444,8 +444,20 @@ int cinder_audio_edit_sequence(const char* const* uris, int count, int start) {
     std::unique_ptr<psu::Node<psu::UriInfo>> node = ju.ConvJsonStringToNode(json);
     if (!node) return -2;
     psu::Node<psu::UriInfo>* fresh = node.get();
+    // EditNode finds the current track again BY NODE ID once the callback returns, and a tree built
+    // from JSON has all-new ids. So the playing track's id is carried over to its new node, inside
+    // the lock, and the sequence never points anywhere else. Layout from the disassembly: a node is
+    // 32 bytes, +0 holds a pointer to its child vector (begin at +0), +0xc is the id.
+    unsigned int cur_id = 0;
+    g_nts->GetCurrentIndexes(nullptr, nullptr, &cur_id);
     g_nts->EditNode(std::function<int(psu::Node<psu::UriInfo>&, int)>(
-        [fresh](psu::Node<psu::UriInfo>& root, int) { root = std::move(*fresh); return 0; }));
+        [fresh, start, cur_id](psu::Node<psu::UriInfo>& root, int) {
+            root = std::move(*fresh);
+            root.ConnectToParent(nullptr);
+            char* kids = **reinterpret_cast<char***>(&root);
+            std::memcpy(kids + (std::size_t)start * 32 + 0xc, &cur_id, sizeof cur_id);
+            return 0;
+        }));
     int item = -1;
     g_nts->GetCurrentIndexes(&item, nullptr, nullptr);
     if (item != start) g_nts->MoveTo(start);

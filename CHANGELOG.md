@@ -37,6 +37,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Adding to the queue no longer interrupts the music.** A queue change used to hand Sony's
+  player a whole new track list, which restarts the track, so Cinder held the change until the
+  next song began and the first second of that song stuttered. Sony's player asks Cinder for the
+  next track when it needs one, so the list is now changed in place and nothing restarts. *Device-
+  verified on one Walkman One player on the headphone jack: no dropout in a recording across the
+  change, and the queued song played next. Not checked on Bluetooth, with shuffle on, or in the
+  last two seconds of a track.* Details: [`analysis/RE_queue_edit.md`](analysis/RE_queue_edit.md).
 - **Dev builds: adb survives a start with the cable in.** The USB port was switched off and on
   2 ms apart while adding adb, so the computer never saw a disconnect and stopped talking to the
   player until the cable was re-plugged. It now stays off for one second. *Device-verified: two

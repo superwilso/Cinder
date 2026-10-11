@@ -73,7 +73,7 @@ All are `/system/vendor/sony/bin/hagodaemon <Service>...`, one init service each
 | 6 | WMPortService, KeyService, ConfigurationService (W1), DisplayService | system + caps | surface | the two 10 Hz pollers live here (`docs/NEXT.md` section 5 item 7). WMPortService talks to a dock over `/dev/icx_cradle` and `/dev/ttyMT1` and republishes its keys through `uinput` |
 | 7 | UpdateService | system | surface | |
 | 8 | UsbHostConnectionService, UsbDeviceConnectionService, UsbDeviceAudioPlayerService | system, nice -10 | part | `E_usbdac_ldac/`, `4f_usb_dac_routing.txt` |
-| 9 | MediaStoreService (W1), PlayerService (W1) | system | part | `H_mediastore/`, `G_player_ipc/`, `RE_playerservice_sound.md`, `RE_32bit_flac.md` |
+| 9 | MediaStoreService (W1), PlayerService (W1) | system | part | `H_mediastore/`, `G_player_ipc/`, `RE_playerservice_sound.md`, `RE_32bit_flac.md`, `RE_queue_edit.md` |
 | 10 | OneTrackPlayerService (W1) | system | surface | a one-file player (`GapPlayerImpl.cc`) on the same media framework as PlayerService: `PlayController` with `SetDataSource`, `Prepare`, `Start`, `Pause`, `Stop`, `Reset`, `SetLooping`, `ResetTrackType`, `GetState`. The stock app names it 21 times; Cinder does not use it |
 | 11 | **SoundServiceFw** (W1) | system, nice -15 | part | `RE_sound_service.md` (in progress) |
 | 12 | NcServiceFw (W1) | system + caps | surface | noise cancel; inert without Sony headphones |
