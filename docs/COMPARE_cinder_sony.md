@@ -49,7 +49,9 @@ separated yet.
 | Custom, 10-band equalizer and Dynamic Normalizer on | 10.3 % of one core |
 
 About half of the Custom figure is the 10-band equalizer and its limiter. The DAC EQ (Sound,
-Advanced) does five bands inside the DAC chip for no processor time, on the jack only.
+Advanced) does five bands inside the DAC chip for no processor time, on the jack only. Direct
+mode holds the DAC EQ flat. In Custom with every software effect off, Sony's service skips its
+chain as it does in Direct (read from its code, not measured), and the DAC EQ still applies.
 
 ## What Bluetooth costs while you listen on the jack
 
