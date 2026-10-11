@@ -200,6 +200,31 @@ when its content moves. What is left needs the player:
 9. 09-05 B12, the lit-idle frame rate (~60 wakeups/s while the panel is lit and nothing moves).
    Small next to the backlight; only with a measurement behind it.
 
+11. **Leads from reading the sound service and the kernel's low-power audio path, 2026-10-11**
+   ([`../analysis/RE_sound_service.md`](../analysis/RE_sound_service.md)). Nothing run on the
+   player yet.
+   * **Deep idle under a stream is Sony's design, not an accident.** The jack output library
+     writes `dpidle_state` (`0`, then `mode 1`) when it opens `hw:0,4`, and the kernel's low-power
+     PCM turns deep idle on at stream start in its ultra mode. This is the unexplained halving in
+     item 10. The wake rate is fixed by the driver (a period is at most 174 ms at 16-bit, 87 ms
+     at 32-bit), so what is left is the CPU work per wake.
+   * **The sound service's 6 to 7 % is not the effects** (with every effect off the chain is
+     skipped whole). One suspect is the MQA decoder in the pre-filter stage, on for three source
+     codec types that are not yet named. `tools/ssfw_cost.sh` on a FLAC track settles it with a
+     profile; an MP3 run beside it shows whether the cost follows the codec.
+   * **32-bit output halves the longest sleep.** Source direct sends 32-bit; compare it with the
+     EQ path off the cable (`tools/idle_probe.sh`, which now records the wall clock).
+   * **Every power node any Sony binary names is now listed**
+     ([`../analysis/FIRMWARE_touchpoints.md`](../analysis/FIRMWARE_touchpoints.md)): the jack and
+     USB-DAC output libraries, the USB-DAC player, PowerService and PowerMgr. There is no other
+     power policy in the userland to copy.
+   * **Suspend to RAM is already configured at its deepest** in the kernel image
+     (`slp_cpu_pdn` 1, `slp_infra_pdn` 1, `slp_ck26m_on` 0, no periodic wake). Read the live
+     values once (`/sys/module/*/parameters/slp_*`) in case something raises them at run time.
+   * PlayerService's 100 ms loop is its file read-ahead cache (`DmcWindowCache_write`); the
+     interval is a constructor argument. It does not wake the SoC from deep idle (item 10), so it
+     is not worth a patch.
+
 ## 6. Walkman One — is it all reverse-engineered, and does stock need it?
 
 **Yes, and no.** Every file Walkman One changes is identified and read
