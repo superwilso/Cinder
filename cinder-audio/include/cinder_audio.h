@@ -114,6 +114,11 @@ int  cinder_audio_seek_ms_origin(int origin, int ms);
  * rejected, else the ChangePlayState result. */
 int  cinder_audio_play_tracks(const char* const* uris, int count, int start);
 
+/* Replace the queue around the PLAYING track without reopening the player: no restart, no gap.
+ * uris[start] must be the track that is playing. 0 = applied; otherwise nothing changed and the
+ * caller falls back to cinder_audio_play_tracks. */
+int  cinder_audio_edit_sequence(const char* const* uris, int count, int start);
+
 /* Poll the current track URI into `buf` (NUL-terminated, truncated to cap). Returns the
  * length written, or <0 on error. This is the PlayStatus.uri field (offset +0x6c);
  * playstate / position / duration are NOT yet exposed (PlayStatus layout RE pending) —

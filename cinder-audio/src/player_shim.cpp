@@ -420,6 +420,44 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
     return rr;
 }
 
+// Change the queue WITHOUT restarting the track. SetTrackSequence reopens the player, so a queue
+// edit handed over that way restarts the song (or, at a boundary, the first second of the next
+// one). The service never holds the list: it calls back into OUR NodeTrackSequence for the next
+// track when it needs one, so swapping the tree under Sony's own EditNode lock is enough.
+// `uris[start]` must be the track that is playing. 0 = applied; anything else = nothing changed
+// and the caller should fall back to cinder_audio_play_tracks.
+int cinder_audio_edit_sequence(const char* const* uris, int count, int start) {
+    if (!g_ctrl || !g_nts || !uris || count <= 0 || start < 0 || start >= count) return -1;
+    if (g_last_uris.empty() || g_last_start < 0 || g_last_start >= (int)g_last_uris.size()) return -1;
+    std::string json = "{\"uri\":\"/\",\"format\":-1,\"children\":[";
+    for (int i = 0; i < count; ++i) {
+        if (!uris[i]) return -1;
+        if (i) json += ',';
+        json += "{\"uri\":\"";
+        json_escape_into(json, uris[i]);
+        json += "\",\"format\":";
+        json += std::to_string(psu::psk::FileUtil::GetFormatFromFilename(std::string(uris[i])));
+        json += '}';
+    }
+    json += "]}";
+    psu::NodeJsonUtil<psu::UriInfo, psu::UriInfoPolicy> ju;
+    std::unique_ptr<psu::Node<psu::UriInfo>> node = ju.ConvJsonStringToNode(json);
+    if (!node) return -2;
+    psu::Node<psu::UriInfo>* fresh = node.get();
+    g_nts->EditNode(std::function<int(psu::Node<psu::UriInfo>&, int)>(
+        [fresh](psu::Node<psu::UriInfo>& root, int) { root = std::move(*fresh); return 0; }));
+    int item = -1;
+    g_nts->GetCurrentIndexes(&item, nullptr, nullptr);
+    if (item != start) g_nts->MoveTo(start);
+    int now = -1;
+    g_nts->GetCurrentIndexes(&now, nullptr, nullptr);
+    std::fprintf(stderr, "[cinder-audio] edit in place: n=%d start=%d (sequence said %d, now %d)\n",
+                 count, start, item, now);
+    g_last_uris.assign(uris, uris + count);
+    g_last_start = start;
+    return now == start ? 0 : -3;
+}
+
 int cinder_audio_play(void)  { return change_state(pl::playstate_t::Play); }
 int cinder_audio_pause(void) { return change_state(pl::playstate_t::Pause); }
 

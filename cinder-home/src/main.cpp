@@ -9387,6 +9387,18 @@ static void play_pending_sequence(const char* label, bool restore_position) {
                           : "Can't play a 32-bit FLAC: this player's decoder stops at 24-bit");
     if (kept == 0) return;
     if (start < 0 || start >= kept) start = 0;
+    // A queue edit around the PLAYING track goes in place: Sony's service asks our sequence for the
+    // next track when it needs one, so nothing has to be reopened and the music does not break.
+    // Anything else (a different track at `start`, or the edit refused) takes the full hand-over.
+    if (restore_position) {
+        char cur[512];
+        int cn = cinder_audio_current_uri(cur, sizeof cur);
+        if (cn > 0 && cn < (int)sizeof cur && std::strcmp(cur, ptrs[start]) == 0
+            && cinder_audio_edit_sequence(ptrs, kept, start) == 0) {
+            g_np_poll_now = true;
+            return;
+        }
+    }
     int resume_ms = restore_position ? cinder_play_position_ms() : 0;
     int rc = cinder_audio_play_tracks(ptrs, kept, start);
     if (rc != 0) {

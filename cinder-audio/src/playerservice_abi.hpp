@@ -176,6 +176,7 @@ enum class UpdateReason : int;
 template <class T> class Node {
 public:
     ~Node();
+    Node& operator=(Node&&);     // exported @0xa6cd; used only inside EditNode, under Sony's lock
 private:
     Node() /* never constructed by us */;
     unsigned char _reserved[0x20];
@@ -216,6 +217,13 @@ public:
     // Repeat-one. Non-virtual, exported, and a member of an object WE construct — so this is a
     // direct call, not a vtable reconstruction.
     void SetOneTrackMode(OneTrackMode);
+    // In-place edit of a sequence the service is already pulling from (analysis/RE_queue_edit.md).
+    // EditNode takes the sequence's own recursive mutex, hands the callback the root node, then
+    // finds the current track again by node id. MoveTo and GetCurrentIndexes are local bookkeeping:
+    // neither makes an IPC call.
+    int  EditNode(std::function<int(Node<T>&, int)>);
+    bool MoveTo(int itemIndex);
+    void GetCurrentIndexes(int* item, int* group, unsigned int* id);
 private:
     unsigned char _reserved[0x100];
 };
