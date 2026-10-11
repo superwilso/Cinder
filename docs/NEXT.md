@@ -239,6 +239,14 @@ when its content moves. What is left needs the player:
      a one-byte patch puts `eq6band` back in place of one other filter. It conflicts with the
      09-17 log, which needs the live library's md5 and printed chain first. The no-risk
      alternative is a bass shelf in the codec's own EQ (jack only, no CPU).
+   * **What the software effects cost, measured 2026-10-11** (pink noise, jack, `tools/ssfw_cost.sh`,
+     mode switched by `tools/dev_remote.sh` and confirmed by reading `SourceDirect` back): the
+     sound service's busiest thread is **0.6 % of a core in Direct mode and 10.3 % in Custom**
+     with the 10-band EQ and the Dynamic Normalizer on. The profile puts about half of that in the
+     10-band EQ (`HQEQ_10bandEQ_iir2order_flt` 23 %, its limiter `HQEQ_10bandEQ_alc` 21 %), 12 %
+     in `memset`, and a few per cent in the normalizer. This is the "6 to 7 %" of 10-10. The DAC
+     EQ does five bands in the codec for no CPU, jack only. Not measured: what 10 % of a core
+     costs in hours, and each effect alone.
    * **About 170 wakeups a second during playback on the cable**, by thread: sound service 54
      (one thread 43), the WM-PORT/Key/Configuration process 20 (two threads at exactly 10 Hz, a
      poll), the decoder process 25 (one at 10 Hz, the read-ahead cache), `khubd_poll` 9 (the

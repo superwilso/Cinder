@@ -11,7 +11,9 @@
 # before it is moved into place, and `revert` restores the kept file. Takes effect at the next
 # boot; nothing here restarts the sound service (stopping it reboots the player).
 #
-# USAGE:  cinder-chain.sh status | set clearbass | revert
+# USAGE:  cinder-chain.sh status | set clearbass | set default | revert
+#         (`set default` is `revert` that stays quiet on a library it does not know: the
+#         installer passes its option straight through on every player, Walkman One or not.)
 set -u
 LIB=${CINDER_CHAIN_LIB:-/system/vendor/sony/lib/libSoundServiceFw.so}
 BAK=$LIB.stock
@@ -37,7 +39,13 @@ status)
         *)            echo "chain: UNRECOGNISED library $(md5 "$LIB"); this script will not touch it"; exit 1 ;;
     esac ;;
 set)
-    [ "${2:-}" = clearbass ] || { echo "chain: usage: set clearbass"; exit 2; }
+    if [ "${2:-}" = default ]; then
+        case "$(md5 "$LIB")" in
+            "$MD5_CB") exec sh "$0" revert ;;
+            *) echo "chain: default (nothing to change)"; exit 0 ;;
+        esac
+    fi
+    [ "${2:-}" = clearbass ] || { echo "chain: usage: set clearbass|default"; exit 2; }
     cur=$(md5 "$LIB")
     [ "$cur" = "$MD5_CB" ] && { echo "chain: already set"; exit 0; }
     [ "$cur" = "$MD5_STOCK" ] || { echo "chain: FAIL, library $cur is not Walkman One 3.02; not patching"; exit 1; }
@@ -54,5 +62,5 @@ revert)
     bb cat "$BAK" > "$TMP" && [ "$(md5 "$TMP")" = "$MD5_STOCK" ] || { echo "chain: FAIL, copy did not verify"; bb rm -f "$TMP"; exit 1; }
     place "$TMP" || { echo "chain: FAIL, could not move the original into place"; exit 1; }
     echo "chain: default restored. Reboot to load it." ;;
-*)  echo "usage: cinder-chain.sh status | set clearbass | revert"; exit 2 ;;
+*)  echo "usage: cinder-chain.sh status | set clearbass | set default | revert"; exit 2 ;;
 esac

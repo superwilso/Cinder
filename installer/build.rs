@@ -55,6 +55,9 @@ const FILES: &[(&str, &str, &str, bool)] = &[
         "",
         true,
     ),
+    // Always staged, like the signature switcher: `chain` is an enum, and `default` must be able
+    // to undo an earlier `clearbass`.
+    ("dist/{ch}/cinder-chain.sh", "cinder-chain.sh", "", true),
     // The mono shim (cinder-home/src/cinder-mono.c). Staged only when `mono` is selected; the
     // device installer then puts it in place of Wampy's preloaded library, or skips it when Wampy
     // is not installed.

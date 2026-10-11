@@ -1640,15 +1640,22 @@ void deferred_up() {
     // `functions=mass_storage` (NO adb interface), so adbd ran but the PC never saw an adb device.
     // Fix: COMPOSE adb into the android_usb gadget ourselves (the same sysfs pattern the MSC path
     // uses below): disable, set functions=mass_storage,adb (keep storage so the log/DB stay
-    // reachable), set the MSC+adb composite PID 0B8D, re-enable, THEN start adbd. Safe here because
-    // a dev boot only reaches this code with USB DISCONNECTED at launch (USB-at-launch boots stock),
-    // so no PC is holding the gadget when we bounce it. Still fully guarded + best-effort.
+    // reachable), set the MSC+adb composite PID 0B8D, re-enable, THEN start adbd. Still fully
+    // guarded + best-effort.
     clog_("deferred_up: DEV channel — composing adb into the USB gadget + starting adbd (guarded)");
     run_watchdog_only("deferred_up: enable adb (dev)", 10, []() {   // system(), see above
         std::system(
             "echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null; "
             "echo mass_storage,adb > /sys/class/android_usb/android0/functions 2>/dev/null; "
             "echo 0B8D > /sys/class/android_usb/android0/idProduct 2>/dev/null; "
+            // STAY OFF THE BUS LONG ENOUGH FOR THE HOST TO SEE IT. A cable CAN be in here now (the
+            // owner's cable_escape_off, and the first boot after an install), and with the two
+            // writes 2 ms apart the PC never saw a disconnect: it kept talking to a device that no
+            // longer existed, the gadget was never configured again, and adb was gone until the
+            // cable was pulled and put back. Kernel log 2026-10-11: disable at 23.405 s, functions
+            // re-added at 23.407 s, and no `high-speed config` after it, where the four earlier
+            // bounces of the same boot (0.25 s apart or more) each got one.
+            "sleep 1; "
             "echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null; "
             "setprop ctl.start adbd 2>/dev/null");
         // Verification snapshot ~3 s later, straight into cinderhome.log: service state per init,
@@ -2330,8 +2337,27 @@ static bool clear_bass_in_chain() {
     return known == 1;
 }
 
+// Does this firmware have ClearAudio+? Sony's own answer: `DmpFeature::IsFeaturedClearAudioPlus`,
+// a static that returns a constant compiled into the build (1 on the stock A50, 0 on Walkman One;
+// analysis/RE_dmp_feature.md). Asked once, by dlopen so the Home app gains no DT_NEEDED. Anything
+// that fails reads as "yes": the write-and-read-back check in apply_sound_fn still catches a no.
+static bool clearaudio_featured() {
+    static int known = -1;
+    if (known < 0) {
+        known = 1;
+        if (void* h = dlopen("libDmpFeature.so", RTLD_NOW)) {
+            typedef bool (*fn)();
+            if (fn f = (fn)dlsym(h, "_ZN3pst10dmpfeature10DmpFeature24IsFeaturedClearAudioPlusEv"))
+                known = f() ? 1 : 0;
+        }
+        if (!known) clog_("sound: this firmware has no ClearAudio+; the Sound page offers Direct and Custom");
+    }
+    return known == 1;
+}
+
 void apply_sound_fn() {
     cinder_set_clear_bass_available(clear_bass_in_chain());
+    if (!clearaudio_featured()) cinder_set_clearaudio_supported(0);
     // Slot numbers are local to this function and only have to be unique; see fx_dirty's note for
     // why the calls are skipped at all. Order is unchanged — only the "has it moved" guard is new.
     enum { S_DSEE, S_VINYL, S_VPT, S_VPTMODE, S_DC, S_DCTYPE, S_CLEARPH, S_DSEEAI, S_DSEECUST,

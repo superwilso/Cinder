@@ -54,6 +54,7 @@ SRC_FM=/contents/cinder-fm
 SRC_VOLTABLE=/contents/cinder-voltable
 SRC_BATTERY=/contents/cinder-battery
 SRC_SIGNATURE=/contents/cinder-signature.sh
+SRC_CHAIN=/contents/cinder-chain.sh
 SRC_MONO=/contents/libcinder_mono.so
 SRC_HAGOWRAP=/contents/cinder-hagowrap
 SRC_GUARD=/contents/cinder-guard.sh
@@ -88,6 +89,10 @@ comp_voltable() {  # comp_voltable — only ever echoes a known table keyword
     v="$(comp_raw CINDER_VOLTABLE)"
     case "$v" in stock|wm1a|w1|region) echo "$v" ;; *) echo stock ;; esac
 }
+comp_chain() { # comp_chain — only ever echoes a known chain name
+    v="$(comp_raw CINDER_CHAIN)"
+    case "$v" in default|clearbass) echo "$v" ;; *) echo default ;; esac
+}
 comp_sig() {   # comp_sig — only ever echoes a known variant name
     v="$(comp_raw CINDER_SIGNATURE)"
     case "$v" in stock|pv1|pv2|clock|hw1|hw2) echo "$v" ;; *) echo stock ;; esac
@@ -107,13 +112,14 @@ WANT_PRELOAD="$(comp_bool CINDER_PRELOAD 0)"
 WANT_W1TUNING="$(comp_bool CINDER_W1_TUNING 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
+WANT_CHAIN="$(comp_chain)"
 
 if [ -f "$COMPONENTS" ]; then
     echo "components: from $COMPONENTS"
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE w1tuning=$WANT_W1TUNING"
+echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE w1tuning=$WANT_W1TUNING"
 
 # ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
 # Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
@@ -601,6 +607,28 @@ if [ -s "$SRC_SIGNATURE" ]; then
     fi
 elif [ "$WANT_SIGNATURE" != stock ]; then
     echo "WARN: $SRC_SIGNATURE not staged but signature=$WANT_SIGNATURE requested — NOT applied."
+fi
+
+# 1h) Clear Bass in Walkman One's effect chain (the `chain` component). Same shape as 1g: the
+#     switcher is always installed, and it is the switcher that decides whether this player's
+#     sound library is one it knows. On any other library `set default` and `set clearbass` both
+#     leave the file alone. Wholly non-fatal. See analysis/RE_clear_bass.md section 6.
+if [ -s "$SRC_CHAIN" ]; then
+    "$BB" cat "$SRC_CHAIN" > "$BIN/cinder-chain.sh.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-chain.sh.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-chain.sh.tmp" 2>/dev/null
+        "$BB" chmod 755 "$BIN/cinder-chain.sh.tmp"
+        "$BB" mv -f "$BIN/cinder-chain.sh.tmp" "$BIN/cinder-chain.sh"
+        echo "installed: $BIN/cinder-chain.sh"
+        # $WANT_CHAIN is whitelist-validated above: `default` or `clearbass`, nothing else.
+        sh "$BIN/cinder-chain.sh" set "$WANT_CHAIN" || \
+            echo "WARN: chain '$WANT_CHAIN' not applied — sound library left as found."
+    else
+        echo "WARN: cinder-chain.sh stage empty — effect chain left as found."
+        "$BB" rm -f "$BIN/cinder-chain.sh.tmp" 2>/dev/null
+    fi
+elif [ "$WANT_CHAIN" != default ]; then
+    echo "WARN: $SRC_CHAIN not staged but chain=$WANT_CHAIN requested — NOT applied."
 fi
 
 # 4j. WALKMAN ONE'S EXTERNAL TUNING (the `w1tuning` component, off by default).

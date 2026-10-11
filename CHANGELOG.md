@@ -16,6 +16,32 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Installer option: Clear Bass (Walkman One 3.02 only)**, off by default. It puts Sony's Clear
+  Bass back into Walkman One's sound effects in place of the DC Phase Linearizer, and Cinder then
+  shows Sound ▸ Advanced ▸ Clear Bass. Choosing "Leave as it is" on a later Update undoes it, and
+  so does Uninstall. Any other player's sound library is left untouched. Only the DC Phase slot
+  is offered because it is the only one run on a player. *The patch and the Cinder row are
+  device-verified on one Walkman One 3.02 player; the installer step itself is host-tested (19
+  checks) and has not been run through an install.*
+
+### Changed
+
+- **The Sound page's mode line says what each mode costs the processor.** Measured on a Walkman
+  One player with pink noise on the jack: Sony's sound service used 0.6 % of one processor core in
+  Direct mode and 10.3 % in Custom with the 10-band equalizer and the Dynamic Normalizer on. About
+  half of that is the 10-band equalizer. The effect on battery hours is not measured.
+- **Walkman One: the ClearAudio+ mode is not offered.** Cinder asks Sony's firmware whether it has
+  ClearAudio+ and shows Direct and Custom where it does not. *Device-verified.*
+
+### Fixed
+
+- **Dev builds: adb survives a start with the cable in.** The USB port was switched off and on
+  2 ms apart while adding adb, so the computer never saw a disconnect and stopped talking to the
+  player until the cable was re-plugged. It now stays off for one second. *Device-verified: two
+  installs in a row came back with no re-plug.*
+
 ## [0.3.16] — 2026-10-11
 
 ### Added

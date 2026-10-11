@@ -959,9 +959,13 @@ fn mode_part(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, scroll: i32, y: 
         );
     }
     let what = match mode {
-        MODE_DIRECT => "No effects. The shortest path to the output.",
-        MODE_CLEARAUDIO => "Sony's automatic tuning, in place of the EQ and effects.",
-        _ => "Your equalizer and effects.",
+        // The processor cost is measured (2026-10-11, docs/NEXT.md item 11): the sound service
+        // took 0.6 % of a core in Direct and 10.3 % with the 10-band EQ and the normalizer on.
+        // Each line is under 48 characters: more than that is cut short at the largest text size.
+        // Hours of battery are not measured, so the line says "processor", not "battery".
+        MODE_DIRECT => "No effects. The least processor work.",
+        MODE_CLEARAUDIO => "Sony's automatic tuning replaces the EQ.",
+        _ => "Your EQ and effects. More processor work.",
     };
     let ds = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
     let (_, sy, _, sh) = mode_rect(0, scroll, n);

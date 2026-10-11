@@ -19,6 +19,7 @@ SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
 BIN=/system/vendor/unknown321/bin
 SIG=$BIN/cinder-signature.sh
+CHAIN=$BIN/cinder-chain.sh
 
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
@@ -106,6 +107,10 @@ if [ "$restored" = 1 ]; then
     else
         echo "signature: no helper installed, nothing to revert"
     fi
+    # The effect chain, the same way: put Sony's own sound library back if Clear Bass was set.
+    if [ -f "$CHAIN" ]; then
+        sh "$CHAIN" set default 2>&1 || echo "chain: revert did not run — the kept original may be absent"
+    fi
 
     # 1b. Give Wampy its library back if the mono shim holds its place (install_cinderhome.sh 1g2).
     #     A rename, so it is right even on a live system. Best-effort, like the revert above.
@@ -139,7 +144,7 @@ if [ "$restored" = 1 ]; then
     "$BB" rm -f "$BIN/cinder-umount" "$BIN/cinder-gpunode" "$BIN/cinder-power" "$BIN/cinder-msc" \
         "$BIN/cinder-clock" "$BIN/cinder-fm" "$BIN/cinder-voltable" "$BIN/cinder-battery" \
         "$BIN/cinder-probe" 2>/dev/null
-    "$BB" rm -f "$SIG" "$BIN/cinder-preload.sh" 2>/dev/null
+    "$BB" rm -f "$SIG" "$CHAIN" "$BIN/cinder-preload.sh" 2>/dev/null
     # The volume tables an install copied in for `wm1a`/`w1` (install_cinderhome.sh 1f3b). Sony's
     # own /system/usr/share/audio_dac is never touched.
     "$BB" rm -rf /system/vendor/unknown321/usr/share/cinder 2>/dev/null

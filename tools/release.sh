@@ -275,6 +275,7 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/cinder-voltable
     cinder-home/dist/stable/cinder-battery
     cinder-home/dist/stable/cinder-signature.sh
+    cinder-home/dist/stable/cinder-chain.sh
     cinder-home/dist/stable/libcinder_mono.so
     cinder-home/dist/stable/cinder-hagowrap
     cinder-home/dist/stable/cinder-guard.sh
