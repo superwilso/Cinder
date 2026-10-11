@@ -18,7 +18,38 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [0.3.16] — 2026-10-11
 
+### Added
+
+- **Clear Bass on Walkman One** (experimental, not in the installer yet). Walkman One's sound
+  library still contains Sony's Clear Bass but leaves it out of the effect chain. The script
+  `cinder-home/deploy/cinder-chain.sh set clearbass` from this repository, pushed to the player
+  and run over adb (so a dev build today), puts it back in place of the DC
+  Phase Linearizer by changing one byte of the library; it refuses any library it does not
+  recognise, keeps the original, and `revert` restores it. Both take effect at the next start.
+  Cinder then shows Sound ▸ Advanced ▸ Clear Bass (Off, +2 to +10). While it is on, the 10-band
+  equalizer and Tone Control are out of the path, because Sony's firmware runs only one of the
+  three. Measured at the headphone jack with pink noise: +10 raises 35 to 90 Hz by about 8 dB and
+  lowers everything above 140 Hz by about 2 dB. Source Direct must be off. *Device-verified on
+  one Walkman One 3.02 player.*
+
 ### Changed
+
+- **The Sound page is short, and says what mode it is in.** One control at the top picks Direct
+  (no effects), Custom (your equalizer and effects) or ClearAudio+ (Sony's automatic tuning). It
+  replaces the Source Direct switch on Advanced and the ClearAudio+ switch, which silently turned
+  most of the page off. Below it are the everyday rows only: Profile, Equalizer, DSEE HX, Dynamic
+  Normalizer and Balance. A More effects row unfolds VPT Surround, DC Phase Linearizer, Vinyl
+  Processor and Advanced in place. A/B compare is unchanged. No setting changed meaning, so saved
+  settings and both profiles carry over. On Walkman One the control has two modes: that firmware
+  has no ClearAudio+, and the old switch never did anything there. *Device-verified on a
+  Walkman One player; the ClearAudio+ mode on stock firmware is host-tested only.*
+- **Bluetooth auto off also acts during wired listening.** With the screen dark, music on the
+  3.5 mm jack and no Bluetooth device linked for ten minutes, the radio switches off. It used to
+  wait for silence. Measured on a Walkman One player: with the radio on and nothing linked the
+  processor never entered its deep idle state during jack playback (0 entries in 3 minutes), and
+  with the radio off it entered it 291 times in the same 3 minutes. The saving in hours is not
+  measured. The radio does not come back by itself; the switch is in Settings. *The rule is
+  host-tested; not yet seen firing on a device.*
 
 - **Suspend to RAM now follows 10 seconds after the screen-off stage** (it was 60), the delay
   Sony's own firmware uses. Still only with `ram_suspend` switched on.
