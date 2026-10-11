@@ -74,21 +74,21 @@ All are `/system/vendor/sony/bin/hagodaemon <Service>...`, one init service each
 | 7 | UpdateService | system | surface | |
 | 8 | UsbHostConnectionService, UsbDeviceConnectionService, UsbDeviceAudioPlayerService | system, nice -10 | part | `E_usbdac_ldac/`, `4f_usb_dac_routing.txt` |
 | 9 | MediaStoreService (W1), PlayerService (W1) | system | part | `H_mediastore/`, `G_player_ipc/`, `RE_playerservice_sound.md`, `RE_32bit_flac.md` |
-| 10 | OneTrackPlayerService (W1) | system | none | |
+| 10 | OneTrackPlayerService (W1) | system | surface | a one-file player (`GapPlayerImpl.cc`) on the same media framework as PlayerService: `PlayController` with `SetDataSource`, `Prepare`, `Start`, `Pause`, `Stop`, `Reset`, `SetLooping`, `ResetTrackType`, `GetState`. The stock app names it 21 times; Cinder does not use it |
 | 11 | **SoundServiceFw** (W1) | system, nice -15 | part | `RE_sound_service.md` (in progress) |
 | 12 | NcServiceFw (W1) | system + caps | surface | noise cancel; inert without Sony headphones |
 | 13 | VolumeServiceFw | system | part | `RE_volume_service.md`, `RE_volume_tables.md` |
 | 14 | VolumeGlue | system | surface | |
-| 15 | RecorderService (W1) | system | none | |
+| 15 | RecorderService (W1) | system | surface | recording: `SetUp`, `GetRecordController` (`Start`), `GetMaxAmplitude`, `GetSocketName` (a PCM socket, like the Bluetooth transmitter's), `Suspend`, `Resume`, listener `OnInfo` / `OnError`. The stock app names it 65 times; Cinder does not use it |
 | 16 | AudioAnalyzerService | system | part | `RE_playerservice_sound.md` sections 7 and 10 |
 | 17 | ConnMgrServiceFw | system | surface | |
 | 18 | FuncMgrServiceFw | system | part | the FuncMode gate (USB-DAC) |
-| 19 | PathMgrServiceFw (W1) | system | surface | |
+| 19 | PathMgrServiceFw (W1) | system | surface | decides the output device and the mixer values for it: `ResolveOutputDevice`, `GetCurrentOutputDevice`, `GetSuitableMediaPlayDevice`, `ResolveMpAmixerValues`, `GetSmasterValue`, `InformDeviceEnabled`, `InformTunerState`, `IsLineOutDisconnectedInSuspending`. It logs `current device is changed [SeHeadphone]` |
 | 20 | PowerMgrServiceFw | system + caps | part | `RE_power_stock_vs_cinder.md` |
 | 21 | RemoteCmdInjCtrlDaemon | system | surface | no API of its own (`IDontHaveAnyApi`); listens to BtTransmitterService and WMPortService to inject remote-control commands |
 | 22 | UsbMgrServiceFw | system + caps | part | `RE_usb_after_resume.md` |
 | 23 | StorageMgrServiceFw | root | part | `RE_storagemgr.md` |
-| 24 | WiredHpServiceFw | system + caps | surface | |
+| 24 | WiredHpServiceFw | system + caps | surface | headphone detection from kernel uevents (`UEventViewer`, `WiredHpMonitorAdler::OnUEvent`), `GetConnected`, `GetInfo`. Event driven: no poll |
 | 25 | NfcService | system | part | `G_bt_nfc/` |
 | 26 | MemmonService | root | surface | memory monitor: samples `/proc/meminfo` and per-process memory on an interval into `/var/log/memmon<n>.csv`, `DropCache`, `OnMemoryShort`; idle unless a client calls `Start` (no wakeups measured 2026-10-10) |
 | 27 | BtCommonService, BtTransmitterService, BtBleCommonService, BtBleRemoteService, BtPlayerService | system | part | `G_bt_nfc/`, several `reference` notes |
@@ -100,8 +100,8 @@ All are `/system/vendor/sony/bin/hagodaemon <Service>...`, one init service each
 |---|---|---|---|
 | `libpstcore.so` | IPC framework (`pst::`), binder-like transport, service manager | part | `G_player_ipc/`; the listener ABI and pump notes |
 | `libaudiohal-adleralsa.so` | the jack output (CXD3778GF over ALSA) | part | `RE_sound_service.md` section 4: it owns a power policy |
-| `libaudiohal-dualtrackmixalsa.so` | two-track mixer output | none | |
-| `libaudiohal-a2dpsnksingletrack.so` | Bluetooth receiver output | none | |
+| `libaudiohal-dualtrackmixalsa.so` | two-track mixer output | surface | carries its own DSD-to-PCM converter (`LibDsdToPcmConv_*`) and Sony's `Plt*` platform helpers |
+| `libaudiohal-a2dpsnksingletrack.so` | Bluetooth transmit output, despite the name | surface | writes PCM to the socket `pst::services::bttransmitterservice` (`RE_sound_service.md` section 4) |
 | `libaudiohal-uacalsasingletrack.so` | USB-DAC output | part | `E_usbdac_ldac/` |
 | `libaudiohal-analyzer.so`, `-listener`, `-genericalsa` | spectrum tap, error listener, generic ALSA input | surface | |
 | `libEffectCtrlDmp.so` (W1), `libSoundServiceSettingsDmp.so` | client side of the sound effects and sound settings | part | `RE_dsp_effects_surface.md` |
@@ -128,9 +128,22 @@ All are `/system/vendor/sony/bin/hagodaemon <Service>...`, one init service each
 | `/system/bin/load_sony_driver`, `nvp*`, `mtkbt`, `kisd`, `dpfd`, `fwpup`, `ffu` | drivers, NVP, Bluetooth stack, key install, updater | surface | `RE_walkmanone_installers.md` for the updater path |
 | `/system/xbin/regmon`, `dsf_player`, `wplayer`, `fm_tuner`, `diag_main` | Sony diagnostics | part | `regmon` is the register tool the FM and codec work uses |
 
+## Measured cost while a track plays (2026-10-11, Walkman One, jack, 16-bit FLAC)
+
+Per cent of one core, from `/proc/<pid>/task/*/stat` over 15 to 30 s.
+
+| process | Direct mode | Custom, 10-band EQ + normalizer |
+|---|---|---|
+| SoundServiceFw | 0.9 | 10.5 |
+| MediaStoreService + PlayerService | 1.9 (decode thread 1.1) | same |
+| cinder-home, screen off | 0.4 to 1.3 | same |
+
+PlayerService's time is spread thin: no symbol in its decode thread is above 4 % of that thread,
+and Walkman One's copy is stripped. Nothing there to patch. The lever is the effect chain.
+
 ## Reading order from here
 
 1. `libSoundServiceFw.so`, Walkman One copy (in progress).
 3. `libPlayerService.so`: the decoder side that feeds the sound service.
 4. `libPathMgrServiceFw.so`, `libWiredHpServiceFw.so`, `libNcServiceFw.so`: output routing.
-5. The services never opened: OneTrackPlayer, Recorder, Memmon, RemoteCmdInjCtrl, EventRouter, Timer.
+5. Every service now has at least a surface read. Deeper reads wait for a question that needs one.
