@@ -148,7 +148,10 @@ Other writers of these nodes: `libUsbDeviceAudioPlayerService.so` (USB-DAC: `cpu
 
 The awake time under a stream is the CPU work per wake. Measured on the cable 2026-10-10: sound
 service 6.5 to 7.5 % of a core, decoder 2.3 %, everything else under 1 %. The wake rate is fixed
-by the kernel's period limit. So the levers are, in order:
+by the kernel's period limit. Measured again 2026-10-11 on a 16-bit FLAC with the EQ path (not
+source direct): sound service 1.1 %, pre-filters `DO_NOT_PROCESS` (the MQA stage is off for an
+ordinary FLAC), period 5513 frames (125 ms). So the 6 to 7 % belongs to source direct or to that
+day, and the MQA suspicion is dead for untagged files. So the levers are, in order:
 
 1. **The sound service's own 6 to 7 %.** Not the effects. Find it with a profile (section 7,
    step 1). If it is the MQA decoder, switch it off with `filter::master:set:` and measure again.

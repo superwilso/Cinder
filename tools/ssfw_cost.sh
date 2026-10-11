@@ -9,8 +9,9 @@
 set -u
 S=${1:-30}
 adb get-state >/dev/null 2>&1 || { echo "no adb device"; exit 1; }
-adb shell "S=$S sh -s" <<'EOF'
-PID=$(ps | grep 'hagodaemon' | while read u p rest; do grep -q SoundServiceFw /proc/$p/cmdline 2>/dev/null && echo $p; done | head -1)
+T=$(mktemp); trap 'rm -f "$T"' EXIT
+cat > "$T" <<'EOF'
+PID=$(for p in /proc/[0-9]*; do case "$(tr '\0' ' ' < $p/cmdline 2>/dev/null)" in /system/vendor/sony/bin/hagodaemon\ SoundServiceFw*) echo ${p##*/};; esac; done | head -1)
 [ -z "$PID" ] && { echo "SoundServiceFw not found"; exit 1; }
 snap() { for t in /proc/$PID/task/*; do set -- $(cat $t/stat 2>/dev/null); echo "${t##*/} ${14} ${15}"; done; }
 snap > /tmp/ssfw.a; sleep $S; snap > /tmp/ssfw.b
@@ -33,3 +34,4 @@ grep -E 'switch|mode|dpidle_cnt|block_cnt' /sys/power/dpidle_state | head -12
 echo "== suspend parameters"; for f in /sys/module/*/parameters/slp_*; do echo "$f $(cat $f 2>/dev/null)"; done
 echo "== cpufreq"; cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq
 EOF
+adb push "$T" /data/local/tmp/ssfw_cost.sh >/dev/null && adb shell "S=$S sh /data/local/tmp/ssfw_cost.sh"

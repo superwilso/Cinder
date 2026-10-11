@@ -212,6 +212,29 @@ when its content moves. What is left needs the player:
      skipped whole). One suspect is the MQA decoder in the pre-filter stage, on for three source
      codec types that are not yet named. `tools/ssfw_cost.sh` on a FLAC track settles it with a
      profile; an MP3 run beside it shows whether the cost follows the codec.
+   * **Measured on the cable 2026-10-11, 16-bit FLAC on the EQ path, screen off**
+     (`tools/ssfw_cost.sh`): the sound service costs **1.1 % of a core, not 6 to 7 %**, and its
+     pre-filters log `DO_NOT_PROCESS`, so the MQA stage is off for an ordinary FLAC. The decoder
+     process costs 2 to 4.6 %, Cinder 0.4 to 1.3 %. The 6 to 7 % figure was taken with source
+     direct on (32-bit), so the open comparison is the same script with source direct on. The
+     period the driver chose is 5513 frames (125 ms), buffer 1 s.
+   * **Bluetooth switched on stops deep idle for the whole of jack playback (found 2026-10-11).**
+     Off the cable, music on the jack, screen dark, Bluetooth on with no link: **0 deep idle
+     entries in 181 s** (0 since boot), `by_oth` counting 76 a second. `dpidle_handler`
+     (0xc0037858) in Sony's ultra mode (`mode 1`, which the jack output library sets while
+     `hw:0,4` is open) first reads the power-status register at SPM +0x60C and returns `by_oth`
+     when bit 1, the connectivity domain (`SYS_CONN`), is on. Only with that bit clear does it go
+     on to the key callback and the clock check. So the 10-04 "key driver veto" was this, and the
+     10-05 run that entered deep idle 294 times had the radio off. Source direct was on for this
+     run and the output was still 16-bit, so the 6 to 7 % sound-service figure did not reproduce.
+     **Next: the same off-cable run with Bluetooth off**, to get the saving as a share of time
+     asleep. If it is large, the lever is the radio's state during jack playback (Bluetooth auto
+     off today waits for a pause).
+   * **About 170 wakeups a second during playback on the cable**, by thread: sound service 54
+     (one thread 43), the WM-PORT/Key/Configuration process 20 (two threads at exactly 10 Hz, a
+     poll), the decoder process 25 (one at 10 Hz, the read-ahead cache), `khubd_poll` 9 (the
+     cable), Cinder 7. The off-cable `tools/idle_probe.sh` run records the same per-thread counts
+     and the timers that fired; that run decides which of these survive without the cable.
    * **32-bit output halves the longest sleep.** Source direct sends 32-bit; compare it with the
      EQ path off the cable (`tools/idle_probe.sh`, which now records the wall clock).
    * **Every power node any Sony binary names is now listed**
