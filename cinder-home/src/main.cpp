@@ -9393,11 +9393,20 @@ static void play_pending_sequence(const char* label, bool restore_position) {
     if (restore_position) {
         char cur[512];
         int cn = cinder_audio_current_uri(cur, sizeof cur);
-        if (cn > 0 && cn < (int)sizeof cur && std::strcmp(cur, ptrs[start]) == 0
-            && cinder_audio_edit_sequence(ptrs, kept, start) == 0) {
+        bool same = cn > 0 && cn < (int)sizeof cur && std::strcmp(cur, ptrs[start]) == 0;
+        if (same && cinder_audio_edit_sequence(ptrs, kept, start) == 0) {
             g_np_poll_now = true;
             return;
         }
+        // Refused mid-song: never reopen the player under a song that is playing. cinder-ffi
+        // holds the edit for the end of the song and sends it round again then.
+        if (same && cinder_queue_edit_refused()) {
+            std::fprintf(stderr, "[cinder] %s: in-place edit refused — held to the end of the song\n", label);
+            return;
+        }
+        // The position belongs to the song that is playing. Leading with a DIFFERENT one (the
+        // service moved on before the edit landed) starts it from the top, not a second or two in.
+        if (!same) restore_position = false;
     }
     int resume_ms = restore_position ? cinder_play_position_ms() : 0;
     int rc = cinder_audio_play_tracks(ptrs, kept, start);

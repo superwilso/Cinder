@@ -622,6 +622,7 @@ int  cinder_set_bt_enhanced_supported(int on);
  * user queue. Deferred to a boundary because a SetTrackSequence mid-track RESTARTS the sequence
  * (device-measured 2026-07-28: position 9000 -> 0 and playback stopped). */
 int  cinder_take_queue_flush(void);
+int  cinder_queue_edit_refused(void);   /* 1 = held to the end of the song; 0 = issue it now */
 
 /* Is the playing track the LAST entry of the sequence the shell handed PlayerService? The
  * queue-end signal repeat-all watches for (position pinned at the duration, playing 1 -> 0) is

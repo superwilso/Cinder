@@ -461,6 +461,9 @@ struct Render {
     /// Repeat album: the lap for the playing song has been staged. Cleared at every track start,
     /// so each lap stages once rather than on every tick of the last 2.5 s.
     album_lap_staged: bool,
+    /// The shell's in-place queue edit was refused during this song, so the edit waits for the
+    /// end of the song instead (`cinder_queue_edit_refused`). Cleared when a track starts.
+    queue_edit_refused: bool,
     /// Tracks that Cinder, rather than PlayerService, has already played. PlayerService loses
     /// its own previous-track state whenever a queue edit replaces its sequence.
     play_history: Vec<cinder_db::Track>,
@@ -736,6 +739,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         scrob: None,
         last_track: None,
         album_lap_staged: false,
+        queue_edit_refused: false,
         play_history: Vec::new(),
         rewind_from: None,
         play_pos_ms: 0,
@@ -4854,6 +4858,21 @@ pub extern "C" fn cinder_repeat_all_prepare() -> libc::c_int {
     1
 }
 
+/// The shell's in-place queue edit was refused. 1 = held back to the end of the song, so the
+/// shell does nothing now; 0 = it was already held back, and the shell issues it the old way.
+#[no_mangle]
+pub extern "C" fn cinder_queue_edit_refused() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    if r.queue_edit_refused {
+        return 0;
+    }
+    r.queue_edit_refused = true;
+    r.queue_pending = true;
+    r.queue_flush = false;
+    1
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_take_queue_flush() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
@@ -6189,64 +6208,38 @@ pub extern "C" fn cinder_clock_tick() {
         save_resume(r);
         save_resume_pos(r, !r.np.playing);
 
-        // Queue edits are applied shortly before the boundary, not while the finger is still on
-        // the row. Rebuilding needs a pause/seek/play round trip, so the lead absorbs it and the
-        // current track still hands directly to the user's first queued choice.
+        // A queue edit goes to the shell on the next pass, while the song plays. The shell edits
+        // the sequence PlayerService pulls from in place (cinder_audio_edit_sequence): nothing is
+        // reopened, so there is no cost to hide near the boundary, on the jack or on Bluetooth.
+        //
+        // It used to wait for the last 2.5 s (the jack) or the boundary itself (Bluetooth),
+        // because the only way in was SetTrackSequence, a pause/seek/play round trip. Waiting is
+        // what broke it once the edit was in place: PlayerService picks its next track before
+        // then, so the old next song started and was corrected a second or two in (owner,
+        // 2026-10-12). analysis/RE_queue_edit.md.
+        //
+        // If the shell reports the in-place edit refused (`queue_edit_refused`), the edit falls
+        // back to the old timing, so the reopen never lands in the middle of the song: the last
+        // 2.5 s on the jack; on Bluetooth the boundary, or the last 2.5 s of the final track,
+        // which has no boundary after it.
         const QUEUE_REBUILD_LEAD_MS: i64 = 2_500;
-        // NOT ON BLUETOOTH. The rebuild is a pause/seek/play round trip, and the lead exists so
-        // that cost lands before the boundary instead of on it. Down the jack that is a brief
-        // glitch; over A2DP it disrupts a stream the sink is buffering ~200 ms of, so the end of
-        // the track is cut and the resume clicks — reported 2026-08-19 as songs being "cut off at
-        // the end" with a pop when listening on BT.
-        //
-        // The boundary flush in the track-change handler already covers this case for free (the
-        // new track's position is ~0, so re-issuing there resets nothing audible). Skipping the
-        // early rebuild on BT costs only that the first queued track hands over a fraction later;
-        // it does not cost the queue edit, which still applies.
-        //
-        // ...EXCEPT ON THE LAST TRACK OF THE SEQUENCE, WHERE THAT ARGUMENT IS FALSE. The paragraph
-        // above says the boundary flush "already covers this case for free", and it does — for
-        // every track that HAS a boundary after it. The final track of the sequence does not: no
-        // new track ever starts, so the track-change handler never runs, `queue_pending` is never
-        // consumed, and PlayerService simply runs off the end of the list it was given.
-        //
-        // Reported: playing the last track of an album with something queued, playback stops and
-        // the queued track never plays. Down the jack the early rebuild above hides it (the `!on_bt`
-        // test passes, so the flush happens 2.5 s out); over Bluetooth nothing fires at all.
-        //
-        // So on the last track the trade inverts. Everywhere else the choice is "a brief A2DP
-        // disruption" against "the first queued track hands over a fraction later", and skipping is
-        // right. Here it is "a brief A2DP disruption" against "the music stops", and a glitch beats
-        // silence.
-        //
-        // `pending_play` is the sequence as HANDED TO the shell and is never rewritten as playback
-        // advances, so its last entry is the final track PlayerService was given. If two entries
-        // share a filename and we are on the earlier one, this fires early: the cost is one
-        // rebuild that was not needed, not a missed queue.
+        let near_end = r.cur_duration_ms > 0
+            && r.cur_duration_ms.saturating_sub(r.play_pos_ms) <= QUEUE_REBUILD_LEAD_MS;
         let last_in_sequence = match (r.last_track.as_ref(), r.pending_play.last()) {
             (Some(t), Some(last)) => *last == t.filename,
             _ => false,
         };
-        let on_bt = r.app.bt_route();
-        if r.queue_pending
-            && r.np.playing
-            && (!on_bt || last_in_sequence)
-            && r.cur_duration_ms > 0
-            && r.play_pos_ms > 0
-            && r.cur_duration_ms.saturating_sub(r.play_pos_ms) <= QUEUE_REBUILD_LEAD_MS
-        {
+        let now = if r.queue_edit_refused {
+            near_end && (!r.app.bt_route() || last_in_sequence)
+        } else {
+            true
+        };
+        if r.queue_pending && r.np.playing && r.play_pos_ms > 0 && now {
             if let Some(current) = r.last_track.as_ref().map(|t| t.filename.clone()) {
                 r.queue_pending = false;
                 r.pending_play = play_order_uris(r, Some(&current));
                 r.pending_play_start = 0;
                 r.queue_flush = r.pending_play.len() > 1;
-                if last_in_sequence {
-                    eprintln!(
-                        "cinder-ffi: queue flush on the LAST track ({} tracks) — no boundary is \
-                         coming, so this is the only chance to issue it",
-                        r.pending_play.len()
-                    );
-                }
             }
         }
         // REPEAT ALBUM. PlayerService has no album loop, and the list it holds runs on past the album
@@ -8102,6 +8095,7 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 let owed = r.queue_pending || r.queue_flush;
                 let preempt = r.app.track_started(t.object_id, owed);
                 r.album_lap_staged = false;
+                let was_refused = std::mem::take(&mut r.queue_edit_refused);
                 if preempt {
                     r.pending_play = context_uris(r, r.app.context_idx());
                     r.pending_play_start = 0;
@@ -8146,6 +8140,7 @@ pub extern "C" fn cinder_set_now_playing_uri(
                     // staged, `pending_play` is a sequence PlayerService has never seen, and
                     // matching against it would drop this queue edit on the floor.
                     let already_live = !r.queue_flush
+                        && !was_refused // that sequence was staged but never handed over
                         && r.pending_play
                             .iter()
                             .position(|u| *u == t.filename)
