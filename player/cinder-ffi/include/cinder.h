@@ -345,6 +345,9 @@ int  cinder_prepare_previous_play(void);
 int  cinder_prepare_skip_play(void);
 /* Best current position estimate, used when rebuilding a sequence for a queue edit. */
 int  cinder_play_position_ms(void);
+/* How far into the first chapter to seek (ms) for the audiobook sequence just handed over, or 0.
+ * One-shot: reading it clears it. Call it straight after starting the sequence. */
+int  cinder_take_play_seek_ms(void);
 /* Tell the UI that the SHELL seeked playback to `ms` (the ◁ rewind paths), so the progress bar
  * snaps there instead of extrapolating from the pre-seek anchor for ~1 s. */
 void cinder_notify_seek_ms(int ms);
