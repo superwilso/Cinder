@@ -18,6 +18,21 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Audiobooks.** Anything in a `LEARNING` folder at the root of the player or the SD card (Sony's
+  own language-study folder) is an audiobook. A **book button** in the Library's header, right of
+  the search lens, opens the Audiobooks list, grouped by author: the author's name as a heading, their books
+  indented below (a book straight in `LEARNING` has no heading). A book is the folder that holds the
+  files (`LEARNING/author/book/*.mp3` is one book, its files the chapters), with where you are
+  ("CH 3 OF 12 · 14:05"). Tapping a book plays it from where you left it, in the saved chapter at
+  the saved position; every book keeps its own place, saved about every five seconds while it
+  plays and at once on a pause, in `cinder_books.tsv` on the drive
+  ([`docs/TRACK_DATA.md`](docs/TRACK_DATA.md)). Within ten seconds of the end of the last chapter a
+  book counts as finished and starts again from the first chapter. **It is an installer option of
+  its own, "Audiobooks (new)", off by default**; the button is drawn only when it is on and
+  `LEARNING` holds books. *Host-tested only (30 new tests, 3 new harness scenarios, the new screen
+  in the overflow and golden gates); nothing here has run on a player
+  ([`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) §37).*
+
 - **Installer option: Clear Bass (Walkman One 3.02 only)**, off by default. It puts Sony's Clear
   Bass back into Walkman One's sound effects in place of the DC Phase Linearizer, and Cinder then
   shows Sound ▸ Advanced ▸ Clear Bass. Choosing "Leave as it is" on a later Update undoes it, and
@@ -27,6 +42,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   checks) and has not been run through an install.*
 
 ### Changed
+
+- **With the Audiobooks option on, audiobooks are no longer in the music lists.** Files under
+  `LEARNING` used to appear in Songs, Albums, Artists, Folders, search and every shuffle; they then
+  appear only in Audiobooks. With the option off nothing changes.
 
 - **The Sound page's mode line says what each mode costs the processor.** Measured on a Walkman
   One player with pink noise on the jack: Sony's sound service used 0.6 % of one processor core in

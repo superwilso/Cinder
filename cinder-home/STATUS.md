@@ -1,5 +1,24 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-10-15 — Audiobooks — BUILT HOST-ONLY, NOTHING HERE HAS RUN ON A PLAYER
+>
+> **Device steps: [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md) §37. File format:
+> [`../docs/TRACK_DATA.md`](../docs/TRACK_DATA.md).** State: *partial — code complete, host-tested,
+> device-unverified.*
+>
+> - **An installer option of its own**, "Audiobooks (new)", **off by default**. Ticked, the
+>   installer leaves `/data/cinder/audiobooks_on`; unticked, nothing is set apart and `LEARNING` is
+>   ordinary music.
+> - **A `LEARNING` folder is a book shelf.** Each folder that directly holds audio files is a book;
+>   its files are the chapters. A **book button** in the Library header (right of the lens) opens the
+>   Audiobooks list; a tap plays the book from the saved chapter at the saved position. Every book
+>   keeps its own place in `/contents/cinder_books.tsv`.
+> - **Audiobooks are out of the music lists** (Songs, Albums, Artists, Folders, search, shuffles).
+> - **The seek after the hand-over is new on this path** (`cinder_take_play_seek_ms`, the boot
+>   resume's own seek) and has run only under the harness fakes. **Unmeasured:** that Sony's scanner
+>   files `LEARNING` as `media_type = 1` audio rows (checklist 37.1).
+> - No chapter list, speed control or sleep timer; none was asked for.
+
 > ## 2026-10-04 — Soundscapes, visualisers from the decoded audio, and what the owner confirmed
 >
 > **Confirmed by the owner (2026-10-01):** Walkman One runs Cinder on the owner's current player;
