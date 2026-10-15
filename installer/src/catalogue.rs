@@ -423,6 +423,33 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
         }
     }
 
+    /// The Audiobooks option is a number on its own in the picker, like FM radio: off until chosen
+    /// (it is new), and the answer reaches the device in `cinder_components.conf`.
+    #[test]
+    fn audiobooks_is_an_option_of_its_own_and_its_answer_is_written() {
+        let mut comps =
+            parse_catalogue(crate::CATALOGUE.expect("components.conf is embedded")).unwrap();
+        let fm = comps
+            .iter()
+            .position(|c| c.id == "fm")
+            .expect("fm is offered");
+        let i = comps
+            .iter()
+            .position(|c| c.id == "audiobooks")
+            .expect("audiobooks is offered");
+        assert_ne!(i, fm, "its own row");
+        assert_eq!(comps[i].var, "CINDER_AUDIOBOOKS");
+        assert!(!comps[i].is_on(), "off by default while it is new");
+        assert!(conf_text(&comps, "stable").contains("CINDER_AUDIOBOOKS=0"));
+        comps[i].cycle();
+        assert!(comps[i].is_on());
+        assert!(conf_text(&comps, "stable").contains("CINDER_AUDIOBOOKS=1"));
+        // What the person installing reads says what they get and what it costs them.
+        let text = comps[i].explain("on", "off");
+        assert!(text.contains("book button"), "{text}");
+        assert!(text.contains("no longer appear among your songs"), "{text}");
+    }
+
     #[test]
     fn generated_conf_is_parseable_key_values() {
         let c = parse_catalogue(SAMPLE).unwrap();
