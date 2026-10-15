@@ -1568,6 +1568,47 @@ static void s_repeat_all_off(void) {
     check_eq(cinder_harness_count("cinder_audio_play_tracks"), 0, "and nothing starts playing");
 }
 
+// ── an audiobook starts where the listener left it ─────────────────────────────────────────────
+// Playing a book queues its chapters from the saved one and leaves an offset for the shell to seek
+// to (`cinder_take_play_seek_ms`). Three things are asserted: the offset is applied once the
+// sequence is playing; nothing is seeked for anything else (an offset of 0 — music, a book not
+// started); and a play that failed to start does not seek whatever is left of the old one.
+// (The URI strings come back empty from the generated stub, so a URI "length" is scripted instead.)
+static void book_play_fixture(long long seek_ms, long long play_rc) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 8 /* CINDER_ACT_PLAY_INDEX */);
+    cinder_harness_script("cinder_pending_play_count", 3);
+    cinder_harness_script("cinder_pending_play_start", 1);
+    cinder_harness_script("cinder_pending_play_uri", 5);
+    cinder_harness_script("cinder_audio_play_tracks", play_rc);
+    cinder_harness_script("cinder_take_play_seek_ms", seek_ms);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_set_budget_ms(30000);
+    cinder_harness_run();
+}
+
+static void s_book_seek(void) {
+    book_play_fixture(754000, 0);
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1, "the book's chapters were handed over");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 1, "and the saved place was sought to");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 0), 754000, "…12:34 into the chapter");
+    check_eq(cinder_harness_count("cinder_notify_seek_ms"), 1, "the progress bar was told");
+}
+
+static void s_book_no_seek_for_music(void) {
+    book_play_fixture(0, 0);
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1, "the tapped track played");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 0, "and nothing was sought to");
+}
+
+static void s_book_no_seek_when_play_failed(void) {
+    book_play_fixture(754000, -1);
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1, "the shell tried to play");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 0, "a play that failed seeks nothing");
+    check_eq(cinder_harness_count("cinder_take_play_seek_ms"), 1, "yet the offset was still taken, so it cannot leak");
+}
+
 // ── stop after this song (Sleep ▸ End of song) ──────────────────────────────────────────────────
 // PlayerService has no "stop at the end of this track", and the position arrives ~1x/s, so
 // main.cpp's stop_after_tick() EXTRAPOLATES it between callbacks and pauses STOP_AFTER_LEAD_MS
@@ -1734,6 +1775,9 @@ static void s_wrapper_proof_none(void) {
 
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
+    { "book-seek", s_book_seek, "an audiobook starts at the place the listener left it" },
+    { "book-no-seek-for-music", s_book_no_seek_for_music, "…and music is never sought to" },
+    { "book-no-seek-when-play-failed", s_book_no_seek_when_play_failed, "…nor is a play that did not start" },
     { "codec-bt-lit", s_codec_bt_lit, "on Bluetooth the codec goes to standby with the screen lit" },
     { "codec-jack-lit", s_codec_jack_lit, "…and on the jack a lit screen still keeps it awake" },
     { "pause-key", s_pause_key_playing, "AVRCP PAUSE and STOP pause a playing track" },
