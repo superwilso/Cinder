@@ -361,6 +361,57 @@ impl LibView {
     }
 }
 
+/// One audiobook: a folder under `LEARNING` and its files, in play order.
+///
+/// The place the listener got to travels on the row (`chapter`, `pos_ms`, `finished`) so that the
+/// screen, the tap and the label all read one thing. The shell fills it from its own file
+/// (`cinder-ffi`'s `books` store); a book never started is chapter 0 at 0 ms.
+#[derive(Clone, Default)]
+pub struct BookRow {
+    /// The last folder name.
+    pub title: String,
+    /// The folder above it when that is an author folder, else empty.
+    pub author: String,
+    /// The book's folder path: its key in the store.
+    pub dir: String,
+    /// The chapters, in play order.
+    pub chapters: Vec<SongRow>,
+    /// Each chapter's file path, parallel to `chapters`: the store remembers a chapter by path,
+    /// because object ids are re-issued by every rescan.
+    pub paths: Vec<String>,
+    /// Index into `chapters` of the one to resume in.
+    pub chapter: usize,
+    /// Where in that chapter, in milliseconds.
+    pub pos_ms: i64,
+    /// Listened to the end; the next play starts again from the first chapter.
+    pub finished: bool,
+}
+
+impl BookRow {
+    /// Has the listener started it (and not finished)?
+    pub fn in_progress(&self) -> bool {
+        !self.finished && (self.chapter > 0 || self.pos_ms > 0)
+    }
+
+    /// The row's second line: where the listener is, or that they have not started / finished.
+    pub fn progress_label(&self) -> String {
+        let n = self.chapters.len();
+        if self.finished {
+            return format!("FINISHED \u{00b7} {n} CHAPTERS");
+        }
+        if !self.in_progress() {
+            return format!("{n} CHAPTERS");
+        }
+        let secs = (self.pos_ms.max(0) / 1000) as u64;
+        let t = if secs >= 3600 {
+            format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+        } else {
+            format!("{}:{:02}", secs / 60, secs % 60)
+        };
+        format!("CH {} OF {n} \u{00b7} {t}", self.chapter + 1)
+    }
+}
+
 /// The whole browsable library, as owned rows. Built once (from the DB on device, or the
 /// sample constants on host) and held by `nav::App`.
 #[derive(Clone, Default)]
@@ -444,6 +495,9 @@ pub struct Library {
     /// Filled by the shell from its store; empty on the host and in the sim until something is
     /// rated there.
     pub stats: std::collections::HashMap<i64, TrackStat>,
+    /// The audiobooks — everything under `LEARNING`, kept out of every music list above. Sorted by
+    /// author then title.
+    pub books: Vec<BookRow>,
 }
 
 impl Library {
@@ -701,6 +755,45 @@ impl Library {
                 total: songs.len().saturating_sub(4) as u32,
             },
         ];
+        // (see the field's doc: one part-way, one not started)
+        let sample_books = vec![
+            BookRow {
+                title: "Pronunciation Drills".into(),
+                author: String::new(),
+                dir: "/contents/LEARNING/Pronunciation Drills".into(),
+                chapters: songs.iter().skip(2).take(4).cloned().collect(),
+                paths: (1..=4)
+                    .map(|i| format!("/contents/LEARNING/Pronunciation Drills/{i:02}.mp3"))
+                    .collect(),
+                ..Default::default()
+            },
+            BookRow {
+                title: "The Dispossessed".into(),
+                author: "Ursula K. Le Guin".into(),
+                dir: "/contents/LEARNING/Ursula K. Le Guin/The Dispossessed".into(),
+                chapters: songs.iter().take(6).cloned().collect(),
+                paths: (1..=6)
+                    .map(|i| {
+                        format!("/contents/LEARNING/Ursula K. Le Guin/The Dispossessed/{i:02}.mp3")
+                    })
+                    .collect(),
+                chapter: 2,
+                pos_ms: 754_000,
+                finished: false,
+            },
+            BookRow {
+                title: "The Left Hand of Darkness".into(),
+                author: "Ursula K. Le Guin".into(),
+                dir: "/contents/LEARNING/Ursula K. Le Guin/The Left Hand of Darkness".into(),
+                chapters: songs.iter().take(6).cloned().collect(),
+                paths: (1..=6)
+                    .map(|i| {
+                        format!("/contents/LEARNING/Ursula K. Le Guin/The Left Hand of Darkness/{i:02}.mp3")
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        ];
         let mut lib = Library {
             songs,
             album_groups,
@@ -721,6 +814,9 @@ impl Library {
             views: Default::default(),
             covers: Default::default(),
             stats: Default::default(),
+            // Two sample books so the Audiobooks screen has something to draw on the host: one
+            // part-way through, one not started.
+            books: sample_books,
         };
         lib.prepare_order();
         lib.build_channels(&SAMPLE_CHANNELS);

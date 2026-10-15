@@ -1453,6 +1453,25 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 l.sensme_tracks = 0;
                 cinder_ui::sensme::render(c, &theme, &fonts, &l, None, 0, false, Default::default())
             }),
+            // Audiobooks: part-way, not started and finished side by side, then the state a player
+            // with no LEARNING folder never sees but a test can reach — it explains itself.
+            ("books_list", &|c: &mut Canvas| {
+                let mut l = lib.clone();
+                if let Some(mut done) = l.books.first().cloned() {
+                    done.title = "Pronunciation Drills II".into();
+                    done.author = "Ursula K. Le Guin".into();
+                    done.chapter = done.chapters.len().saturating_sub(1);
+                    done.pos_ms = 0;
+                    done.finished = true;
+                    l.books.push(done);
+                }
+                cinder_ui::audiobooks::render(c, &theme, &fonts, &l, 0, false)
+            }),
+            ("books_empty", &|c: &mut Canvas| {
+                let mut l = lib.clone();
+                l.books.clear();
+                cinder_ui::audiobooks::render(c, &theme, &fonts, &l, 0, false)
+            }),
             ("track_info", &|c: &mut Canvas| {
                 let rows: Vec<(String, String)> = vec![
                     ("Rating".into(), "-".into()),
