@@ -9341,9 +9341,11 @@ static void reclaim_contents() {
 // Drain Cinder's pending URI sequence into PlayerService. Queue edits use the same proven
 // NodeTrackSequence path as a normal play action, but restore the current position afterwards so
 // replacing the sequence does not turn a "play next" gesture into a restart.
-static void play_pending_sequence(const char* label, bool restore_position) {
+// True when the sequence was handed over and is playing (or, for a queue edit, was applied in
+// place); false when nothing was started — which is when an offset into it must not be applied.
+static bool play_pending_sequence(const char* label, bool restore_position) {
     int n = cinder_pending_play_count();
-    if (n <= 0) return;
+    if (n <= 0) return false;
     ambient_yield_for_music();   // the output is about to be PlayerService's (see set_transport)
     if (n > 512) n = 512;
     static char bufs[512][512];
@@ -9385,7 +9387,7 @@ static void play_pending_sequence(const char* label, bool restore_position) {
     if (tapped_wide)
         cinder_toast(kept ? "Skipped a 32-bit FLAC: this player can't decode above 24-bit"
                           : "Can't play a 32-bit FLAC: this player's decoder stops at 24-bit");
-    if (kept == 0) return;
+    if (kept == 0) return false;
     if (start < 0 || start >= kept) start = 0;
     // A queue edit around the PLAYING track goes in place: Sony's service asks our sequence for the
     // next track when it needs one, so nothing has to be reopened and the music does not break.
@@ -9396,13 +9398,13 @@ static void play_pending_sequence(const char* label, bool restore_position) {
         bool same = cn > 0 && cn < (int)sizeof cur && std::strcmp(cur, ptrs[start]) == 0;
         if (same && cinder_audio_edit_sequence(ptrs, kept, start) == 0) {
             g_np_poll_now = true;
-            return;
+            return true;
         }
         // Refused mid-song: never reopen the player under a song that is playing. cinder-ffi
         // holds the edit for the end of the song and sends it round again then.
         if (same && cinder_queue_edit_refused()) {
             std::fprintf(stderr, "[cinder] %s: in-place edit refused — held to the end of the song\n", label);
-            return;
+            return false;
         }
         // The position belongs to the song that is playing. Leading with a DIFFERENT one (the
         // service moved on before the edit landed) starts it from the top, not a second or two in.
@@ -9413,7 +9415,7 @@ static void play_pending_sequence(const char* label, bool restore_position) {
     if (rc != 0) {
         std::fprintf(stderr, "[cinder] %s: play_tracks(%d tracks, start %d) failed rc=%d\n",
                      label, kept, start, rc);
-        return;
+        return false;
     }
     if (restore_position && resume_ms > 0) {
         cinder_audio_seek_ms(resume_ms);
@@ -9422,6 +9424,7 @@ static void play_pending_sequence(const char* label, bool restore_position) {
     set_transport(true);
     g_np_poll_now = true;
     g_house_due = true;
+    return true;
 }
 
 
@@ -10400,7 +10403,15 @@ void carry_out(int act) {
                 // Without this a resume armed at boot would still be waiting, and the next ▶ after
                 // a pause would drag playback back to wherever the previous session stopped.
                 cinder_resume_cancel();
-                play_pending_sequence("play", false);
+                bool started = play_pending_sequence("play", false);
+                // An audiobook starts where the listener left it: the saved offset in the chapter
+                // the sequence began on (0 for everything else). The same seek the boot resume does.
+                // Always taken, so an offset armed for a play that failed cannot reach the next one.
+                int book_ms = cinder_take_play_seek_ms();
+                if (started && book_ms > 0) {
+                    cinder_audio_seek_ms(book_ms);
+                    cinder_notify_seek_ms(book_ms);
+                }
             });
             break;
         case CINDER_ACT_QUEUE_CHANGED:

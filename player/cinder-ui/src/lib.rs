@@ -8,6 +8,7 @@
 
 pub mod advanced;
 pub mod art;
+pub mod audiobooks;
 pub mod bluetooth;
 pub mod canvas;
 pub mod chrome;

@@ -124,6 +124,20 @@ fn hostile_library() -> cinder_ui::Library {
     for g in &mut l.genres {
         g.name = "Contemporary Classical / Neo-Classical Crossover".into();
     }
+    // Audiobooks: a long title and author, a place deep into a long book (the longest label the
+    // row can show: hours as well as minutes), and enough books to scroll.
+    let template = l.books.first().cloned().unwrap_or_default();
+    l.books = (0..12)
+        .map(|i| cinder_ui::model::BookRow {
+            title: format!("The Complete Annotated Chronicles of the Very Long Winter, Book {i}"),
+            author: "Королевский филармонический оркестр / 東京都交響楽団".into(),
+            chapters: vec![Default::default(); 120],
+            paths: vec![String::new(); 120],
+            chapter: 118,
+            pos_ms: 11 * 3_600_000 + 59 * 60_000,
+            ..template.clone()
+        })
+        .collect();
     l
 }
 
@@ -225,6 +239,8 @@ const SCREENS: &[Screen] = &[
     Screen::GenreFilter,
     Screen::Folders,
     Screen::SensMe,
+    // The Audiobooks list, opened from the Library's header.
+    Screen::Books,
     Screen::TrackInfo,
     Screen::Lyrics,
     Screen::Search,

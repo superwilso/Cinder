@@ -935,3 +935,32 @@ side. Not proven.
 | 36.3 | **Codec standby with the screen lit** | Playing over Bluetooth, screen on for a minute | Log: `codec: … DAC/amp to standby` once, and not again at every wake | Repeats at each wake = the route flag dropped: send the log |
 | 36.4 | **NFC after a wake** — pause and resume **RUN 2026-10-05, PASS** (log) | Screen dark for a minute, wake it, hold NFC headphones to the mark | They pair or connect as before. Log: `nfc: polling stopped while the screen is dark`, `nfc: polling again, Start(1) rc=0` | No reaction to a tag = Start without Open does not re-arm the reader: report it; the old behaviour is one line (`nfc_dark`) |
 | 36.5 | **Warmth** | A normal hour of Bluetooth listening in a pocket | Not warmer than before | Still warm: run `tools/idle_probe.sh arm` during playback off the cable and send the result |
+
+## 37 — 2026-10-15 — Audiobooks
+
+Host-tested: 27 tests, three harness scenarios, the screen in the overflow and golden gates.
+**2026-10-15: the owner installed it on their player and reports it works and is "already very good"**
+(reported as a whole, so the rows below are not ticked individually). One assumption is unmeasured: that Sony's scanner files the
+contents of `LEARNING` as ordinary audio rows (`media_type = 1`) in `/db/MTPDB.dat`. Its scanner is
+configured for `MUSIC` and `LEARNING` (`g_ms_dirs`), so it should, but no player has been asked.
+
+**It is an installer option, off by default (`audiobooks`, id 5 in the picker).** Every row below
+needs it ticked; row 37.0 is the install itself.
+
+Setup: on the player, `LEARNING/<author>/<book>/` with three or four MP3 or M4A files named so they
+sort in order (`01`, `02`, …), two books by one author, and a few songs in `MUSIC/`. Let Sony's
+scanner pick them up (reconnect from the PC, or the rescan Cinder triggers after USB mass storage).
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 37.0 | **The option, ticked and unticked** | Install with Audiobooks ticked; read the install log. Then Update with it unticked | `audiobooks: on` and `/data/cinder/audiobooks_on` exists; after the Update `audiobooks: off`, the file is gone, the book button is gone and the `LEARNING` files are back among the songs | No `audiobooks:` line = the installer predates the option; the flag missing with `on` printed = `/data` was not writable: send the install log |
+| 37.1 | **The scanner lists them, and music stays clean** | Start Cinder after the copy. Read `cinderhome.log` | `cinder-ffi: audiobooks: 2 books, N chapters`. Songs, Albums, Artists and Folders show no chapter of either book. Shuffle all plays only music | No `audiobooks:` line = the files are not `media_type = 1` rows: send `sqlite3 /db/MTPDB.dat "select filename,media_type from object_body where filename like '%LEARNING%'"` |
+| 37.2 | **The book button** | Open the Library | A book icon right of the lens, left of the SORT chip; nothing overlaps at any text size (Settings ▸ Display). Tap it: the Audiobooks list, one row per book, "N CHAPTERS". Remove `LEARNING` and reconnect: the button is gone | Overlap = send the text size and a screenshot |
+| 37.3 | **Start, stop, resume** | Tap a book. Let chapter 1 play for a minute, press pause, power off. Boot, open Audiobooks | The row reads "CH 1 OF N · 1:0x". Tap it: it plays chapter 1 from about where you stopped (within a second of the saved position) | Starts at 0:00 = the seek after the hand-over did not land: `PlayBook(...): chapter 1 of N at … ms` in the log shows what was asked; send it |
+| 37.4 | **Chapters carry on, and the place follows** | Let a book run across a chapter boundary. Pause in chapter 2 | The row reads "CH 2 OF N". Resume from the list lands in chapter 2 | Row says chapter 1 = the place is saved on a five-second tick, so check the pause was forced: `/contents/cinder_books.tsv` |
+| 37.5 | **Two books, two places** | Listen to book A for a minute, then to book B for a minute. Tap A, then B | Each resumes at its own place; neither disturbed the other | |
+| 37.6 | **Music and books do not cross** | Play a song, then tap a book, then a song again | The song starts at 0:00, never seeked to a book's offset | A song starting part-way = an offset leaked: send the log |
+| 37.7 | **Finished** | Seek the last chapter of a short book to its last 10 s and let it end | Row reads "FINISHED"; tapping it starts at chapter 1, 0:00 | |
+| 37.8 | **Over Bluetooth** | 37.3 with headphones | Same result. The seek after the hand-over is the one the boot resume does, but not yet seen on the Bluetooth route | |
+| 37.9 | **The file survives a PC** | Connect to the PC, open `cinder_books.tsv`, change one position, save, eject | The next resume of that book starts at the edited position | A reset position = the PC copy was overwritten: send both versions |
+| 37.10 | **Books are grouped under their author** | Put `LEARNING/Author A/Book 1`, `…/Book 2` and `LEARNING/Author B/Book 3` on the player; open the book button | `Author A` heading with Book 1, Book 2 slightly indented below, then `Author B` with Book 3. Tapping a heading does nothing; tapping a book resumes it | A heading that plays, or a book listed twice = send a photo |

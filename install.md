@@ -146,11 +146,12 @@ clicked underneath.
     2  [x]  Charger details on the battery screen
     3  [ ]  Library search (new)
     4  [ ]  SensMe channels (new)
-    5  [x]  Scrobble log (for Last.fm)
-    6       Headphone volume curve: Sony standard (default)
-    7       Sound signature (Walkman One modes): Sony standard (default)
-    8  [x]  Mono and soundscapes over music (with Wampy)
-    9  [ ]  Mono and soundscapes over music (without Wampy, new)
+    5  [ ]  Audiobooks (new)
+    6  [x]  Scrobble log (for Last.fm)
+    7       Headphone volume curve: Sony standard (default)
+    8       Sound signature (Walkman One modes): Sony standard (default)
+    9  [x]  Mono and soundscapes over music (with Wampy)
+   10  [ ]  Mono and soundscapes over music (without Wampy, new)
   ------------------------------------------------------------
 
    <number> switch on/off or change   ?<number> read about it   i install   q quit
@@ -222,6 +223,7 @@ removes something the player cannot do without (`components.conf` explains the d
 | Charger details on the battery screen (`battery`) | on | The charger's own readings: charging state, faults, charge current and voltage | The battery screen still shows level, health, voltage and temperatures |
 | Library search (`search`) | **off** | A search button in the Library | — (new, so off for now) |
 | SensMe channels (`sensme`) | **off** | Play the library by mood, like radio stations. Needs your music analysed on a PC first, by [Flint](https://github.com/superwilso/flint) or Sony's Music Center | — |
+| Audiobooks (`audiobooks`) | **off** | A book button in the Library, beside search, that opens the books in a `LEARNING` folder on the player or the SD card, one folder per book. Each book remembers where you stopped and carries on from there. See [Audiobooks](#audiobooks) | The files in `LEARNING` are ordinary music, as before (new, so off for now) |
 | Scrobble log (`scrobble`) | on | Logs the songs you finish to `.scrobbler.log` for a Last.fm uploader | Nothing logged; an existing log is kept. **Leave it on with Wampy's scrobbler**: Cinder steps aside while that one runs, so nothing is logged twice |
 | Headphone volume curve (`voltable`) | Sony standard | How much each volume step changes the loudness. See [The volume curve tables](#the-volume-curve-tables) | — |
 | Sound signature (`signature`) | Sony standard | Walkman One's Plus modes, to compare by ear. See [below](#the-sound-signature) | — |
@@ -352,6 +354,32 @@ thing from redistributing it.
 > **Every choice except *Sony, with region limit* lifts the regional limit.** The EU tables (`ov_*_cew`) set the
 > analogue amplifier exactly like the others but lower two digital stages, which is why they measure
 > quieter at the jack. Smooth (`wm1a`) is also louder than Sony standard around 60–80 on every player, so start low.
+
+### Audiobooks
+
+Tick **Audiobooks** and put each book in its own folder inside a `LEARNING` folder at the top of the
+player's drive (or of the SD card), the same folder Sony's own player uses for language study:
+
+```
+LEARNING/
+  Ursula K. Le Guin/
+    The Dispossessed/    01.mp3  02.mp3  03.mp3 …
+    The Lathe of Heaven/ 01.mp3  02.mp3 …
+```
+
+Name the files so they sort in reading order (`01`, `02`, … or `Chapter 1`, `Chapter 2`; numbers
+count as numbers, so `Chapter 2` comes before `Chapter 10`). The folder that holds the files is the
+book, and the folder above it, if it is not `LEARNING` itself, is the author.
+
+The Library then has a book button, between the search button and the sort control, that opens the
+list of books. Tap a book to play it from where you stopped: the chapter and the second are
+remembered for each book on its own, so two books by one author never disturb each other. A book
+you reach the last ten seconds of counts as finished and starts again from the first chapter.
+
+While this is on, the files in `LEARNING` are not shown among your songs, albums and artists, and
+the shuffles leave them out. Untick it and **Update** and they are ordinary music again. Where you
+had got to is kept in `cinder_books.tsv` on the drive (see [`docs/TRACK_DATA.md`](docs/TRACK_DATA.md))
+and survives both.
 
 ### Choosing components without the GUI
 

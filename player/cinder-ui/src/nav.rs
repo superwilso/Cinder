@@ -124,6 +124,10 @@ pub enum Screen {
     /// holding which is open. An OPT-IN component: the Menu row only exists when the installer left
     /// `/data/cinder/sensme_on`. See `sensme.rs`.
     SensMe,
+    /// Audiobooks — the books under `LEARNING`, one row per folder, opened from the book button in
+    /// the Library's header. Tapping a row plays the book from where the listener left it. See
+    /// `audiobooks.rs`.
+    Books,
     /// Track information — Sony's "Detailed Information". Pushed by tapping the title/artist/codec
     /// block on Now Playing, which is where the eye already is when the question comes up.
     TrackInfo,
@@ -401,6 +405,10 @@ pub enum Action {
         from: u32,
         shuffle: bool,
     },
+    /// Play an audiobook (an index into `Library::books`) from where the listener left it: its
+    /// saved chapter at its saved position, or the first chapter for a book not started or
+    /// finished. The shell owns the place, so the message is only which book.
+    PlayBook(usize),
     /// Shuffle one playlist by DB id. Same channel as `PlayPlaylist`, but shuffled — the page's
     /// band needs it and `ShuffleScope::Playlist` picks a RANDOM playlist, which is a different
     /// thing entirely.
@@ -1573,6 +1581,8 @@ pub struct App {
     /// One level rather than the folder tree's stack: channels do not nest.
     sensme_channel: Option<usize>,
     sensme_scroll_px: i32,
+    /// Scroll of the Audiobooks list.
+    books_scroll_px: i32,
     /// The channel LIST's scroll, kept while a channel is open so Back puts the channel you went
     /// into back under your finger — the folder tree's `folder_scroll_saved`, for one level.
     sensme_scroll_saved: i32,
@@ -1896,6 +1906,7 @@ impl Default for App {
             folder_scroll_saved: Vec::new(),
             sensme_channel: None,
             sensme_scroll_px: 0,
+            books_scroll_px: 0,
             sensme_scroll_saved: 0,
             sensme_enabled: false,
             sensme_follow: false,
@@ -3214,6 +3225,21 @@ impl App {
         self.push(Screen::SensMe);
     }
 
+    /// Open the Audiobooks list from the top.
+    pub fn open_books(&mut self) {
+        self.books_scroll_px = 0;
+        self.fling_v = 0.0;
+        self.push(Screen::Books);
+    }
+
+    /// Tap on the Audiobooks screen: a book plays from its place.
+    fn tap_books(&mut self, y: i32) -> Vec<Action> {
+        match crate::audiobooks::row_at(&self.lib, y, self.books_scroll_px) {
+            Some(i) => self.start_play_action(Action::PlayBook(i)),
+            None => vec![],
+        }
+    }
+
     /// Open one channel, remembering where the list was so Back can restore it.
     fn sensme_enter(&mut self, i: usize) {
         if i >= self.lib.channels.len() {
@@ -3934,7 +3960,13 @@ impl App {
         // The Library's SORT/ORDER chip claims the strip's bottom edge above it — see
         // `library::SORT_HIT_TOP`. Only there: `tap_library` handles it.
         let sort_chip = self.current() == Screen::Library
-            && library::hit_sort_chip(self.lib_tab, x, y, self.search_enabled);
+            && library::hit_sort_chip(
+                self.lib_tab,
+                x,
+                y,
+                self.search_enabled,
+                !self.lib.books.is_empty(),
+            );
         match crate::chrome::status_hit(x, y).filter(|_| !sort_chip) {
             Some(crate::chrome::StatusTap::Shelf) => {
                 self.open_shelf();
@@ -4051,6 +4083,7 @@ impl App {
                 }
             }
             Screen::Folders => self.tap_folders(y),
+            Screen::Books => self.tap_books(y),
             Screen::SensMe => self.tap_sensme(x, y),
             Screen::Library => self.tap_library(x, y),
             Screen::Album => {
@@ -4803,13 +4836,23 @@ impl App {
             self.open_search();
             return vec![];
         }
+        if library::hit_books_button(x, y, self.search_enabled, !self.lib.books.is_empty()) {
+            self.open_books();
+            return vec![];
+        }
         if library::hit_view_button(x, y, self.search_enabled) {
             self.cycle_lib_view();
             return vec![];
         }
         // SORT/ORDER chip in the header's right slot (right of the back chevron's x<80 band).
         // Songs cycles the SORT chip; Albums cycles the ORDER chip. Both reset the list position.
-        if library::hit_sort_chip(self.lib_tab, x, y, self.search_enabled) {
+        if library::hit_sort_chip(
+            self.lib_tab,
+            x,
+            y,
+            self.search_enabled,
+            !self.lib.books.is_empty(),
+        ) {
             match self.lib_tab {
                 Tab::Songs => self.lib_sort = (self.lib_sort + 1) % library::SORTS.len(),
                 Tab::Albums => self.cycle_album_sort(),
@@ -6221,6 +6264,10 @@ impl App {
                 let max = crate::sensme::max_scroll_px(&self.lib, self.sensme_channel);
                 self.sensme_scroll_px = (self.sensme_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::Books => {
+                let max = crate::audiobooks::max_scroll_px(&self.lib);
+                self.books_scroll_px = (self.books_scroll_px + dy_px).clamp(0, max);
+            }
             // The user queue drew from row 0 and stopped at the bottom of the panel, so anything
             // past ~10 tracks was unreachable — and unreorderable with it.
             Screen::UpNext => {
@@ -6252,6 +6299,7 @@ impl App {
                 | Screen::Playlist
                 | Screen::UpNext
                 | Screen::SensMe
+                | Screen::Books
         ) {
             self.fling_v = velocity_px_s.clamp(-8000.0, 8000.0);
         }
@@ -6855,6 +6903,11 @@ impl App {
                     lb
                 },
             )),
+            Screen::Books => Some((
+                crate::audiobooks::max_scroll_px(&self.lib),
+                crate::audiobooks::TOP,
+                lb,
+            )),
             _ => None,
         }
     }
@@ -6899,6 +6952,7 @@ impl App {
             Screen::Lyrics => self.lyrics_scroll_px,
             Screen::Folders => self.folder_scroll_px,
             Screen::SensMe => self.sensme_scroll_px,
+            Screen::Books => self.books_scroll_px,
             Screen::PlaylistPick => self.pick_scroll_px,
             Screen::TrackPick => self.track_pick_scroll_px,
             Screen::Search => self.search_scroll_px,
@@ -7694,6 +7748,7 @@ impl App {
                 | Screen::UpNext
                 | Screen::Folders
                 | Screen::SensMe
+                | Screen::Books
         )
     }
 
@@ -8713,6 +8768,14 @@ impl App {
                 &self.lib,
                 self.folder_cur(),
                 self.folder_scroll_px,
+                self.sbar_active(),
+            ),
+            Screen::Books => crate::audiobooks::render(
+                c,
+                &theme,
+                fonts,
+                &self.lib,
+                self.books_scroll_px,
                 self.sbar_active(),
             ),
             Screen::SensMe => crate::sensme::render(
@@ -13078,6 +13141,7 @@ mod tests {
             Screen::GenreFilter,
             Screen::Folders,
             Screen::SensMe,
+            Screen::Books,
             Screen::TrackInfo,
             Screen::Lyrics,
             Screen::PlaylistPick,
@@ -15088,6 +15152,7 @@ mod tests {
             Screen::UpNext,
             Screen::Folders,
             Screen::SensMe,
+            Screen::Books,
         ];
         for s in reserves {
             assert!(
@@ -15149,6 +15214,7 @@ mod tests {
             Screen::GenreFilter,
             Screen::Folders,
             Screen::SensMe,
+            Screen::Books,
             Screen::TrackInfo,
             Screen::Lyrics,
             Screen::Search,
@@ -15243,6 +15309,87 @@ mod tests {
         assert_eq!(a.current(), Screen::Menu);
         a.press(Button::Back);
         assert_eq!(a.current(), Screen::NowPlaying);
+    }
+
+    // ── Audiobooks ─────────────────────────────────────────────────────────────────────────────
+
+    fn books_lib(n: usize) -> Library {
+        Library {
+            books: (0..n)
+                .map(|i| crate::model::BookRow {
+                    title: format!("Book {i}"),
+                    dir: format!("/contents/LEARNING/Author/Book {i}"),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The header's book button is right of the lens and opens the Audiobooks list; Back returns to
+    /// the Library on the tab it was left on.
+    #[test]
+    fn the_header_book_button_opens_the_audiobooks_and_back_returns() {
+        for search in [false, true] {
+            let mut a = unlocked();
+            a.search_enabled = search;
+            a.set_library(books_lib(3));
+            a.push_for_test(Screen::Library);
+            a.lib_tab = Tab::Artists;
+            let (x0, x1) = library::book_button_x(search);
+            assert_eq!(
+                a.tap((x0 + x1) / 2, 62),
+                vec![],
+                "opening a list plays nothing"
+            );
+            assert_eq!(a.current(), Screen::Books, "search {search}");
+            a.press(Button::Back);
+            assert_eq!(a.current(), Screen::Library);
+            assert_eq!(a.lib_tab, Tab::Artists, "the tab is where it was");
+        }
+    }
+
+    /// No audiobooks, no button: that spot is the caption's, and a tap there must not open an
+    /// empty screen.
+    #[test]
+    fn without_audiobooks_the_header_has_no_book_button() {
+        let mut a = unlocked();
+        a.set_library(books_lib(0));
+        a.push_for_test(Screen::Library);
+        let (x0, x1) = library::book_button_x(a.search_enabled);
+        a.tap((x0 + x1) / 2, 62);
+        assert_eq!(a.current(), Screen::Library);
+    }
+
+    /// A tap on a row asks the shell to play THAT book.
+    #[test]
+    fn tapping_a_book_plays_that_book() {
+        let mut a = unlocked();
+        a.set_library(books_lib(4));
+        a.push_for_test(Screen::Books);
+        for i in 0..4 {
+            let y = crate::audiobooks::row_top(&a.lib, i, 0) + crate::audiobooks::ROW_H / 2;
+            assert_eq!(a.tap(240, y), vec![Action::PlayBook(i)], "row {i}");
+        }
+        assert_eq!(
+            a.tap(
+                240,
+                crate::audiobooks::row_top(&a.lib, 3, 0) + crate::audiobooks::ROW_H + 5
+            ),
+            vec![]
+        );
+    }
+
+    /// A scrolled list plays the row that is under the finger, not the one at the same place
+    /// unscrolled.
+    #[test]
+    fn a_scrolled_audiobook_list_plays_the_row_under_the_finger() {
+        let mut a = unlocked();
+        a.set_library(books_lib(30));
+        a.push_for_test(Screen::Books);
+        a.scroll_px(crate::audiobooks::ROW_H * 5);
+        let y = crate::audiobooks::TOP + crate::audiobooks::ROW_H / 2;
+        assert_eq!(a.tap(240, y), vec![Action::PlayBook(5)]);
     }
 
     // ── SensMe channels ────────────────────────────────────────────────────────────────────────

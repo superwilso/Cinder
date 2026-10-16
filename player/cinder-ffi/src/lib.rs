@@ -13,6 +13,7 @@
 
 mod art_cache;
 mod art_load;
+mod books;
 mod likes;
 mod lyrics;
 mod pcm_tap;
@@ -612,6 +613,17 @@ struct Render {
     stats: stats::Store,
     /// The play counter's own listen clock, fed beside the scrobbler's.
     listen: stats::Listen,
+    /// Where the listener is in each audiobook (`books.rs`), by book folder.
+    books: books::Store,
+    /// When the books store last changed, so a burst of saves is one write.
+    books_changed: std::time::Instant,
+    /// One-shot: how far into the chapter to seek once the sequence a `PlayBook` queued is playing.
+    /// The shell takes it with `cinder_take_play_seek_ms`.
+    book_seek_ms: i64,
+    /// The chapter (path, position ms, when) a `PlayBook` just started. Until playback reaches that
+    /// position, a saved position EARLIER than it is the chapter's first moments before the seek
+    /// lands, not the listener going back, and must not overwrite the place being resumed.
+    book_hold: Option<(String, i64, std::time::Instant)>,
     /// When the stats were last changed, so a burst of edits is written once.
     stats_changed: std::time::Instant,
     /// Where the saved views live (`/contents/cinder_views.conf`); None until the library opens.
@@ -793,6 +805,10 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         plists: playlists::Store::default(),
         stats: stats::Store::default(),
         listen: stats::Listen::default(),
+        books: books::Store::default(),
+        books_changed: std::time::Instant::now(),
+        book_seek_ms: 0,
+        book_hold: None,
         stats_changed: std::time::Instant::now(),
         views_path: None,
         views_saved: String::new(),
@@ -1313,6 +1329,69 @@ fn flush_stats(r: &mut Render, now: bool) {
     }
 }
 
+/// Write the audiobook places if they changed and have settled for a few seconds. `now` forces it
+/// (before the volume is handed to a PC, and at shutdown).
+fn flush_books(r: &mut Render, now: bool) {
+    if !r.books.is_dirty() || (!now && r.books_changed.elapsed().as_secs() < 3) {
+        return;
+    }
+    if let Err(e) = r.books.flush() {
+        r.books_changed = std::time::Instant::now();
+        eprintln!("cinder-ffi: audiobook places not written ({e}) — kept in memory, will retry");
+    }
+}
+
+/// If the track playing is an audiobook chapter, remember how far into it the listener is — and
+/// that the book is finished once its last chapter nears its end. Called on the resume file's
+/// cadence (`RESUME_POS_EVERY`), and forced on a pause.
+fn record_book_pos(r: &mut Render) {
+    // No books in the library means the component is off (or nothing is in `LEARNING`): a file
+    // there is then just music and has no place to keep.
+    if r.app.library().books.is_empty() {
+        return;
+    }
+    let Some(t) = r.last_track.as_ref() else {
+        return;
+    };
+    let Some(dir) = books::book_dir(&t.filename) else {
+        return;
+    };
+    let (dir, file) = (dir.to_string(), t.filename.clone());
+    let pos = (r.play_pos_ms.max(0) / 1000) * 1000;
+    if let Some((held, want, at)) = r.book_hold.as_ref() {
+        if books::holds_back(held, *want, at.elapsed().as_secs(), &file, pos) {
+            return;
+        }
+        r.book_hold = None;
+    }
+    let (idx, n) = r
+        .app
+        .library()
+        .books
+        .iter()
+        .find(|b| b.dir == dir)
+        .map_or((0, 0), |b| {
+            (
+                b.paths.iter().position(|p| *p == file).unwrap_or(0),
+                b.paths.len(),
+            )
+        });
+    if books::is_finished(idx, n, r.play_pos_ms, r.cur_duration_ms) {
+        r.books.finish(&dir, &file);
+    } else {
+        r.books.record(&dir, &file, pos);
+    }
+    if r.books.is_dirty() {
+        r.books_changed = std::time::Instant::now();
+        // The list's label follows, but a redraw is only owed when that list is on screen.
+        let r_books = &r.books;
+        r_books.apply(&mut r.app.library_mut().books);
+        if r.app.current() == cinder_ui::nav::Screen::Books {
+            r.dirty = true;
+        }
+    }
+}
+
 /// Read the player's palette folder into the navigator.
 ///
 /// A folder that does not exist means "no palettes". Any OTHER failure — the volume handed to a
@@ -1407,17 +1486,18 @@ fn save_resume_pos(r: &mut Render, force: bool) {
     let Some(path) = r.resume_pos_path.clone() else {
         return;
     };
-    let Some(t) = r.last_track.as_ref() else {
+    let Some(object_id) = r.last_track.as_ref().map(|t| t.object_id) else {
         return;
     };
     if !force && r.resume_pos_at.elapsed() < RESUME_POS_EVERY {
         return;
     }
+    record_book_pos(r);
     // Second granularity: the file is compared before it is written, so a paused player stops
     // writing entirely instead of rewriting the same millisecond count forever.
     let body = format!(
         "track={}\npos={}\n",
-        t.object_id,
+        object_id,
         (r.play_pos_ms.max(0) / 1000) * 1000
     );
     r.resume_pos_at = std::time::Instant::now();
@@ -1474,12 +1554,16 @@ const NO_ALBUM_ID: i64 = i64::MIN;
 
 #[cfg(test)]
 fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
-    build_library_with(db, None)
+    build_library_with(db, None, true)
 }
 
 /// [`build_library`], with the stats store read against the tracks while their paths are in hand
 /// — the store is keyed by path and the UI by object id, and this is the one place both exist.
-fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinder_ui::Library {
+fn build_library_with(
+    db: &cinder_db::Db,
+    stats: Option<&stats::Store>,
+    audiobooks: bool,
+) -> cinder_ui::Library {
     use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, SongRow};
     use std::collections::BTreeMap;
 
@@ -1512,10 +1596,25 @@ fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinde
     // A FAILED QUERY SAYS SO. These three used to be `unwrap_or_default()`, which turned any error
     // into an empty list and logged nothing — so a library that would not read looked exactly like a
     // card with no music on it (reported 2026-09-13: `library loaded — 0 tracks`, no reason given).
-    let tracks = db.tracks(cinder_db::Sort::Title).unwrap_or_else(|e| {
+    let all_tracks = db.tracks(cinder_db::Sort::Title).unwrap_or_else(|e| {
         eprintln!("cinder-ffi: track query FAILED — {e} (the library will show no songs)");
         Vec::new()
     });
+    // AUDIOBOOKS ARE NOT MUSIC. With the component on, everything under `LEARNING` goes to the
+    // Audiobooks screen and is kept out of Songs, Albums, Artists, Folders and every shuffle built
+    // from them. With it off (the installer's choice, `audiobooks_enabled`) nothing is set apart
+    // and those files are music, as they were before the component existed.
+    let (book_tracks, tracks): (Vec<cinder_db::Track>, Vec<cinder_db::Track>) = all_tracks
+        .into_iter()
+        .partition(|t| audiobooks && books::is_audiobook(&t.filename));
+    let books = books::rows(&book_tracks, song_row_of);
+    if !books.is_empty() {
+        eprintln!(
+            "cinder-ffi: audiobooks: {} books, {} chapters",
+            books.len(),
+            book_tracks.len()
+        );
+    }
     let ms_tracks = t_phase.elapsed().as_millis();
     let track_stats = stats
         .map(|s| s.by_object_id(tracks.iter().map(|t| (t.object_id, t.filename.as_str()))))
@@ -1605,7 +1704,10 @@ fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinde
     });
     let ms_album_order = t_phase.elapsed().as_millis();
     let t_phase = std::time::Instant::now();
-    for t in album_order_rows {
+    for t in album_order_rows
+        .into_iter()
+        .filter(|t| !(audiobooks && books::is_audiobook(&t.filename)))
+    {
         if let Some(aid) = t.album_id {
             let a = album_added.entry(aid).or_insert(0);
             if t.added > *a {
@@ -1632,8 +1734,20 @@ fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinde
         Vec::new()
     });
     let ms_albums = t_phase.elapsed().as_millis();
+    // An album that holds only audiobook chapters is a book, not an album. (One that mixes the two
+    // stays, with its music tracks.)
+    let book_only_albums: std::collections::HashSet<i64> = {
+        let music: std::collections::HashSet<i64> =
+            tracks.iter().filter_map(|t| t.album_id).collect();
+        book_tracks
+            .iter()
+            .filter_map(|t| t.album_id)
+            .filter(|id| !music.contains(id))
+            .collect()
+    };
     let mut album_rows: Vec<AlbumRow> = album_list
         .into_iter()
+        .filter(|a| !book_only_albums.contains(&a.id))
         .map(|a| {
             let trs = album_tracks.remove(&a.id).unwrap_or_default();
             let mut artist = album_artist.get(&a.id).cloned().unwrap_or_default();
@@ -1835,6 +1949,7 @@ fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinde
         // The App's layouts, applied by `set_library` like `ignore_the`.
         views: Default::default(),
         covers: Default::default(),
+        books,
     };
     // The channel table is a reverse-engineering finding and lives with the akeys that produced it
     // (`cinder_db::SENSME_CHANNELS`); cinder-ui is DB-free and is handed it. `build_channels` is
@@ -1975,7 +2090,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 44] = [
+const SCREEN_NAMES: [&str; 45] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2022,6 +2137,7 @@ const SCREEN_NAMES: [&str; 44] = [
     "?",
     "?",
     "Profiles",
+    "Books",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2071,6 +2187,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::ViewEdit => 39,
         S::Soundscape => 40,
         S::Profiles => 43,
+        S::Books => 44,
     }
 }
 
@@ -3248,13 +3365,20 @@ fn play_order(lead: Option<&str>, rest: impl IntoIterator<Item = Option<String>>
 /// Matches on ALBUM ARTIST with the track artist as the
 /// fallback — the same `group_artist` rule the Artists tab is built with, so the row's track count
 /// and what this plays are the same set.
-fn artist_tracks(db: Option<&cinder_db::Db>, name: &str) -> Option<Vec<cinder_db::Track>> {
+fn artist_tracks(
+    db: Option<&cinder_db::Db>,
+    name: &str,
+    books_on: bool,
+) -> Option<Vec<cinder_db::Track>> {
     let db = db?;
     let v: Vec<cinder_db::Track> = db
         .tracks(cinder_db::Sort::Artist)
         .ok()?
         .into_iter()
         .filter(|t| {
+            if books_on && books::is_audiobook(&t.filename) {
+                return false;
+            }
             let group = if t.album_artist.trim().is_empty() {
                 &t.artist
             } else {
@@ -3304,10 +3428,15 @@ fn shuffle_tracks(
     db: Option<&cinder_db::Db>,
     scope: cinder_ui::nav::ShuffleScope,
     keep: &dyn Fn(&cinder_db::Track) -> bool,
+    books_on: bool,
 ) -> Option<(Vec<cinder_db::Track>, Vec<i64>)> {
     use cinder_ui::nav::ShuffleScope as S;
     let db = db?;
     let mut rng = Rng::new();
+    // A shuffle of "everything", of albums or of artists is a shuffle of the MUSIC: a book's
+    // chapters dealt among songs would be unlistenable. (A playlist is the user's own choice.)
+    let keep_music =
+        |t: &cinder_db::Track| keep(t) && !(books_on && books::is_audiobook(&t.filename));
 
     // THE FILTER IS APPLIED BEFORE THE SCOPE IS PICKED, not after it is shuffled. Two reasons:
     // a random artist or playlist has to be picked from what SURVIVES the filter, or the band
@@ -3321,7 +3450,7 @@ fn shuffle_tracks(
                 .tracks(cinder_db::Sort::Title)
                 .ok()?
                 .into_iter()
-                .filter(|t| keep(t))
+                .filter(|t| keep_music(t))
                 .collect();
             let pre = v.iter().map(|t| t.object_id).collect();
             rng.shuffle(&mut v);
@@ -3334,7 +3463,7 @@ fn shuffle_tracks(
                 .tracks_album_order()
                 .ok()?
                 .into_iter()
-                .filter(|t| keep(t))
+                .filter(|t| keep_music(t))
                 .collect();
             let pre: Vec<i64> = tracks.iter().map(|t| t.object_id).collect();
             let mut albums: Vec<Vec<cinder_db::Track>> = Vec::new();
@@ -3356,7 +3485,7 @@ fn shuffle_tracks(
             let mut by_artist: std::collections::BTreeMap<String, Vec<cinder_db::Track>> =
                 Default::default();
             for t in tracks {
-                if !t.artist.is_empty() && keep(&t) {
+                if !t.artist.is_empty() && keep_music(&t) {
                     by_artist.entry(t.artist.clone()).or_default().push(t);
                 }
             }
@@ -3432,6 +3561,22 @@ fn sensme_tracks(
     let resolved = db.tracks_by_object_ids(&ids).ok()?;
     // Driven by the ids, so the order on screen is the order that plays; a member whose file has
     // gone is skipped rather than failing the whole channel.
+    let tracks: Vec<cinder_db::Track> = ids
+        .iter()
+        .filter_map(|id| resolved.get(id).cloned())
+        .collect();
+    (!tracks.is_empty()).then_some(tracks)
+}
+
+/// The chapters of one audiobook as playable tracks, in the book's order. A chapter whose file has
+/// gone is skipped rather than failing the whole book.
+fn book_tracks(
+    db: Option<&cinder_db::Db>,
+    book: &cinder_ui::model::BookRow,
+) -> Option<Vec<cinder_db::Track>> {
+    let db = db?;
+    let ids: Vec<i64> = book.chapters.iter().map(|c| c.object_id).collect();
+    let resolved = db.tracks_by_object_ids(&ids).ok()?;
     let tracks: Vec<cinder_db::Track> = ids
         .iter()
         .filter_map(|id| resolved.get(id).cloned())
@@ -3874,6 +4019,40 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 }
             }
         }
+        Action::PlayBook(i) => {
+            // The book IS the context, as a playlist is: its chapters in order, from the saved
+            // chapter, and the shell seeks to the saved position once the sequence is playing.
+            let Some(book) = r.app.library().books.get(*i).cloned() else {
+                eprintln!("cinder-ffi: PlayBook({i}): no such book — ignored");
+                return None;
+            };
+            match book_tracks(r.db.as_ref(), &book) {
+                Some(seq) => {
+                    let files: Vec<String> = seq.iter().map(|t| t.filename.clone()).collect();
+                    let (start, pos) = books::start_point(&r.books, &book, &files);
+                    r.book_seek_ms = pos;
+                    r.book_hold =
+                        (pos > 0).then(|| (files[start].clone(), pos, std::time::Instant::now()));
+                    play_in_order(r);
+                    set_pending(r, seq, start);
+                    eprintln!(
+                        "cinder-ffi: PlayBook({}): chapter {} of {} at {} ms",
+                        book.title,
+                        start + 1,
+                        book.paths.len(),
+                        pos
+                    );
+                    8
+                }
+                None => {
+                    eprintln!(
+                        "cinder-ffi: PlayBook({}): nothing playable in it",
+                        book.title
+                    );
+                    return None;
+                }
+            }
+        }
         Action::PlaySensMe {
             chan,
             from,
@@ -3939,7 +4118,8 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                         })
                 }
             };
-            match shuffle_tracks(r.db.as_ref(), *scope, &keep) {
+            let books_on = !r.app.library().books.is_empty();
+            match shuffle_tracks(r.db.as_ref(), *scope, &keep, books_on) {
                 Some((seq, pre)) => {
                     // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
                     // the shuffle band on Albums / All Songs started a shuffled sequence but left
@@ -4188,7 +4368,8 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     return None;
                 }
             };
-            match artist_tracks(r.db.as_ref(), &name) {
+            let books_on = !r.app.library().books.is_empty();
+            match artist_tracks(r.db.as_ref(), &name, books_on) {
                 Some(mut seq) => {
                     // Same as the playlist band: remember the catalogue order before permuting it.
                     let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
@@ -4233,6 +4414,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::EnterUsbMsc => {
             // The volume is about to go to the PC: write what is pending while it is still ours.
             flush_stats(r, true);
+            flush_books(r, true);
             11
         }
         Action::ExitUsbMsc => 19,
@@ -6207,6 +6389,7 @@ pub extern "C" fn cinder_clock_tick() {
         // moment the position stops moving, so the compare makes it a single write.
         save_resume(r);
         save_resume_pos(r, !r.np.playing);
+        flush_books(r, false);
 
         // A queue edit goes to the shell on the next pass, while the song plays. The shell edits
         // the sequence PlayerService pulls from in place (cinder_audio_edit_sequence): nothing is
@@ -7086,6 +7269,7 @@ pub extern "C" fn cinder_resume_flush() {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         save_resume(r);
         save_resume_pos(r, true);
+        flush_books(r, true);
     }
 }
 
@@ -7458,7 +7642,15 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     }
     let track_stats = stats::Store::open(stats::PATH);
     let t_phase = std::time::Instant::now();
-    let lib = build_library_with(&db, Some(&track_stats));
+    let audiobooks = books::enabled();
+    let mut lib = build_library_with(&db, Some(&track_stats), audiobooks);
+    // Where the listener is in each audiobook. Anything this side has not written yet goes out
+    // first, for the reason the stats file does.
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        flush_books(r, true);
+    }
+    let book_places = books::Store::open(books::PATH);
+    book_places.apply(&mut lib.books);
     let ms_build = t_phase.elapsed().as_millis();
     eprintln!(
         "cinder-ffi: track stats: {} rated or played",
@@ -7592,6 +7784,9 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     // Keep the memory if the flush above could not write it: it is newer than the file.
     if !r.stats.is_dirty() {
         r.stats = track_stats;
+    }
+    if !r.books.is_dirty() {
+        r.books = book_places;
     }
     load_views(r, VIEWS_PATH);
     // WAS 3,802 ms OF THE BOOT — 83% of the whole dead time, in this one call. See
@@ -7814,6 +8009,17 @@ pub extern "C" fn cinder_play_position_ms() -> libc::c_int {
     cell().lock().unwrap().as_ref().map_or(0, |r| {
         r.play_pos_ms.clamp(0, i32::MAX as i64) as libc::c_int
     })
+}
+
+/// How far into the first chapter to seek, in ms, for the sequence a play of an audiobook just
+/// handed over; 0 when there is nothing to seek to. One-shot: reading it clears it, so it cannot
+/// leak into the next thing played. The shell calls it straight after starting the sequence.
+#[no_mangle]
+pub extern "C" fn cinder_take_play_seek_ms() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let ms = std::mem::take(&mut r.book_seek_ms);
+    ms.clamp(0, i32::MAX as i64) as libc::c_int
 }
 
 /// Tell the UI that playback jumped to `ms` because the SHELL seeked on its own (the ◁ rewind
@@ -8466,6 +8672,7 @@ mod tests {
             S::ViewEdit,
             S::Soundscape,
             S::Profiles,
+            S::Books,
         ];
         // Two ordinals (41, 42) are spare — see SCREEN_NAMES.
         const RESERVED: usize = 2;
@@ -8964,6 +9171,107 @@ mod tests {
         assert_eq!(bfl_artist.albums, 1);
     }
 
+    /// The fixture library plus three audiobook chapters in two books by one author, filed the way
+    /// Sony's scanner files them: under a `LEARNING` folder at the root of internal storage.
+    fn fixture_db_with_books() -> cinder_db::Db {
+        let db = fixture_db();
+        db.conn()
+            .execute_batch(
+                r#"
+            INSERT INTO albums  VALUES (12,0,'book a','book a','Book A');
+            INSERT INTO albums  VALUES (13,0,'book b','book b','Book B');
+            INSERT INTO artists VALUES (22,0,'author one','author one','Author One',NULL,0,0,0,0);
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,albumartist_id,addedtime)
+              VALUES (101,1,1,'Chapter 2','/contents/LEARNING/Author One/Book A/02.mp3',2,1,0,12,22,22,6000);
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,albumartist_id,addedtime)
+              VALUES (102,1,1,'Chapter 1','/contents/LEARNING/Author One/Book A/01.mp3',1,1,0,12,22,22,6000);
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,albumartist_id,addedtime)
+              VALUES (103,1,1,'Prologue','/contents/LEARNING/Author One/Book B/01.mp3',1,1,0,13,22,22,6001);
+            "#,
+            )
+            .unwrap();
+        db
+    }
+
+    /// Audiobooks have their own screen. They must not turn up in Songs, Albums or Artists — the
+    /// music library is exactly what it was without them.
+    #[test]
+    fn audiobooks_stay_out_of_the_music_library() {
+        let lib = build_library(&fixture_db_with_books());
+        assert_eq!(lib.songs.len(), 3, "no chapter in Songs");
+        assert_eq!(lib.album_count(), 2, "no book among the albums");
+        assert_eq!(lib.artists.len(), 2, "no author among the artists");
+        assert!(!lib.songs.iter().any(|s| s.title.starts_with("Chapter")));
+    }
+
+    /// The same rows, kept: grouped one book per folder, chapters in file order, by author.
+    #[test]
+    fn audiobooks_are_grouped_one_book_per_folder() {
+        let lib = build_library(&fixture_db_with_books());
+        let names: Vec<(&str, &str, usize)> = lib
+            .books
+            .iter()
+            .map(|b| (b.author.as_str(), b.title.as_str(), b.chapters.len()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("Author One", "Book A", 2), ("Author One", "Book B", 1)]
+        );
+        let a = &lib.books[0];
+        assert_eq!(a.dir, "/contents/LEARNING/Author One/Book A");
+        // inserted as 02 then 01: the chapters come back in file order
+        let titles: Vec<&str> = a.chapters.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["Chapter 1", "Chapter 2"]);
+        assert!(a.paths[0].ends_with("/01.mp3") && a.paths[1].ends_with("/02.mp3"));
+        assert!(fixture_db().tracks(cinder_db::Sort::Title).is_ok());
+        assert!(build_library(&fixture_db()).books.is_empty());
+    }
+
+    /// "Shuffle everything" and "shuffle by artist" are about music; with audiobooks on, a book's
+    /// chapters are never dealt among songs. With the component off they are music like any other.
+    #[test]
+    fn shuffles_and_artist_play_leave_audiobooks_out_when_the_component_is_on() {
+        let db = fixture_db_with_books();
+        for scope in [
+            cinder_ui::nav::ShuffleScope::AllSongs,
+            cinder_ui::nav::ShuffleScope::ByAlbum,
+            cinder_ui::nav::ShuffleScope::ByArtist,
+        ] {
+            for _ in 0..8 {
+                let (v, _) = shuffle_tracks(Some(&db), scope, &|_| true, true).unwrap();
+                assert!(
+                    v.iter().all(|t| !books::is_audiobook(&t.filename)),
+                    "{scope:?}"
+                );
+            }
+        }
+        assert!(artist_tracks(Some(&db), "Author One", true).is_none());
+        // Off: the author is an ordinary artist and the chapters are tracks.
+        assert_eq!(
+            artist_tracks(Some(&db), "Author One", false).unwrap().len(),
+            3
+        );
+        let (all, _) = shuffle_tracks(
+            Some(&db),
+            cinder_ui::nav::ShuffleScope::AllSongs,
+            &|_| true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(all.len(), 6, "every track, chapters included");
+    }
+
+    /// The installer's option off: nothing is set apart. The library is what it was before
+    /// audiobooks existed — `LEARNING` files are songs, books are albums — and there is no list.
+    #[test]
+    fn with_the_component_off_the_learning_folder_is_just_music() {
+        let lib = build_library_with(&fixture_db_with_books(), None, false);
+        assert!(lib.books.is_empty(), "no book list, so no book button");
+        assert_eq!(lib.songs.len(), 6, "the chapters are songs");
+        assert_eq!(lib.album_count(), 4, "and the books are albums");
+        assert_eq!(lib.artists.len(), 3, "and the author is an artist");
+    }
+
     /// SensMe reaches the browsable library: the bitmasks land on the song rows, the channels are
     /// built from them, empty channels are dropped, and an unanalysed track is in none of them.
     #[test]
@@ -9096,7 +9404,7 @@ mod tests {
         store.count_play(&guest.filename, 1_790_000_000);
         store.rate("/music/not-in-the-library.flac", 3);
 
-        let lib = build_library_with(&db, Some(&store));
+        let lib = build_library_with(&db, Some(&store), true);
         let row = |id: i64| lib.songs.iter().find(|s| s.object_id == id).unwrap();
         assert_eq!(
             row(own.object_id).album_artist,
@@ -9195,7 +9503,7 @@ mod tests {
         .into_iter()
         .collect();
         for scope in [S::AllSongs, S::ByAlbum, S::ByArtist, S::Playlist] {
-            let (seq, pre) = shuffle_tracks(Some(&db), scope, &keep_all)
+            let (seq, pre) = shuffle_tracks(Some(&db), scope, &keep_all, false)
                 .unwrap_or_else(|| panic!("{scope:?} empty"));
             let uris = uris_of(seq.clone());
             assert!(!uris.is_empty());
@@ -9219,14 +9527,14 @@ mod tests {
         }
         // AllSongs is the whole library; ByAlbum keeps every track too (it only reorders albums).
         assert_eq!(
-            shuffle_tracks(Some(&db), S::AllSongs, &keep_all)
+            shuffle_tracks(Some(&db), S::AllSongs, &keep_all, false)
                 .unwrap()
                 .0
                 .len(),
             3
         );
         assert_eq!(
-            shuffle_tracks(Some(&db), S::ByAlbum, &keep_all)
+            shuffle_tracks(Some(&db), S::ByAlbum, &keep_all, false)
                 .unwrap()
                 .0
                 .len(),
@@ -9246,13 +9554,13 @@ mod tests {
         // than doing nothing and saying so.
         let keep_none = |_: &cinder_db::Track| false;
         for scope in [S::AllSongs, S::ByAlbum, S::ByArtist, S::Playlist] {
-            if let Some((seq, _)) = shuffle_tracks(Some(&db), scope, &keep_none) {
+            if let Some((seq, _)) = shuffle_tracks(Some(&db), scope, &keep_none, false) {
                 panic!("{scope:?} ignored the filter: {} tracks", seq.len());
             }
         }
         // …and a predicate that keeps one track keeps exactly that one.
         let one = |t: &cinder_db::Track| t.filename == "/music/harvest.flac";
-        let (seq, pre) = shuffle_tracks(Some(&db), S::AllSongs, &one).expect("one survivor");
+        let (seq, pre) = shuffle_tracks(Some(&db), S::AllSongs, &one, false).expect("one survivor");
         assert_eq!(uris_of(seq), vec!["/music/harvest.flac".to_string()]);
         assert_eq!(pre.len(), 1);
     }
@@ -9289,7 +9597,11 @@ mod tests {
         let db = fixture_db();
         // Album 10 = atlas then box (series_no 1,2); album 11 = harvest alone.
         for _ in 0..25 {
-            let uris = uris_of(shuffle_tracks(Some(&db), S::ByAlbum, &keep_all).unwrap().0);
+            let uris = uris_of(
+                shuffle_tracks(Some(&db), S::ByAlbum, &keep_all, false)
+                    .unwrap()
+                    .0,
+            );
             let atlas = uris.iter().position(|u| u == "/music/atlas.flac").unwrap();
             let boxs = uris.iter().position(|u| u == "/music/box.flac").unwrap();
             assert_eq!(boxs, atlas + 1, "album 10 was split or reordered: {uris:?}");
@@ -9481,7 +9793,13 @@ mod tests {
     /// No DB → no action (rather than an empty queue).
     #[test]
     fn shuffle_without_db_is_ignored() {
-        assert!(shuffle_tracks(None, cinder_ui::nav::ShuffleScope::AllSongs, &keep_all).is_none());
+        assert!(shuffle_tracks(
+            None,
+            cinder_ui::nav::ShuffleScope::AllSongs,
+            &keep_all,
+            false
+        )
+        .is_none());
     }
 
     /// Unknown id, or no DB at all → no action, rather than handing the shell an empty sequence.

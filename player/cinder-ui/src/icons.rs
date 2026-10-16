@@ -344,6 +344,29 @@ pub fn search(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     polyline(c, cx, cy, s, col, w, &[(15.3, 15.3), (20.0, 20.0)]);
 }
 
+/// An open book: two pages meeting at the spine. The Library header's Audiobooks button.
+pub fn book(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let w = stroke_w(s);
+    polyline(
+        c,
+        cx,
+        cy,
+        s,
+        col,
+        w,
+        &[
+            (3.0, 5.5),
+            (12.0, 8.0),
+            (21.0, 5.5),
+            (21.0, 18.5),
+            (12.0, 21.0),
+            (3.0, 18.5),
+            (3.0, 5.5),
+        ],
+    );
+    polyline(c, cx, cy, s, col, w, &[(12.0, 8.0), (12.0, 21.0)]);
+}
+
 pub fn chevron(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     let w = stroke_w(s).max(2);
     polyline(

@@ -131,6 +131,45 @@ The handoff's saved view also has *show as* and *pin to the Library bar*. Both b
 Library view bar, which is not built yet (R3), so the file has no keys for them. They will be added
 as new keys, which older builds will ignore.
 
+## `cinder_books.tsv` — where you are in each audiobook
+
+*Added 2026-10-15 ([`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §37). Host-tested only.*
+
+Audiobooks are an installer option (off by default): it leaves `/data/cinder/audiobooks_on`, and
+without that file none of this applies and `LEARNING` is ordinary music.
+
+An **audiobook** is a track under a `LEARNING` folder at the root of either volume
+(`/contents/LEARNING/…`, `/contents_ext/LEARNING/…`; the folder name's case does not matter). A
+**book** is the folder that directly holds the files, so `LEARNING/author_1/book1/` and
+`LEARNING/author_1/book_2/` are two books and each has its own place. The files in a book are its
+chapters, in file-name order with numbers compared as numbers (`2` before `10`).
+
+```
+#CINDER-BOOKS/1
+# folder<TAB>chapter file<TAB>position_ms<TAB>finished
+/contents/LEARNING/Le Guin/Earthsea/02.mp3<TAB>/contents/LEARNING/Le Guin/Earthsea/02.mp3<TAB>754000<TAB>0
+```
+
+(The first column is the book's folder, the second the chapter's file; `<TAB>` is one tab.)
+
+| Column | Meaning |
+|---|---|
+| `folder` | The book's folder path, as the player sees it. The key |
+| `chapter` | The file the listener was in. A chapter that is no longer in the book reads as "start of the book" |
+| `position_ms` | Milliseconds into that chapter, whole seconds. A 64-bit number in the code |
+| `finished` | `1` once the last chapter is within 10 seconds of its end (or within a tenth of it, for a chapter shorter than that). A finished book starts again from its first chapter |
+
+* Keyed by **folder path**, not by Sony's object id, for the reason ratings are keyed by file path:
+  every rescan re-issues the ids.
+* A book with no line has not been started. Lines starting with `#` are comments; a line that does
+  not read is skipped on its own.
+* Saved about every five seconds while a book plays, at once on a pause, before the volume is handed
+  to a PC and before a power-off; written through a temporary file and a rename.
+* If the file changed while the player held it, this side's books win for the ones it changed since
+  its last write and every other book is the file's.
+* Audiobooks are kept out of Songs, Albums, Artists, Folders, search and the shuffles. A playlist
+  may still hold an audiobook file, because a playlist is the owner's own choice.
+
 ## Code
 
 | | |
@@ -139,6 +178,9 @@ as new keys, which older builds will ignore.
 | Stats for the UI, by object id | `cinder_ui::model::TrackStat`, `Library::stats`, `Library::album_rating` |
 | Saved views | `player/cinder-ui/src/views.rs` (`SavedView`, `parse`, `serialize`) |
 | Load and save | `cinder-ffi/src/lib.rs`: `load_views`, `save_views`, `flush_stats` |
+| Audiobooks: which files, the store | `player/cinder-ffi/src/books.rs` (`book_dir`, `rows`, `Store`, `start_point`) |
+| Audiobooks: saving and playing | `cinder-ffi/src/lib.rs`: `record_book_pos`, `flush_books`, `Action::PlayBook` |
+| Audiobooks: the screen | `player/cinder-ui/src/audiobooks.rs`, the header button in `library.rs` |
 
 ## Tests
 
@@ -146,3 +188,6 @@ as new keys, which older builds will ignore.
 rule. `cargo test -p cinder-ui views::` — each rule, each sort, an unknown clock, the file's round
 trip. `cargo test -p cinder-ui r4_tests` — rating, smart playlists and the playlist editor driven by
 taps.
+`cargo test -p cinder-ffi books::` — the path rules, natural chapter order, the store, the resume
+point, the finished rule. `cargo test -p cinder-ui audiobooks` and `the_header_book_button` —
+the list and the header button.
