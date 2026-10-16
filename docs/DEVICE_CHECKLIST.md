@@ -939,7 +939,7 @@ side. Not proven.
 ## 37 — 2026-10-15 — Audiobooks
 
 Host-tested: 27 tests, three harness scenarios, the screen in the overflow and golden gates.
-**2026-10-15: the owner installed it on their player and reports it works and is "already very good"**
+**2026-10-15: the PR author (plaquette) installed it on their NW-A55 and reports it works and is "already very good"**
 (reported as a whole, so the rows below are not ticked individually). One assumption is unmeasured: that Sony's scanner files the
 contents of `LEARNING` as ordinary audio rows (`media_type = 1`) in `/db/MTPDB.dat`. Its scanner is
 configured for `MUSIC` and `LEARNING` (`g_ms_dirs`), so it should, but no player has been asked.
