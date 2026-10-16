@@ -2965,6 +2965,17 @@ fn shuffle_off(np: &mut Np) -> bool {
     std::mem::replace(&mut np.shuffle, false)
 }
 
+/// A book plays through once: repeat all or album would start it again and lose its FINISHED mark,
+/// so either ends off. Repeat one is left as set: it lives in the audio shim, and the indicator
+/// still says so. True when it changed, so it is saved.
+fn loop_off(np: &mut Np) -> bool {
+    let looped = matches!(np.repeat, 2 | REPEAT_ALBUM);
+    if looped {
+        np.repeat = 0;
+    }
+    looped
+}
+
 /// Is a release-year label worth printing? Sony's `releaseyears` table spells "unknown" as `"0"`.
 fn is_real_year(y: &str) -> bool {
     let y = y.trim();
@@ -4033,6 +4044,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     r.book_seek_ms = pos;
                     r.book_hold =
                         (pos > 0).then(|| (files[start].clone(), pos, std::time::Instant::now()));
+                    if loop_off(&mut r.np) {
+                        r.album_lap_staged = false;
+                        save_settings(r);
+                    }
                     play_in_order(r);
                     set_pending(r, seq, start);
                     eprintln!(
@@ -8479,6 +8494,24 @@ mod tests {
         assert!(!np.shuffle);
         assert!(!super::shuffle_off(&mut np), "already off: nothing to save");
         assert!(!np.shuffle);
+    }
+
+    /// Starting a book ends repeat all and repeat album, keeps repeat one, and reports only a change.
+    #[test]
+    fn a_book_ends_repeat_all_and_album_but_not_one() {
+        for (was, now, changed) in [
+            (2, 0, true),
+            (REPEAT_ALBUM, 0, true),
+            (1, 1, false),
+            (0, 0, false),
+        ] {
+            let mut np = super::Np {
+                repeat: was,
+                ..Default::default()
+            };
+            assert_eq!(super::loop_off(&mut np), changed, "repeat {was}");
+            assert_eq!(np.repeat, now, "repeat {was}");
+        }
     }
 
     use super::*;
