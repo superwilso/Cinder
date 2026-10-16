@@ -213,11 +213,11 @@ ba98dc23a80d9581 library_artists_compact_night
 950663098198cf80 viz_size_0_off
 2864fac45dfb0e69 viz_size_1_veil
 2513c2d1b1efb6b5 viz_size_2_full
-63f26088656b705b confirm_restart
-9757356bf27138d1 confirm_poweroff
+6fef6a7b3c393a42 confirm_restart
+43d21402fc98d19c confirm_poweroff
 008b308f6fdc16ab settings_scrolled
 5dd66b36c95c03b2 device
-bbc107d690495f73 device_scrolled
+2c02b511c5d9bef0 device_scrolled
 3f4281c899b9c2bd device_degraded
 2864fac45dfb0e69 np_page_0
 a66c9cc1931a6351 np_page_1
