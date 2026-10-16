@@ -27,6 +27,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::stats::sig;
+
 pub const PATH: &str = "/contents/cinder_books.tsv";
 const HEADER: &str = "#CINDER-BOOKS/1\n# folder\tchapter\tposition_ms\tfinished\n";
 
@@ -186,16 +188,6 @@ pub struct Store {
     touched: BTreeSet<String>,
     /// A fingerprint of the file as this store last read or wrote it (0 = there was no file).
     disk_sig: u64,
-}
-
-/// FNV-1a over the file's bytes: enough to say "this is not the file I last saw".
-fn sig(body: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in body {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h | 1
 }
 
 /// Parse the file's text. A line that does not read is skipped on its own; it never costs the
