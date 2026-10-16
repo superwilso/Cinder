@@ -52,7 +52,7 @@ pub struct Store {
 }
 
 /// FNV-1a over the file's bytes: enough to say "this is not the file I last saw".
-fn sig(body: &[u8]) -> u64 {
+pub(crate) fn sig(body: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in body {
         h ^= *b as u64;
