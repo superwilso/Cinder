@@ -121,13 +121,23 @@ pub struct Advanced {
     pub clear_bass: Option<&'static str>,
     /// Name of whatever upstream control is currently overriding the rest of the chain, if any.
     pub overridden_by: Option<&'static str>,
+    /// Walkman One's sound library: its effect chain has no `clearphase` and no `dseeai`
+    /// (analysis/RE_sound_service.md section 3), so those two rows can do nothing.
+    pub w1_chain: bool,
 }
 
 /// Is this row one of the ones an upstream override hides? Source Direct itself never dims — it is
 /// the thing doing the overriding, so greying it out would strand the user with no way back.
 fn dimmed(a: &Advanced, row: usize) -> bool {
-    a.overridden_by.is_some() && row != ROW_HP_AMP && row != ROW_DAC_EQ
+    (a.overridden_by.is_some() && row != ROW_HP_AMP && row != ROW_DAC_EQ) || not_here(a, row)
 }
+
+/// A row whose filter is not in this player's effect chain at all.
+pub fn not_here(a: &Advanced, row: usize) -> bool {
+    a.w1_chain && (row == ROW_CLEAR_PHASE || row == ROW_DSEE_AI)
+}
+
+const NOT_HERE: &str = "Not in Walkman One's sound library";
 
 /// A row drawn dim, for when something upstream has taken it out of the path. Same geometry as
 /// `sound::row` — it just draws the label in the faint ink so the screen reads as "these are not
@@ -206,7 +216,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         sel == 0,
         ROW_CLEAR_PHASE,
         "Clear Phase",
-        "Correct headphone phase response",
+        if a.w1_chain { NOT_HERE } else { "Correct headphone phase response" },
     );
     toggle(c, t, 418, cy - 11, 40, 22, 14, a.clear_phase);
 
@@ -222,7 +232,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
     //
     // NOT removed, because unlike high gain nobody has measured it inert; the honest state is "we
     // do not know", and a subtitle can say that where a bare toggle cannot.
-    let aidesc = if a.dsee_hx {
+    let aidesc = if a.w1_chain {
+        NOT_HERE
+    } else if a.dsee_hx {
         "Upscaling by source analysis — UNVERIFIED on this hardware"
     } else {
         "Upscaling by source analysis — DSEE HX is off"
@@ -436,6 +448,16 @@ mod tests {
             dac_eq_on: false,
             clear_bass: None,
             overridden_by: None,
+            w1_chain: false,
+        }
+    }
+
+    /// On Walkman One's library the two rows with no filter behind them dim; the rest do not.
+    #[test]
+    fn walkman_one_dims_only_the_missing_filters() {
+        let a = Advanced { w1_chain: true, ..sample() };
+        for r in 0..ROWS {
+            assert_eq!(dimmed(&a, r), r == ROW_CLEAR_PHASE || r == ROW_DSEE_AI, "row {r}");
         }
     }
 

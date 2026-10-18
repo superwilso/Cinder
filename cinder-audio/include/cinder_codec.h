@@ -132,6 +132,10 @@ int cinder_codec_get_hp_amp_linear(void);
 /* Select the linear amp (linear != 0) or S-Master SE. Returns 0 = applied, -1 = failed. */
 int cinder_codec_set_hp_amp_linear(int linear);
 
+/* Read-only, for diagnostics: control `name`'s value as text into out (an enum by its item name).
+ * Returns the length written, or -1 when there is no such control. */
+int cinder_codec_describe(const char* name, char* out, int n);
+
 #ifdef __cplusplus
 }
 #endif

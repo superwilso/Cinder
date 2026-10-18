@@ -1332,6 +1332,9 @@ pub struct App {
     // ponytail: one value for every output, not per sound profile. Join `SoundSetup` if asked.
     adv_clear_bass: usize,
     clear_bass_available: bool,
+    /// The shell's report that this player runs Walkman One's sound library (no `vpt`,
+    /// `clearphase` or `dseeai` in its chain).
+    w1_chain: bool,
     /// FM radio state. Frequency in kHz — the unit `SetFrequency` takes, and it validates its own
     /// range, so an out-of-band value is rejected rather than stored.
     fm_khz: i32,
@@ -1804,6 +1807,7 @@ impl Default for App {
             adv_tone: false,
             adv_clear_bass: 0,
             clear_bass_available: false,
+            w1_chain: false,
             fm_khz: 97300,
             fm_playing: false,
             fm_stations: [0; crate::fm::PRESETS],
@@ -3665,6 +3669,7 @@ impl App {
             // d-pad on this device, so a tap is the ONLY way to reach the rooms. Cycles
             // Off -> Studio -> Club -> Concert Hall -> Matrix -> Off. `snd_vpt` and `snd_vpt_mode`
             // stay separate underneath because the device has separate SetVpt/SetVptMode calls.
+            2 if self.w1_chain => return vec![],
             2 => {
                 if !self.snd_vpt {
                     self.snd_vpt = true;
@@ -3755,6 +3760,7 @@ impl App {
     fn advanced_toggle_row(&mut self) -> Vec<Action> {
         use crate::advanced as adv;
         match self.adv_sel {
+            adv::ROW_CLEAR_PHASE | adv::ROW_DSEE_AI if self.w1_chain => return vec![],
             adv::ROW_CLEAR_PHASE => self.adv_clear_phase = !self.adv_clear_phase,
             adv::ROW_DSEE_AI => self.adv_dsee_ai = !self.adv_dsee_ai,
             adv::ROW_DSEE_CUSTOM => {
@@ -8917,6 +8923,7 @@ impl App {
                     more: self.sound_more,
                     clearaudio_ok: self.clearaudio_ok,
                     dc_gone: self.clear_bass_available,
+                    vpt_gone: self.w1_chain,
                     dsee: self.snd_dsee,
                     vinyl: self.snd_vinyl,
                     vpt: if self.snd_vpt {
@@ -9044,6 +9051,7 @@ impl App {
                     } else {
                         None
                     },
+                    w1_chain: self.w1_chain,
                 };
                 crate::advanced::render(c, &theme, fonts, &adv, self.adv_sel)
             }
@@ -11005,6 +11013,12 @@ impl App {
     }
     pub fn set_clear_bass_step(&mut self, i: usize) {
         self.adv_clear_bass = i.min(crate::advanced::CLEAR_BASS.len() - 1);
+    }
+    /// The shell's report that the sound library is Walkman One's. Returns whether it changed.
+    pub fn set_w1_chain(&mut self, on: bool) -> bool {
+        let changed = self.w1_chain != on;
+        self.w1_chain = on;
+        changed
     }
     /// The shell's report of whether the six-band EQ is in the chain. Returns whether it changed.
     pub fn set_clear_bass_available(&mut self, on: bool) -> bool {

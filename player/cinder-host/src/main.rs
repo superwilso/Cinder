@@ -274,6 +274,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         more: false,
         clearaudio_ok: true,
         dc_gone: false,
+        vpt_gone: false,
     };
     // Folded, the everyday rows fit the glass; this is 0 unless a text size pushes them past it.
     let snd_end = sound::max_scroll(false);

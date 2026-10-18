@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <cstdio>
 #include <cstring>
 #include <sound/asound.h>
 
@@ -132,5 +133,34 @@ int cinder_codec_get_hp_amp_linear(void) {
     return item < 0 ? -1 : (item == 0 ? 1 : 0);
 }
 int cinder_codec_set_hp_amp_linear(int linear)  { return set_enum(kHpAmpCtl, linear != 0 ? 0 : 1); }
+
+// Read-only, for diagnostics: a control's value as text, an enum by its item name ("nw500n"),
+// anything else as its first integer. One open for the info, value and item-name ioctls.
+int cinder_codec_describe(const char* name, char* out, int n) {
+    if (!out || n <= 0) return -1;
+    out[0] = 0;
+    int fd = open(kControlDev, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return -1;
+    snd_ctl_elem_info info;
+    std::memset(&info, 0, sizeof(info));
+    fill_id(info.id, name);
+    snd_ctl_elem_value v;
+    std::memset(&v, 0, sizeof(v));
+    fill_id(v.id, name);
+    int rc = -1;
+    if (ioctl(fd, SNDRV_CTL_IOCTL_ELEM_INFO, &info) == 0 && ioctl(fd, SNDRV_CTL_IOCTL_ELEM_READ, &v) == 0) {
+        if (info.type == SNDRV_CTL_ELEM_TYPE_ENUMERATED) {
+            info.value.enumerated.item = v.value.enumerated.item[0];
+            if (ioctl(fd, SNDRV_CTL_IOCTL_ELEM_INFO, &info) == 0)
+                rc = std::snprintf(out, n, "%s", info.value.enumerated.name);
+            else
+                rc = std::snprintf(out, n, "#%u", v.value.enumerated.item[0]);
+        } else {
+            rc = std::snprintf(out, n, "%ld", v.value.integer.value[0]);
+        }
+    }
+    close(fd);
+    return rc;
+}
 
 } // extern "C"

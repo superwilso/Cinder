@@ -120,6 +120,36 @@ bool adv_on(const char* key) {
     return on;
 }
 
+// The value files folded in the same way: `suspend_s=5`, `cpufloor_khz=1040000`, `mediastore_db=…`
+// in cinder_advanced.conf. The last `key=value` line wins; true if there was one. The old files
+// (cinder_suspend_s, cinder_cpufloor.conf, cinder_mediastore.conf) still win where they exist.
+bool adv_value(const char* key, char* out, size_t out_n) {
+    FILE* f = std::fopen("/contents/cinder_advanced.conf", "r");
+    if (!f) return false;
+    const size_t n = std::strlen(key);
+    char line[320];
+    bool got = false;
+    while (std::fgets(line, sizeof line, f)) {
+        const char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (std::strncmp(p, key, n) != 0) continue;
+        p += n;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p != '=') continue;
+        p++;
+        while (*p == ' ' || *p == '\t') p++;
+        size_t len = std::strcspn(p, "#\r\n");
+        while (len && (p[len - 1] == ' ' || p[len - 1] == '\t')) len--;
+        if (len == 0) continue;   // `key=` alone leaves the default in place
+        if (len >= out_n) len = out_n - 1;
+        std::memcpy(out, p, len);
+        out[len] = 0;
+        got = true;
+    }
+    std::fclose(f);
+    return got;
+}
+
 // ---- crash + hang diagnostics ----------------------------------------------------------
 // The first device runs hang inside the device's CuiAppModule::OnInitialize, which we can't
 // instrument from source. This handler captures the EXACT location: on a fatal signal OR a
@@ -1957,15 +1987,18 @@ static int read_int_file(const char* path) {
 
 static void load_cpufloor_cfg() {
     g_cpufloor_read = true;
-    FILE* f = std::fopen("/contents/cinder_cpufloor.conf", "r");
-    if (!f) return;
-    char line[128];
-    while (std::fgets(line, sizeof line, f)) {
-        if (line[0] == '#') continue;
-        int v = 0;
-        if (std::sscanf(line, " khz = %d", &v) == 1 && v > 0) g_cpufloor_khz = v;
+    if (FILE* f = std::fopen("/contents/cinder_cpufloor.conf", "r")) {
+        char line[128];
+        while (std::fgets(line, sizeof line, f)) {
+            if (line[0] == '#') continue;
+            int v = 0;
+            if (std::sscanf(line, " khz = %d", &v) == 1 && v > 0) g_cpufloor_khz = v;
+        }
+        std::fclose(f);
+    } else {
+        char v[32];
+        if (adv_value("cpufloor_khz", v, sizeof v) && std::atoi(v) > 0) g_cpufloor_khz = std::atoi(v);
     }
-    std::fclose(f);
     if (g_cpufloor_khz) {
         g_cpufloor_orig = read_int_file(CPUFLOOR_PATH);
         char m[144];
@@ -2318,6 +2351,11 @@ static void apply_balance(int pos) {
 // there only after cinder-chain.sh has pointed one chain entry at it: one byte, 0x8e at 0x6f918 of
 // a 3306868-byte library (analysis/RE_clear_bass.md 6.3). Anything else reads as "no", and the
 // Clear Bass row is then never drawn.
+//
+// The same size also identifies the library as Walkman One 3.02's, with or without that byte: a
+// chain of i2f dseehxcustom heq dynamicnormalizer attn eq10band eqtone alc dcphaselinear vinylizer
+// f2i, so no vpt, clearphase or dseeai (analysis/RE_sound_service.md section 3).
+static int g_w1_chain = 0;
 static bool clear_bass_in_chain() {
     static int known = -1;
     if (known < 0) {
@@ -2327,10 +2365,12 @@ static bool clear_bass_in_chain() {
         int fd = ::open(lib, O_RDONLY | O_CLOEXEC);
         unsigned char b = 0;
         if (fd >= 0) {
-            if (::fstat(fd, &st) == 0 && st.st_size == 3306868 && ::pread(fd, &b, 1, 0x6f918) == 1 && b == 0x8e)
+            g_w1_chain = ::fstat(fd, &st) == 0 && st.st_size == 3306868;
+            if (g_w1_chain && ::pread(fd, &b, 1, 0x6f918) == 1 && b == 0x8e)
                 known = 1;
             ::close(fd);
         }
+        if (g_w1_chain) clog_("sound: Walkman One sound library (no VPT, Clear Phase or DSEE AI in its chain)");
         clog_(known ? "sound: Clear Bass available (six-band EQ is in the chain)"
                     : "sound: Clear Bass not available on this sound library");
     }
@@ -2357,6 +2397,7 @@ static bool clearaudio_featured() {
 
 void apply_sound_fn() {
     cinder_set_clear_bass_available(clear_bass_in_chain());
+    cinder_set_w1_chain(g_w1_chain);
     if (!clearaudio_featured()) cinder_set_clearaudio_supported(0);
     // Slot numbers are local to this function and only have to be unique; see fx_dirty's note for
     // why the calls are skipped at all. Order is unchanged — only the "has it moved" guard is new.
@@ -4025,6 +4066,16 @@ int threshold_s() {
     if (!contents_mounted()) { ++retries; return 0; }   // undecided: ask again next tick
 
     char m[144];
+    char adv[32];
+    if (!file_exists(kConfigFile) && adv_value("suspend_s", adv, sizeof adv)) {
+        char* end = nullptr;
+        const long v = std::strtol(adv, &end, 10);
+        cached = (end != adv && v >= 0 && v < 100000) ? (int)v : kDefaultThresholdS;
+        std::snprintf(m, sizeof m, "suspend: idle threshold %d s (suspend_s=%s in cinder_advanced.conf; 0 = off)",
+                      cached, adv);
+        clog_(m);
+        return cached;
+    }
     if (!file_exists(kConfigFile)) {
         cached = kDefaultThresholdS;
         std::snprintf(m, sizeof m,
@@ -9577,6 +9628,70 @@ static int g_jack_last = -1;   // -1 = not yet observed
 const char* const ANTENNA_SWITCH = "/sys/class/switch/cxd3778gf_antenna/state";
 static int g_antenna_last = -1;
 
+// ── NOISE CANCELLING PROBE (issue #27) ──────────────────────────────────────────────────────────
+//
+// Read-only. Sony's NC needs its own earphones (IER-NW500N and the like), which the developer does
+// not have, so this writes what an owner of a pair needs to send: /contents/cinder_nc_probe.txt.
+// Sony's rule (NcServiceImpl::MakeValidity, stock libNcServiceFw.so 0x32808): NC is valid when the
+// plug is in, it is a 5-pin plug (the ucom switch below), the output is the single-ended jack, the
+// earphone model is NW750N / NW500N / NC31, and the driver can run it. The file records each
+// input to that rule, the 11 NC controls, and Sony's own NC log lines from logcat.
+//
+// Runs 3 s after the ucom switch changes (the earphone's microcontroller needs a moment to
+// report its model), when it is non-zero at startup, or at startup and on every jack change with
+// `nc_probe` in cinder_advanced.conf. Nothing is written for anyone with ordinary headphones.
+const char* const UCOM_SWITCH = "/sys/class/switch/cxd3778gf_ucom/state";
+
+static void nc_probe_dump(const char* why) {
+    FILE* o = std::fopen("/contents/cinder_nc_probe.txt", "a");
+    if (!o) return;
+    std::fprintf(o, "=== nc-probe %s (uptime %d s) ===\n", why, read_int_file("/proc/uptime"));
+    int feat = -1;
+    if (void* h = dlopen("libDmpFeature.so", RTLD_NOW)) {
+        typedef bool (*fn)();
+        if (fn f = (fn)dlsym(h, "_ZN3pst10dmpfeature10DmpFeature21IsFeaturedNoiseCancelEv")) feat = f();
+    }
+    std::fprintf(o, "IsFeaturedNoiseCancel=%d\n", feat);
+    std::fprintf(o, "switch ucom=%d h2w=%d\n", read_int_file(UCOM_SWITCH), read_int_file(JACK_SWITCH));
+    static const char* const ctls[] = {
+        "noise cancel mode", "noise cancel status", "noise cancel headphone type",
+        "user noise cancel gain", "user ambient gain", "base noise cancel gain left",
+        "base noise cancel gain right", "base noise cancel gain save", "nc ignore jack state",
+        "jack mode", "jack status se", "headphone amp", "output device",
+    };
+    for (const char* c : ctls) {
+        char v[64];
+        if (cinder_codec_describe(c, v, sizeof v) < 0) std::snprintf(v, sizeof v, "(none)");
+        std::fprintf(o, "ctl '%s' = %s\n", c, v);
+    }
+    std::fclose(o);
+    // Sony's own reasoning: NcServiceImpl logs HpModel, each validity input and the driver writes
+    // under the NC tag. In a background shell, never here: this runs inside the guarded 1 Hz jack
+    // tick, and the first cut ran `logcat -d` in-line, overran the guard's 4 s and cost the boot its
+    // Sony IPC (2026-10-18). `&` returns at once; the exec'd shell holds no binder fd.
+    std::system("( logcat -d -v time 2>&1 | grep -E '\\|NC  \\||NcService|NcMonitor' | tail -n 60;"
+                "  echo '=== end' ) >> /contents/cinder_nc_probe.txt 2>/dev/null &");
+    clog_("nc-probe: wrote /contents/cinder_nc_probe.txt");
+}
+
+static void nc_probe_tick(bool jack_changed) {
+    static int last = -1, due = -1;
+    const int now = read_int_file(UCOM_SWITCH);
+    if (now < 0) return;
+    if (now != last) {
+        if (last >= 0 || now != 0 || adv_on("nc_probe")) due = 3;
+        last = now;
+    } else if (jack_changed && adv_on("nc_probe")) {
+        due = 3;
+    }
+    if (due > 0 && --due == 0) {
+        due = -1;
+        char why[48];
+        std::snprintf(why, sizeof why, "ucom=%d", now);
+        nc_probe_dump(why);
+    }
+}
+
 void jack_watch_tick() {
     // The FM screen's aerial note. It used to be told only when the radio was switched ON, and the
     // UI starts from "no aerial" — so with the cable in and the radio off (the state you scan in),
@@ -9591,6 +9706,7 @@ void jack_watch_tick() {
     if (now < 0) return;                       // no such node on this unit: feature simply absent
     const int prev = g_jack_last;
     g_jack_last = now;
+    nc_probe_tick(prev >= 0 && prev != now);
     if (prev < 0) {                            // first read of the boot: seed only, never act
         char m[96];
         std::snprintf(m, sizeof m, "jack: %s at startup (state=%d)",
@@ -9859,7 +9975,14 @@ static bool g_ms_read = false;
 static void load_mediastore_cfg() {
     g_ms_read = true;
     FILE* f = std::fopen("/contents/cinder_mediastore.conf", "r");
-    if (!f) return;
+    if (!f) {
+        bool any = adv_value("mediastore_db", g_ms_db, sizeof g_ms_db);
+        any |= adv_value("mediastore_root", g_ms_root, sizeof g_ms_root);
+        any |= adv_value("mediastore_extra", g_ms_extra, sizeof g_ms_extra);
+        any |= adv_value("mediastore_dirs", g_ms_dirs, sizeof g_ms_dirs);
+        if (any) clog_("mediastore: applied mediastore_* from cinder_advanced.conf");
+        return;
+    }
     char line[320];
     while (std::fgets(line, sizeof line, f)) {
         if (line[0] == '#' || line[0] == '\n') continue;

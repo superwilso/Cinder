@@ -78,8 +78,8 @@ its line and record the result where its procedure lives.
 1. *Done 2026-10-05, on the owner's player:* Settings opens as ten everyday rows and **More
    settings** unfolds the rest; nine empty-file switches are also lines in one
    `cinder_advanced.conf` (`cinder-home/deploy/cinder_advanced.conf.example`).
-2. Next: the three value files (`cinder_suspend_s`, `cinder_cpufloor.conf`,
-   `cinder_mediastore.conf`) as keys of the same file; the same fold for Sound (Advanced already is
+2. *Done 2026-10-18:* the three value files are keys of the same file (`suspend_s`,
+   `cpufloor_khz`, `mediastore_*`). Next: the same fold for Sound (Advanced already is
    one) and Bluetooth; remember the fold across restarts if it is opened every time.
 3. Not started: ship `cinder_advanced.conf.example` to the player's storage from the installer, and
    name it on Help.

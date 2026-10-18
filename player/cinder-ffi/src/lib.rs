@@ -6077,6 +6077,17 @@ pub extern "C" fn cinder_set_clearaudio_supported(on: libc::c_int) {
     }
 }
 
+/// The shell's report that this player runs Walkman One's sound library: no `vpt`, `clearphase`
+/// or `dseeai` in its chain, so those rows draw as not on this player.
+#[no_mangle]
+pub extern "C" fn cinder_set_w1_chain(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if r.app.set_w1_chain(on != 0) {
+            r.dirty = true;
+        }
+    }
+}
+
 /// The shell's report that this player's sound library has the six-band EQ in its chain.
 #[no_mangle]
 pub extern "C" fn cinder_set_clear_bass_available(on: libc::c_int) {

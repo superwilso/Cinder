@@ -5,7 +5,8 @@
 # every switch back. A line is  name  or  name=on ; name=off is the same as leaving it out.
 # Changes to the power switches take effect within a second; the rest are read at start.
 #
-# (Each of these also still works the old way, as an empty file called cinder_<name>.)
+# (Each switch also still works the old way, as an empty file called cinder_<name>; the values
+# below still work as cinder_suspend_s, cinder_cpufloor.conf and cinder_mediastore.conf.)
 
 # ── Power ────────────────────────────────────────────────────────────────────────────────────
 # Sleep fully (suspend to RAM) when paused, screen off, off the cable, for a minute.
@@ -17,6 +18,10 @@
 #no_suspend_bt
 # Leave the processor's speed alone behind a dark screen.
 #no_cpu_tune
+# Seconds of dark screen before the light sleep (default 5; 0 turns it off).
+#suspend_s=5
+# Hold the processor at least this fast while playing (default off). 598000 / 747500 / 1040000 / 1300000.
+#cpufloor_khz=1040000
 
 # ── Other ────────────────────────────────────────────────────────────────────────────────────
 # Do not write /contents/.scrobbler.log (for players that run another scrobbler).
@@ -26,3 +31,7 @@
 #no_fbsync
 #async_library
 #automsc_on
+# Where Sony's library lives and which folders it scans (defaults shown).
+#mediastore_db=/db/MTPDB.dat
+#mediastore_root=/data/mnt/
+#mediastore_dirs=MUSIC,LEARNING

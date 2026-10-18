@@ -964,3 +964,13 @@ scanner pick them up (reconnect from the PC, or the rescan Cinder triggers after
 | 37.8 | **Over Bluetooth** | 37.3 with headphones | Same result. The seek after the hand-over is the one the boot resume does, but not yet seen on the Bluetooth route | |
 | 37.9 | **The file survives a PC** | Connect to the PC, open `cinder_books.tsv`, change one position, save, eject | The next resume of that book starts at the edited position | A reset position = the PC copy was overwritten: send both versions |
 | 37.10 | **Books are grouped under their author** | Put `LEARNING/Author A/Book 1`, `…/Book 2` and `LEARNING/Author B/Book 3` on the player; open the book button | `Author A` heading with Book 1, Book 2 slightly indented below, then `Author B` with Book 3. Tapping a heading does nothing; tapping a book resumes it | A heading that plays, or a book listed twice = send a photo |
+
+## 38 — 2026-10-18 — v0.3.17 results on the owner's Walkman One player
+
+| # | Item | Result |
+|---|---|---|
+| 38.1 | **Queue edit in place, across the song's end** | **PASS** (owner, daily use, headphone jack): a song queued mid-track plays next, from 0:00, with no break. Not yet itemised on Bluetooth or with shuffle on |
+| 38.2 | **The installer's Clear Bass step** (`install_cinderhome.sh` §1h's commands, run by hand) | **PASS:** the release's `cinder-chain.sh` ran `status`, `set clearbass` (already set), `set default` (original restored, md5 `845e27e9…`), `set clearbass` (patched, md5 `6f594882…`, original kept as `.stock`). Not yet run from the Windows installer's picker |
+| 38.3 | **ClearAudio+ on Walkman One** | **Off, as expected:** `DmpFeature::IsFeaturedClearAudioPlus` = 0, and the sound service's own getter reads 0 (`cinder-probe --eqsel`: `ClearAudio+=0 SourceDirect=0`). The probe crashed on exit after reading (`PC=0`, teardown); the Home app was unaffected |
+| 38.4 | **Bluetooth auto off during wired listening** | **Not run:** the switch is off on this player (`bt_idle_off=0`), so it never fires. Turn on Bluetooth ▸ Turn off when idle, play on the jack, screen dark 10 min, then look for `bt: 10 min dark, music on the jack, no link -> radio off` |
+| 38.5 | **NC probe, start-up path** (`nc_probe` in `cinder_advanced.conf`) | **PASS** on the second build: the file was written 13 s into the boot with every control read, no guard trip. The first build ran `logcat -d` inside the guarded jack tick, overran its 4 s and left that boot without Sony IPC (no audio until the next restart); `logcat` now runs in a background shell. Logcat lines came back empty for the Home app's user on Walkman One. Not run with a Sony NC earphone: that is for the issue #27 reporter |

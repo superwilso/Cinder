@@ -420,6 +420,8 @@ pub struct Sound {
     /// The DC Phase Linearizer is not in this player's effect chain: Clear Bass was given its
     /// place (`cinder-chain.sh`), so the row says so instead of taking taps that do nothing.
     pub dc_gone: bool,
+    /// Walkman One's sound library has no `vpt` filter in its chain.
+    pub vpt_gone: bool,
 }
 
 /// Outlined value pill ending at `xr`; accent when value != "Off".
@@ -896,6 +898,12 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
             fx_over,
             pill(s.vpt),
         ),
+        ROW_VPT if s.vpt_gone => RowText {
+            title: "VPT Surround".into(),
+            sub: "Not in Walkman One's sound library".into(),
+            trail: RowTrail::Value("OFF".into()),
+            dim: true,
+        },
         ROW_DC if s.dc_gone => RowText {
             title: "DC Phase Linearizer".into(),
             sub: "Not on this player \u{b7} Clear Bass has its place".into(),
@@ -1213,6 +1221,7 @@ mod tests {
             more: true,
             clearaudio_ok: true,
             dc_gone: false,
+            vpt_gone: false,
         }
     }
 

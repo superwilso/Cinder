@@ -16,6 +16,28 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **A noise cancelling probe (issue #27).** With a Sony noise-cancelling earphone in the jack (its
+  5-pin plug sets the codec's `ucom` switch), Cinder writes `cinder_nc_probe.txt` to the player's
+  storage 3 s later: Sony's NC feature flag, the plug switches, the 13 NC and jack controls, and
+  Sony's NC log lines. Nothing is written for ordinary headphones; `nc_probe` in
+  `cinder_advanced.conf` also writes it at start and on every jack change. Read-only. *Run on a
+  Walkman One player with no NC earphone (the `nc_probe` start-up path); never with one.*
+
+### Changed
+
+- **VPT Surround, Clear Phase and DSEE AI say "Not in Walkman One's sound library" on Walkman
+  One** and ignore taps. Walkman One's effect chain has none of the three, so they never did
+  anything there; it was not ClearAudio+ holding them off. *Device-verified: the player logs
+  `sound: Walkman One sound library`; the screens are host-tested.*
+- **The three settings that took a value are lines in `cinder_advanced.conf` too:** `suspend_s=`
+  (seconds of dark screen before the light sleep), `cpufloor_khz=` (the processor floor while
+  playing) and `mediastore_db=` / `mediastore_root=` / `mediastore_dirs=` / `mediastore_extra=`.
+  The old files (`cinder_suspend_s`, `cinder_cpufloor.conf`, `cinder_mediastore.conf`) still work
+  and win where they exist. *`suspend_s` device-verified on a Walkman One player; the other two
+  share its reader and are not yet run.*
+
 ## [0.3.17] — 2026-10-18
 
 ### Added

@@ -470,6 +470,8 @@ int  cinder_get_vinyl_type(void);
  * the six-band is in this player's chain (Walkman One needs cinder-chain.sh; RE_clear_bass.md). */
 int  cinder_get_clear_bass(void);
 void cinder_set_clear_bass_available(int on);
+/* 1 = Walkman One's sound library (its chain has no vpt, clearphase or dseeai: RE_sound_service.md 3). */
+void cinder_set_w1_chain(int on);
 /* Call with 0 when the sound service kept ClearAudio+ off after being asked to switch it on: the
  * firmware has none (Walkman One), and the Sound screen's mode control drops that segment. */
 void cinder_set_clearaudio_supported(int on);
