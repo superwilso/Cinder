@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.17] — 2026-10-18
+
 ### Added
 
 - **Audiobooks.** Anything in a `LEARNING` folder at the root of the player or the SD card (Sony's
@@ -2751,7 +2753,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.16...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.17-rc1...HEAD
+[0.3.17]: https://github.com/superwilso/Cinder/compare/v0.3.16...v0.3.17-rc1
 [0.3.16]: https://github.com/superwilso/Cinder/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/superwilso/Cinder/compare/v0.3.14...v0.3.15-rc1
 [0.3.14]: https://github.com/superwilso/Cinder/compare/v0.3.13...v0.3.14
