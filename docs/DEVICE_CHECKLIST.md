@@ -727,6 +727,10 @@ What only the device can say: whether the files survive a reboot and a cable, wh
 (§25 is left for the R4 work — ratings, play counts, playlists — built beside this in another
 branch.)
 
+**2026-10-18: rows 26.4, 26.6 (the profile half), 26.8 (the per-output half) and 26.9 are retired.**
+Profiles per output were replaced by Sound ▸ Presets with A/B as a compare (owner's call); the
+new rows are in `NEXT.md` section 4 A. 26.2 still stands as "A and B are whole sounds".
+
 **Nothing in this section has run on a player.** It was built host-only, with no device attached.
 Host-tested: the profile data model and every route edge (734 Rust tests in the player workspace), the settings round
 trip including a file from before R5 and a damaged one, the atomic settings write, the grouped

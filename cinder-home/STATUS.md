@@ -19,6 +19,19 @@
 >   files `LEARNING` as `media_type = 1` audio rows (checklist 37.1).
 > - No chapter list, speed control or sleep timer; none was asked for.
 
+> ## 2026-10-18 — v0.3.17-rc2: presets, the DAC EQ on the jack, the NC probe
+>
+> - **A/B is a compare; saved sounds are Sound ▸ Presets** (up to four). Profiles per output, and
+>   Bluetooth ▸ Sound profile, are gone (the 2026-09-30 R5 entry below describes what was
+>   replaced). *Host-tested.*
+> - **On the jack the equalizer is the DAC's** (no processor time); Bluetooth keeps the 10-band.
+>   Fit my 10-band curve, and a switch to put the 10-band back on the jack. *Host-tested.*
+> - **A flat 10-band is switched off**, so Sony's chain can be skipped. *Host-tested, unmeasured.*
+> - **Walkman One:** VPT, Clear Phase and DSEE AI are not in its chain and say so.
+>   *Device-verified detection.*
+> - **NC probe** for issue #27: `cinder_nc_probe.txt` when a Sony NC earphone is plugged in.
+>   *Start-up path device-verified; never run with the earphones.*
+
 > ## 2026-10-04 — Soundscapes, visualisers from the decoded audio, and what the owner confirmed
 >
 > **Confirmed by the owner (2026-10-01):** Walkman One runs Cinder on the owner's current player;
