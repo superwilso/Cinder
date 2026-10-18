@@ -68,3 +68,12 @@ falls back to `SetTrackSequence` otherwise.
   next track, that boundary may still use the old one.
 - Bluetooth output, and a queue edit while shuffle is on.
 - Whether the boundary itself is gapless: that is Sony's path and was not changed.
+
+## Timing (2026-10-12)
+
+The edit is issued the moment the queue changes, not held for the last 2.5 s of the song. Held
+that late, PlayerService had already picked its next track: the old next song started and was
+corrected a second or two in (owner's report, a day of use). If the in-place edit is refused,
+`cinder_queue_edit_refused` holds it for the end of the song, so the player is never reopened
+mid-song. Measured: an edit about 40 s into a song logged `edit in place: n=12 start=0` at once
+with the stream RUNNING. Not measured: the boundary after it.
