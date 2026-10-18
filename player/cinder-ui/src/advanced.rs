@@ -216,7 +216,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         sel == 0,
         ROW_CLEAR_PHASE,
         "Clear Phase",
-        if a.w1_chain { NOT_HERE } else { "Correct headphone phase response" },
+        if a.w1_chain {
+            NOT_HERE
+        } else {
+            "Correct headphone phase response"
+        },
     );
     toggle(c, t, 418, cy - 11, 40, 22, 14, a.clear_phase);
 
@@ -455,9 +459,16 @@ mod tests {
     /// On Walkman One's library the two rows with no filter behind them dim; the rest do not.
     #[test]
     fn walkman_one_dims_only_the_missing_filters() {
-        let a = Advanced { w1_chain: true, ..sample() };
+        let a = Advanced {
+            w1_chain: true,
+            ..sample()
+        };
         for r in 0..ROWS {
-            assert_eq!(dimmed(&a, r), r == ROW_CLEAR_PHASE || r == ROW_DSEE_AI, "row {r}");
+            assert_eq!(
+                dimmed(&a, r),
+                r == ROW_CLEAR_PHASE || r == ROW_DSEE_AI,
+                "row {r}"
+            );
         }
     }
 

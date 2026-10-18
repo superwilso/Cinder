@@ -101,6 +101,7 @@ full_check() {
 printf '%spre-push%s: checking what CI checks (skip with --no-verify)\n' "$C_B" "$C_0"
 
 # 1. The player workspace — where all three breakages landed.
+run "player format"  player cargo fmt --all -- --check
 run "player tests"   player cargo test --workspace --quiet
 run "player clippy"  player cargo clippy --workspace --all-targets --quiet -- \
                            -D clippy::correctness -D clippy::suspicious

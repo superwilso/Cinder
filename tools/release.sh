@@ -359,6 +359,17 @@ if [ -n "$DRY" ]; then
     exit 0
 fi
 
+# The installer's pictures are drawn by Windows and never come out byte-identical twice (3c), so on
+# a run where they are the ONLY change, the committed ones are put back instead of asking for
+# another commit. Without this every run re-rendered them, asked for a commit, and never reached
+# the tag (v0.3.17-rc2: two "prepare" commits and no tag).
+if [ "$(joined "${CHANGED[@]}")" = "installer screenshots" ] \
+   && [ -z "$(git status --porcelain | grep -v ' docs/screenshots/installer-[a-z]*\.png$')" ]; then
+    git checkout -- docs/screenshots/installer-*.png
+    CHANGED=()
+    note "installer screenshots differ only in how Windows drew them this time — kept the committed ones"
+fi
+
 # A tag points at a commit, so anything uncommitted is simply not in the release. This is the ONE
 # place that check belongs — after every change this script makes, so it is asked once and answered
 # with a single commit, rather than three times with three.

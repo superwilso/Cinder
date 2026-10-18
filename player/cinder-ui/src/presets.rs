@@ -38,9 +38,21 @@ pub enum Hit {
 
 /// The ALSO SAVED rows: `(bit, title, what it means)`.
 pub const FOLLOWS: [(u8, &str, &str); 3] = [
-    (crate::nav::FOLLOW_MONO, "Mono", "Saved with the sound, and different on A and B"),
-    (crate::nav::FOLLOW_AMP, "Linear amp", "3.5 mm only \u{b7} saved with the sound"),
-    (crate::nav::FOLLOW_DAC_EQ, "DAC EQ", "3.5 mm only \u{b7} saved with the sound"),
+    (
+        crate::nav::FOLLOW_MONO,
+        "Mono",
+        "Saved with the sound, and different on A and B",
+    ),
+    (
+        crate::nav::FOLLOW_AMP,
+        "Linear amp",
+        "3.5 mm only \u{b7} saved with the sound",
+    ),
+    (
+        crate::nav::FOLLOW_DAC_EQ,
+        "DAC EQ",
+        "3.5 mm only \u{b7} saved with the sound",
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,13 +92,13 @@ fn parts(n: usize) -> Vec<(Part, i32, i32)> {
 /// What is under `(x, y)` with `n` presets saved.
 pub fn hit(x: i32, y: i32, n: usize) -> Option<Hit> {
     parts(n).into_iter().find_map(|(p, top, h)| match p {
-        Part::Row(Hit::Load(i)) if (top..top + h).contains(&y) => Some(
-            if x >= crate::canvas::W as i32 - DELETE_W {
+        Part::Row(Hit::Load(i)) if (top..top + h).contains(&y) => {
+            Some(if x >= crate::canvas::W as i32 - DELETE_W {
                 Hit::Delete(i)
             } else {
                 Hit::Load(i)
-            },
-        ),
+            })
+        }
         Part::Row(hit) if (top..top + h).contains(&y) => Some(hit),
         _ => None,
     })
@@ -132,27 +144,65 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Presets) {
                 } else {
                     format!("Keeps what {} sounds like now, as Preset {}", p.live, n + 1)
                 };
-                kit::row(c, t, f, top, h, &Row::new("Save current sound").sub(&sub).trail(Trail::Tag("SAVE")));
+                kit::row(
+                    c,
+                    t,
+                    f,
+                    top,
+                    h,
+                    &Row::new("Save current sound")
+                        .sub(&sub)
+                        .trail(Trail::Tag("SAVE")),
+                );
             }
             Part::Empty => {
-                let st = sty(Family::Sans, Weight::Regular, crate::scale::SECONDARY, t.dim, 0.0);
+                let st = sty(
+                    Family::Sans,
+                    Weight::Regular,
+                    crate::scale::SECONDARY,
+                    t.dim,
+                    0.0,
+                );
                 let w = (kit::RIGHT - kit::LEFT) as f32;
                 let s = fit(f, "Nothing saved yet. Save the sound you have now.", &st, w);
                 text::draw(c, f, kit::LEFT as f32, (top + h / 2 + 5) as f32, &s, &st);
             }
             Part::Row(Hit::Load(i)) => {
                 let title = format!("Preset {}", i + 1);
-                let trail = if p.armed == Some(i) { "SURE?" } else { "DELETE" };
-                kit::row(c, t, f, top, h, &Row::new(&title).sub(&p.saved[i]).trail(Trail::Value(trail)));
+                let trail = if p.armed == Some(i) {
+                    "SURE?"
+                } else {
+                    "DELETE"
+                };
+                kit::row(
+                    c,
+                    t,
+                    f,
+                    top,
+                    h,
+                    &Row::new(&title).sub(&p.saved[i]).trail(Trail::Value(trail)),
+                );
             }
             Part::Row(Hit::Copy) => {
                 let title = format!("Copy {} to {other}", p.live);
-                let sub = format!("{other} starts as {}, to change one thing and compare", p.live);
+                let sub = format!(
+                    "{other} starts as {}, to change one thing and compare",
+                    p.live
+                );
                 kit::row(c, t, f, top, h, &Row::new(&title).sub(&sub));
             }
             Part::Row(Hit::Follow(bit)) => {
                 if let Some((_, title, sub)) = FOLLOWS.iter().find(|(b, _, _)| *b == bit) {
-                    kit::row(c, t, f, top, h, &Row::new(title).sub(sub).trail(Trail::Switch(p.follow & bit != 0)));
+                    kit::row(
+                        c,
+                        t,
+                        f,
+                        top,
+                        h,
+                        &Row::new(title)
+                            .sub(sub)
+                            .trail(Trail::Switch(p.follow & bit != 0)),
+                    );
                 }
             }
             Part::Row(Hit::Delete(_)) => {}
@@ -173,11 +223,17 @@ mod tests {
             hits.extend(FOLLOWS.iter().map(|(b, _, _)| Hit::Follow(*b)));
             for h in hits {
                 let y = centre(h, n);
-                assert!(y > crate::chrome::HEADER_BOTTOM && y < crate::canvas::H as i32, "{h:?} n={n}");
+                assert!(
+                    y > crate::chrome::HEADER_BOTTOM && y < crate::canvas::H as i32,
+                    "{h:?} n={n}"
+                );
                 assert_eq!(hit(100, y, n), Some(h), "n={n}");
             }
             for i in 0..n {
-                assert_eq!(hit(crate::canvas::W as i32 - 10, centre(Hit::Load(i), n), n), Some(Hit::Delete(i)));
+                assert_eq!(
+                    hit(crate::canvas::W as i32 - 10, centre(Hit::Load(i), n), n),
+                    Some(Hit::Delete(i))
+                );
             }
         }
     }

@@ -269,9 +269,16 @@ mod tests {
     fn fitting_the_10_band_curve() {
         assert_eq!(fit([0; 10]), [0; BANDS]);
         assert_eq!(fit([12, 12, 12, 0, 0, 0, 0, 0, 0, 0]), [12, 0, 0, 0, 0]);
-        assert_eq!(fit([0, 0, 0, 0, 0, 0, 0, -20, -20, -20]), [0, 0, 0, -20, -20]);
+        assert_eq!(
+            fit([0, 0, 0, 0, 0, 0, 0, -20, -20, -20]),
+            [0, 0, 0, -20, -20]
+        );
         assert_eq!(fit([20; 10]), [BAND_MAX; BANDS], "boosts clamp at +6 dB");
-        assert_eq!(fit([3, 3, 3, 0, 0, 0, 0, 0, 0, 0])[0] % BAND_STEP, 0, "snapped to 1 dB");
+        assert_eq!(
+            fit([3, 3, 3, 0, 0, 0, 0, 0, 0, 0])[0] % BAND_STEP,
+            0,
+            "snapped to 1 dB"
+        );
     }
 
     #[test]

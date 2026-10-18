@@ -19569,7 +19569,10 @@ mod tests {
         assert_eq!(a.presets().len(), 1);
         assert!(describe_setup(&a.presets()[0]).ends_with("DSEE HX"));
         a.snd_dsee = false;
-        assert_eq!(a.tap(100, centre(Hit::Load(0), 1)), vec![Action::SoundChanged]);
+        assert_eq!(
+            a.tap(100, centre(Hit::Load(0), 1)),
+            vec![Action::SoundChanged]
+        );
         assert!(a.snd_dsee, "the preset came back");
         for _ in 1..MAX + 2 {
             a.tap(100, centre(Hit::Save, a.presets().len()));
@@ -19589,7 +19592,9 @@ mod tests {
         a.snd_vpt = true;
         a.snd_vpt_mode = 2;
         a.go(Screen::Presets);
-        assert!(a.tap(240, crate::presets::centre(crate::presets::Hit::Copy, 0)).is_empty());
+        assert!(a
+            .tap(240, crate::presets::centre(crate::presets::Hit::Copy, 0))
+            .is_empty());
         assert_eq!(a.setup_inactive(), a.setup());
         a.select_setup(1);
         assert!(a.snd_vpt && a.snd_vpt_mode == 2);

@@ -869,7 +869,10 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         ROW_PROFILE => RowText {
             title: "Presets".into(),
             sub: match s.presets_saved {
-                0 => format!("Save the sound on {} to come back to it", crate::profile::letter(setup)),
+                0 => format!(
+                    "Save the sound on {} to come back to it",
+                    crate::profile::letter(setup)
+                ),
                 1 => "1 saved".into(),
                 n => format!("{n} saved"),
             },
@@ -1388,10 +1391,16 @@ mod tests {
     /// On the jack the curve is in the DAC: the path names it there and drops the 10-band.
     #[test]
     fn the_dac_carries_the_jack_curve_in_the_path() {
-        let s = Sound { eq_on_dac: true, ..loud() };
+        let s = Sound {
+            eq_on_dac: true,
+            ..loud()
+        };
         let (p, _) = signal_path(&s, 0);
         assert!(p.contains("→ DAC EQ →") && !p.contains("EQ ("), "{p}");
-        assert_eq!(row_text(&s, ROW_EQ, 0).sub, "In the DAC \u{b7} no battery cost on the jack");
+        assert_eq!(
+            row_text(&s, ROW_EQ, 0).sub,
+            "In the DAC \u{b7} no battery cost on the jack"
+        );
     }
 
     /// The ordinary case: every stage the user switched on is named, in order.
