@@ -66,9 +66,8 @@ pub enum Screen {
     /// Sound ▸ Advanced ▸ DAC EQ — five bands in the codec chip itself, applied by the setuid
     /// `cinder-voltable eq` helper. Same slider-field idiom as `Tone`. See `dac_eq.rs`.
     DacEq,
-    /// Sound ▸ Profile (and Bluetooth ▸ Sound profile): which of the two profiles, A or B, each
-    /// output uses — the jack, Bluetooth, USB-DAC. See `profile.rs`.
-    Profiles,
+    /// Sound ▸ Presets: saved sounds, and the A/B compare's tools. See `presets.rs`.
+    Presets,
     Bluetooth,
     /// Paired-device picker (connect / disconnect / forget). Pushed from Bluetooth ▸ "Pair new
     /// device"; before 2026-07-30 `pairing.rs` rendered but had no route at all.
@@ -293,6 +292,41 @@ pub const FOLLOW_MONO: u8 = 1;
 pub const FOLLOW_AMP: u8 = 1 << 1;
 pub const FOLLOW_DAC_EQ: u8 = 1 << 2;
 pub const FOLLOW_ALL: u8 = FOLLOW_MONO | FOLLOW_AMP | FOLLOW_DAC_EQ;
+
+/// One line saying what a saved sound holds, for its Presets row: "Direct", or what is on.
+pub fn describe_setup(s: &SoundSetup) -> String {
+    if s.src_direct {
+        return "Direct \u{b7} no effects".into();
+    }
+    let mut on: Vec<&str> = Vec::new();
+    if s.tone {
+        on.push("Tone Control");
+    } else if s.eq_bands != [0; 10] {
+        on.push("EQ");
+    }
+    if s.dac_eq != [0; crate::dac_eq::BANDS] {
+        on.push("DAC EQ");
+    }
+    for (flag, name) in [
+        (s.dsee, "DSEE HX"),
+        (s.norm, "Normalizer"),
+        (s.vinyl, "Vinyl"),
+        (s.vpt, "VPT"),
+        (s.dc, "DC Phase"),
+    ] {
+        if flag {
+            on.push(name);
+        }
+    }
+    if s.balance != crate::sound::BALANCE_CENTRE {
+        on.push("Balance");
+    }
+    if on.is_empty() {
+        "Flat \u{b7} no effects".into()
+    } else {
+        on.join(" \u{b7} ")
+    }
+}
 
 impl Default for SoundSetup {
     fn default() -> Self {
@@ -1378,17 +1412,23 @@ pub struct App {
     setup_other: SoundSetup,
     /// 0 = A is live, 1 = B is live.
     setup_idx: usize,
-    /// Which profile (0 = A, 1 = B) each output uses, in `profile::Output::ALL` order: the jack,
-    /// Bluetooth, USB-DAC. Persisted as `profile_jack` / `profile_bt` / `profile_usb`.
-    profile_map: [usize; 3],
-    /// Which of mono / linear amp / DAC EQ travel with a profile (`FOLLOW_*`). 0 = none, the
-    /// default: they are then one value for every output, as before 2026-10-04.
+    /// Saved sounds (Sound ▸ Presets), at most `presets::MAX`. Persisted as `preset<N>_*` keys.
+    presets: Vec<SoundSetup>,
+    /// The preset whose Delete was tapped once; a second tap deletes it.
+    preset_armed: Option<usize>,
+    /// Which of mono / linear amp / DAC EQ travel with a sound through A/B and presets
+    /// (`FOLLOW_*`). 0 = none, the default: one value for both sides.
     profile_follow: u8,
-    /// The output the live setup was chosen for. Compared with `current_output()` whenever the
-    /// shell reports a route, which is how a route change becomes a profile switch.
+    /// The output the shell last reported, so a route change is seen once.
     live_output: crate::profile::Output,
-    /// A route change switched the live profile and the shell has not re-applied the chain yet.
+    /// A route change moved the jack's EQ between the DAC and Sony's 10-band (`jack_eq_dac`), and
+    /// the shell has not re-applied the chain yet.
     profile_apply: bool,
+    /// On the headphone jack the curve lives in the DAC chip (Sound ▸ Advanced ▸ DAC EQ), which
+    /// costs no processor time, and Sony's 10-band is held flat; Bluetooth still uses the 10-band.
+    /// The default since 2026-10-18 (the owner's call); `jack_eq=10band` in the settings file
+    /// puts the 10-band back on the jack.
+    jack_eq_dac: bool,
     /// Sound screen scroll offset (px). The grouped list is taller than the glass.
     sound_scroll_px: i32,
     /// Sound ▸ More effects is unfolded. Not persisted: the screen opens on the everyday rows.
@@ -1830,10 +1870,12 @@ impl Default for App {
             snd_balance: crate::sound::BALANCE_CENTRE,
             setup_other: SoundSetup::default(),
             setup_idx: 0,
-            profile_map: [0; 3],
+            presets: Vec::new(),
+            preset_armed: None,
             profile_follow: 0,
             live_output: crate::profile::Output::Jack,
             profile_apply: false,
+            jack_eq_dac: true,
             sound_scroll_px: 0,
             sound_more: false,
             clearaudio_ok: true,
@@ -3714,11 +3756,16 @@ impl App {
             }
             // Routes too, for the same reason: which profile each output uses, and the EQ editor.
             crate::sound::ROW_PROFILE => {
-                self.push(Screen::Profiles);
+                self.push(Screen::Presets);
                 return vec![];
             }
             crate::sound::ROW_EQ => {
-                self.push(Screen::Eq);
+                if self.eq_on_dac() {
+                    self.dac_eq_sel = 0;
+                    self.push(Screen::DacEq);
+                } else {
+                    self.push(Screen::Eq);
+                }
                 return vec![];
             }
             _ => {}
@@ -4560,9 +4607,9 @@ impl App {
                 }
                 vec![]
             }
-            Screen::Profiles => {
-                if let Some(h) = crate::profile::hit(x, y) {
-                    return self.profiles_tap(h);
+            Screen::Presets => {
+                if let Some(h) = crate::presets::hit(x, y, self.presets.len()) {
+                    return self.presets_tap(h);
                 }
                 vec![]
             }
@@ -4586,6 +4633,21 @@ impl App {
                     }
                     self.dac_eq = [0; crate::dac_eq::BANDS];
                     return vec![Action::DacEqChanged];
+                }
+                if crate::dac_eq::fit_at(x, y) {
+                    let fitted = crate::dac_eq::fit(self.eq_bands);
+                    self.notify("Your 10-band curve, fitted to the DAC's five bands");
+                    if fitted == self.dac_eq {
+                        return vec![];
+                    }
+                    self.dac_eq = fitted;
+                    return vec![Action::DacEqChanged];
+                }
+                // Which equalizer the jack uses. The DAC curve itself does not move, only whether
+                // Sony's 10-band is flat on the jack, so the chain is what needs re-applying.
+                if crate::dac_eq::jack_row_at(y) {
+                    self.jack_eq_dac = !self.jack_eq_dac;
+                    return vec![Action::SoundChanged];
                 }
                 vec![]
             }
@@ -4665,12 +4727,6 @@ impl App {
                     },
                     BtHit::Advanced => {
                         self.push(Screen::BtCodec);
-                        vec![]
-                    }
-                    // A route: which profile Bluetooth uses is set on the Profiles screen, with
-                    // the other outputs beside it.
-                    BtHit::Profile => {
-                        self.push(Screen::Profiles);
                         vec![]
                     }
                     BtHit::DebugLog => {
@@ -8341,7 +8397,7 @@ impl App {
                 _ => vec![],
             },
             Screen::Soundscape => self.soundscape_button(b),
-            Screen::Profiles => match b {
+            Screen::Presets => match b {
                 Button::Back => {
                     self.pop();
                     vec![]
@@ -8954,8 +9010,8 @@ impl App {
                     // replaces the 10-band EQ rather than stacking with it.
                     source_direct: self.adv_source_direct,
                     tone_control: self.adv_tone,
-                    profile_map: self.profile_map,
-                    output: self.live_output,
+                    presets_saved: self.presets.len(),
+                    eq_on_dac: self.eq_on_dac(),
                     eq_preset: data::EQ_PRESETS[self.eq_preset].0,
                     // The signal path shows what is REALLY carrying the audio: it ends at
                     // Bluetooth only while a sink is the route. (It used to end there whenever the
@@ -8980,18 +9036,26 @@ impl App {
                     self.sound_scroll_px,
                 )
             }
-            Screen::Profiles => {
-                let p = crate::profile::Profiles {
-                    map: self.profile_map,
-                    live: self.live_output,
+            Screen::Presets => {
+                let saved: Vec<String> = self.presets.iter().map(describe_setup).collect();
+                let p = crate::presets::Presets {
+                    saved: &saved,
+                    armed: self.preset_armed,
+                    live: crate::profile::letter(self.setup_idx),
                     follow: self.profile_follow,
                 };
-                crate::profile::render(c, &theme, fonts, &p)
+                crate::presets::render(c, &theme, fonts, &p)
             }
             Screen::DacEq => {
+                let back = match self.stack.iter().rev().nth(1) {
+                    Some(Screen::Sound) => "Sound",
+                    _ => "Advanced",
+                };
                 let d = crate::dac_eq::DacEq {
                     bands: self.dac_eq,
                     direct: self.adv_source_direct,
+                    jack: self.jack_eq_dac,
+                    back,
                 };
                 crate::dac_eq::render(c, &theme, fonts, &d, self.dac_eq_sel)
             }
@@ -9113,9 +9177,6 @@ impl App {
                     busy_phase: self.bt_busy_phase,
                     paired: &self.bt_paired,
                     debug_log: self.bt_debug_log,
-                    profile: crate::profile::letter(
-                        self.profile_map[crate::profile::Output::Bluetooth.idx()],
-                    ),
                 };
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
@@ -9140,9 +9201,6 @@ impl App {
                     busy_phase: self.bt_busy_phase,
                     paired: &self.bt_paired,
                     debug_log: self.bt_debug_log,
-                    profile: crate::profile::letter(
-                        self.profile_map[crate::profile::Output::Bluetooth.idx()],
-                    ),
                 };
                 crate::bluetooth::render_codec(c, &theme, fonts, &bt)
             }
@@ -10132,22 +10190,15 @@ impl App {
         true
     }
 
-    /// Switch to setup `idx` — the Sound screen's A/B control. Since R5 this also makes it the
-    /// profile of the output that is LIVE, so the choice survives the next route change instead
-    /// of being undone by it. The live one is banked first, so edits are never lost by comparing.
-    /// Returns the actions needed to make the hardware match — the whole chain, because
-    /// everything in a setup can differ.
+    /// Switch to side `idx` of the compare — the Sound screen's A/B control. The live side is
+    /// banked first, so edits are never lost by comparing. Returns the actions needed to make the
+    /// hardware match — the whole chain, because everything in a setup can differ.
     pub fn select_setup(&mut self, idx: usize) -> Vec<Action> {
         let idx = idx & 1;
-        self.profile_map[self.live_output.idx()] = idx;
         if !self.swap_to_setup(idx) {
             return vec![];
         }
-        self.toast = format!(
-            "Profile {} \u{b7} {}",
-            crate::profile::letter(idx),
-            self.live_output.label()
-        );
+        self.toast = format!("Comparing {}", crate::profile::letter(idx));
         self.toast_frames = TOAST_FRAMES;
         // ONE action, and it has to be SoundChanged. The FFI hands the shell a single code per tap
         // or press — the first shell-visible action — so the old `[EqChanged, SoundChanged]` only
@@ -10179,65 +10230,69 @@ impl App {
         self.profile_follow = bits & FOLLOW_ALL;
     }
 
-    /// Profile index (0 = A, 1 = B) per output, in `profile::Output::ALL` order.
-    pub fn profile_map(&self) -> [usize; 3] {
-        self.profile_map
-    }
-
-    /// Restore the per-output choices at boot and bring the live setup in line with the output
-    /// that is live NOW. Boot is the one place the two can disagree: the file remembers which
-    /// setup was live at the last write, which is whatever output was live then — Bluetooth, say
-    /// — while the player boots with nothing connected. No apply is requested: the shell asserts
-    /// the whole chain at boot anyway (`deferred_up`), after this has run.
-    pub fn restore_profiles(&mut self, map: [usize; 3]) {
-        self.profile_map = map.map(|i| i & 1);
-        self.live_output = self.current_output();
-        self.swap_to_setup(self.profile_map[self.live_output.idx()]);
-    }
-
-    /// The route may have changed: bring the live setup in line with the new output's profile.
-    /// Called from every place the shell reports a route (`set_bt_route`, `set_usb_dac`) and
-    /// from the USB-DAC switch itself. When the live setup changes, `profile_apply` is raised for
-    /// the shell to collect with [`Self::take_profile_apply`] — these are state pushes, not taps,
-    /// so there is no action to return.
+    /// The route may have changed. Called from every place the shell reports a route
+    /// (`set_bt_route`, `set_usb_dac`) and from the USB-DAC switch itself. Moving on or off the
+    /// jack moves the curve between the DAC and the 10-band (`jack_eq_dac`), so `profile_apply` is
+    /// raised for the shell to collect with [`Self::take_profile_apply`].
     fn route_changed(&mut self) {
         let out = self.current_output();
         if out == self.live_output {
             return;
         }
-        self.live_output = out;
-        if self.swap_to_setup(self.profile_map[out.idx()]) {
+        let jack = crate::profile::Output::Jack;
+        if self.jack_eq_dac && (self.live_output == jack || out == jack) {
             self.profile_apply = true;
-            self.notify(&format!(
-                "Profile {} for {}",
-                crate::profile::letter(self.setup_idx),
-                out.label()
-            ));
         }
+        self.live_output = out;
     }
 
-    /// Has a route change switched the live profile since the last call? Take-once: the shell
+    /// Has a route change moved the jack's EQ since the last call? Take-once: the shell
     /// re-applies the chain when this returns true.
     pub fn take_profile_apply(&mut self) -> bool {
         std::mem::take(&mut self.profile_apply)
     }
 
-    /// A tap on the Profiles screen.
-    fn profiles_tap(&mut self, h: crate::profile::Hit) -> Vec<Action> {
-        use crate::profile::Hit;
+    /// A tap on the Presets screen.
+    fn presets_tap(&mut self, h: crate::presets::Hit) -> Vec<Action> {
+        use crate::presets::Hit;
+        if !matches!(h, Hit::Delete(_)) {
+            self.preset_armed = None;
+        }
         match h {
-            Hit::Output(o) => {
-                let flipped = 1 - (self.profile_map[o.idx()] & 1);
-                self.profile_map[o.idx()] = flipped;
-                // Only the LIVE output changes what is heard. Any other just changes what the
-                // player will switch to later — saved by the tap itself, nothing to apply.
-                if o == self.live_output && self.swap_to_setup(flipped) {
-                    return vec![Action::SoundChanged];
+            Hit::Save => {
+                if self.presets.len() >= crate::presets::MAX {
+                    self.notify("All four are in use: delete one first");
+                    return vec![];
+                }
+                self.presets.push(self.setup());
+                self.notify(&format!("Saved as Preset {}", self.presets.len()));
+                vec![]
+            }
+            Hit::Load(i) => {
+                let Some(mut p) = self.presets.get(i).copied() else {
+                    return vec![];
+                };
+                p.share_unfollowed(&self.setup(), self.profile_follow);
+                self.set_setup(p);
+                self.notify(&format!(
+                    "Preset {} on {}",
+                    i + 1,
+                    crate::profile::letter(self.setup_idx)
+                ));
+                vec![Action::SoundChanged]
+            }
+            Hit::Delete(i) => {
+                if self.preset_armed == Some(i) && i < self.presets.len() {
+                    self.presets.remove(i);
+                    self.preset_armed = None;
+                    self.notify(&format!("Preset {} deleted", i + 1));
+                } else {
+                    self.preset_armed = Some(i);
                 }
                 vec![]
             }
-            // Both profiles start from the value that is live, so switching an item in changes
-            // nothing that is heard; switching it out leaves the live value as the one for all.
+            // Both sides start from the value that is live, so switching an item in changes
+            // nothing that is heard; switching it out leaves the live value as the one for both.
             Hit::Follow(bit) => {
                 self.profile_follow ^= bit & FOLLOW_ALL;
                 let live = self.setup();
@@ -10252,6 +10307,36 @@ impl App {
                 self.notify(&format!("{other} is now a copy of {live}"));
                 vec![]
             }
+        }
+    }
+
+    /// Saved presets, oldest first.
+    pub fn presets(&self) -> &[SoundSetup] {
+        &self.presets
+    }
+    /// Restore the saved presets at boot (at most `presets::MAX`).
+    pub fn restore_presets(&mut self, mut p: Vec<SoundSetup>) {
+        p.truncate(crate::presets::MAX);
+        self.presets = p;
+    }
+
+    /// The jack's EQ is the DAC's (see the field).
+    pub fn jack_eq_dac(&self) -> bool {
+        self.jack_eq_dac
+    }
+    pub fn set_jack_eq_dac(&mut self, on: bool) {
+        self.jack_eq_dac = on;
+    }
+    /// The DAC is carrying the curve right now: the setting is on and the jack is the output.
+    pub fn eq_on_dac(&self) -> bool {
+        self.jack_eq_dac && self.current_output() == crate::profile::Output::Jack
+    }
+    /// What Sony's 10-band should be given: flat while the DAC carries the jack's curve.
+    pub fn eq_bands_for_dsp(&self) -> [i8; 10] {
+        if self.eq_on_dac() {
+            [0; 10]
+        } else {
+            self.eq_bands
         }
     }
 
@@ -15214,7 +15299,7 @@ mod tests {
             Screen::Advanced,
             Screen::Tone,
             Screen::DacEq,
-            Screen::Profiles,
+            Screen::Presets,
             Screen::Bluetooth,
             Screen::BtCodec,
             Screen::Pairing,
@@ -19437,198 +19522,108 @@ mod tests {
         );
     }
 
-    /// 2026-10-04 (owner: "have it as an option"): mono, the linear amp and the DAC EQ are one
-    /// value for every output until switched into the profiles, one by one. Switching one in or
-    /// out changes nothing that is heard; once in, each profile keeps its own.
+    /// Mono, the linear amp and the DAC EQ are one value for both sides of the compare until
+    /// switched in on the Presets screen; switching one in changes nothing heard.
     #[test]
-    fn mono_amp_and_dac_eq_follow_a_profile_only_when_asked() {
-        use crate::profile::{centre, Hit};
+    fn mono_amp_and_dac_eq_follow_the_sound_only_when_asked() {
+        use crate::presets::{centre, Hit};
         let mut a = unlocked();
         assert_eq!(a.profile_follow(), 0, "off by default");
         a.set_mono(true);
-        a.set_adv_flags(1 << 5);
         a.set_dac_eq([2, 0, -2, 0, 4]);
-        // Not followed: B has the same three as A, and going back changes nothing either.
         a.select_setup(1);
-        assert!(a.mono() && a.adv_flags() & (1 << 5) != 0 && a.dac_eq() == [2, 0, -2, 0, 4]);
-        a.set_dac_eq([0, 0, 0, 0, 6]); // edited under B: still the one curve
+        assert!(a.mono() && a.dac_eq() == [2, 0, -2, 0, 4]);
         a.select_setup(0);
-        assert_eq!(a.dac_eq(), [0, 0, 0, 0, 6]);
-        let (live, other) = (a.setup(), a.setup_inactive());
-        assert_eq!(
-            (live.mono, live.linear_amp, live.dac_eq),
-            (other.mono, other.linear_amp, other.dac_eq)
-        );
-
-        // Switch mono and the DAC EQ in. Nothing heard changes at the moment of the switch…
-        a.stack = vec![Screen::Profiles];
+        a.stack = vec![Screen::Presets];
         let before = a.setup();
         for bit in [FOLLOW_MONO, FOLLOW_DAC_EQ] {
-            assert!(a.tap(240, centre(Hit::Follow(bit))).is_empty());
+            assert!(a.tap(240, centre(Hit::Follow(bit), 0)).is_empty());
         }
         assert_eq!(a.profile_follow(), FOLLOW_MONO | FOLLOW_DAC_EQ);
         assert_eq!(a.setup(), before);
-        assert_eq!(
-            (a.setup_inactive().mono, a.setup_inactive().dac_eq),
-            (true, [0, 0, 0, 0, 6])
-        );
-        // …and from here each profile keeps its own: B goes stereo with a flat curve, A does not.
         a.select_setup(1);
         a.set_mono(false);
-        a.set_dac_eq([0; 5]);
-        a.set_adv_flags(0); // the amp is NOT followed: this is for both
         a.select_setup(0);
         assert!(a.mono(), "A's mono came back");
-        assert_eq!(a.dac_eq(), [0, 0, 0, 0, 6], "A's curve came back");
-        assert_eq!(
-            a.adv_flags() & (1 << 5),
-            0,
-            "the amp stayed one value for both"
-        );
+    }
+
+    /// A/B is a compare: a route change never switches sides any more.
+    #[test]
+    fn a_route_change_leaves_the_compare_alone() {
+        let mut a = unlocked();
         a.select_setup(1);
-        assert!(!a.mono());
-        assert_eq!(a.dac_eq(), [0; 5]);
-        // Switching mono back out: the live value becomes the one for both.
-        a.stack = vec![Screen::Profiles];
-        a.tap(240, centre(Hit::Follow(FOLLOW_MONO)));
-        a.select_setup(0);
-        assert!(!a.mono(), "mono is one value again, the one that was live");
+        a.set_bt_route(true);
+        assert_eq!(a.setup_idx(), 1);
+        a.set_bt_route(false);
+        assert_eq!(a.setup_idx(), 1);
     }
 
-    /// The route change is the switch: each output comes back to the profile it was given, the
-    /// shell is told to re-apply exactly once, and an output on the SAME profile asks for nothing.
+    /// Save keeps the live sound; Load puts it back on the live side; Delete needs two taps.
     #[test]
-    fn a_route_change_switches_to_that_outputs_profile() {
-        use crate::profile::Output;
+    fn presets_save_load_and_delete() {
+        use crate::presets::{centre, Hit, MAX};
         let mut a = unlocked();
-        assert_eq!((a.live_output(), a.setup_idx()), (Output::Jack, 0));
-        a.go(Screen::Profiles);
-        // Give Bluetooth profile B. It is not the live output, so nothing is applied.
-        assert!(a
-            .tap(
-                240,
-                crate::profile::centre(crate::profile::Hit::Output(Output::Bluetooth))
-            )
-            .is_empty());
-        assert_eq!(a.profile_map(), [0, 1, 0]);
-        assert_eq!(a.setup_idx(), 0);
-        assert!(!a.take_profile_apply());
-
-        // Tune A on the jack, then connect headphones.
+        a.go(Screen::Presets);
         a.snd_dsee = true;
-        a.set_bt_route(true);
-        assert_eq!((a.live_output(), a.setup_idx()), (Output::Bluetooth, 1));
-        assert!(!a.snd_dsee, "B is live, and DSEE HX was A's");
-        assert!(a.take_profile_apply(), "the shell must re-apply the chain");
-        assert!(!a.take_profile_apply(), "…once");
-
-        // Disconnect: back to A, with its tuning.
-        a.set_bt_route(false);
-        assert_eq!((a.live_output(), a.setup_idx()), (Output::Jack, 0));
-        assert!(a.snd_dsee);
-        assert!(a.take_profile_apply());
-
-        // USB-DAC shares A with the jack: the output changes, the profile does not, nothing to do.
-        a.set_usb_dac(true);
-        assert_eq!((a.live_output(), a.setup_idx()), (Output::UsbDac, 0));
-        assert!(!a.take_profile_apply());
-        // …and DAC mode outranks a Bluetooth link made while it is on.
-        a.set_bt_route(true);
-        assert_eq!((a.live_output(), a.setup_idx()), (Output::UsbDac, 0));
-        a.set_usb_dac(false);
-        assert_eq!((a.live_output(), a.setup_idx()), (Output::Bluetooth, 1));
-        assert!(a.take_profile_apply());
+        assert!(a.tap(100, centre(Hit::Save, 0)).is_empty());
+        assert_eq!(a.presets().len(), 1);
+        assert!(describe_setup(&a.presets()[0]).ends_with("DSEE HX"));
+        a.snd_dsee = false;
+        assert_eq!(a.tap(100, centre(Hit::Load(0), 1)), vec![Action::SoundChanged]);
+        assert!(a.snd_dsee, "the preset came back");
+        for _ in 1..MAX + 2 {
+            a.tap(100, centre(Hit::Save, a.presets().len()));
+        }
+        assert_eq!(a.presets().len(), MAX, "never more than the screen holds");
+        let x = crate::canvas::W as i32 - 10;
+        a.tap(x, centre(Hit::Load(0), MAX));
+        assert_eq!(a.presets().len(), MAX, "the first tap only arms");
+        a.tap(x, centre(Hit::Load(0), MAX));
+        assert_eq!(a.presets().len(), MAX - 1);
     }
 
-    /// The Sound screen's A/B picks the profile FOR THE LIVE OUTPUT, so the next route change does
-    /// not undo it; flipping the live output on the Profiles screen is the same act.
+    /// "Copy A to B" makes the other side the same as the live one, and changes nothing heard.
     #[test]
-    fn ab_sets_the_live_outputs_profile() {
-        use crate::profile::{Hit, Output};
-        let mut a = unlocked();
-        a.set_bt_route(true);
-        assert_eq!(a.select_setup(1), vec![Action::SoundChanged]);
-        assert_eq!(
-            a.profile_map(),
-            [0, 1, 0],
-            "B was chosen while Bluetooth was live"
-        );
-        a.set_bt_route(false);
-        assert_eq!(a.setup_idx(), 0, "the jack kept A");
-        a.set_bt_route(true);
-        assert_eq!(a.setup_idx(), 1, "Bluetooth came back to B");
-        // On the Profiles screen, the LIVE output's row applies at once.
-        a.go(Screen::Profiles);
-        let acts = a.tap(240, crate::profile::centre(Hit::Output(Output::Bluetooth)));
-        assert_eq!(acts, vec![Action::SoundChanged]);
-        assert_eq!((a.setup_idx(), a.profile_map()), (0, [0, 0, 0]));
-    }
-
-    /// "Copy A to B" makes the other profile the same as the live one, and changes nothing heard.
-    #[test]
-    fn copy_makes_the_other_profile_match_the_live_one() {
+    fn copy_makes_the_other_side_match_the_live_one() {
         let mut a = unlocked();
         a.snd_vpt = true;
         a.snd_vpt_mode = 2;
-        a.set_tone_bands([2, 0, -2]);
-        a.go(Screen::Profiles);
-        assert!(a
-            .tap(240, crate::profile::centre(crate::profile::Hit::Copy))
-            .is_empty());
+        a.go(Screen::Presets);
+        assert!(a.tap(240, crate::presets::centre(crate::presets::Hit::Copy, 0)).is_empty());
         assert_eq!(a.setup_inactive(), a.setup());
-        assert_eq!(a.setup_idx(), 0);
         a.select_setup(1);
-        assert!(a.snd_vpt && a.snd_vpt_mode == 2 && a.tone_bands() == [2, 0, -2]);
+        assert!(a.snd_vpt && a.snd_vpt_mode == 2);
     }
 
-    /// At boot the file's live setup is whatever output was live at the last write; the player
-    /// boots on the jack, so the jack's profile is what must be live when the chain is asserted.
+    /// On the jack the curve is the DAC's: Sony's 10-band gets flat bands, the Equalizer row opens
+    /// the DAC EQ, and moving to Bluetooth hands the 10-band back (with a re-apply).
     #[test]
-    fn boot_brings_the_live_setup_in_line_with_the_jack() {
+    fn the_jack_eq_lives_in_the_dac_by_default() {
         let mut a = unlocked();
-        let b = SoundSetup {
-            dsee: true,
-            ..SoundSetup::default()
-        };
-        // Written while Bluetooth (profile B) was live: live = B, spare = A.
-        a.restore_setups(b, SoundSetup::default(), 1);
-        a.restore_profiles([0, 1, 0]);
-        assert_eq!(a.setup_idx(), 0, "the jack uses A");
-        assert!(!a.snd_dsee);
-        assert_eq!(a.setup_inactive(), b);
-        assert!(!a.take_profile_apply(), "boot asserts the chain itself");
-        // Junk indices are masked, never trusted.
-        a.restore_profiles([7, 2, 9]);
-        assert_eq!(a.profile_map(), [1, 0, 1]);
+        a.set_eq_bands([4; 10]);
+        assert!(a.eq_on_dac());
+        assert_eq!(a.eq_bands_for_dsp(), [0; 10]);
+        a.go(Screen::Sound);
+        let y = crate::sound::row_top(crate::sound::ROW_EQ, 0) + crate::sound::ROW_H / 2;
+        a.tap(240, y);
+        assert_eq!(a.current(), Screen::DacEq);
+        a.set_bt_route(true);
+        assert!(a.take_profile_apply());
+        assert_eq!(a.eq_bands_for_dsp(), [4; 10]);
+        a.set_jack_eq_dac(false);
+        a.set_bt_route(false);
+        assert!(!a.take_profile_apply());
+        assert_eq!(a.eq_bands_for_dsp(), [4; 10]);
     }
 
-    /// The Sound screen's two new rows are routes, and neither re-applies the chain.
+    /// The Presets row is a route and does not re-apply the chain.
     #[test]
-    fn the_profile_and_equalizer_rows_open_their_screens() {
-        for (row, want) in [
-            (crate::sound::ROW_PROFILE, Screen::Profiles),
-            (crate::sound::ROW_EQ, Screen::Eq),
-        ] {
-            let mut a = unlocked();
-            a.go(Screen::Sound);
-            let y = crate::sound::row_top(row, 0) + crate::sound::ROW_H / 2;
-            assert!(
-                a.tap(240, y).is_empty(),
-                "a route must not emit SoundChanged"
-            );
-            assert_eq!(a.current(), want);
-        }
-    }
-
-    /// Bluetooth ▸ Sound profile shows Bluetooth's letter and opens the Profiles screen.
-    #[test]
-    fn the_bluetooth_sound_profile_row_opens_profiles() {
+    fn the_presets_row_opens_presets() {
         let mut a = unlocked();
-        a.set_bt_on(true);
-        a.go(Screen::Bluetooth);
-        let (_, y, _, h) = crate::bluetooth::profile_row();
-        assert!(a.tap(240, y + h / 2).is_empty());
-        assert_eq!(a.current(), Screen::Profiles);
+        a.go(Screen::Sound);
+        let y = crate::sound::row_top(crate::sound::ROW_PROFILE, 0) + crate::sound::ROW_H / 2;
+        assert!(a.tap(240, y).is_empty());
+        assert_eq!(a.current(), Screen::Presets);
     }
 
     /// The Sound list scrolls, and a tap lands on the row under the finger at that scroll.

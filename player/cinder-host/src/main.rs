@@ -268,9 +268,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         bt_codec: Some("LDAC"),
         source_direct: false,
         tone_control: false,
-        // Bluetooth is live in these previews (the path ends in BT·LDAC), so the Profile row says so.
-        profile_map: [0, 0, 1],
-        output: cinder_ui::profile::Output::Bluetooth,
+        presets_saved: 2,
+        eq_on_dac: false,
         more: false,
         clearaudio_ok: true,
         dc_gone: false,
@@ -292,7 +291,6 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         paired: &preview_paired_list,
         fine_volume: "OFF",
         debug_log: false,
-        profile: "B",
     };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
@@ -1575,7 +1573,6 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     link_codec: None,
                     fine_volume: "OFF",
                     debug_log: false,
-                    profile: "B",
                 };
                 bluetooth::render(c, &theme, &fonts, &b)
             }),
@@ -2914,22 +2911,25 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         }
     }
 
-    // Sound profiles (R5), driven through the navigator so the previews are the states a user can
-    // reach: the Profiles screen on the jack, the same screen with Bluetooth live on B, and the
-    // Sound list scrolled to its end with that profile live. After everything else, for the same
+    // Presets, driven through the navigator: empty, then two saved with the first armed for
+    // deletion, then the Sound list scrolled to its end. After everything else, for the same
     // glyph-cache reason as the block above.
     {
         use cinder_ui::nav::Screen;
-        use cinder_ui::profile::{centre, Hit, Output};
-        for (name, screen, bt_live) in [
-            ("profiles", Screen::Profiles, false),
-            ("profiles_bt_live", Screen::Profiles, true),
-            ("sound_end_profile_b", Screen::Sound, true),
+        use cinder_ui::presets::{centre, Hit};
+        for (name, screen, saved) in [
+            ("presets_empty", Screen::Presets, 0usize),
+            ("presets_two", Screen::Presets, 2),
+            ("sound_end_presets", Screen::Sound, 2),
         ] {
             let mut app = new_app();
-            app.go_for_preview(Screen::Profiles);
-            app.tap(240, centre(Hit::Output(Output::Bluetooth))); // Bluetooth uses B
-            app.set_bt_route(bt_live);
+            app.go_for_preview(Screen::Presets);
+            for n in 0..saved {
+                app.tap(100, centre(Hit::Save, n));
+            }
+            if saved > 0 {
+                app.tap(470, centre(Hit::Load(0), saved));
+            }
             app.go_for_preview(screen);
             app.scroll_px(10_000);
             let mut c = Canvas::new();

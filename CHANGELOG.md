@@ -16,31 +16,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.17] — 2026-10-18
+
 ### Added
 
+- **Presets** (Sound ▸ Presets): save the sound you have now and come back to it. Up to four
+  are kept; tapping one loads it, and Delete takes two taps. A preset holds the EQ, every effect
+  and the balance; mono, the linear amp and the DAC EQ are in it only if switched on under ALSO
+  SAVED. *Host-tested (tests and previews); not yet used on a player.*
 - **A noise cancelling probe (issue #27).** With a Sony noise-cancelling earphone in the jack (its
   5-pin plug sets the codec's `ucom` switch), Cinder writes `cinder_nc_probe.txt` to the player's
   storage 3 s later: Sony's NC feature flag, the plug switches, the 13 NC and jack controls, and
   Sony's NC log lines. Nothing is written for ordinary headphones; `nc_probe` in
   `cinder_advanced.conf` also writes it at start and on every jack change. Read-only. *Run on a
   Walkman One player with no NC earphone (the `nc_probe` start-up path); never with one.*
-
-### Changed
-
-- **VPT Surround, Clear Phase and DSEE AI say "Not in Walkman One's sound library" on Walkman
-  One** and ignore taps. Walkman One's effect chain has none of the three, so they never did
-  anything there; it was not ClearAudio+ holding them off. *Device-verified: the player logs
-  `sound: Walkman One sound library`; the screens are host-tested.*
-- **The three settings that took a value are lines in `cinder_advanced.conf` too:** `suspend_s=`
-  (seconds of dark screen before the light sleep), `cpufloor_khz=` (the processor floor while
-  playing) and `mediastore_db=` / `mediastore_root=` / `mediastore_dirs=` / `mediastore_extra=`.
-  The old files (`cinder_suspend_s`, `cinder_cpufloor.conf`, `cinder_mediastore.conf`) still work
-  and win where they exist. *`suspend_s` device-verified on a Walkman One player; the other two
-  share its reader and are not yet run.*
-
-## [0.3.17] — 2026-10-18
-
-### Added
 
 - **Audiobooks.** Anything in a `LEARNING` folder at the root of the player or the SD card (Sony's
   own language-study folder) is an audiobook. A **book button** in the Library's header, right of
@@ -67,6 +56,28 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **The equalizer on the headphone jack is the DAC's own** (Sound ▸ Equalizer on the jack opens
+  the DAC EQ). It runs in the DAC chip and costs no processor time, where Sony's 10-band costs
+  about 5 % of a core. Bluetooth still uses the 10-band. **Fit my 10-band curve** on the DAC EQ
+  screen copies a 10-band curve into the DAC's five bands, and **Use on the headphone jack**
+  there puts the 10-band back on the jack. A player that already has a 10-band curve keeps it on
+  the jack after the update; the rest start on the DAC. *Host-tested; the DAC EQ itself was
+  device-verified 2026-09-29 (tables accepted and read back) but not yet measured at the jack.*
+- **A/B on the Sound screen is a compare again, not a profile per output.** Tap A or B to hear
+  the two sides; nothing switches by itself when headphones connect or disconnect. Bluetooth ▸
+  Sound profile is gone, and the Sound profiles screen is now Presets. Both sides are kept as
+  before; which side each output used is no longer read from the settings file.
+- **VPT Surround, Clear Phase and DSEE AI say "Not in Walkman One's sound library" on Walkman
+  One** and ignore taps. Walkman One's effect chain has none of the three, so they never did
+  anything there; it was not ClearAudio+ holding them off. *Device-verified: the player logs
+  `sound: Walkman One sound library`; the screens are host-tested.*
+- **The three settings that took a value are lines in `cinder_advanced.conf` too:** `suspend_s=`
+  (seconds of dark screen before the light sleep), `cpufloor_khz=` (the processor floor while
+  playing) and `mediastore_db=` / `mediastore_root=` / `mediastore_dirs=` / `mediastore_extra=`.
+  The old files (`cinder_suspend_s`, `cinder_cpufloor.conf`, `cinder_mediastore.conf`) still work
+  and win where they exist. *`suspend_s` device-verified on a Walkman One player; the other two
+  share its reader and are not yet run.*
+
 - **With the Audiobooks option on, audiobooks are no longer in the music lists.** Files under
   `LEARNING` used to appear in Songs, Albums, Artists, Folders, search and every shuffle; they then
   appear only in Audiobooks. With the option off nothing changes.
@@ -79,6 +90,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   ClearAudio+ and shows Direct and Custom where it does not. *Device-verified.*
 
 ### Fixed
+
+- **A flat 10-band EQ no longer keeps Sony's effect chain running.** Cinder switched the
+  10-band on whenever it sent a curve, flat or not, and any filter that is on makes Sony's sound
+  service process every packet. A flat curve now switches it off, so with nothing else on the
+  chain is skipped, as in Direct mode. *Host-tested; the saving is not measured.*
 
 - **Adding to the queue no longer interrupts the music.** A queue change used to hand Sony's
   player a whole new track list, which restarts the track, so Cinder held the change until the
@@ -2775,8 +2791,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.17-rc1...HEAD
-[0.3.17]: https://github.com/superwilso/Cinder/compare/v0.3.16...v0.3.17-rc1
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.17-rc2...HEAD
+[0.3.17]: https://github.com/superwilso/Cinder/compare/v0.3.16...v0.3.17-rc2
 [0.3.16]: https://github.com/superwilso/Cinder/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/superwilso/Cinder/compare/v0.3.14...v0.3.15-rc1
 [0.3.14]: https://github.com/superwilso/Cinder/compare/v0.3.13...v0.3.14

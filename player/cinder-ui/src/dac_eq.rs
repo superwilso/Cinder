@@ -82,9 +82,35 @@ pub fn band_at(x: i32) -> Option<usize> {
 pub const FOOTER_TOP: i32 = 700;
 const FOOTER_H: i32 = 60;
 
-/// Did this tap land on Reset? The right half is a status label.
+/// Did this tap land on Reset (the footer's left half)?
 pub fn reset_at(x: i32, y: i32) -> bool {
     (FOOTER_TOP..FOOTER_TOP + FOOTER_H).contains(&y) && x < W as i32 / 2
+}
+
+/// Did this tap land on "Fit my 10-band" (the footer's right half)?
+pub fn fit_at(x: i32, y: i32) -> bool {
+    (FOOTER_TOP..FOOTER_TOP + FOOTER_H).contains(&y) && x >= W as i32 / 2
+}
+
+/// The "Use on the headphone jack" switch row, under the two lines of text.
+pub const JACK_ROW_TOP: i32 = crate::chrome::HEADER_BOTTOM + 66;
+pub const JACK_ROW_H: i32 = 64;
+pub fn jack_row_at(y: i32) -> bool {
+    (JACK_ROW_TOP..JACK_ROW_TOP + JACK_ROW_H).contains(&y)
+}
+
+/// The 10-band curve brought to the DAC's five bands: each DAC band takes the mean of the 10-band
+/// bands nearest it (100 Hz shelf: 32/64/125; 400: 250/500; 1.5k: 1k/2k; 4k: 4k; 10k shelf:
+/// 8k/16k), snapped to the editor's 1 dB step and clamped to the DAC's range. Both are half-dB.
+pub fn fit(eq10: [i8; 10]) -> [i8; BANDS] {
+    const GROUPS: [&[usize]; BANDS] = [&[0, 1, 2], &[3, 4], &[5, 6], &[7], &[8, 9]];
+    let mut out = [0i8; BANDS];
+    for (o, g) in out.iter_mut().zip(GROUPS) {
+        let mean = g.iter().map(|&i| eq10[i] as f32).sum::<f32>() / g.len() as f32;
+        let snapped = (mean / BAND_STEP as f32).round() as i32 * BAND_STEP as i32;
+        *o = snapped.clamp(BAND_MIN as i32, BAND_MAX as i32) as i8;
+    }
+    out
 }
 
 /// Clamp a raw gain into the range — for values arriving from the settings file, which any PC can
@@ -98,11 +124,15 @@ pub struct DacEq {
     pub bands: [i8; BANDS],
     /// Source Direct is on, so the shell is holding the DAC EQ flat.
     pub direct: bool,
+    /// This is the jack's equalizer (Sony's 10-band held flat there).
+    pub jack: bool,
+    /// The screen it was opened from, for the header's back label.
+    pub back: &'static str,
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "DAC EQ", Some("Advanced"));
+    let y0 = crate::chrome::header(c, t, f, "DAC EQ", Some(d.back));
     hline(c, y0, t.line);
 
     const AVAIL: f32 = 436.0;
@@ -121,10 +151,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         "Wired headphones only. A boost lowers everything else.",
         sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
     );
-    line(
-        66,
-        "Experimental: not yet measured at the jack.",
-        sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+    let jsub = if d.jack {
+        "The jack's equalizer \u{b7} the 10-band stays for Bluetooth"
+    } else {
+        "Off: the 10-band runs on the jack too, on the processor"
+    };
+    crate::kit::row(
+        c,
+        t,
+        f,
+        JACK_ROW_TOP,
+        JACK_ROW_H,
+        &crate::kit::Row::new("Use on the headphone jack")
+            .sub(jsub)
+            .trail(crate::kit::Trail::Switch(d.jack)),
     );
 
     // ── the slider field ────────────────────────────────────────────────────────────────────
@@ -215,14 +255,24 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         f,
         458.0,
         fcy + 4.0,
-        "Saved automatically",
-        &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0),
+        "Fit my 10-band curve",
+        &sty(Family::Sans, Weight::SemiBold, 16.0, t.acc, 0.0),
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A flat curve fits flat; a bass boost lands in the bass shelf; nothing leaves the range.
+    #[test]
+    fn fitting_the_10_band_curve() {
+        assert_eq!(fit([0; 10]), [0; BANDS]);
+        assert_eq!(fit([12, 12, 12, 0, 0, 0, 0, 0, 0, 0]), [12, 0, 0, 0, 0]);
+        assert_eq!(fit([0, 0, 0, 0, 0, 0, 0, -20, -20, -20]), [0, 0, 0, -20, -20]);
+        assert_eq!(fit([20; 10]), [BAND_MAX; BANDS], "boosts clamp at +6 dB");
+        assert_eq!(fit([3, 3, 3, 0, 0, 0, 0, 0, 0, 0])[0] % BAND_STEP, 0, "snapped to 1 dB");
+    }
 
     #[test]
     fn every_band_is_hittable_across_its_column() {

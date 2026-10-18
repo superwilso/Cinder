@@ -875,6 +875,14 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 /// Serialise the setup that is NOT live, so both halves of the A/B pair survive a reboot. The LIVE
 /// one keeps using the existing `eq=` / `sound=` / `balance100=` keys, which means an older build
 /// reading this file still finds exactly what it expects and simply ignores the spare.
+/// Every saved preset, as the spare's keys under `preset<N>_` (`bank_` never occurs in a value).
+fn presets_body(p: &[cinder_ui::nav::SoundSetup]) -> String {
+    p.iter()
+        .enumerate()
+        .map(|(i, s)| setup_body(s).replace("bank_", &format!("preset{}_", i + 1)))
+        .collect()
+}
+
 fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
     let eq: Vec<String> = s.eq_bands.iter().map(|b| b.to_string()).collect();
     let flags = (s.dsee as u8)
@@ -901,22 +909,6 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
     )
 }
 
-/// Which profile each output uses (R5), one line per output: `profile_jack=a`, `profile_bt=b`,
-/// `profile_usb=a`. Letters rather than indices, like `volume_hud` and `home_screen`: they are
-/// what the screen shows, and what someone editing the file by hand would expect to type.
-fn profiles_body(map: [usize; 3]) -> String {
-    cinder_ui::profile::Output::ALL
-        .iter()
-        .map(|o| {
-            format!(
-                "{}={}\n",
-                o.key(),
-                cinder_ui::profile::letter(map[o.idx()]).to_ascii_lowercase()
-            )
-        })
-        .collect()
-}
-
 /// Write `body` to `path` so that a crash or a power cut leaves either the old file or the new
 /// one, never half of one: the body goes to a temporary file beside it, is flushed to the card,
 /// and is renamed over the original. `/contents` is vfat on flash and the player can lose power
@@ -933,7 +925,10 @@ struct ProfileLoad {
     /// The file carried the spare's Advanced values. One written before R5 does not.
     bank_adv_seen: bool,
     live_idx: usize,
-    profiles: [usize; 3],
+    /// Saved presets, each read through the same keys as the spare (`preset<N>_` for `bank_`).
+    presets: Vec<ProfileLoad>,
+    /// `jack_eq=`: Some(true) for the DAC, Some(false) for the 10-band, None when absent.
+    jack_eq: Option<bool>,
 }
 
 impl Default for ProfileLoad {
@@ -943,7 +938,8 @@ impl Default for ProfileLoad {
             bank_seen: false,
             bank_adv_seen: false,
             live_idx: 0,
-            profiles: [0; 3],
+            presets: Vec::new(),
+            jack_eq: None,
         }
     }
 }
@@ -1041,16 +1037,23 @@ impl ProfileLoad {
                     }
                 }
             }
-            // Which profile each output uses. An unreadable letter leaves that output on A.
-            "profile_jack" | "profile_bt" | "profile_usb" => {
-                if let (Some(o), Some(i)) = (
-                    cinder_ui::profile::Output::ALL
-                        .iter()
-                        .find(|o| o.key() == k),
-                    cinder_ui::profile::parse_letter(v),
-                ) {
-                    self.profiles[o.idx()] = i;
+            // Sound profiles per output, retired 2026-10-18: taken and ignored.
+            "profile_jack" | "profile_bt" | "profile_usb" => {}
+            "jack_eq" => self.jack_eq = Some(v != "10band"),
+            k if k.starts_with("preset") => {
+                let Some((n, rest)) = k[6..].split_once('_') else {
+                    return false;
+                };
+                let Ok(n) = n.parse::<usize>() else {
+                    return false;
+                };
+                if !(1..=cinder_ui::presets::MAX).contains(&n) {
+                    return true;
                 }
+                while self.presets.len() < n {
+                    self.presets.push(ProfileLoad::default());
+                }
+                self.presets[n - 1].line(&format!("bank_{rest}"), v);
             }
             _ => return false,
         }
@@ -1077,9 +1080,16 @@ impl ProfileLoad {
             }
             app.restore_setups(live, self.bank, self.live_idx);
         }
-        // Then the outputs: the live setup follows the output that is live at boot (the jack),
-        // whichever one the file was written under.
-        app.restore_profiles(self.profiles);
+        app.restore_presets(
+            self.presets
+                .into_iter()
+                .filter(|p| p.bank_seen)
+                .map(|p| p.bank)
+                .collect(),
+        );
+        // A file from before 2026-10-18 has no `jack_eq`: the DAC unless the owner has a 10-band
+        // curve, so an upgrade never takes a curve they hear off the jack.
+        app.set_jack_eq_dac(self.jack_eq.unwrap_or(app.eq_bands() == [0; 10]));
     }
 }
 
@@ -1142,8 +1152,13 @@ fn settings_body(r: &Render) -> String {
         r.app.clear_bass_step(),
     );
     body.push_str(&setup_body(&r.app.setup_inactive()));
-    body.push_str(&profiles_body(r.app.profile_map()));
-    // Which of mono (1), linear amp (2) and DAC EQ (4) travel with a profile. 0 = none.
+    // Saved presets (Sound ▸ Presets): the spare's keys, numbered — `preset1_eq=` and so on.
+    body.push_str(&presets_body(r.app.presets()));
+    body.push_str(&format!(
+        "jack_eq={}\n",
+        if r.app.jack_eq_dac() { "dac" } else { "10band" }
+    ));
+    // Which of mono (1), linear amp (2) and DAC EQ (4) travel with a sound. 0 = none.
     body.push_str(&format!("profile_follow={}\n", r.app.profile_follow()));
     // The visualiser's signal settings. One line each rather than a packed field, because these
     // are exactly the lines someone tuning the display over adb will want to edit by hand — and
@@ -2136,7 +2151,7 @@ const SCREEN_NAMES: [&str; 45] = [
     "Soundscape",
     "?",
     "?",
-    "Profiles",
+    "Presets",
     "Books",
 ];
 
@@ -2186,7 +2201,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::PlaylistEdit => 38,
         S::ViewEdit => 39,
         S::Soundscape => 40,
-        S::Profiles => 43,
+        S::Presets => 43,
         S::Books => 44,
     }
 }
@@ -4939,7 +4954,7 @@ pub extern "C" fn cinder_get_eq_bands(out: *mut i8) {
         .lock()
         .unwrap()
         .as_ref()
-        .map(|r| r.app.eq_bands())
+        .map(|r| r.app.eq_bands_for_dsp())
         .unwrap_or([0i8; 10]);
     unsafe {
         for (i, b) in bands.iter().enumerate() {
@@ -8715,7 +8730,7 @@ mod tests {
             S::PlaylistEdit,
             S::ViewEdit,
             S::Soundscape,
-            S::Profiles,
+            S::Presets,
             S::Books,
         ];
         // Two ordinals (41, 42) are spare — see SCREEN_NAMES.
@@ -8806,13 +8821,9 @@ mod tests {
             ..SoundSetup::default()
         };
         let body = format!(
-            "setup=0\n{}{}",
+            "setup=0\n{}{}jack_eq=10band\nprofile_bt=b\n",
             setup_body(&spare),
-            profiles_body([0, 1, 1])
-        );
-        assert!(
-            body.contains("profile_jack=a\nprofile_bt=b\nprofile_usb=b\n"),
-            "{body}"
+            presets_body(&[spare, SoundSetup::default()])
         );
 
         let mut pl = ProfileLoad::default();
@@ -8827,28 +8838,20 @@ mod tests {
         let mut app = cinder_ui::nav::App::new();
         pl.install(&mut app);
         assert_eq!(app.setup_inactive(), spare);
-        assert_eq!(app.profile_map(), [0, 1, 1]);
         assert_eq!(app.setup_idx(), 0);
+        assert_eq!(app.presets(), &[spare, SoundSetup::default()]);
+        assert!(!app.jack_eq_dac());
+    }
 
-        // Written while Bluetooth (B) was live: the boot is on the jack, so A must come back live
-        // and what the file called "live" must be banked as B.
-        let mut pl = ProfileLoad::default();
-        for line in format!(
-            "setup=1\n{}{}",
-            setup_body(&SoundSetup::default()),
-            profiles_body([0, 1, 0])
-        )
-        .lines()
-        {
-            let (k, v) = line.split_once('=').unwrap();
-            pl.line(k, v);
+    /// No `jack_eq` key: the DAC, unless the file's live 10-band curve is not flat.
+    #[test]
+    fn an_older_file_keeps_a_10_band_curve_on_the_jack() {
+        for (eq, want) in [([0i8; 10], true), ([4; 10], false)] {
+            let mut app = cinder_ui::nav::App::new();
+            app.set_eq_bands(eq);
+            ProfileLoad::default().install(&mut app);
+            assert_eq!(app.jack_eq_dac(), want);
         }
-        let mut app = cinder_ui::nav::App::new();
-        app.set_setup(spare); // the file's live keys described B
-        pl.install(&mut app);
-        assert_eq!(app.setup_idx(), 0, "the jack uses A");
-        assert_eq!(app.setup(), SoundSetup::default());
-        assert_eq!(app.setup_inactive(), spare);
     }
 
     /// A settings file from before R5 has a spare with no Advanced values. Advanced was shared by
@@ -8876,11 +8879,6 @@ mod tests {
             "the spare lost the shared Advanced values"
         );
         assert_eq!((b.tone_bands, b.vinyl_type), ([6, 0, -6], 3));
-        assert_eq!(
-            app.profile_map(),
-            [0, 0, 0],
-            "no profile_* keys: every output on A"
-        );
 
         let mut pl = ProfileLoad::default();
         for (k, v) in [
@@ -8902,7 +8900,6 @@ mod tests {
             &pl.bank.eq_bands[..2],
             &[crate::EQ_BAND_MAX, -crate::EQ_BAND_MAX]
         );
-        assert_eq!(pl.profiles, [0, 0, 1]);
         assert_eq!(
             pl.bank.adv_bits(),
             0b1_1111,

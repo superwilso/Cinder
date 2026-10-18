@@ -2248,12 +2248,21 @@ void apply_eq_fn() {
     if (trim) {
         for (int i = 0; i < 10; i++) bands[i] = (signed char)cinder_eq_clamp_gain(bands[i] + trim);
     }
-    if (!g_eq_have) {
-        // First apply, or the cache was dropped: assert the whole curve, and the 10-band's own
-        // on-switch with it. cinder_effects_set_eq does both.
+    // A FLAT CURVE SWITCHES THE 10-BAND OFF. cinder_effects_set_eq always switches it on, and an
+    // enabled filter keeps Sony's whole effect chain running (FilterChain::ConfigureDoProcess),
+    // so a flat EQ cost processor time for nothing. That is also the jack's normal state since
+    // 2026-10-18, when its curve moved to the DAC and the 10-band is handed flat bands there.
+    bool flat = true;
+    for (int i = 0; i < 10; i++) flat = flat && bands[i] == 0;
+    static bool s_flat = false;
+    if (!g_eq_have || flat != s_flat) {
+        // First apply, a dropped cache, or the curve went flat or stopped being flat: assert the
+        // whole curve, and the 10-band's own on-switch to match.
         cinder_effects_set_eq(bands, 10);
+        if (flat) cinder_effects_set_eq10_on(0);
         for (int i = 0; i < 10; i++) g_eq_last[i] = bands[i];
         g_eq_have = true;
+        s_flat = flat;
         return;
     }
     for (int i = 0; i < 10; i++) {
@@ -2579,7 +2588,7 @@ static void fx_verify_fn(const char* why) {
 static const char* g_fx_verify_why = "";
 static void fx_verify_thunk() { fx_verify_fn(g_fx_verify_why); }
 
-// Did a route change switch the live sound profile? If so, make the DSP match it. Called straight
+// Did a route change move the jack's EQ between the DAC and the 10-band? If so, make the DSP match. Called straight
 // after every place the shell tells the UI about a route. Cheap when nothing switched: one FFI
 // call that returns 0.
 static void apply_profile_if_switched(const char* why) {
@@ -2587,8 +2596,8 @@ static void apply_profile_if_switched(const char* why) {
     static const char* const out[3] = { "the 3.5 mm jack", "Bluetooth", "USB-DAC" };
     const int o = cinder_get_profile_output();
     char m[160];
-    std::snprintf(m, sizeof m, "profile: %s -> profile %c for %s",
-                  why, cinder_get_profile() ? 'B' : 'A', out[(o >= 0 && o < 3) ? o : 0]);
+    std::snprintf(m, sizeof m, "eq: %s -> now %s, the jack's curve %s", why,
+                  out[(o >= 0 && o < 3) ? o : 0], o == 0 ? "in the DAC" : "back on the 10-band");
     clog_(m);
     // The same work, in the same order, as CINDER_ACT_SOUND_CHANGED — a profile is that action's
     // payload, arriving by a route instead of by a tap.

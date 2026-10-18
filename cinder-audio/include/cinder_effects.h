@@ -15,6 +15,9 @@ extern "C" {
 /* Apply the 10-band EQ: enables the 10-band EQ and sets each band gain (dB). `bands` points to
  * `n` (<=10) signed bytes. 0 = ok, <0 = effect controller unavailable. */
 int cinder_effects_set_eq(const signed char *bands, int n);
+/* The 10-band EQ's own on-switch alone. Off with a flat curve lets Sony's service skip its whole
+ * effect chain when nothing else is on (analysis/RE_sound_service.md section 3). */
+int cinder_effects_set_eq10_on(int on);
 
 /* Individual effect toggles (wire from the Sound screen). 0 = ok, <0 = unavailable. */
 int cinder_effects_set_dsee_hx(int on);

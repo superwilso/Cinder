@@ -41,6 +41,7 @@ pub mod palette;
 pub mod palette_list;
 pub mod playlist_edit;
 pub mod playlist_pick;
+pub mod presets;
 pub mod profile;
 pub mod quick;
 pub mod receiver;

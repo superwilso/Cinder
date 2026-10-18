@@ -248,7 +248,7 @@ const SCREENS: &[Screen] = &[
     Screen::Advanced,
     Screen::Tone,
     Screen::DacEq,
-    Screen::Profiles,
+    Screen::Presets,
     Screen::Keyboard,
     Screen::PlaylistPick,
     Screen::TrackPick,

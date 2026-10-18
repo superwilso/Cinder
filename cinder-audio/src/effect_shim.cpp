@@ -43,6 +43,7 @@ int cinder_effects_set_eq(const signed char* bands, int n) {
     return 0;
 }
 
+int cinder_effects_set_eq10_on(int on)           { auto* e = fxc(); if (!e) return -1; e->SetEq10Band(on != 0); return 0; }
 int cinder_effects_set_dsee_hx(int on)            { auto* e = fxc(); if (!e) return -1; e->SetDseeHx(on != 0); return 0; }
 int cinder_effects_set_vpt(int on)                { auto* e = fxc(); if (!e) return -1; e->SetVpt(on != 0); return 0; }
 // Mode setters/getters for the two effects that have more than on/off. The enum VALUES are not

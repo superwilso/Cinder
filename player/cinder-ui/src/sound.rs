@@ -39,7 +39,7 @@ pub const ROW_BALANCE: usize = 6;
 /// because the header's right side is the A/B control — and because a screenful of rows that
 /// quietly omits half the DSP is worse than one that says where the rest went.
 pub const ROW_ADVANCED: usize = 7;
-/// "Profile A ›" — pushes `Screen::Profiles`: which profile each output uses (R5).
+/// "Presets ›" — pushes `Screen::Presets`: saved sounds and the A/B compare's tools.
 pub const ROW_PROFILE: usize = 8;
 /// "Equalizer ›" — pushes `Screen::Eq`. The handoff puts the EQ at the head of ENHANCE, where the
 /// profile's tone stage belongs; the Menu keeps its own route to it too.
@@ -410,9 +410,10 @@ pub struct Sound {
     /// ALTERNATIVES — `SetSelectUsingEq` picks one — so when this is on the 10-band EQ is not in
     /// the chain, and a footer that keeps naming a preset is naming something inaudible.
     pub tone_control: bool,
-    /// Which profile each output uses, and which output is live — the Profile row's subtitle.
-    pub profile_map: [usize; 3],
-    pub output: crate::profile::Output,
+    /// How many presets are saved — the Presets row's subtitle.
+    pub presets_saved: usize,
+    /// The jack's curve is in the DAC right now, so the Equalizer row opens the DAC EQ.
+    pub eq_on_dac: bool,
     /// "More effects" is unfolded.
     pub more: bool,
     /// This player's firmware has ClearAudio+. Without it the mode control has two segments.
@@ -788,6 +789,9 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
     // is the same lie as naming both.
     let tone_stage = if s.tone_control {
         "TONE".to_string()
+    } else if s.eq_on_dac {
+        // The curve is in the DAC, after every effect: Sony's 10-band is held flat.
+        String::new()
     } else {
         format!("EQ ({})", s.eq_preset)
     };
@@ -809,10 +813,12 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
     } else {
         parts.join(" → ")
     };
-    (
-        format!("SIGNAL PATH ({ab}): SOURCE → {tone_stage} → {mid} → {out}"),
-        warn,
-    )
+    let path = if tone_stage.is_empty() {
+        format!("SIGNAL PATH ({ab}): SOURCE → {mid} → DAC EQ → {out}")
+    } else {
+        format!("SIGNAL PATH ({ab}): SOURCE → {tone_stage} → {mid} → {out}")
+    };
+    (path, warn)
 }
 
 /// Why rows are out of the path, as the subtitle that replaces theirs: `(manual effects, every
@@ -861,8 +867,12 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
     let pill = |v: &str| RowTrail::Value(v.to_uppercase());
     match r {
         ROW_PROFILE => RowText {
-            title: format!("Profile {}", crate::profile::letter(setup)),
-            sub: crate::profile::summary(s.profile_map, s.output),
+            title: "Presets".into(),
+            sub: match s.presets_saved {
+                0 => format!("Save the sound on {} to come back to it", crate::profile::letter(setup)),
+                1 => "1 saved".into(),
+                n => format!("{n} saved"),
+            },
             trail: RowTrail::Open(String::new()),
             dim: false,
         },
@@ -873,6 +883,13 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
             "Tone Control is in the path instead (Advanced)",
             fx_over,
             RowTrail::Open("TONE".into()),
+        ),
+        // On the jack the curve is the DAC chip's own five bands: no processor time at all.
+        ROW_EQ if s.eq_on_dac => t(
+            "Equalizer",
+            "In the DAC \u{b7} no battery cost on the jack",
+            fx_over,
+            RowTrail::Open("DAC".into()),
         ),
         ROW_EQ => t(
             "Equalizer",
@@ -892,18 +909,18 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
             trail: RowTrail::Value(if s.more { "HIDE" } else { "SHOW" }.into()),
             dim: false,
         },
-        ROW_VPT => t(
-            "VPT Surround",
-            "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix",
-            fx_over,
-            pill(s.vpt),
-        ),
         ROW_VPT if s.vpt_gone => RowText {
             title: "VPT Surround".into(),
             sub: "Not in Walkman One's sound library".into(),
             trail: RowTrail::Value("OFF".into()),
             dim: true,
         },
+        ROW_VPT => t(
+            "VPT Surround",
+            "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix",
+            fx_over,
+            pill(s.vpt),
+        ),
         ROW_DC if s.dc_gone => RowText {
             title: "DC Phase Linearizer".into(),
             sub: "Not on this player \u{b7} Clear Bass has its place".into(),
@@ -1001,7 +1018,7 @@ pub fn render(
     // No subtitle here — the A/B compare control occupies the header's right side.
     let y0 = crate::chrome::header(c, t, f, "Sound", None);
 
-    // A/B (top-right of the header): the profile the LIVE output uses. Two segments, the active one
+    // A/B (top-right of the header): which side of the compare is live. Two segments, the active one
     // in accent. Tapped; this player has no Option button, so the hint that used to read
     // "OPTION = SWAP" named a key nobody could press.
     {
@@ -1216,8 +1233,8 @@ mod tests {
             tone_control: false,
             mono: false,
             mono_live: false,
-            profile_map: [0; 3],
-            output: crate::profile::Output::Jack,
+            presets_saved: 0,
+            eq_on_dac: false,
             more: true,
             clearaudio_ok: true,
             dc_gone: false,
@@ -1365,7 +1382,16 @@ mod tests {
         };
         assert!(matches!(row_text(&tone, ROW_EQ, 0).trail, RowTrail::Open(ref v) if v == "TONE"));
         assert!(matches!(row_text(&loud(), ROW_EQ, 0).trail, RowTrail::Open(ref v) if v == "ROCK"));
-        assert_eq!(row_text(&loud(), ROW_PROFILE, 1).title, "Profile B");
+        assert_eq!(row_text(&loud(), ROW_PROFILE, 1).title, "Presets");
+    }
+
+    /// On the jack the curve is in the DAC: the path names it there and drops the 10-band.
+    #[test]
+    fn the_dac_carries_the_jack_curve_in_the_path() {
+        let s = Sound { eq_on_dac: true, ..loud() };
+        let (p, _) = signal_path(&s, 0);
+        assert!(p.contains("→ DAC EQ →") && !p.contains("EQ ("), "{p}");
+        assert_eq!(row_text(&s, ROW_EQ, 0).sub, "In the DAC \u{b7} no battery cost on the jack");
     }
 
     /// The ordinary case: every stage the user switched on is named, in order.
