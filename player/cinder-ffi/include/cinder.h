@@ -474,6 +474,9 @@ void cinder_set_clear_bass_available(int on);
 void cinder_set_w1_chain(int on);
 /* Noise cancelling (analysis/RE_noise_cancel.md). The shell reports the jack: plug = Sony NC
  * earphones (`jack status se` reads 5pin), ambient_ok = Sony's ambient filter is on the player. */
+/* Read the playlist files again (after the SD card mounts). Returns the count, -1 before the
+ * library is open. */
+int cinder_playlists_reload(void);
 void cinder_set_nc_plug(int plug, int ambient_ok);
 /* While the earphones are in: the `noise cancel mode` and `noise cancel headphone type` items to
  * write, NUL-terminated, n bytes each. 1 = written, 0 = no NC earphones (nothing written). */

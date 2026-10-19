@@ -12359,6 +12359,15 @@ static void sd_watch_tick(long now) {
                                                           : "SD card in the slot but NOT mounted");
         clog_(m);
         if (last != -1) report_storage();
+        // The card's playlists: the library was opened before the card was mounted, so the ones
+        // synced into its MUSIC folder are read now (cinder_playlists_reload has the measurement).
+        if (state == 2) {
+            const int n = cinder_playlists_reload();
+            if (n >= 0) {
+                std::snprintf(m, sizeof m, "playlists: re-read with the card mounted -> %d", n);
+                clog_(m);
+            }
+        }
         last = state;
         unmounted_since = now;
         said_late = false;

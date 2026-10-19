@@ -16,6 +16,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Playlists on the SD card were missing.** Cinder read its playlist files about 2 s into a boot,
+  and an exFAT card mounts about 10 s in, so playlists synced into the card's `MUSIC` folder were
+  never seen. Sony's own index of them was empty too: its rows from Cinder's library scan carry no
+  storage number, and Sony links playlist entries only to tracks that have one. Cinder now reads
+  the playlist files again when the card mounts. *Device-verified: 9 playlists back on the owner's
+  player.*
+
 ## [0.3.17] — 2026-10-18
 
 ### Added

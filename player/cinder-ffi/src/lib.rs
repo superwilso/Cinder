@@ -6110,6 +6110,28 @@ pub extern "C" fn cinder_set_w1_chain(on: libc::c_int) {
     }
 }
 
+/// Read the playlist files again, after the SD card mounts. The library is opened about 2 s into
+/// a boot and the card is mounted about 10 s in, so the playlists on it were never seen at boot:
+/// measured 2026-10-19, nine synced playlists in `/contents_ext/MUSIC` and "playlists: 0 of your
+/// own". (Sony's own index of them is empty on a card Cinder's scan built — its rows carry storage
+/// 0, and Sony resolves playlist entries only to tracks with a real storage number.) Returns how
+/// many playlists Cinder now has, or -1 before the library is open.
+#[no_mangle]
+pub extern "C" fn cinder_playlists_reload() -> libc::c_int {
+    let store = playlists::Store::open(playlists::DIR);
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else {
+        return -1;
+    };
+    if r.db.is_none() {
+        return -1;
+    }
+    let n = store.lists.len() as libc::c_int;
+    r.plists = store;
+    refresh_playlists(r);
+    n
+}
+
 /// The shell's report of the jack: `plug` = Sony NC earphones (the codec reads `5pin`),
 /// `ambient_ok` = Sony's ambient-sound filter is on this player.
 #[no_mangle]
