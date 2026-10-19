@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.18] — 2026-10-19
+
 ### Fixed
 
 - **Playlists on the SD card were missing.** Cinder read its playlist files about 2 s into a boot,
@@ -2814,7 +2816,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.17-rc3...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.18...HEAD
+[0.3.18]: https://github.com/superwilso/Cinder/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/superwilso/Cinder/compare/v0.3.16...v0.3.17-rc3
 [0.3.16]: https://github.com/superwilso/Cinder/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/superwilso/Cinder/compare/v0.3.14...v0.3.15-rc1
