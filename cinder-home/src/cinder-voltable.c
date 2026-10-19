@@ -50,10 +50,12 @@
  * Exit: 0 ok, 2 bad/absent argument, 3 not setuid root, 4 source unreadable/wrong, 5 write failed.
  */
 #include <fcntl.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "codec_eq.h"
@@ -236,6 +238,111 @@ static int apply_eq(char **arg)
     return 0;
 }
 
+/* `nc-load`: give the codec Sony's noise-cancelling engine where the firmware left it out.
+ *
+ * Stock's load_sony_driver insmods cxd3778gf_dnc_core.ko and feeds it its coefficients and gain
+ * tables at every boot. Walkman One's copy drops the insmod and the gain lines and deletes the gain
+ * table files, so on W1 noise cancelling can never engage, whatever the controls say. The module
+ * itself is still on the player. analysis/RE_noise_cancel.md.
+ *
+ * With the module already loaded (stock, or a second call) this does nothing. Otherwise: load the
+ * module, re-run Sony's own NC `dacdat` lines (their files are still on W1), and write the seven
+ * gain tables W1 deleted, computed: each is 31 steps of a fixed dB increment around one centre
+ * value, then the byte sum and the 32-bit xor the module checks (`check_data`). Measured against
+ * Sony's tables: within 1 code everywhere. Ambient mode's own filter (ambient480_nw500n.bin) is
+ * coefficients, not a curve, and stays missing. No argument, nothing from the caller. */
+#define DNC_DIR "/proc/icx_audio_dnc_data"
+#define DNC_KO "/system/lib/modules/cxd3778gf_dnc_core.ko"
+
+static void nc_gain_table(unsigned char *t, int centre, double step_db)
+{
+    unsigned sum = 0, x = 0, w;
+    int k;
+
+    memset(t, 0, 72);
+    for (k = 0; k < 31; k++) {
+        int v = (int)(centre * pow(10.0, (k - 15) * step_db / 20.0) + 0.5);
+        t[2 * k] = (unsigned char)(v >> 8);
+        t[2 * k + 1] = (unsigned char)v;
+    }
+    for (k = 0; k < 62; k++)
+        sum += t[k];
+    for (k = 0; k < 64; k += 4) {
+        w = t[k] | t[k + 1] << 8 | t[k + 2] << 16 | (unsigned)t[k + 3] << 24;
+        x ^= w;
+    }
+    for (k = 0; k < 4; k++) {
+        t[62 + k] = (unsigned char)(sum >> (8 * k));
+        t[66 + k] = (unsigned char)(x >> (8 * k));
+    }
+}
+
+static int nc_load(void)
+{
+    /* Centres (step 15) of Sony's ncgain_*.tbl / ambgain.tbl, plain and _cew. */
+    static const struct { const char *node; int plain, cew; double step; } G[] = {
+        { "u_ncgain_500n", 2106, 3966, 0.3 }, { "u_ncgain_500s", 2082, 3744, 0.3 },
+        { "u_ncgain_750n", 2106, 3966, 0.3 }, { "u_ncgain_750s", 2082, 3744, 0.3 },
+        { "u_ncgain_31n",  4106, 7645, 0.3 }, { "u_ncgain_31s",  4059, 7218, 0.3 },
+        { "ambgain",       5733, 10313, 8.0 / 30.0 },
+    };
+    struct stat st;
+    unsigned char t[72];
+    char shp[32] = "", node[96];
+    unsigned i;
+    int fd, cew, bad = 0;
+
+    if (stat(DNC_DIR, &st) == 0) {
+        fprintf(stderr, "cinder-voltable: nc-load: the NC engine is already loaded\n");
+        return 0;
+    }
+    fd = open(DNC_KO, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > (1 << 20)) {
+        fprintf(stderr, "cinder-voltable: nc-load failed (4): no %s\n", DNC_KO);
+        return 4;
+    }
+    {
+        void *ko = malloc((size_t)st.st_size);
+        int rc = ko && read(fd, ko, (size_t)st.st_size) == st.st_size
+                     ? (int)syscall(SYS_init_module, ko, (unsigned long)st.st_size, "")
+                     : -1;
+        free(ko);
+        close(fd);
+        if (rc != 0 || stat(DNC_DIR, &st) != 0) {
+            fprintf(stderr, "cinder-voltable: nc-load failed (5): init_module\n");
+            return 5;
+        }
+    }
+    /* Sony's own lines, as stock's load_sony_driver has them (shp picks the region files). */
+    if (system("PATH=/system/bin; F=/system/usr/share/audio_dac; S=`nvpflag -x shp`; S=${S%% *};"
+               " for m in nw500n:nw500n nw750n:nw750n nc31n:nc03x; do n=${m%:*}; f=${m#*:};"
+               " dacdat c$n $F/airplane441_$f.bin $F/train441_$f.bin $F/office441_$f.bin"
+               " $F/through.bin $F/airplane480_$f.bin $F/train480_$f.bin $F/office480_$f.bin"
+               " $F/through.bin; done; dacdat idata $F/iram.bin;"
+               " for n in 500 750 31; do dacdat ainc_$n $F/ainc_$n.bin; dacdat limiter_$n $S; done"
+               " >/dev/null 2>&1") != 0)
+        bad = 1;
+    {
+        FILE *p = popen("/system/bin/nvpflag -x shp", "r");
+        if (p) {
+            if (!fgets(shp, sizeof shp, p))
+                shp[0] = 0;
+            pclose(p);
+        }
+    }
+    /* dacdat's own test: the EU tables for these two shp values. */
+    cew = strncmp(shp, "0x00000103", 10) == 0 || strncmp(shp, "0x00000203", 10) == 0;
+    for (i = 0; i < sizeof G / sizeof G[0]; i++) {
+        nc_gain_table(t, cew ? G[i].cew : G[i].plain, G[i].step);
+        snprintf(node, sizeof node, DNC_DIR "/%s", G[i].node);
+        if (write_node(node, t, 70) != 0)
+            bad = 1;
+    }
+    fprintf(stderr, "cinder-voltable: nc-load: NC engine loaded%s%s\n", cew ? " (EU gains)" : "",
+            bad ? ", but some of its data did not load" : "");
+    return bad ? 5 : 0;
+}
+
 int main(int argc, char **argv)
 {
     unsigned i;
@@ -248,9 +355,11 @@ int main(int argc, char **argv)
     }
     if (argc == 2 + CODEC_EQ_BANDS && strcmp(argv[1], "eq") == 0)
         return apply_eq(argv + 2);
+    if (argc == 2 && strcmp(argv[1], "nc-load") == 0)
+        return nc_load();
     if (argc != 2) {
         fprintf(stderr, "usage: cinder-voltable stock|w1|wm1a|eu"
-                        " | tone-stock|tone-w1|tone-wm1a | eq G1 G2 G3 G4 G5\n");
+                        " | tone-stock|tone-w1|tone-wm1a | eq G1 G2 G3 G4 G5 | nc-load\n");
         return 2;
     }
     for (i = 0; i < sizeof TONE_TABLES / sizeof TONE_TABLES[0]; i++) {

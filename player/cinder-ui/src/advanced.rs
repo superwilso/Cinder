@@ -1,11 +1,10 @@
 //! Sound ▸ Advanced — the rest of Sony's effect surface.
 //!
-//! WHY A SUB-SCREEN. The Sound screen is full: six effect rows at 64 px, a 132 px balance slider,
-//! and the signal-path footer at y=700. Sony exposes far more than fits there, and making that
-//! list scroll would put a scroll offset into the one screen whose render and hit test have already
-//! drifted apart once. A pushed screen is additive — `ClockSet`, `Folders` and `TrackInfo` are the
-//! precedent — and it also says something true about these controls: they are the ones you set once
-//! for a pair of headphones, not the ones you reach for per album.
+//! WHY A SUB-SCREEN. The Sound screen keeps the everyday rows; everything else Sony's chain offers
+//! is here, in one place. Since 2026-10-19 that includes VPT Surround, DC Phase and the Vinyl
+//! Processor, which used to unfold under a "More effects" row on Sound — a second hiding place
+//! beside this one. They are the controls you set once for a pair of headphones, not the ones you
+//! reach for per album. The list scrolls.
 //!
 //! WHAT IS AND IS NOT HERE. Everything on this screen is a control Sony's own firmware exposes and
 //! Cinder did not. Deliberately absent:
@@ -28,11 +27,8 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline, sty, toggle};
 use crate::Canvas;
 
-/// Rows: Clear Phase, DSEE AI, DSEE HX Custom, Vinyl character, Tone Control, the route to the
-/// Tone Control band editor, which headphone amplifier drives the jack, and the route to the DAC
-/// EQ. Source Direct was row 0 until 2026-10-11; it is the Direct segment of the Sound screen's
-/// mode control now.
-pub const ROWS: usize = 8;
+/// Row ids. IDENTITIES, not positions: the screen draws them in [`order`].
+pub const ROWS: usize = 12;
 pub const ROW_CLEAR_PHASE: usize = 0;
 pub const ROW_DSEE_AI: usize = 1;
 pub const ROW_DSEE_CUSTOM: usize = 2;
@@ -48,14 +44,36 @@ pub const ROW_DAC_EQ: usize = 7;
 /// Sony's Clear Bass. Drawn only on a player whose sound library has the six-band EQ in its
 /// chain (Walkman One after `cinder-chain.sh set clearbass`; `analysis/RE_clear_bass.md`).
 pub const ROW_CLEAR_BASS: usize = 8;
+/// From the Sound screen, 2026-10-19. Their state and toggles are the Sound screen's own
+/// (`sound::ROW_VPT` and friends); only where they are drawn moved.
+pub const ROW_VPT: usize = 9;
+pub const ROW_DC: usize = 10;
+pub const ROW_VINYL: usize = 11;
 
 /// Clear Bass steps. The index times two is the gain handed to the six-band's band 0. Measured at
 /// the jack 2026-10-11: +10 is about +7 dB from 35 to 90 Hz.
 pub const CLEAR_BASS: [&str; 6] = ["Off", "+2", "+4", "+6", "+8", "+10"];
 
-/// How many rows are drawn: the Clear Bass row exists only where the firmware can run it.
-pub fn rows(clear_bass: bool) -> usize {
-    ROWS + usize::from(clear_bass)
+/// Top-to-bottom order: the effects (Clear Bass beside DC Phase, whose place it takes in the
+/// chain), then the tone stage, then the two hardware rows. The Clear Bass row exists only where
+/// the firmware can run it.
+pub fn order(clear_bass: bool) -> Vec<usize> {
+    let mut v = vec![ROW_VPT, ROW_DC];
+    if clear_bass {
+        v.push(ROW_CLEAR_BASS);
+    }
+    v.extend([
+        ROW_VINYL,
+        ROW_VINYL_TYPE,
+        ROW_CLEAR_PHASE,
+        ROW_DSEE_AI,
+        ROW_DSEE_CUSTOM,
+        ROW_TONE,
+        ROW_TONE_BANDS,
+        ROW_HP_AMP,
+        ROW_DAC_EQ,
+    ]);
+    v
 }
 
 /// Row pitch and list top — SINGLE SOURCE for the render below and `nav`'s hit test. The banner
@@ -63,14 +81,27 @@ pub fn rows(clear_bass: bool) -> usize {
 /// how a hit test drifts out of step with what is drawn.
 pub const ROW_H: i32 = crate::scale::SETTING_ROW_H;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
+/// The banner under the rows.
+const BANNER_H: i32 = 64;
 
-/// Which row is under `y`, or None if the point is outside the list.
-pub fn row_at(y: i32, rows: usize) -> Option<usize> {
+/// Which row id is under `y` at scroll `scroll`, or None outside the list.
+pub fn row_at(y: i32, clear_bass: bool, scroll: i32) -> Option<usize> {
     if y < TOP {
         return None;
     }
-    let r = ((y - TOP) / ROW_H) as usize;
-    (r < rows).then_some(r)
+    let i = ((y - TOP + scroll) / ROW_H) as usize;
+    order(clear_bass).get(i).copied()
+}
+
+/// Screen-y of row `r`'s top at scroll `scroll` (TOP when it is not drawn).
+pub fn row_top(r: usize, clear_bass: bool, scroll: i32) -> i32 {
+    let i = order(clear_bass).iter().position(|&x| x == r).unwrap_or(0);
+    TOP + ROW_H * i as i32 - scroll
+}
+
+/// How far the list scrolls.
+pub fn max_scroll(clear_bass: bool) -> i32 {
+    (TOP + ROW_H * order(clear_bass).len() as i32 + BANNER_H - crate::canvas::H as i32).max(0)
 }
 
 /// DSEE HX Custom modes, catalogue order — the index IS the value handed to `SetDseeHxCustomMode`.
@@ -112,6 +143,9 @@ pub struct Advanced {
     /// "set it up, then switch it on" is a reasonable order to do things in.
     pub vinyl_type: &'static str,
     pub vinyl_on: bool,
+    /// "Off" or the VPT room; "Off" or the DC Phase filter (the Sound screen's values).
+    pub vpt: &'static str,
+    pub dcphase: &'static str,
     pub tone_control: bool,
     /// The linear headphone amp is selected (experimental, off by default).
     pub hp_linear: bool,
@@ -134,7 +168,8 @@ fn dimmed(a: &Advanced, row: usize) -> bool {
 
 /// A row whose filter is not in this player's effect chain at all.
 pub fn not_here(a: &Advanced, row: usize) -> bool {
-    a.w1_chain && (row == ROW_CLEAR_PHASE || row == ROW_DSEE_AI)
+    (a.w1_chain && matches!(row, ROW_CLEAR_PHASE | ROW_DSEE_AI | ROW_VPT))
+        || (row == ROW_DC && a.clear_bass.is_some())
 }
 
 const NOT_HERE: &str = "Not in Walkman One's sound library";
@@ -199,134 +234,149 @@ fn a_row(
     }
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) {
+/// What a row ends in.
+enum End {
+    Switch(bool),
+    Pill(&'static str),
+    Open,
+}
+
+/// One row's title, subtitle and trail.
+fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
+    let s = |x: &str| x.to_string();
+    match r {
+        ROW_VPT => (
+            "VPT Surround",
+            s(if not_here(a, r) {
+                NOT_HERE
+            } else {
+                "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix"
+            }),
+            End::Pill(if not_here(a, r) { "Off" } else { a.vpt }),
+        ),
+        ROW_DC => (
+            "DC Phase Linearizer",
+            s(if not_here(a, r) {
+                "Not on this player \u{b7} Clear Bass has its place"
+            } else {
+                "Analog-amp low-frequency phase"
+            }),
+            End::Pill(if not_here(a, r) { "Off" } else { a.dcphase }),
+        ),
+        ROW_VINYL => (
+            "Vinyl Processor",
+            s("Tonearm resonance, surface noise"),
+            End::Switch(a.vinyl_on),
+        ),
+        ROW_CLEAR_PHASE => (
+            "Clear Phase",
+            s(if a.w1_chain {
+                NOT_HERE
+            } else {
+                "Correct headphone phase response"
+            }),
+            End::Switch(a.clear_phase),
+        ),
+        // DSEE AI. SAYS WHAT IS KNOWN ABOUT IT, which is less than the other rows on this screen.
+        //
+        // `SetDseeAi`/`IsDseeAiOn` are exported by libEffectCtrlDmp and the write lands — and this
+        // project has already learned once, expensively, that neither of those is evidence: high
+        // gain accepted its write, read back 1, persisted, and the codec ignored it because the A50
+        // output stage lacks the hardware (STATUS.md: "a mixer control accepting a write is not
+        // evidence the feature works"). Not removed, because unlike high gain nobody has measured
+        // it inert; the honest state is "we do not know", and a subtitle can say that.
+        ROW_DSEE_AI => (
+            "DSEE AI",
+            s(if a.w1_chain {
+                NOT_HERE
+            } else if a.dsee_hx {
+                "Upscaling by source analysis \u{2014} UNVERIFIED on this hardware"
+            } else {
+                "Upscaling by source analysis \u{2014} DSEE HX is off"
+            }),
+            End::Switch(a.dsee_ai),
+        ),
+        // Tuning the upscaler needs an upscaler.
+        ROW_DSEE_CUSTOM => (
+            "DSEE HX Custom",
+            s(if a.dsee_hx {
+                "Tune the upscaler to the material"
+            } else {
+                "DSEE HX is off"
+            }),
+            End::Pill(a.dsee_custom),
+        ),
+        ROW_VINYL_TYPE => (
+            "Vinyl Character",
+            s(if a.vinyl_on {
+                "Character of the vinyl emulation"
+            } else {
+                "Vinyl Processor is off"
+            }),
+            End::Pill(a.vinyl_type),
+        ),
+        ROW_TONE => (
+            "Tone Control",
+            s("Bass / mid / treble \u{2014} alternative to the EQ"),
+            End::Switch(a.tone_control),
+        ),
+        // The band editor. A ROUTE, not a setting. Reachable while Tone Control is off, because
+        // "set it up, then switch it on" is a reasonable order to do things in.
+        ROW_TONE_BANDS => (
+            "Adjust bands",
+            s(if a.tone_control {
+                "Three bands, \u{b1}10 dB"
+            } else {
+                "Three bands \u{2014} Tone Control is off"
+            }),
+            End::Open,
+        ),
+        // The linear amp. Says "experimental" and what it costs up front: it has only been
+        // measured into a line input, and it gives up the class-D amp's efficiency by an amount
+        // this device cannot measure.
+        ROW_HP_AMP => (
+            "Linear headphone amp",
+            s(if a.hp_linear {
+                "Experimental \u{2014} about 3 dB louder, may cost battery"
+            } else {
+                "Experimental \u{2014} off uses Sony's S-Master amp"
+            }),
+            End::Switch(a.hp_linear),
+        ),
+        // The DAC EQ. A route. Source Direct holds it flat, and says so here instead of dimming.
+        ROW_DAC_EQ => (
+            "DAC EQ",
+            s(if a.source_direct {
+                "Five bands in the DAC chip \u{2014} flat in Direct mode"
+            } else if a.dac_eq_on {
+                "Five bands in the DAC chip \u{2014} on"
+            } else {
+                "Five bands in the DAC chip \u{2014} flat"
+            }),
+            End::Open,
+        ),
+        // Clear Bass. Sony's six-band EQ is a third alternative beside the 10-band EQ and Tone
+        // Control (measured 2026-10-11), so the row says what it displaces.
+        _ => {
+            let level = a.clear_bass.unwrap_or(CLEAR_BASS[0]);
+            (
+                "Clear Bass",
+                s(if level == CLEAR_BASS[0] {
+                    "Sony's bass boost \u{2014} takes the place of the EQ"
+                } else {
+                    "On \u{2014} the EQ and Tone Control are out of the path"
+                }),
+                End::Pill(level),
+            )
+        }
+    }
+}
+
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize, scroll: i32) {
     c.fill(t.bg);
     let y0 = crate::chrome::header(c, t, f, "Advanced", Some("Sound"));
     debug_assert_eq!(y0, TOP, "advanced list top drifted from the hit test");
     hline(c, y0, t.line);
-
-    let rh = ROW_H;
-
-    let cy = a_row(
-        c,
-        t,
-        f,
-        a,
-        y0,
-        sel == 0,
-        ROW_CLEAR_PHASE,
-        "Clear Phase",
-        if a.w1_chain {
-            NOT_HERE
-        } else {
-            "Correct headphone phase response"
-        },
-    );
-    toggle(c, t, 418, cy - 11, 40, 22, 14, a.clear_phase);
-
-    // DSEE AI. SAYS WHAT IS KNOWN ABOUT IT, which is less than the other rows on this screen.
-    //
-    // `SetDseeAi`/`IsDseeAiOn` are exported by libEffectCtrlDmp and the write lands — and this
-    // project has already learned once, expensively, that neither of those is evidence: high gain
-    // accepted its write, read back 1, persisted, and the codec ignored it because the A50 output
-    // stage lacks the hardware (STATUS.md: "a mixer control accepting a write is not evidence the
-    // feature works"). analysis/RE_dsp_effects_surface.md says the same thing about this row in
-    // as many words — "Whether the A50 has the hardware is UNVERIFIED — treat like high gain until
-    // heard" — and it was shipped anyway, drawn exactly like the toggles that do work.
-    //
-    // NOT removed, because unlike high gain nobody has measured it inert; the honest state is "we
-    // do not know", and a subtitle can say that where a bare toggle cannot.
-    let aidesc = if a.w1_chain {
-        NOT_HERE
-    } else if a.dsee_hx {
-        "Upscaling by source analysis — UNVERIFIED on this hardware"
-    } else {
-        "Upscaling by source analysis — DSEE HX is off"
-    };
-    let cy = a_row(
-        c,
-        t,
-        f,
-        a,
-        y0 + rh,
-        sel == 1,
-        ROW_DSEE_AI,
-        "DSEE AI",
-        aidesc,
-    );
-    toggle(c, t, 418, cy - 11, 40, 22, 14, a.dsee_ai);
-
-    // Tuning the upscaler needs an upscaler. Same sentence shape as the two rows below, which have
-    // said this about their own parents since the screen was written.
-    let cdesc = if a.dsee_hx {
-        "Tune the upscaler to the material"
-    } else {
-        "DSEE HX is off"
-    };
-    let cy = a_row(
-        c,
-        t,
-        f,
-        a,
-        y0 + rh * 2,
-        sel == 2,
-        ROW_DSEE_CUSTOM,
-        "DSEE HX Custom",
-        cdesc,
-    );
-    crate::sound::value_pill(c, f, t, 458, cy, a.dsee_custom);
-
-    let vdesc = if a.vinyl_on {
-        "Character of the vinyl emulation"
-    } else {
-        "Vinyl Processor is off"
-    };
-    let cy = a_row(
-        c,
-        t,
-        f,
-        a,
-        y0 + rh * 3,
-        sel == 3,
-        ROW_VINYL_TYPE,
-        "Vinyl Character",
-        vdesc,
-    );
-    crate::sound::value_pill(c, f, t, 458, cy, a.vinyl_type);
-
-    let cy = a_row(
-        c,
-        t,
-        f,
-        a,
-        y0 + rh * 4,
-        sel == 4,
-        ROW_TONE,
-        "Tone Control",
-        "Bass / mid / treble — alternative to the EQ",
-    );
-    toggle(c, t, 418, cy - 11, 40, 22, 14, a.tone_control);
-
-    // The band editor. A ROUTE, not a setting — the same shape as the Sound screen's own
-    // "Advanced ›" row. It stays reachable while Tone Control is off, because "set it up, then
-    // switch it on" is a reasonable order to do things in — the Vinyl Character row above says
-    // the same thing about the Vinyl Processor.
-    let bdesc = if a.tone_control {
-        "Three bands, ±10 dB"
-    } else {
-        "Three bands — Tone Control is off"
-    };
-    let cy = a_row(
-        c,
-        t,
-        f,
-        a,
-        y0 + rh * 5,
-        sel == 5,
-        ROW_TONE_BANDS,
-        "Adjust bands",
-        bdesc,
-    );
     let chev = sty(
         Family::Sans,
         Weight::SemiBold,
@@ -334,77 +384,25 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
         t.dim,
         0.0,
     );
-    crate::widgets::right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
-
-    // The linear amp. Says "experimental" and what it costs up front: it has only been measured
-    // into a line input, it is about 3 dB louder at the same volume, and it gives up the class-D
-    // amp's efficiency by an amount this device cannot measure.
-    let hdesc = if a.hp_linear {
-        "Experimental — about 3 dB louder, may cost battery"
-    } else {
-        "Experimental — off uses Sony's S-Master amp"
-    };
-    let cy = a_row(
-        c,
-        t,
-        f,
-        a,
-        y0 + rh * 6,
-        sel == 6,
-        ROW_HP_AMP,
-        "Linear headphone amp",
-        hdesc,
-    );
-    toggle(c, t, 418, cy - 11, 40, 22, 14, a.hp_linear);
-
-    // The DAC EQ. A route, like "Adjust bands". Source Direct holds it flat, and says so here
-    // instead of dimming: the row stays the way in.
-    let edesc = if a.source_direct {
-        "Five bands in the DAC chip — flat in Direct mode"
-    } else if a.dac_eq_on {
-        "Five bands in the DAC chip — on"
-    } else {
-        "Five bands in the DAC chip — flat"
-    };
-    let cy = a_row(
-        c,
-        t,
-        f,
-        a,
-        y0 + rh * 7,
-        sel == 7,
-        ROW_DAC_EQ,
-        "DAC EQ",
-        edesc,
-    );
-    crate::widgets::right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
-
-    // Clear Bass. Sony's six-band EQ is a third alternative beside the 10-band EQ and Tone
-    // Control (measured 2026-10-11: with it selected a 10-band change does nothing), so the row
-    // says what it displaces instead of leaving that to be discovered by ear.
-    if let Some(level) = a.clear_bass {
-        let desc = if level == CLEAR_BASS[0] {
-            "Sony's bass boost — takes the place of the EQ"
-        } else {
-            "On — the EQ and Tone Control are out of the path"
-        };
-        let cy = a_row(
-            c,
-            t,
-            f,
-            a,
-            y0 + rh * 8,
-            sel == 8,
-            ROW_CLEAR_BASS,
-            "Clear Bass",
-            desc,
-        );
-        crate::sound::value_pill(c, f, t, 458, cy, level);
+    let rows = order(a.clear_bass.is_some());
+    c.set_clip_y(TOP, crate::canvas::H as i32);
+    for (i, &r) in rows.iter().enumerate() {
+        let y = y0 + ROW_H * i as i32 - scroll;
+        if y >= crate::canvas::H as i32 || y + ROW_H <= TOP {
+            continue;
+        }
+        let (title, desc, end) = spec(a, r);
+        let cy = a_row(c, t, f, a, y, sel == r, r, title, &desc);
+        match end {
+            End::Switch(on) => toggle(c, t, 418, cy - 11, 40, 22, 14, on),
+            End::Pill(v) => crate::sound::value_pill(c, f, t, 458, cy, v),
+            End::Open => crate::widgets::right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev),
+        }
     }
 
     // ── the override banner ─────────────────────────────────────────────────────────────────
     // Below the rows, so nothing above it moves when it appears.
-    let by = y0 + rh * rows(a.clear_bass.is_some()) as i32 + 18;
+    let by = y0 + ROW_H * rows.len() as i32 - scroll + 18;
     // Every line here goes through `fit`: the banner carries a control's NAME, so its width is not
     // something this file gets to assume, and at 140% UI scale the one-line version ran 156 px past
     // the margin — caught by tests/ui_overflow.rs, which is why it sweeps this screen with the
@@ -432,6 +430,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
             sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0),
         );
     }
+    c.clear_clip();
 }
 
 #[cfg(test)]
@@ -447,6 +446,8 @@ mod tests {
             dsee_custom: "Off",
             vinyl_type: VINYL_TYPES[0],
             vinyl_on: false,
+            vpt: "Off",
+            dcphase: "Off",
             tone_control: false,
             hp_linear: false,
             dac_eq_on: false,
@@ -466,32 +467,40 @@ mod tests {
         for r in 0..ROWS {
             assert_eq!(
                 dimmed(&a, r),
-                r == ROW_CLEAR_PHASE || r == ROW_DSEE_AI,
+                matches!(r, ROW_CLEAR_PHASE | ROW_DSEE_AI | ROW_VPT),
                 "row {r}"
             );
         }
     }
 
-    /// The hit test must agree with the drawn geometry for every row, including the edges — this
-    /// screen is touch-only and a row you cannot land on is a row that does not exist.
+    /// The hit test must agree with the drawn geometry for every row, at the top and the bottom
+    /// of the scroll, with and without Clear Bass — this screen is touch-only and a row you cannot
+    /// land on is a row that does not exist.
     #[test]
     fn every_row_is_hittable_at_its_own_band() {
-        for r in 0..ROWS {
-            let top = TOP + ROW_H * r as i32;
-            assert_eq!(row_at(top, ROWS), Some(r), "top edge of row {r}");
-            assert_eq!(row_at(top + ROW_H / 2, ROWS), Some(r), "middle of row {r}");
-            assert_eq!(
-                row_at(top + ROW_H - 1, ROWS),
-                Some(r),
-                "bottom edge of row {r}"
+        for cb in [false, true] {
+            assert_eq!(order(cb).len(), ROWS - 1 + usize::from(cb));
+            for scroll in [0, max_scroll(cb)] {
+                for r in order(cb) {
+                    let top = row_top(r, cb, scroll);
+                    if top < TOP {
+                        continue;
+                    }
+                    assert_eq!(row_at(top, cb, scroll), Some(r), "top edge of row {r}");
+                    assert_eq!(
+                        row_at(top + ROW_H - 1, cb, scroll),
+                        Some(r),
+                        "bottom of {r}"
+                    );
+                }
+                assert_eq!(row_at(TOP - 1, cb, scroll), None, "above the list");
+            }
+            let last = *order(cb).last().unwrap();
+            assert!(
+                row_top(last, cb, max_scroll(cb)) + ROW_H + BANNER_H <= crate::canvas::H as i32,
+                "scrolled to the end, the last row and the banner are on the glass"
             );
         }
-        assert_eq!(row_at(TOP - 1, ROWS), None, "above the list");
-        assert_eq!(
-            row_at(TOP + ROW_H * ROWS as i32, ROWS),
-            None,
-            "below the list"
-        );
     }
 
     /// An upstream mode dims every effect row; the two hardware rows stay live.
@@ -533,16 +542,6 @@ mod tests {
             };
             assert!(!dimmed(&a, ROW_DAC_EQ), "dimmed under {who}");
         }
-    }
-
-    /// The ninth row still ends above the bottom of the panel with room for the banner.
-    #[test]
-    fn nine_rows_and_the_banner_fit() {
-        let banner_bottom = TOP + ROW_H * ROWS as i32 + 18 + 34 + 6;
-        assert!(
-            banner_bottom < crate::canvas::H as i32,
-            "banner ends at {banner_bottom}"
-        );
     }
 
     /// With nothing overriding, nothing is dim.

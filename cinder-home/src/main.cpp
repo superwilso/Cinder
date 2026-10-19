@@ -3366,6 +3366,80 @@ void apply_dac_eq() {
     if (code == 0) { std::memcpy(last, b, sizeof b); known = true; }
 }
 
+// ── NOISE CANCELLING (issue #27; analysis/RE_noise_cancel.md) ─────────────────────────────────
+//
+// Sony's NcServiceImpl does nothing but write four codec controls BY ITEM NAME: the earphone
+// model (`noise cancel headphone type`, which the plug cannot report — stock asks the user), the
+// NC gain, then `noise cancel mode`. The kernel's NC module then engages only on the jack, with a
+// 5-pin plug, and a model other than `other`. This does the same writes from the UI's choice,
+// once per change and again after every plug-in. Nothing happens without a 5-pin plug.
+//
+// Walkman One never loads that module (its load_sony_driver drops the insmod and the gain
+// tables), so the first time NC is switched on with the earphones in, `cinder-voltable nc-load`
+// loads it and its data. On stock it is already loaded and the helper returns at once.
+//
+// While NC is on the codec is kept out of standby and the SoC out of RAM suspend: both power the
+// DNC engine down, and noise cancelling with nothing playing is a normal way to use it.
+bool g_nc_on = false;
+const int JACK_5PIN = 3;   // `jack status se`: none, 3pin, 4pin, 5pin, antenna
+
+void nc_tick() {
+    static int last_plug = -1;
+    static char applied[48] = "";
+    static bool loaded = false;
+    static int load_tries = 0;
+    const bool plug = cinder_codec_get_jack_se() == JACK_5PIN;
+    if ((int)plug != last_plug) {
+        struct stat st;
+        cinder_set_nc_plug(plug, ::stat("/system/usr/share/audio_dac/ambient480_nw500n.bin", &st) == 0);
+        if (plug || last_plug == 1)
+            clog_(plug ? "nc: Sony NC earphones in (5-pin plug)" : "nc: NC earphones out");
+        last_plug = plug;
+        applied[0] = 0;
+        if (!plug && g_nc_on) {
+            cinder_codec_set_enum_item("noise cancel mode", "off");
+            g_nc_on = false;
+        }
+    }
+    if (!plug) return;
+    char mode[16], model[16], want[48];
+    if (!cinder_get_nc(mode, model, (int)sizeof mode)) return;
+    std::snprintf(want, sizeof want, "%s %s", mode, model);
+    if (std::strcmp(want, applied) == 0) return;
+    const bool on = std::strcmp(mode, "off") != 0;
+    if (on && !loaded && load_tries < 2) {
+        ++load_tries;
+        static const char kHelper[] = "/system/vendor/unknown321/bin/cinder-voltable";
+        static int rc = -1;
+        rc = -1;
+        if (::access(kHelper, X_OK) == 0)
+            run_watchdog_only("nc: load the NC engine", 10, []() {
+                const int r = std::system("/system/vendor/unknown321/bin/cinder-voltable nc-load");
+                rc = (r == -1) ? -1 : ((r >> 8) & 0xff);
+            });
+        loaded = rc == 0;
+        char m[96];
+        std::snprintf(m, sizeof m, "nc: cinder-voltable nc-load -> rc=%d%s", rc,
+                      rc == 0 ? "" : " (noise cancelling cannot engage)");
+        clog_(m);
+    }
+    // Awake first: the module programs the DNC block over I2C the moment the mode is written,
+    // and a codec in standby does not answer.
+    if (on) cinder_codec_set_standby(0);
+    int bad = cinder_codec_set_enum_item("noise cancel headphone type", model);
+    // Sony's gain 0 of its -15..+15; this player reads 0 (the weakest) when nothing set it.
+    if (on) bad |= cinder_codec_set_int("user noise cancel gain", 15);
+    bad |= cinder_codec_set_enum_item("noise cancel mode", mode);
+    char st[24] = "?";
+    cinder_codec_describe("noise cancel status", st, sizeof st);
+    char m[128];
+    std::snprintf(m, sizeof m, "nc: mode %s, earphones %s -> %s, status %s", mode, model,
+                  bad ? "a write FAILED" : "written", st);
+    clog_(m);
+    g_nc_on = on && !bad;
+    std::snprintf(applied, sizeof applied, "%s", bad ? "" : want);
+}
+
 void hp_amp_tick() {
     static int last_want = 0;
     static int fails = 0;
@@ -9646,9 +9720,13 @@ static int g_antenna_last = -1;
 // earphone model is NW750N / NW500N / NC31, and the driver can run it. The file records each
 // input to that rule, the 11 NC controls, and Sony's own NC log lines from logcat.
 //
-// Runs 3 s after the ucom switch changes (the earphone's microcontroller needs a moment to
-// report its model), when it is non-zero at startup, or at startup and on every jack change with
-// `nc_probe` in cinder_advanced.conf. Nothing is written for anyone with ordinary headphones.
+// Runs 3 s after the codec starts reading a 5-pin plug (`jack status se` item 3), or at startup
+// and on every jack change with `nc_probe` in cinder_advanced.conf. Nothing is written for anyone
+// with ordinary headphones.
+//
+// v0.3.17-rc2 triggered on the `cxd3778gf_ucom` switch instead, and so never fired (#27): that
+// switch is the codec microcontroller's health (Sony's EmgMsg "HungUp"), 0 for everyone. Still
+// recorded below. analysis/RE_noise_cancel.md.
 const char* const UCOM_SWITCH = "/sys/class/switch/cxd3778gf_ucom/state";
 
 static void nc_probe_dump(const char* why) {
@@ -9662,6 +9740,10 @@ static void nc_probe_dump(const char* why) {
     }
     std::fprintf(o, "IsFeaturedNoiseCancel=%d\n", feat);
     std::fprintf(o, "switch ucom=%d h2w=%d\n", read_int_file(UCOM_SWITCH), read_int_file(JACK_SWITCH));
+    struct stat st;
+    std::fprintf(o, "nc engine (dnc_core.ko) loaded=%d ambient filter=%d\n",
+                 ::stat("/proc/icx_audio_dnc_data", &st) == 0,
+                 ::stat("/system/usr/share/audio_dac/ambient480_nw500n.bin", &st) == 0);
     static const char* const ctls[] = {
         "noise cancel mode", "noise cancel status", "noise cancel headphone type",
         "user noise cancel gain", "user ambient gain", "base noise cancel gain left",
@@ -9683,20 +9765,18 @@ static void nc_probe_dump(const char* why) {
     clog_("nc-probe: wrote /contents/cinder_nc_probe.txt");
 }
 
-static void nc_probe_tick(bool jack_changed) {
+static void nc_probe_tick(int jse, bool jack_changed) {
     static int last = -1, due = -1;
-    const int now = read_int_file(UCOM_SWITCH);
-    if (now < 0) return;
-    if (now != last) {
-        if (last >= 0 || now != 0 || adv_on("nc_probe")) due = 3;
-        last = now;
+    if (jse != last) {
+        if (jse == JACK_5PIN || adv_on("nc_probe")) due = 3;
+        last = jse;
     } else if (jack_changed && adv_on("nc_probe")) {
         due = 3;
     }
     if (due > 0 && --due == 0) {
         due = -1;
         char why[48];
-        std::snprintf(why, sizeof why, "ucom=%d", now);
+        std::snprintf(why, sizeof why, "jack status se=%d", jse);
         nc_probe_dump(why);
     }
 }
@@ -9715,7 +9795,7 @@ void jack_watch_tick() {
     if (now < 0) return;                       // no such node on this unit: feature simply absent
     const int prev = g_jack_last;
     g_jack_last = now;
-    nc_probe_tick(prev >= 0 && prev != now);
+    nc_probe_tick(cinder_codec_get_jack_se(), prev >= 0 && prev != now);
     if (prev < 0) {                            // first read of the boot: seed only, never act
         char m[96];
         std::snprintf(m, sizeof m, "jack: %s at startup (state=%d)",
@@ -13378,7 +13458,7 @@ void* render_driver(void*) {
                 const bool codec_idle = !codec_in_path && (!g_screen_on || on_bt);
                 if (codec_idle) {
                     if (idle_secs < 100000) ++idle_secs;
-                    if (!we_slept && idle_secs >= 30) {
+                    if (!we_slept && idle_secs >= 30 && !g_nc_on) {
                         if (cinder_codec_set_standby(1) == 0) {
                             we_slept = true;
                             clog_(on_bt && audible
@@ -13402,7 +13482,7 @@ void* render_driver(void*) {
                 // does go down — the codec fix stands on its own and must not depend on this one
                 // being enabled.
                 // Stage 2's own, stricter test — Sony's interlocks (see soc_suspend_tick).
-                const bool ram_idle = idle && cinder_get_bt_route() == 0 && !g_bt_user_pending
+                const bool ram_idle = idle && !g_nc_on && cinder_get_bt_route() == 0 && !g_bt_user_pending
                     && !g_rx_active && !g_msc_active
                     && socsusp::read_node_long("/sys/class/power_supply/usb/online") == 0
                     && socsusp::read_node_long("/sys/class/power_supply/dc/online") <= 0;
@@ -13432,6 +13512,7 @@ void* render_driver(void*) {
                     }
                 }
                 hp_amp_tick();
+                nc_tick();
             }
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");

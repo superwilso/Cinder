@@ -24,12 +24,23 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   are kept; tapping one loads it, and Delete takes two taps. A preset holds the EQ, every effect
   and the balance; mono, the linear amp and the DAC EQ are in it only if switched on under ALSO
   SAVED. *Host-tested (tests and previews); not yet used on a player.*
-- **A noise cancelling probe (issue #27).** With a Sony noise-cancelling earphone in the jack (its
-  5-pin plug sets the codec's `ucom` switch), Cinder writes `cinder_nc_probe.txt` to the player's
-  storage 3 s later: Sony's NC feature flag, the plug switches, the 13 NC and jack controls, and
-  Sony's NC log lines. Nothing is written for ordinary headphones; `nc_probe` in
-  `cinder_advanced.conf` also writes it at start and on every jack change. Read-only. *Run on a
-  Walkman One player with no NC earphone (the `nc_probe` start-up path); never with one.*
+- **Noise cancelling with Sony's NC earphones (issue #27).** With an IER-NW500N, MDR-NW750N or
+  MDR-NC31 in the jack, a Noise cancelling row appears at the top of Sound. It opens a screen to pick
+  the mode (Off, Automatic, Bus or train, Office, and Ambient sound for the IER-NW500N) and which of
+  the three earphones you have, because the plug cannot say. On Walkman One, which never loads
+  Sony's noise-cancelling engine and deleted its gain tables, Cinder loads the engine and rebuilds
+  the tables the first time NC is switched on. Ambient sound is not offered on Walkman One, whose
+  ambient filter is gone. While NC is on the DAC stays awake, so it keeps working when paused.
+  [`analysis/RE_noise_cancel.md`](analysis/RE_noise_cancel.md). *The engine load and the tables
+  are device-verified on a Walkman One player, and so is the codec reporting NC on when forced with
+  no earphones. Nothing has been heard, and the row has not appeared on a player: it needs the
+  earphones.*
+- **A noise cancelling probe (issue #27).** About 3 s after the jack reads a 5-pin plug (Sony's NC
+  earphones), Cinder writes `cinder_nc_probe.txt` to the player's storage: Sony's NC feature flag,
+  the plug switches, whether the NC engine is loaded, the NC and jack controls, and Sony's NC log
+  lines. Nothing is written for ordinary headphones; `nc_probe` in `cinder_advanced.conf` also
+  writes it at start and on every jack change. Read-only. *v0.3.17-rc2 waited for the wrong
+  switch (`ucom`, the codec microcontroller's health) and so never wrote the file; fixed in rc3.*
 
 - **Audiobooks.** Anything in a `LEARNING` folder at the root of the player or the SD card (Sony's
   own language-study folder) is an audiobook. A **book button** in the Library's header, right of
@@ -56,6 +67,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **Sound ▸ More effects is gone.** VPT Surround, DC Phase and the Vinyl Processor are on Sound ▸
+  Advanced with everything else Sony's chain offers, so there is one place for extras rather than
+  two. Advanced scrolls. *Host-tested.*
 - **The equalizer on the headphone jack is the DAC's own** (Sound ▸ Equalizer on the jack opens
   the DAC EQ). It runs in the DAC chip and costs no processor time, where Sony's 10-band costs
   about 5 % of a core. Bluetooth still uses the 10-band. **Fit my 10-band curve** on the DAC EQ
@@ -2791,8 +2805,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.17-rc2...HEAD
-[0.3.17]: https://github.com/superwilso/Cinder/compare/v0.3.16...v0.3.17-rc2
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.17-rc3...HEAD
+[0.3.17]: https://github.com/superwilso/Cinder/compare/v0.3.16...v0.3.17-rc3
 [0.3.16]: https://github.com/superwilso/Cinder/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/superwilso/Cinder/compare/v0.3.14...v0.3.15-rc1
 [0.3.14]: https://github.com/superwilso/Cinder/compare/v0.3.13...v0.3.14

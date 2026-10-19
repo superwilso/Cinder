@@ -134,6 +134,36 @@ int cinder_codec_get_hp_amp_linear(void) {
 }
 int cinder_codec_set_hp_amp_linear(int linear)  { return set_enum(kHpAmpCtl, linear != 0 ? 0 : 1); }
 
+int cinder_codec_set_int(const char* name, int v) { return name ? set_int(name, v) : -1; }
+
+// An enum by its item's NAME, which is how Sony's NcServiceImpl writes the noise-cancel controls
+// (AmixerUtils::SetStr): the item order is the driver's, not ours to assume.
+int cinder_codec_set_enum_item(const char* name, const char* item) {
+    if (!name || !item) return -1;
+    int fd = open(kControlDev, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return -1;
+    snd_ctl_elem_info info;
+    std::memset(&info, 0, sizeof(info));
+    fill_id(info.id, name);
+    int rc = -1;
+    if (ioctl(fd, SNDRV_CTL_IOCTL_ELEM_INFO, &info) == 0 &&
+        info.type == SNDRV_CTL_ELEM_TYPE_ENUMERATED) {
+        for (unsigned i = 0; i < info.value.enumerated.items; ++i) {
+            info.value.enumerated.item = i;
+            if (ioctl(fd, SNDRV_CTL_IOCTL_ELEM_INFO, &info) != 0) break;
+            if (std::strcmp(info.value.enumerated.name, item) != 0) continue;
+            snd_ctl_elem_value v;
+            std::memset(&v, 0, sizeof(v));
+            fill_id(v.id, name);
+            v.value.enumerated.item[0] = i;
+            rc = ioctl(fd, SNDRV_CTL_IOCTL_ELEM_WRITE, &v) < 0 ? -1 : 0;
+            break;
+        }
+    }
+    close(fd);
+    return rc;
+}
+
 // Read-only, for diagnostics: a control's value as text, an enum by its item name ("nw500n"),
 // anything else as its first integer. One open for the info, value and item-name ioctls.
 int cinder_codec_describe(const char* name, char* out, int n) {

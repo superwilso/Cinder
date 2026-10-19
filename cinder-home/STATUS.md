@@ -19,6 +19,17 @@
 >   files `LEARNING` as `media_type = 1` audio rows (checklist 37.1).
 > - No chapter list, speed control or sleep timer; none was asked for.
 
+> ## 2026-10-19 — v0.3.17-rc3: noise cancelling, one place for extras
+>
+> - **Noise cancelling** with Sony's NC earphones: a Sound row that appears with a 5-pin plug, a
+>   mode and earphone picker, and on Walkman One the NC engine W1 never loads, loaded on demand
+>   with its gain tables rebuilt (`analysis/RE_noise_cancel.md`). *Engine and tables
+>   device-verified on W1 (forced, no earphones); nothing heard yet — checklist 38.7.*
+> - **The NC probe** now waits for the 5-pin plug (`jack status se`), not the `ucom` switch, which
+>   is why rc2 never wrote a file for the #27 reporter.
+> - **Sound ▸ More effects is gone:** VPT, DC Phase and Vinyl are on Advanced, which scrolls.
+>   *Host-tested.*
+
 > ## 2026-10-18 — v0.3.17-rc2: presets, the DAC EQ on the jack, the NC probe
 >
 > - **A/B is a compare; saved sounds are Sound ▸ Presets** (up to four). Profiles per output, and

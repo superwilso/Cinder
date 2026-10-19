@@ -136,6 +136,12 @@ int cinder_codec_set_hp_amp_linear(int linear);
  * Returns the length written, or -1 when there is no such control. */
 int cinder_codec_describe(const char* name, char* out, int n);
 
+/* Set an ENUMERATED control to the item named `item` ("nw500n", "ainc"). 0 = written, -1 = no
+ * such control or item. Used for noise cancelling (analysis/RE_noise_cancel.md). */
+int cinder_codec_set_enum_item(const char* name, const char* item);
+/* Set an INTEGER control. 0 = written, -1 = failed. */
+int cinder_codec_set_int(const char* name, int v);
+
 #ifdef __cplusplus
 }
 #endif

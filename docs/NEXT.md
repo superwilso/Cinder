@@ -16,8 +16,8 @@ this file (battery research in full, Walkman One parity) is in git history; its 
 |---|---|
 | Cinder | **v0.3.16** is the Latest release (10-11). **v0.3.17-rc2** is the pre-release (10-18): audiobooks, presets, A/B as a compare, the DAC EQ on the jack, the NC probe, the in-place queue edit, Clear Bass in the installer |
 | Flint | **v0.2.1** is the Latest release (09-28). **v0.2.3-rc1** is the pre-release (10-18): one Windows file, sync into `MUSIC`, MusicBee playlists, faster tagged copies, no recopy with SensMe off |
-| Open issues | Cinder #27 (noise cancelling with IER-NW500N): reply posted 10-18, waiting for the reporter's `cinder_nc_probe.txt` |
-| Gates | 835 player tests, the harness, 367 golden previews, the text audit, `cargo fmt --check` (also in pre-push since 10-18) |
+| Open issues | Cinder #27 (noise cancelling with IER-NW500N): the rc2 probe never fired (wrong switch). RE'd 10-19: Walkman One never loads the NC engine. rc3 (built, not released) loads it and adds the NC screen; needs the reporter to test (checklist 38.7) |
+| Gates | 836 player tests, the harness, 370 golden previews, the text audit, `cargo fmt --check` (also in pre-push since 10-18) |
 
 ---
 
@@ -76,10 +76,9 @@ this file (battery research in full, Walkman One parity) is in git history; its 
 
 ## 3. Research with no deadline
 
-* **Noise cancelling (#27):** Sony's rule is read (`NcServiceImpl::MakeValidity`): a 5-pin plug,
-  an NC model, the single-ended jack, the driver. Next is the reporter's probe file; then, on stock,
-  driving `NcAsmService::SetNcSetting` from a Cinder row shown only when the earphones are in.
-  Walkman One's library reports no NC (`IsFeaturedNoiseCancel` = 0, a stub service).
+* **Noise cancelling (#27):** done offline 10-19 ([`../analysis/RE_noise_cancel.md`](../analysis/RE_noise_cancel.md)).
+  Left: hearing it (the reporter), the ambient filter W1 deleted, and whether the DAC EQ and the
+  linear amp interact with NC.
 * **What each effect costs on its own** (section 4 E): DSEE HX, the normalizer, Vinyl, Clear Bass.
 * What Sony's six-band waits for (`no desired value, skip`) on stock — 16.5 / 17.6.
 * DSEE AI (2B.3) and the SensMe channel id → name table (14.2).

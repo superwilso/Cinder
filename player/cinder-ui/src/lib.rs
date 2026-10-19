@@ -32,6 +32,7 @@ pub mod lyrics;
 pub mod menu;
 pub mod model;
 pub mod nav;
+pub mod nc;
 pub mod now_playing;
 pub mod np_styles;
 pub mod onboarding;

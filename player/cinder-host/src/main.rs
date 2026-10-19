@@ -253,6 +253,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     ];
 
     let snd = Sound {
+        nc: None,
         dsee: true,
         balance: cinder_ui::sound::BALANCE_CENTRE,
         balance_drag: false,
@@ -270,13 +271,12 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         tone_control: false,
         presets_saved: 2,
         eq_on_dac: false,
-        more: false,
         clearaudio_ok: true,
         dc_gone: false,
         vpt_gone: false,
     };
-    // Folded, the everyday rows fit the glass; this is 0 unless a text size pushes them past it.
-    let snd_end = sound::max_scroll(false);
+    // The everyday rows fit the glass; this is 0 unless a text size pushes them past it.
+    let snd_end = sound::max_scroll();
     let bt = Bt {
         on: true,
         connected: Some("WH-1000XM5"),
@@ -1239,17 +1239,25 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("sound", &|c: &mut Canvas| {
                 sound::render(c, &theme, &fonts, &snd, 0, 0, 0)
             }),
-            // More effects unfolded, scrolled to its end: the rows the fold hides.
-            ("sound_more", &|c: &mut Canvas| {
-                let s = Sound { more: true, ..snd };
-                sound::render(
+            // Sony NC earphones in: the Noise cancelling row above the mode control, at the top
+            // of the scroll it adds; and its screen.
+            ("sound_nc", &|c: &mut Canvas| {
+                let s = Sound {
+                    nc: Some("Automatic"),
+                    ..snd
+                };
+                sound::render(c, &theme, &fonts, &s, 0, 0, -sound::NC_H)
+            }),
+            ("nc", &|c: &mut Canvas| {
+                cinder_ui::nc::render(
                     c,
                     &theme,
                     &fonts,
-                    &s,
-                    sound::ROW_MORE,
-                    0,
-                    sound::max_scroll(true),
+                    &cinder_ui::nc::Nc {
+                        mode: 1,
+                        model: 0,
+                        ambient_ok: true,
+                    },
                 )
             }),
             ("sound_setup_b", &|c: &mut Canvas| {
@@ -2909,6 +2917,13 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             app.render(&mut c, &fonts, &np);
             save(&c, name);
         }
+        // Advanced scrolled to its end: the hardware rows and the banner.
+        let mut app = new_app();
+        app.go_for_preview(Screen::Advanced);
+        app.scroll_px(10_000);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "advanced_end");
     }
 
     // Presets, driven through the navigator: empty, then two saved with the first armed for

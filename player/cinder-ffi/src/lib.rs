@@ -1158,6 +1158,12 @@ fn settings_body(r: &Render) -> String {
         "jack_eq={}\n",
         if r.app.jack_eq_dac() { "dac" } else { "10band" }
     ));
+    // Noise cancelling: indices into cinder_ui::nc::MODES / MODELS.
+    body.push_str(&format!(
+        "nc_mode={}\nnc_model={}\n",
+        r.app.nc_mode(),
+        r.app.nc_model()
+    ));
     // Which of mono (1), linear amp (2) and DAC EQ (4) travel with a sound. 0 = none.
     body.push_str(&format!("profile_follow={}\n", r.app.profile_follow()));
     // The visualiser's signal settings. One line each rather than a packed field, because these
@@ -2147,9 +2153,9 @@ const SCREEN_NAMES: [&str; 45] = [
     "PlaylistEdit",
     "ViewEdit",
     // 40 is Soundscape (2026-10-04); 41 and 42 were left spare when R4 and R5 were built side by
-    // side; R5's screens start at 43.
+    // side; R5's screens start at 43. 41 is Noise cancelling (2026-10-19).
     "Soundscape",
-    "?",
+    "Nc",
     "?",
     "Presets",
     "Books",
@@ -2201,6 +2207,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::PlaylistEdit => 38,
         S::ViewEdit => 39,
         S::Soundscape => 40,
+        S::Nc => 41,
         S::Presets => 43,
         S::Books => 44,
     }
@@ -6103,6 +6110,47 @@ pub extern "C" fn cinder_set_w1_chain(on: libc::c_int) {
     }
 }
 
+/// The shell's report of the jack: `plug` = Sony NC earphones (the codec reads `5pin`),
+/// `ambient_ok` = Sony's ambient-sound filter is on this player.
+#[no_mangle]
+pub extern "C" fn cinder_set_nc_plug(plug: libc::c_int, ambient_ok: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if r.app.set_nc_plug(plug != 0, ambient_ok != 0) {
+            r.dirty = true;
+        }
+    }
+}
+
+/// What noise cancelling should be, while the earphones are in: the `noise cancel mode` and
+/// `noise cancel headphone type` items, written NUL-terminated into `mode` and `model` (`n` bytes
+/// each). Returns 1, or 0 with nothing written when no NC earphones are in.
+///
+/// # Safety
+/// `mode` and `model` must each point to `n` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_get_nc(
+    mode: *mut libc::c_char,
+    model: *mut libc::c_char,
+    n: libc::c_int,
+) -> libc::c_int {
+    let Some((m, t)) = cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|r| r.app.nc_items())
+    else {
+        return 0;
+    };
+    if mode.is_null() || model.is_null() || (n as usize) <= m.len().max(t.len()) {
+        return 0;
+    }
+    for (dst, src) in [(mode, m), (model, t)] {
+        std::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len());
+        *dst.add(src.len()) = 0;
+    }
+    1
+}
+
 /// The shell's report that this player's sound library has the six-band EQ in its chain.
 #[no_mangle]
 pub extern "C" fn cinder_set_clear_bass_available(on: libc::c_int) {
@@ -6929,6 +6977,16 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "clear_bass" => {
                         if let Ok(n) = v.parse::<usize>() {
                             r.app.set_clear_bass_step(n);
+                        }
+                    }
+                    "nc_mode" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            r.app.set_nc(n, r.app.nc_model());
+                        }
+                    }
+                    "nc_model" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            r.app.set_nc(r.app.nc_mode(), n);
                         }
                     }
                     // Tone Control bands, RAW half-decibels. Absent in older files = flat, which
@@ -8730,11 +8788,12 @@ mod tests {
             S::PlaylistEdit,
             S::ViewEdit,
             S::Soundscape,
+            S::Nc,
             S::Presets,
             S::Books,
         ];
-        // Two ordinals (41, 42) are spare — see SCREEN_NAMES.
-        const RESERVED: usize = 2;
+        // One ordinal (42) is spare — see SCREEN_NAMES.
+        const RESERVED: usize = 1;
         assert_eq!(
             all.len() + RESERVED,
             SCREEN_NAMES.len(),

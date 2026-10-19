@@ -28,10 +28,9 @@ pub const ROW_VINYL: usize = 1;
 pub const ROW_VPT: usize = 2;
 pub const ROW_DC: usize = 3;
 pub const ROW_NORM: usize = 4;
-/// "More effects" — unfolds the rows after it in [`ORDER`], in place, and folds them away again
-/// (the same pattern as Settings ▸ More settings). It took ClearAudio+'s id when that switch
-/// became a segment of the mode control at the top of the list (2026-10-11).
-pub const ROW_MORE: usize = 5;
+// Id 5 was "More effects", a fold that unfolded VPT, DC Phase and Vinyl in place — a second
+// hiding place beside Advanced (the owner, 2026-10-19: "why is there more effects and advanced
+// effects as well"). Those three rows live on Sound ▸ Advanced now.
 pub const ROW_BALANCE: usize = 6;
 /// The "Advanced ›" row — pushes `Screen::Advanced`, where the rest of Sony's effect surface lives.
 ///
@@ -46,33 +45,16 @@ pub const ROW_PROFILE: usize = 8;
 pub const ROW_EQ: usize = 9;
 
 /// Top-to-bottom order of the rows, for the render, the hit test and the Up/Down buttons alike.
-///
-/// The everyday rows come first and end on `ROW_MORE`; everything after it is folded away until
-/// that row is tapped. Because the folded rows are the TAIL, folding moves nothing above them:
-/// the balance slider's geometry is the same either way.
-pub const ORDER: [usize; ROWS] = [
+/// `ROW_VINYL`, `ROW_VPT` and `ROW_DC` are not here: they are drawn on Sound ▸ Advanced, which
+/// keeps their ids and their toggles (`nav::App::sound_toggle_row`).
+pub const ORDER: [usize; 6] = [
     ROW_PROFILE,
     ROW_EQ,
     ROW_DSEE,
     ROW_NORM,
     ROW_BALANCE,
-    ROW_MORE,
-    ROW_VPT,
-    ROW_DC,
-    ROW_VINYL,
     ROW_ADVANCED,
 ];
-/// How many of [`ORDER`]'s rows are drawn: up to and including `ROW_MORE` while folded.
-pub fn shown(more: bool) -> usize {
-    if more {
-        ROWS
-    } else {
-        ORDER
-            .iter()
-            .position(|&r| r == ROW_MORE)
-            .map_or(ROWS, |i| i + 1)
-    }
-}
 
 // ── The mode control ────────────────────────────────────────────────────────────────────────────
 /// Direct, Custom, ClearAudio+: one three-way control at the top of the list in place of two
@@ -160,6 +142,17 @@ pub const TOP: i32 = crate::chrome::HEADER_BOTTOM + PATH_STRIP_H;
 /// above it — the same near-miss that made the library filter strip hard to hit.
 pub const BALANCE_ROW_H: i32 = 132;
 
+/// The Noise cancelling row, above the mode control — drawn only while Sony's NC earphones are in
+/// (`Sound::nc`). It is not part of [`parts`]: while it shows, the CALLER passes every function
+/// here a scroll `NC_H` smaller than its own (`nav::App::sound_scroll`), which moves the whole
+/// list down by one row and leaves every hit test, slider and fold exactly as it was. The row
+/// itself sits at [`nc_top`].
+pub const NC_H: i32 = ROW_H;
+/// Screen-y of the Noise cancelling row's top, for the scroll the rest of this file is given.
+pub fn nc_top(scroll: i32) -> i32 {
+    TOP - scroll - NC_H
+}
+
 /// One band of the scrolling list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Part {
@@ -176,7 +169,6 @@ fn label_before(r: usize) -> Option<&'static str> {
     match r {
         ROW_EQ => Some("ENHANCE"),
         ROW_NORM => Some("LEVEL"),
-        ROW_VPT => Some("SPACE"),
         _ => None,
     }
 }
@@ -192,12 +184,12 @@ fn part_h(p: Part) -> i32 {
 
 /// The list as `(part, screen-y of its top)` at scroll `scroll`. THE layout: the render and every
 /// hit test below walk this, so they cannot drift apart.
-pub fn parts(scroll: i32, more: bool) -> Vec<(Part, i32)> {
+pub fn parts(scroll: i32) -> Vec<(Part, i32)> {
     let mut v = Vec::with_capacity(ROWS + 4);
     let mut y = TOP - scroll;
     v.push((Part::Mode, y));
     y += MODE_H;
-    for r in ORDER.into_iter().take(shown(more)) {
+    for r in ORDER {
         if let Some(l) = label_before(r) {
             v.push((Part::Label(l), y));
             y += crate::kit::SECTION_H;
@@ -209,34 +201,32 @@ pub fn parts(scroll: i32, more: bool) -> Vec<(Part, i32)> {
 }
 
 /// Height of the whole list, unscrolled.
-pub fn content_h(more: bool) -> i32 {
-    parts(0, more).iter().map(|(p, _)| part_h(*p)).sum()
+pub fn content_h() -> i32 {
+    parts(0).iter().map(|(p, _)| part_h(*p)).sum()
 }
 
 /// How far the list scrolls. It is taller than the glass under the strip since the grouping.
-pub fn max_scroll(more: bool) -> i32 {
-    (TOP + content_h(more) + 8 - crate::canvas::H as i32).max(0)
+pub fn max_scroll() -> i32 {
+    (TOP + content_h() + 8 - crate::canvas::H as i32).max(0)
 }
 
 /// Screen-y of the top of row `r` at scroll `scroll`.
 pub fn row_top(r: usize, scroll: i32) -> i32 {
-    parts(scroll, true)
+    parts(scroll)
         .into_iter()
         .find_map(|(p, y)| (p == Part::Row(r)).then_some(y))
         .unwrap_or(TOP)
 }
 
 /// Which row is under `y`. Nothing above the list (the strip, the header), nothing on a label.
-pub fn row_at(y: i32, scroll: i32, more: bool) -> Option<usize> {
+pub fn row_at(y: i32, scroll: i32) -> Option<usize> {
     if y < TOP {
         return None;
     }
-    parts(scroll, more)
-        .into_iter()
-        .find_map(|(p, top)| match p {
-            Part::Row(r) if (top..top + part_h(p)).contains(&y) => Some(r),
-            _ => None,
-        })
+    parts(scroll).into_iter().find_map(|(p, top)| match p {
+        Part::Row(r) if (top..top + part_h(p)).contains(&y) => Some(r),
+        _ => None,
+    })
 }
 
 /// Top edge of the Balance row. Everything below it is slider.
@@ -414,8 +404,8 @@ pub struct Sound {
     pub presets_saved: usize,
     /// The jack's curve is in the DAC right now, so the Equalizer row opens the DAC EQ.
     pub eq_on_dac: bool,
-    /// "More effects" is unfolded.
-    pub more: bool,
+    /// Sony NC earphones are in the jack: the Noise cancelling row, valued with the mode's name.
+    pub nc: Option<&'static str>,
     /// This player's firmware has ClearAudio+. Without it the mode control has two segments.
     pub clearaudio_ok: bool,
     /// The DC Phase Linearizer is not in this player's effect chain: Clear Bass was given its
@@ -906,12 +896,6 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
             fx_over,
             RowTrail::Switch(s.dsee),
         ),
-        ROW_MORE => RowText {
-            title: "More effects".into(),
-            sub: "Surround \u{b7} DC phase \u{b7} vinyl \u{b7} advanced".into(),
-            trail: RowTrail::Value(if s.more { "HIDE" } else { "SHOW" }.into()),
-            dim: false,
-        },
         ROW_VPT if s.vpt_gone => RowText {
             title: "VPT Surround".into(),
             sub: "Not in Walkman One's sound library".into(),
@@ -950,7 +934,7 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         ),
         _ => RowText {
             title: "Advanced".into(),
-            sub: "Clear Phase, DSEE AI, Tone Control, DAC EQ".into(),
+            sub: "Surround, DC Phase, Vinyl, Tone Control, DAC EQ".into(),
             trail: RowTrail::Open(String::new()),
             dim: false,
         },
@@ -1080,7 +1064,13 @@ pub fn render(
     // CLIPPED to below the strip, so a scrolled row cannot paint over the path or the header.
     let dim = t.scaled(45);
     c.set_clip_y(TOP, crate::canvas::H as i32);
-    for (part, y) in parts(scroll, s.more) {
+    if let Some(v) = s.nc {
+        let row = Row::new("Noise cancelling")
+            .sub("Sony NC earphones are in")
+            .trail(Trail::Open(v));
+        crate::kit::row(c, t, f, nc_top(scroll), NC_H, &row);
+    }
+    for (part, y) in parts(scroll) {
         if y >= crate::canvas::H as i32 || y + part_h(part) <= TOP {
             continue;
         }
@@ -1160,8 +1150,8 @@ mod tests {
     /// class of near-miss this screen's geometry constants exist to prevent.
     #[test]
     fn the_mono_button_owns_its_own_pixels() {
-        let (mx, my, mw, mh) = balance_mono_rect(max_scroll(true));
-        let (rx, ry, rw, rh) = balance_reset_rect(max_scroll(true));
+        let (mx, my, mw, mh) = balance_mono_rect(max_scroll());
+        let (rx, ry, rw, rh) = balance_reset_rect(max_scroll());
         assert_eq!((my, mh), (ry, rh), "the two buttons share a baseline");
         assert!(mx + mw < rx, "MONO overlaps CENTRE");
         assert!(mx > BAL_X0, "MONO runs off the left of the row");
@@ -1170,49 +1160,38 @@ mod tests {
         // Every pixel of each button hits that button and not the other.
         for x in mx..mx + mw {
             assert!(
-                hit_balance_mono(x, my + mh / 2, max_scroll(true)),
+                hit_balance_mono(x, my + mh / 2, max_scroll()),
                 "MONO dead at x={x}"
             );
             assert!(
-                !hit_balance_reset(x, my + mh / 2, max_scroll(true)),
+                !hit_balance_reset(x, my + mh / 2, max_scroll()),
                 "CENTRE claims a MONO pixel at x={x}"
             );
         }
         for x in rx..rx + rw {
             assert!(
-                hit_balance_reset(x, ry + rh / 2, max_scroll(true)),
+                hit_balance_reset(x, ry + rh / 2, max_scroll()),
                 "CENTRE dead at x={x}"
             );
             assert!(
-                !hit_balance_mono(x, ry + rh / 2, max_scroll(true)),
+                !hit_balance_mono(x, ry + rh / 2, max_scroll()),
                 "MONO claims a CENTRE pixel at x={x}"
             );
         }
         // …and both are inside the Balance row, so `row_at` agrees they belong to it.
-        assert_eq!(
-            row_at(my + mh / 2, max_scroll(true), true),
-            Some(ROW_BALANCE)
-        );
+        assert_eq!(row_at(my + mh / 2, max_scroll()), Some(ROW_BALANCE));
         // The gap between them belongs to neither.
-        assert!(!hit_balance_mono(
-            mx + mw + 4,
-            my + mh / 2,
-            max_scroll(true)
-        ));
-        assert!(!hit_balance_reset(
-            mx + mw + 4,
-            my + mh / 2,
-            max_scroll(true)
-        ));
+        assert!(!hit_balance_mono(mx + mw + 4, my + mh / 2, max_scroll()));
+        assert!(!hit_balance_reset(mx + mw + 4, my + mh / 2, max_scroll()));
     }
 
     /// The buttons sit ABOVE the slider's grab band, so pressing one cannot also move the knob.
     #[test]
     fn pressing_mono_does_not_grab_the_slider() {
-        let (_, my, _, mh) = balance_mono_rect(max_scroll(true));
+        let (_, my, _, mh) = balance_mono_rect(max_scroll());
         for y in my..my + mh {
             assert!(
-                !balance_grab(y, max_scroll(true)),
+                !balance_grab(y, max_scroll()),
                 "the slider grab band reaches the buttons at y={y}"
             );
         }
@@ -1221,6 +1200,7 @@ mod tests {
     /// A live chain with everything on, so each test can switch off the one thing it is about.
     fn loud() -> Sound {
         Sound {
+            nc: None,
             dsee: true,
             vinyl: true,
             vpt: "Club",
@@ -1238,7 +1218,6 @@ mod tests {
             mono_live: false,
             presets_saved: 0,
             eq_on_dac: false,
-            more: true,
             clearaudio_ok: true,
             dc_gone: false,
             vpt_gone: false,
@@ -1249,7 +1228,7 @@ mod tests {
     /// the hit test finds each row where the layout put it — at any scroll.
     #[test]
     fn the_grouped_list_hits_every_row_where_it_is_drawn() {
-        let labels: Vec<&str> = parts(0, true)
+        let labels: Vec<&str> = parts(0)
             .iter()
             .filter_map(|(p, _)| {
                 if let Part::Label(l) = p {
@@ -1259,68 +1238,46 @@ mod tests {
                 }
             })
             .collect();
-        assert_eq!(labels, ["ENHANCE", "LEVEL", "SPACE"]);
-        let rows: Vec<usize> = parts(0, true)
+        assert_eq!(labels, ["ENHANCE", "LEVEL"]);
+        let rows: Vec<usize> = parts(0)
             .iter()
             .filter_map(|(p, _)| if let Part::Row(r) = p { Some(*r) } else { None })
             .collect();
         assert_eq!(rows, ORDER);
         let mut ids = ORDER.to_vec();
         ids.sort_unstable();
-        assert_eq!(
-            ids,
-            (0..ROWS).collect::<Vec<_>>(),
-            "ORDER names every row exactly once"
-        );
-        for scroll in [0, max_scroll(true) / 2, max_scroll(true)] {
-            for (p, top) in parts(scroll, true) {
+        ids.dedup();
+        assert_eq!(ids.len(), ORDER.len(), "ORDER names every row once");
+        for r in [ROW_VINYL, ROW_VPT, ROW_DC] {
+            assert!(!ids.contains(&r), "row {r} is drawn on Advanced");
+        }
+        for scroll in [0, max_scroll() / 2, max_scroll()] {
+            for (p, top) in parts(scroll) {
                 let mid = top + part_h(p) / 2;
                 if mid < TOP || mid >= crate::canvas::H as i32 {
                     continue;
                 }
                 match p {
                     Part::Row(r) => {
-                        assert_eq!(
-                            row_at(mid, scroll, true),
-                            Some(r),
-                            "row {r} at scroll {scroll}"
-                        )
+                        assert_eq!(row_at(mid, scroll), Some(r), "row {r} at scroll {scroll}")
                     }
-                    Part::Mode => assert_eq!(
-                        row_at(mid, scroll, true),
-                        None,
-                        "the mode control is not a row"
-                    ),
+                    Part::Mode => {
+                        assert_eq!(row_at(mid, scroll), None, "the mode control is not a row")
+                    }
                     Part::Label(l) => {
-                        assert_eq!(row_at(mid, scroll, true), None, "label {l} is not a target")
+                        assert_eq!(row_at(mid, scroll), None, "label {l} is not a target")
                     }
                 }
             }
         }
     }
 
-    /// The list is taller than the glass, and the scroll reaches its last row with room under it.
-    #[test]
-    fn the_scroll_reaches_the_last_row() {
-        assert!(
-            max_scroll(true) > 0,
-            "the grouped list fits without scrolling — drop the scroll"
-        );
-        let top = row_top(ROW_ADVANCED, max_scroll(true));
-        assert!(
-            top + ROW_H <= crate::canvas::H as i32,
-            "Advanced is cut off at full scroll"
-        );
-        // Unscrolled, the first row starts under the strip.
-        assert_eq!(row_top(ROW_PROFILE, 0), TOP + MODE_H);
-    }
-
     /// A row scrolled under the strip is not a target: what cannot be seen cannot be pressed.
     #[test]
     fn nothing_under_the_strip_can_be_pressed() {
-        let sc = max_scroll(true);
+        let sc = max_scroll();
         for y in crate::chrome::HEADER_BOTTOM..TOP {
-            assert_eq!(row_at(y, sc, true), None);
+            assert_eq!(row_at(y, sc), None);
             assert!(!balance_grab(y, sc));
             for x in [30, 240, 300, 400] {
                 assert!(!hit_balance_mono(x, y, sc) && !hit_balance_reset(x, y, sc));
@@ -1334,11 +1291,16 @@ mod tests {
         let _g = crate::text::scale_guard();
         let f = FontSet::load();
         let t = Theme::day();
-        let s = loud();
+        // The list fits the glass; what scrolls is the Noise cancelling row above it, which the
+        // caller pays for with a scroll from -NC_H to 0.
+        let s = Sound {
+            nc: Some("Off"),
+            ..loud()
+        };
         let mut a = Canvas::new();
         let mut b = Canvas::new();
-        render(&mut a, &t, &f, &s, 0, 0, 0);
-        render(&mut b, &t, &f, &s, 0, 0, max_scroll(true));
+        render(&mut a, &t, &f, &s, 0, 0, -NC_H);
+        render(&mut b, &t, &f, &s, 0, 0, max_scroll());
         let w = crate::canvas::W;
         for y in 0..TOP as usize {
             assert_eq!(
@@ -1366,7 +1328,7 @@ mod tests {
             row_text(&ca, ROW_EQ, 0).dim,
             "ClearAudio+ replaces the EQ too"
         );
-        assert!(!row_text(&ca, ROW_MORE, 0).dim && !row_text(&ca, ROW_NORM, 0).dim);
+        assert!(!row_text(&ca, ROW_NORM, 0).dim);
         let sd = Sound {
             source_direct: true,
             ..loud()
@@ -1534,28 +1496,22 @@ mod tests {
         assert!(signal_path(&bt, 0).0.starts_with("SIGNAL PATH (A):"));
     }
 
-    /// Folded, the list ends on More effects and the rows after it are neither drawn nor targets;
-    /// folding moves nothing above them, so the balance slider's geometry does not depend on it.
+    /// The list ends on Advanced, fits the glass without scrolling, and the three effects that
+    /// moved to Advanced are not targets here.
     #[test]
-    fn more_effects_folds_the_tail_and_nothing_else_moves() {
-        let last = |more| parts(0, more).last().map(|(p, _)| *p);
-        assert_eq!(last(false), Some(Part::Row(ROW_MORE)));
-        assert_eq!(last(true), Some(Part::Row(ROW_ADVANCED)));
+    fn the_list_is_the_everyday_rows_and_fits() {
         assert_eq!(
-            max_scroll(false),
+            parts(0).last().map(|(p, _)| *p),
+            Some(Part::Row(ROW_ADVANCED))
+        );
+        assert_eq!(
+            max_scroll(),
             0,
             "the everyday rows fit the glass without scrolling"
         );
-        let below = row_top(ROW_MORE, 0) + ROW_H + 10;
-        assert_eq!(
-            row_at(below, 0, false),
-            None,
-            "nothing under More effects while folded"
-        );
-        assert!(parts(0, false)
-            .iter()
-            .zip(parts(0, true))
-            .all(|(a, b)| *a == b));
+        for r in [ROW_VPT, ROW_DC, ROW_VINYL] {
+            assert!(parts(0).iter().all(|(p, _)| *p != Part::Row(r)), "row {r}");
+        }
     }
 
     /// The mode control: every segment is hit across its own box, and the two flags map to the
@@ -1571,7 +1527,7 @@ mod tests {
                     "segment {seg} at x={px}"
                 );
             }
-            assert_eq!(row_at(y + h / 2, 0, true), None, "a segment is not a row");
+            assert_eq!(row_at(y + h / 2, 0), None, "a segment is not a row");
         }
         let (_, y, _, h) = mode_rect(0, 0, 3);
         assert_eq!(

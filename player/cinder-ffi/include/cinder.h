@@ -472,6 +472,12 @@ int  cinder_get_clear_bass(void);
 void cinder_set_clear_bass_available(int on);
 /* 1 = Walkman One's sound library (its chain has no vpt, clearphase or dseeai: RE_sound_service.md 3). */
 void cinder_set_w1_chain(int on);
+/* Noise cancelling (analysis/RE_noise_cancel.md). The shell reports the jack: plug = Sony NC
+ * earphones (`jack status se` reads 5pin), ambient_ok = Sony's ambient filter is on the player. */
+void cinder_set_nc_plug(int plug, int ambient_ok);
+/* While the earphones are in: the `noise cancel mode` and `noise cancel headphone type` items to
+ * write, NUL-terminated, n bytes each. 1 = written, 0 = no NC earphones (nothing written). */
+int cinder_get_nc(char* mode, char* model, int n);
 /* Call with 0 when the sound service kept ClearAudio+ off after being asked to switch it on: the
  * firmware has none (Walkman One), and the Sound screen's mode control drops that segment. */
 void cinder_set_clearaudio_supported(int on);
