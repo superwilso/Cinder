@@ -358,9 +358,23 @@ pub fn chips(
     labels: &[&str],
     sel: Option<usize>,
 ) -> i32 {
+    chips_in(c, t, f, y, labels, sel, labels.len())
+}
+
+/// [`chips`] sized as `cols` across, left-aligned, so a short last row of a grid lines up with
+/// the rows above it.
+pub fn chips_in(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    labels: &[&str],
+    sel: Option<usize>,
+    cols: usize,
+) -> i32 {
     for (i, l) in labels.iter().enumerate() {
         let l = crate::i18n::text(l);
-        let (x, w) = chip_span(i, labels.len());
+        let (x, w) = chip_span(i, cols);
         let on = sel == Some(i);
         if on {
             fill_rect(c, x, y, w, CHIP_H, t.acc);

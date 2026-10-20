@@ -25,6 +25,11 @@ pub const CODECS: [(&str, &str); 5] = [
 /// starts (the shell restarts Bluetooth to swap them), and Sony's aptX HD switch drives either.
 pub const AAC: u8 = 4;
 const SBC: u8 = 3;
+/// Codec chips go three to a row: five across truncated "aptX HD" and "SBC XQ" at the larger text
+/// sizes. Two rows are always reserved, so the page below does not move when AAC is offered.
+const CHIP_COLS: usize = 3;
+const CHIP_PITCH: i32 = crate::kit::CHIP_H + 8;
+
 /// The codec chips this boot offers, as `CODECS` ids in display order. `aac` comes from the
 /// `bt-aac` library (`/tmp/cinder_aac_codecs`, read by the shell).
 pub fn chips(aac: bool) -> &'static [u8] {
@@ -199,7 +204,7 @@ fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
     };
     push(Part::Strip, STRIP_H);
     push(Part::Label(crate::i18n::text("TRANSMIT CODEC")), SECTION_H);
-    push(Part::Codecs, CHIP_H + 8);
+    push(Part::Codecs, 2 * CHIP_PITCH);
     if ldac {
         push(Part::Label("LDAC"), SECTION_H);
         for k in 0..LDAC_ORDER.len() {
@@ -253,10 +258,13 @@ pub fn debug_row_y() -> i32 {
 }
 /// Centre of codec `id`'s chip on the Sound quality page.
 pub fn codec_chip(id: u8, aac: bool) -> (i32, i32) {
-    let ids = chips(aac);
-    let i = ids.iter().position(|&c| c == id).unwrap_or(0);
-    let (x, w) = crate::kit::chip_span(i, ids.len());
-    (x + w / 2, codec_parts(false)[2].1 + crate::kit::CHIP_H / 2)
+    let i = chips(aac).iter().position(|&c| c == id).unwrap_or(0);
+    let (x, w) = crate::kit::chip_span(i % CHIP_COLS, CHIP_COLS);
+    let row = (i / CHIP_COLS) as i32;
+    (
+        x + w / 2,
+        codec_parts(false)[2].1 + row * CHIP_PITCH + crate::kit::CHIP_H / 2,
+    )
 }
 /// Vertical centre of the LDAC row for quality `q` (an index into [`QUALITIES`]). Only drawn, and
 /// only tappable, while LDAC is the chosen codec.
@@ -342,8 +350,10 @@ pub fn hit_codec(x: i32, y: i32, on: bool, codec_is_ldac: bool, aac: bool) -> Bt
         return match p {
             Part::Codecs => {
                 let ids = chips(aac);
-                crate::kit::chip_at(ids.len(), top, x, y)
-                    .map_or(BtHit::None, |i| BtHit::Codec(ids[i] as usize))
+                let row = ((y - top) / CHIP_PITCH) as usize;
+                crate::kit::chip_at(CHIP_COLS, top + row as i32 * CHIP_PITCH, x, y)
+                    .and_then(|i| ids.get(row * CHIP_COLS + i))
+                    .map_or(BtHit::None, |&id| BtHit::Codec(id as usize))
             }
             Part::Ldac(k) => BtHit::Quality(LDAC_ORDER[k]),
             Part::Enhanced => BtHit::Enhanced,
@@ -693,12 +703,19 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             }
             Part::Codecs => {
                 let ids = chips(bt.aac);
-                let names: Vec<&str> = ids.iter().map(|&i| codec_name(i, bt.xq)).collect();
                 let sel = bt
                     .on
                     .then(|| ids.iter().position(|&i| i == bt.codec_sel))
                     .flatten();
-                kit::chips(c, &shown(t, bt.on), f, top, &names, sel);
+                for (r, row) in ids.chunks(CHIP_COLS).enumerate() {
+                    let names: Vec<&str> = row.iter().map(|&i| codec_name(i, bt.xq)).collect();
+                    let first = r * CHIP_COLS;
+                    let sel = sel
+                        .filter(|s| (first..first + row.len()).contains(s))
+                        .map(|s| s - first);
+                    let y = top + r as i32 * CHIP_PITCH;
+                    kit::chips_in(c, &shown(t, bt.on), f, y, &names, sel, CHIP_COLS);
+                }
             }
             Part::Ldac(k) => {
                 let q = LDAC_ORDER[k];
@@ -847,7 +864,8 @@ mod tests {
                     Part::Ldac(k) => BtHit::Quality(LDAC_ORDER[k]),
                     Part::Enhanced => BtHit::Enhanced,
                     Part::Fine => BtHit::FineVolume,
-                    Part::Codecs => BtHit::Codec(2), // x 240: half the gap left of the third chip is its
+                    // x 240, y at the second row's top: its middle cell, empty without AAC.
+                    Part::Codecs => BtHit::None, // each chip is tapped at its centre below
                     Part::Strip | Part::Label(_) => BtHit::None,
                 };
                 assert_eq!(got, want, "{p:?} (ldac {ldac})");
