@@ -51,10 +51,9 @@ it has run on hardware (*device-verified*). Per-feature state: [`cinder-home/STA
 
 - **v0.3.9 doesn't start after a fresh install** ([#16](../../issues/16)). Fixed in **v0.3.12**:
   install it over the top.
-- **Walkman One:** the release package is rejected, silently. Walkman One changes the key the
-  updater accepts. The installer warns when it sees Walkman One's `CFW` folder. Cinder itself runs on
-  Walkman One 3.02, but a package sealed for it hasn't been tested yet. See
-  [Coming from Walkman One](#coming-from-walkman-one).
+- **The release package doesn't install over Walkman One.** Cinder runs on it, but the package
+  has to be sealed with Walkman One's key, and releases don't include one yet. See
+  [Walkman One](#walkman-one).
 - **Bluetooth receiver mode (Walkman as a speaker) is experimental.** Playing from a Windows PC
   works. iPhones won't connect, and some don't list the Walkman at all.
 - **Not built yet:** FM recording.
@@ -65,7 +64,7 @@ it has run on hardware (*device-verified*). Per-feature state: [`cinder-home/STA
 | Model | State |
 |---|---|
 | NW-A55 / A56 / A57 (NW-A50 series) | **The target.** Developed on one 64 GB A55. Other models should work; a [device report](../../issues/new/choose) either way helps. |
-| NW-A50 series on Walkman One | See Known issues. |
+| NW-A50 series on Walkman One 3.02 | **Supported.** The developer's own player runs it daily. A few things differ; see [Walkman One](#walkman-one). |
 | A40 / A30 series, ZX300, WM1A/Z, DMP-Z1 | **Not supported.** Use [Wampy](https://github.com/unknown321/wampy), which covers the whole MT8590 family. If you own one and can test, get in touch through GitHub. |
 
 ## Install
@@ -100,7 +99,27 @@ Each way back to Sony's player depends on less than the one before:
 Read [`RECOVERY.md`](RECOVERY.md) **before** you need it. Attach `cinderhome.log` (root of the
 drive) to any issue.
 
-## Coming from Walkman One
+## Walkman One
+
+Cinder runs on Walkman One 3.02 as well as on Sony's stock 1.02. Everything in Cinder works there
+except:
+
+- **Installing.** Walkman One changes the key Sony's updater accepts, so the release package is
+  dropped without a word: the player restarts into Walkman One and nothing changes. The installer
+  warns when it sees Walkman One's `CFW` folder. For now, either go back to stock 1.02 first and
+  install there, or build a package sealed for Walkman One from source
+  (`cinder-home/tools/pack_upg.sh stable nw-wm1a`). If you try,
+  run `nvpstr kas` on your player and post the output in an issue.
+- **VPT Surround, Clear Phase and DSEE AI** aren't in Walkman One's sound library. Cinder shows
+  them as unavailable rather than letting a tap do nothing.
+- **Clear Bass** isn't in Walkman One's sound effects either. The install option *Clear Bass
+  (Walkman One 3.02 only)* puts it back, in place of the DC Phase Linearizer.
+- **Noise cancelling** (Sony's NC earphones): Walkman One never starts Sony's noise-cancelling
+  engine, so Cinder starts it when you switch NC on. Ambient sound isn't available: Walkman One
+  removed its filter. This arrives in the next release.
+- **Other versions** of Walkman One haven't been tried.
+
+Coming from Walkman One:
 
 - **Sound:** Walkman One's plus modes are a 3-byte change to Sony's audio library. Cinder's
   *Sound signature* install option makes the same change to your own stock files, no flashing. Its
@@ -109,8 +128,6 @@ drive) to any issue.
 - **Volume curve:** Cinder removes Sony's regional volume limit by default; the *Headphone volume
   curve* option **Sony, with region limit** keeps it. **Smooth (NW-WM1A)** is a choice there too, if
   you supply Sony's table file ([how](install.md#the-volume-curve-tables)).
-- **Installing over Walkman One:** not with a release package yet. To help, run `nvpstr kas` on your
-  player and post the output in an issue.
 - **Reverting to stock first** works; Cinder installs on stock 1.02. If it then doesn't start,
   you're on v0.3.9 ([#16](../../issues/16)): use a newer release.
 

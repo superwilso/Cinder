@@ -103,3 +103,6 @@ cinder-home/dist/*/cinder-installer*
 
 # Python tool bytecode is generated locally.
 __pycache__/
+
+# The design handoff (prototypes, chats, exports): local working material, not part of the product.
+design/
