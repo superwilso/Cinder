@@ -100,10 +100,13 @@ done
 
 # libcinder_mono.so is loaded INTO Sony's SoundServiceFw, where a loader error or a crash switches the
 # player off. So its rules are tighter than the app's: a shared object, glibc 2.23, and nothing but
-# glibc itself — the service must not have to find a library it did not already load.
-b=libcinder_mono.so; f="$DIR/$b"
+# glibc itself — the service must not have to find a library it did not already load. The bt-aac
+# pair (libcinder_aac.so and the encoder it loads) go into the Bluetooth service on the same terms;
+# they are checked when present, since a build without the cinder-aac submodule has none.
+for b in libcinder_mono.so libcinder_aac.so libfdk-aac-enc.so; do
+f="$DIR/$b"
 if [ ! -f "$f" ]; then
-    bad "$b" "missing"
+    if [ "$b" = libcinder_mono.so ]; then bad "$b" "missing"; fi
 elif ! is_arm "$f" || ! file -b "$f" | grep -q 'shared object'; then
     bad "$b" "not a 32-bit ARM EABI5 shared object: $(file -b "$f")"
 else
@@ -113,9 +116,10 @@ else
     extra=""
     for lib in $needed; do case "$lib" in libc.so.6|libdl.so.2|libpthread.so.0) ;; *) extra="$extra $lib" ;; esac; done
     [ -z "$too_new" ] || bad "$b" "needs glibc newer than the player's 2.23: $(echo $too_new)"
-    [ -z "$extra" ] || bad "$b" "needs more than glibc inside SoundServiceFw:$extra"
+    [ -z "$extra" ] || bad "$b" "needs more than glibc inside a Sony service:$extra"
     [ -z "$too_new$extra" ] && good "$b" "ARM shared object, glibc <= 2.23, needs only: $needed"
 fi
+done
 
 if [ "$FAIL" = 0 ]; then
     echo "ARM payload fits the player's runtime ($DIR)."

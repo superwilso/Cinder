@@ -59,6 +59,8 @@ SRC_MONO=/contents/libcinder_mono.so
 SRC_HAGOWRAP=/contents/cinder-hagowrap
 SRC_GUARD=/contents/cinder-guard.sh
 SRC_PRELOAD=/contents/cinder-preload.sh
+SRC_BTAAC=/contents/libcinder_aac.so
+SRC_FDK=/contents/libfdk-aac-enc.so
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
 LAUNCH=$BIN/cinderhome-launch.sh
@@ -110,6 +112,8 @@ WANT_AUDIOBOOKS="$(comp_bool CINDER_AUDIOBOOKS 0)"
 WANT_SCROBBLE="$(comp_bool CINDER_SCROBBLE 1)"
 WANT_MONO="$(comp_bool CINDER_MONO 1)"
 WANT_PRELOAD="$(comp_bool CINDER_PRELOAD 0)"
+WANT_BT_AAC="$(comp_bool CINDER_BT_AAC 0)"
+WANT_BT_SBC_XQ="$(comp_bool CINDER_BT_SBC_XQ 0)"
 WANT_W1TUNING="$(comp_bool CINDER_W1_TUNING 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
@@ -120,7 +124,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE w1tuning=$WANT_W1TUNING"
+echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE w1tuning=$WANT_W1TUNING"
 
 # ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
 # Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
@@ -784,6 +788,43 @@ else
     if [ -s "$PRELOAD_SH" ]; then
         sh "$PRELOAD_SH" remove || echo "WARN: preload — could not be removed cleanly (see the line above)."
     fi
+fi
+
+# 1g4) AAC Bluetooth transmit and SBC XQ: the `bt-aac` component (the cinder-aac submodule). Two
+#      libraries the wrapper from 1g3 loads into the Bluetooth service, so they go on only where
+#      the wrapper is in place; anywhere else nothing would load them. Taken off by every install
+#      that does not select it. The switches are flags in /data, written with the others below.
+BTAAC_LIB=$VENDOR/lib/preload/BtCommonService.so
+BTAAC_FDK=$VENDOR/lib/libfdk-aac-enc.so
+BTAAC_IN=0
+btaac_put() {  # btaac_put <src> <dst> — temporary name, compared, renamed
+    "$BB" cat "$1" > "$2.tmp" 2>/dev/null
+    if [ -s "$2.tmp" ] && "$BB" cmp -s "$1" "$2.tmp"; then
+        "$BB" chown 0:0 "$2.tmp" 2>/dev/null
+        "$BB" chmod 644 "$2.tmp"
+        "$BB" mv -f "$2.tmp" "$2" && return 0
+    fi
+    "$BB" rm -f "$2.tmp" 2>/dev/null
+    return 1
+}
+if [ "$WANT_BT_AAC" = 1 ]; then
+    if ! "$BB" grep -q cinder-hagowrap "$SONYBIN/hagodaemon" 2>/dev/null; then
+        echo "components: bt-aac needs the 'preload' component in place — not installed."
+    elif [ ! -s "$SRC_BTAAC" ] || [ ! -s "$SRC_FDK" ]; then
+        echo "WARN: bt-aac selected but its libraries are not staged — nothing installed."
+    else
+        "$BB" mkdir -p "$VENDOR/lib/preload" 2>/dev/null
+        "$BB" chmod 755 "$VENDOR/lib/preload" 2>/dev/null   # the service runs as uid 100
+        if btaac_put "$SRC_FDK" "$BTAAC_FDK" && btaac_put "$SRC_BTAAC" "$BTAAC_LIB"; then
+            BTAAC_IN=1
+            echo "bt-aac: installed (AAC from the next start)"
+        else
+            echo "WARN: bt-aac — a library did not copy whole; not installed."
+        fi
+    fi
+fi
+if [ "$BTAAC_IN" = 0 ]; then
+    "$BB" rm -f "$BTAAC_LIB" "$BTAAC_FDK" 2>/dev/null
 fi
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
@@ -1473,6 +1514,20 @@ if [ "$WANT_SCROBBLE" = 1 ]; then
 else
     echo 1 > /data/cinder/scrobble_off 2>/dev/null && "$BB" chmod 644 /data/cinder/scrobble_off 2>/dev/null \
         && echo "scrobble log: off"
+fi
+# Bluetooth AAC and SBC XQ (1g4): read by the library when the Bluetooth service starts. Written
+# only when the library went on, so a flag never outlives it. 0644 for the same umask reason.
+if [ "$BTAAC_IN" = 1 ]; then
+    echo 1 > /data/cinder/bt_aac 2>/dev/null && "$BB" chmod 644 /data/cinder/bt_aac 2>/dev/null
+else
+    "$BB" rm -f /data/cinder/bt_aac 2>/dev/null
+fi
+if [ "$BTAAC_IN" = 1 ] && [ "$WANT_BT_SBC_XQ" = 1 ]; then
+    echo 1 > /data/cinder/bt_sbc_xq 2>/dev/null && "$BB" chmod 644 /data/cinder/bt_sbc_xq 2>/dev/null \
+        && echo "sbc xq: on"
+else
+    [ "$WANT_BT_SBC_XQ" = 1 ] && echo "components: bt-sbc-xq needs bt-aac as well — not installed."
+    "$BB" rm -f /data/cinder/bt_sbc_xq 2>/dev/null
 fi
 # Languages: one checkbox each (CINDER_LANG_<TAG>=1). Every ticked tag goes to the player as it is,
 # so a new language needs no change here; none ticked, or no answers at all, means English only.

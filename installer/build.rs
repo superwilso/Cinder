@@ -90,6 +90,21 @@ const FILES: &[(&str, &str, &str, bool)] = &[
         "preload",
         false,
     ),
+    // The `bt-aac` component: AAC Bluetooth transmit (the cinder-aac submodule) and the fdk-aac
+    // encoder it prefers. Not `required`: a clone without the submodule builds an installer
+    // that offers everything else.
+    (
+        "dist/{ch}/libcinder_aac.so",
+        "libcinder_aac.so",
+        "bt-aac",
+        false,
+    ),
+    (
+        "dist/{ch}/libfdk-aac-enc.so",
+        "libfdk-aac-enc.so",
+        "bt-aac",
+        false,
+    ),
     // The .UPG the Sony updater actually runs. It MUST land on the player as NW_WM_FW.UPG —
     // that filename is what the device's own "update firmware" flow looks for.
     (

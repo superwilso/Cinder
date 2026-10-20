@@ -1196,6 +1196,10 @@ pub struct App {
     /// `bt_ldac_quality` indexes bluetooth::QUALITIES (0 = Auto). Persisted; applied by the shell.
     bt_codec: u8,
     bt_ldac_quality: u8,
+    /// What this boot's Bluetooth stack offers beyond Sony's four (`bluetooth::codecs`), pushed by
+    /// the shell from the `bt-aac` component: AAC in aptX HD's place, SBC sent as SBC XQ.
+    bt_aac: bool,
+    bt_sbc_xq: bool,
     /// Sony's "Use Enhanced Mode" — `BtTransmitterService::SetControlAbsoluteVolume`. Persisted
     /// intent; the shell pushes it at the radio on change and after every reconnect. Default ON:
     /// Sony's own help text is "select this check box if you cannot change the volume", and the
@@ -1791,7 +1795,9 @@ impl Default for App {
             eq_sel: 0,
             eq_preset: 3,
             bt_on: true,
-            bt_codec: 0,        // LDAC
+            bt_codec: 0, // LDAC
+            bt_aac: false,
+            bt_sbc_xq: false,
             bt_ldac_quality: 0, // Auto
             bt_enhanced: true,
             bt_enhanced_supported: true,
@@ -3567,9 +3573,7 @@ impl App {
                 1 => String::from(crate::i18n::text("1 folder")),
                 n => crate::ui_format!("{n} folders", n = n),
             },
-            bluetooth: crate::bluetooth::CODECS[self.bt_codec as usize]
-                .0
-                .to_string(),
+            bluetooth: self.bt_codec_name().to_string(),
             usb_dac: String::from(if self.usb_dac_on {
                 crate::i18n::text("On")
             } else {
@@ -4916,6 +4920,7 @@ impl App {
                     y,
                     self.bt_on,
                     self.bt_codec == crate::bluetooth::LDAC,
+                    self.bt_aac,
                 ) {
                     BtHit::Codec(i) => {
                         self.bt_codec = i as u8;
@@ -9214,8 +9219,7 @@ impl App {
                     // "3.5 mm now", two answers on one screen.) Prefer the codec the link
                     // negotiated; until the shell has read it, the preference stands in.
                     bt_codec: if self.bt_route {
-                        self.negotiated_codec_name()
-                            .or(Some(crate::bluetooth::CODECS[self.bt_codec as usize].0))
+                        self.negotiated_codec_name().or(Some(self.bt_codec_name()))
                     } else {
                         None
                     },
@@ -9387,6 +9391,8 @@ impl App {
                     // guess dressed as a fact.
                     link_known: self.bt_link_known,
                     codec_sel: self.bt_codec,
+                    aac: self.bt_aac,
+                    xq: self.bt_sbc_xq,
                     ldac_quality: self.bt_ldac_quality,
                     link_codec: self.bt_link_codec_raw(),
                     enhanced: self.bt_enhanced,
@@ -9411,6 +9417,8 @@ impl App {
                     connected: self.bt_connected.as_deref(),
                     link_known: self.bt_link_known,
                     codec_sel: self.bt_codec,
+                    aac: self.bt_aac,
+                    xq: self.bt_sbc_xq,
                     ldac_quality: self.bt_ldac_quality,
                     link_codec: self.bt_link_codec_raw(),
                     enhanced: self.bt_enhanced,
@@ -9574,7 +9582,7 @@ impl App {
             }
             Screen::UsbDac => {
                 let ldac = self.usb_dac_on && self.bt_on;
-                let codec = crate::bluetooth::CODECS[self.bt_codec as usize].0;
+                let codec = self.bt_codec_name();
                 let dev: Option<&str> = None; // see the Bluetooth screen: no invented device name
                 crate::usbdac::render(
                     c,
@@ -11629,6 +11637,14 @@ impl App {
     }
     pub fn bt_ldac_quality(&self) -> u8 {
         self.bt_ldac_quality
+    }
+    pub fn set_bt_codecs(&mut self, aac: bool, xq: bool) {
+        self.bt_aac = aac;
+        self.bt_sbc_xq = xq;
+    }
+    /// The chosen codec's name, as this boot sends it.
+    pub fn bt_codec_name(&self) -> &'static str {
+        crate::bluetooth::codec_name(self.bt_codec, self.bt_sbc_xq)
     }
     pub fn set_bt_codec(&mut self, v: u8) {
         self.bt_codec = (v as usize % crate::bluetooth::CODECS.len()) as u8;
@@ -17567,7 +17583,7 @@ mod tests {
             vec![Action::BtCodecChanged]
         );
         // select SBC (codec chip 3) → device-wide codec changes; the LDAC rows hide
-        let (x, y) = crate::bluetooth::codec_chip(3);
+        let (x, y) = crate::bluetooth::codec_chip(3, false);
         assert_eq!(a.tap(x, y), vec![Action::BtCodecChanged]);
         assert_eq!(a.bt_codec, 3);
         // with SBC active there are no LDAC rows: a tap where one was never picks a quality

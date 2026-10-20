@@ -18,6 +18,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Bluetooth AAC, and SBC XQ, as installer options** (`bt-aac`, `bt-sbc-xq`, both off by
+  default, both need the `preload` component). AAC is for AirPods, Beats and other headphones
+  without LDAC or aptX. All five codecs are offered: AAC and aptX HD share the stack's fourth
+  slot, so moving between those two restarts Bluetooth and reconnects. The Sound quality chips
+  show AAC (and SBC XQ) only when this start of the player offers them. An AAC link is reported as AAC, not as
+  the SBC Sony's status claims. The code lives in its own repo,
+  [cinder-aac](https://github.com/superwilso/cinder-aac), included here as a git submodule
+  (`git submodule update --init`). AAC transmit *device-verified* by hand-install 10-20; the
+  installer path and the live AAC/SBC switch are *device-unverified*.
 - **Simplified Chinese**, translated by @yin8ruo (#28). Device-verified on stock 1.02 by the
   contributor.
 - **Pick your languages in the installer.** Each language is a checkbox, with English ticked by

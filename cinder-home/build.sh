@@ -318,6 +318,20 @@ echo "[6j] build cinder-hagowrap (hagodaemon wrapper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -Wextra -Werror -o "$HERE/cinder-hagowrap" "$HERE/src/cinder-hagowrap.c"
 echo "built: $HERE/cinder-hagowrap ($(stat -c %s "$HERE/cinder-hagowrap") bytes)"
 
+# cinder-aac: AAC Bluetooth transmit and SBC XQ, the `bt-aac` component (deploy/components.conf).
+# Its own repo, here as the cinder-aac submodule; CINDER_AAC_DIR points at another checkout (the
+# one being worked on). Loaded into the Bluetooth service by cinder-hagowrap, so it needs the
+# `preload` component on the player. No checkout (a clone without --recursive) = not built, and
+# the installer simply leaves the component out.
+AAC_DIR="${CINDER_AAC_DIR:-$REPO/cinder-aac}"
+if [ -x "$AAC_DIR/build.sh" ]; then
+    echo "[6k] build cinder-aac ($AAC_DIR)…"
+    FW="$REPO/artifacts/rootfs_mnt" RAMLIB="$RAMLIB" DEVSYS="$DEVSYS" bash "$AAC_DIR/build.sh"
+    RAMLIB="$RAMLIB" DEVSYS="$DEVSYS" bash "$AAC_DIR/build_fdk.sh"
+else
+    echo "[6k] no cinder-aac checkout ($AAC_DIR) — bt-aac not built (git submodule update --init)"
+fi
+
 mkdir -p "$DIST"
 cp -f "$OUT" "$DIST/cinder-home"
 # cinder-signature.sh: the on-device audio "sound signature" switcher (3-byte HAL patch — see
@@ -336,6 +350,10 @@ cp -f "$HERE/libcinder_mono.so" "$DIST/libcinder_mono.so"
 cp -f "$HERE/cinder-hagowrap" "$DIST/cinder-hagowrap"
 cp -f "$HERE/deploy/cinder-guard.sh" "$DIST/cinder-guard.sh"
 cp -f "$HERE/deploy/cinder-preload.sh" "$DIST/cinder-preload.sh"
+if [ -s "$AAC_DIR/build/libcinder_aac.so" ]; then
+    cp -f "$AAC_DIR/build/libcinder_aac.so" "$DIST/libcinder_aac.so"
+    cp -f "$AAC_DIR/build/libfdk-aac-enc.so" "$DIST/libfdk-aac-enc.so"
+fi
 cp -f "$HERE/cinder-fm" "$DIST/cinder-fm"
 cp -f "$HERE/cinder-voltable" "$DIST/cinder-voltable"
 cp -f "$HERE/cinder-battery" "$DIST/cinder-battery"

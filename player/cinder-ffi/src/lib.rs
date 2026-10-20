@@ -5414,6 +5414,15 @@ pub extern "C" fn cinder_set_bt_negotiated_codec(raw: libc::c_int) {
     }
 }
 
+/// What this boot's Bluetooth stack offers beyond Sony's four codecs, from the `bt-aac`
+/// component: `aac` = AAC (codec index 4), `xq` = SBC goes as SBC XQ. Sets state only.
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_codecs(aac: libc::c_int, xq: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_bt_codecs(aac != 0, xq != 0);
+    }
+}
+
 /// Leave the transient backlight-off state (brightness 0) and return to the last visible level.
 /// Returns 1 if it changed, so the shell only rewrites the backlight node when it must.
 ///

@@ -288,6 +288,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         connected: Some("WH-1000XM5"),
         link_known: true,
         codec_sel: 0,
+        aac: false,
+        xq: false,
         ldac_quality: 0,
         enhanced: true,
         enhanced_supported: true,
@@ -1566,6 +1568,17 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("bluetooth_codec", &|c: &mut Canvas| {
                 bluetooth::render_codec(c, &theme, &fonts, &bt)
             }),
+            // The `bt-aac` component: five chips, AAC chosen and the link AAC, SBC sent as XQ.
+            ("bluetooth_codec_aac", &|c: &mut Canvas| {
+                let b = Bt {
+                    aac: true,
+                    xq: true,
+                    codec_sel: bluetooth::AAC,
+                    link_codec: Some(0x03),
+                    ..bt
+                };
+                bluetooth::render_codec(c, &theme, &fonts, &b)
+            }),
             // The radio off: the page is inert, so every row is faint and nothing is marked chosen.
             ("bluetooth_codec_off", &|c: &mut Canvas| {
                 bluetooth::render_codec(c, &theme, &fonts, &bluetooth::Bt { on: false, ..bt })
@@ -1580,6 +1593,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     connected: None,
                     link_known: true,
                     codec_sel: 0,
+                    aac: false,
+                    xq: false,
                     ldac_quality: 0,
                     enhanced: true,
                     enhanced_supported: true,

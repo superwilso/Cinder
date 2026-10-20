@@ -4403,9 +4403,9 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
 // gated (the BT client shim, same boundary as ldac-bridge); this config write is the always-safe
 // half (pure file IO, no Sony service). Names mirror the cinder.h codec/quality indices.
 void write_bt_pref() {
-    static const char* codecs[] = { "ldac", "aptxhd", "aptx", "sbc" };
+    static const char* codecs[] = { "ldac", "aptxhd", "aptx", "sbc", "aac" };
     static const char* quals[]  = { "auto", "990", "660", "330" };
-    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 3) ci = 0;
+    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 4) ci = 0;
     int qi = cinder_get_bt_ldac_quality(); if (qi < 0 || qi > 3) qi = 0;
     FILE* f = std::fopen("/contents/cinder_bt.conf", "w");
     if (f) {
@@ -4966,16 +4966,59 @@ static void bt_vol_walk_tick(void) {
 // `SetLdacSoundQuality(const IBtTransmitterService::BtLdacSoundQuality &)` all appear verbatim in
 // the library's strings, and the marshalling matches (base 3×Alloc(4) plus one Alloc sized 1 for
 // each bool, 4 for the quality enum).
+// What this boot's Bluetooth stack offers beyond Sony's four, from the `bt-aac` component's library
+// (cinder-aac): "aac" = AAC is offered (codec index 4), "sbc-xq" = SBC goes as XQ. The stack offers
+// headphones four codecs, so AAC and aptX HD share a slot, filled each time Bluetooth starts:
+// aptX HD when /data/cinder/bt_aptxhd exists (written below when aptX HD is the choice), AAC
+// otherwise; "slot aac" / "slot aptxhd" says which it holds now. Either one is driven by Sony's
+// aptX HD switch. The library writes the file when the Bluetooth service starts, before that
+// service can answer apply_bt_codec. No file = no component, or the wrapper did not load it.
+static bool g_bt_aac = false;
+static char g_bt_slot = 0;   // 'a' AAC, 'h' aptX HD, 0 = Bluetooth has not started yet
+static void bt_read_codecs() {
+    bool aac = false, xq = false;
+    char slot = 0;
+    if (FILE* f = std::fopen("/tmp/cinder_aac_codecs", "r")) {
+        char line[32];
+        while (std::fgets(line, sizeof line, f)) {
+            if (!std::strcmp(line, "aac\n")) aac = true;
+            if (!std::strcmp(line, "sbc-xq\n")) xq = true;
+            if (!std::strcmp(line, "slot aac\n")) slot = 'a';
+            if (!std::strcmp(line, "slot aptxhd\n")) slot = 'h';
+        }
+        std::fclose(f);
+    }
+    g_bt_aac = aac;
+    g_bt_slot = slot;
+    cinder_set_bt_codecs(aac ? 1 : 0, xq ? 1 : 0);
+}
+
+// The chosen codec is AAC or aptX HD and the shared slot holds the other one: only a Bluetooth
+// restart refills it. Read after apply_bt_codec, which refreshes g_bt_slot.
+static bool bt_slot_stale() {
+    if (!g_bt_aac || !g_bt_slot || !cinder_get_bt_on()) return false;
+    int ci = cinder_get_bt_codec();
+    return (ci == 1 && g_bt_slot != 'h') || (ci == 4 && g_bt_slot != 'a');
+}
+
 void apply_bt_codec() {
     enum { VIDX_SetLdacSoundQuality = 18, VIDX_SetLdac = 20,
            VIDX_SetAptxClassic = 21, VIDX_SetAptxHD = 22 };
-    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 3) ci = 0;   // 0 ldac 1 aptxhd 2 aptx 3 sbc
+    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 4) ci = 0;   // 0 ldac 1 aptxhd 2 aptx 3 sbc 4 aac
     int qi = cinder_get_bt_ldac_quality(); if (qi < 0 || qi > 3) qi = 0;   // 0 auto 1 990 2 660 3 330
+    bt_read_codecs();
+    // Which of AAC / aptX HD the shared slot gets at the next Bluetooth start (bt_read_codecs).
+    if (g_bt_aac && ci == 1) {
+        if (FILE* f = std::fopen("/data/cinder/bt_aptxhd", "w")) std::fclose(f);
+    } else {
+        std::remove("/data/cinder/bt_aptxhd");
+    }
     try {
         void* x = bt_xmit();
         if (!x) { clog_("bt-codec: BtTransmitterServiceClient unavailable"); return; }
         typedef int (*fnb)(void*, const bool*);
-        bool ldac = (ci == 0), aptxhd = (ci == 1), aptx = (ci == 2);
+        // AAC (4) rides Sony's aptX HD switch; without the bt-aac library it falls back to SBC.
+        bool ldac = (ci == 0), aptxhd = (ci == 1 || (ci == 4 && g_bt_aac)), aptx = (ci == 2);
         ((fnb)bt_slot(x, VIDX_SetLdac))(x, &ldac);
         ((fnb)bt_slot(x, VIDX_SetAptxHD))(x, &aptxhd);
         ((fnb)bt_slot(x, VIDX_SetAptxClassic))(x, &aptx);
@@ -5014,9 +5057,10 @@ void apply_bt_codec() {
         // is the one to compare against logcat's `ldac quality:%d`.
         static const unsigned LDAC_WIRE_LOG[4] = { 0xFFu, 0u, 1u, 2u };
         std::snprintf(m, sizeof m,
-                      "bt-codec: ldac=%d aptxhd=%d aptx=%d quality=%d wire=0x%02x (0=sbc baseline)",
-                      (int)ldac, (int)aptxhd, (int)aptx, qi,
-                      ldac ? LDAC_WIRE_LOG[qi] : 0u);
+                      "bt-codec: choice=%d ldac=%d aptxhd=%d aptx=%d quality=%d wire=0x%02x slot=%c "
+                      "(0=sbc baseline; slot: a=aac h=aptxhd)",
+                      ci, (int)ldac, (int)aptxhd, (int)aptx, qi,
+                      ldac ? LDAC_WIRE_LOG[qi] : 0u, g_bt_slot ? g_bt_slot : '-');
         clog_(m);
         // What we asked for is a PREFERENCE; go and read what the link actually agreed on, without
         // waiting out the poll's throttle. This is the whole point of GetSoundStatus existing.
@@ -6117,6 +6161,16 @@ static void bt_poll_sound_status() {
         typedef void (*fn4)(void*, unsigned*, unsigned*, unsigned*, bool*);
         ((fn4)bt_slot(x, VIDX_GetSoundStatus))(x, &codec, &freq, &chan, &ok);
     } catch (...) { return; }
+    // An AAC link (the `bt-aac` component) reaches Sony's side dressed as SBC, so Sony reports SBC;
+    // the library that does the dressing says what the link really is.
+    if (codec && g_bt_aac) {
+        char st[8] = "";
+        if (FILE* f = std::fopen("/tmp/cinder_aac_status", "r")) {
+            if (!std::fgets(st, sizeof st, f)) st[0] = 0;
+            std::fclose(f);
+        }
+        if (!std::strncmp(st, "AAC ", 4)) codec = 0x03;   // BtSoundCodec AAC (bluetooth.rs)
+    }
     const unsigned key = (codec & 0xff) | ((freq & 0xff) << 8) | ((chan & 0xff) << 16)
                        | ((unsigned)ok << 24);
     if (key == last) return;
@@ -10783,6 +10837,20 @@ void carry_out(int act) {
             write_bt_pref();
             // …and apply it to the live radio, which the conf file alone never did.
             run_guarded("carry_out: BT codec apply", 6, apply_bt_codec);
+            // AAC and aptX HD share one slot, filled when Bluetooth starts (bt_read_codecs): moving
+            // between them restarts Bluetooth, through the same off and on as the switch, which
+            // also reconnects the headphones. 10 s: the off, up to 2 s for the radio to go down,
+            // then the toggle's own 8 s path.
+            if (bt_slot_stale()) {
+                clog_("bt-codec: the AAC / aptX HD slot holds the other one — restarting Bluetooth");
+                run_guarded("carry_out: BT restart for the codec slot", 10, []() {
+                    cinder_set_bt_on(0);
+                    apply_bt_toggle();
+                    for (int i = 0; i < 20 && bt_radio_up(bt_status()); i++) usleep(100000);
+                    cinder_set_bt_on(1);
+                    apply_bt_toggle();
+                });
+            }
             break;
         case CINDER_ACT_BT_ENHANCED_CHANGED:
             // "Use Enhanced Mode" toggled → hand the preference to the radio, then re-push the
