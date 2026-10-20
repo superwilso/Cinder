@@ -1,6 +1,3 @@
-[submodule "cinder-aac"]
-	path = cinder-aac
-	url = https://github.com/superwilso/cinder-aac.git
 [submodule "flint"]
 	path = flint
 	url = https://github.com/superwilso/flint.git
