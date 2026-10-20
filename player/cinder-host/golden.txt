@@ -87,6 +87,7 @@ f639417a99b94d6f lyrics_day
 57597fdbb2c89a49 library_search_button_day
 070dd9712f1e33d9 bluetooth_day
 0efd1556529d3c78 bluetooth_codec_day
+55794e3a00a885e3 bluetooth_codec_aac_day
 5c6fdb102a884b7e bluetooth_codec_off_day
 1fde314ffad2a6ef bluetooth_connecting_day
 5937698f3dc12344 pairing_day
@@ -192,6 +193,7 @@ cac7ec63b511ce42 lyrics_night
 a8d23c83f31ec59d library_search_button_night
 d9081a7eeabc45fd bluetooth_night
 741c870bbd3c7c14 bluetooth_codec_night
+6832e36419b905e1 bluetooth_codec_aac_night
 39f48a58c980ae2b bluetooth_codec_off_night
 2981f90675228acf bluetooth_connecting_night
 9ae5ee3f86a9bac9 pairing_night

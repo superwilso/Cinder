@@ -28,10 +28,14 @@ PINNED_MAJOR_MINOR="0.11"
 # of vendor scripts we neither wrote nor can fix. They are gitignored, so CI never sees them and
 # passed purely by their absence; locally they buried our findings in vendor noise and turned the
 # gate red for things that are not ours. Excluded explicitly so local and CI check the same set.
+# The submodules (.gitmodules) are their own repos with their own gates.
 mapfile -t SCRIPTS < <(find . -name '*.sh' \
     -not -path './.git/*' \
     -not -path './artifacts/*' \
     -not -path './analysis/binwalk/*' \
+    -not -path './cinder-aac/*' \
+    -not -path './flint/*' \
+    -not -path './cinder-themes/*' \
     | sort)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${SCRIPTS[@]}"; exit 0; fi
 
