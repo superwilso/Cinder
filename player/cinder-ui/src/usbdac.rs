@@ -54,7 +54,11 @@ pub fn render(
 ) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "USB-DAC", None);
-    let onoff = if on { "ON" } else { "OFF" };
+    let onoff = if on {
+        crate::i18n::text("ON")
+    } else {
+        crate::i18n::text("OFF")
+    };
     crate::widgets::right(
         c,
         f,
@@ -79,7 +83,7 @@ pub fn render(
             f,
             240.0,
             292.0,
-            "USB-DAC active",
+            crate::i18n::text("USB-DAC active"),
             &sty(Family::Sans, Weight::Bold, 24.0, t.ink, 0.0),
         );
         // One path or the other, never both: the bridge takes the capture PCM for the whole
@@ -90,7 +94,7 @@ pub fn render(
         // printing it here would be the third false claim this screen has made about its own
         // output. `negotiated` comes from GetSoundStatus and is None until its enumerators are tied
         // to a real headphone, so until then the honest label is the transport, not the codec.
-        let out_name = negotiated.unwrap_or("BLUETOOTH");
+        let out_name = negotiated.unwrap_or(crate::i18n::text("BLUETOOTH"));
         let path = if ldac {
             format!("PC → NW-A55 → {}", out_name)
         } else {
@@ -112,9 +116,9 @@ pub fn render(
         fill_rect(c, bx, by, bw, bh, t.panel);
         stroke_rect(c, bx, by, bw, bh, t.line, 1);
         let out = if ldac {
-            format!("OUTPUT : {}", out_name)
+            crate::ui_format!("OUTPUT : {}", out_name)
         } else {
-            "OUTPUT : 3.5MM UNBALANCED".to_string()
+            crate::i18n::text("OUTPUT : 3.5MM UNBALANCED").to_string()
         };
         // This line used to read "INPUT : PCM 24BIT / 96.0 KHZ" as a hardcoded literal, next to a
         // "SOURCE : DESKTOP-7F3K (USB)" that named a PC which does not exist. Both were invented,
@@ -126,12 +130,12 @@ pub fn render(
             Some((rate, bits, _)) if rate > 0 => {
                 let khz = rate as f32 / 1000.0;
                 if bits > 0 {
-                    format!("INPUT  : PCM {}BIT / {:.1} KHZ", bits, khz)
+                    crate::ui_format!("INPUT  : PCM {}BIT / {:.1} KHZ", bits, khz)
                 } else {
-                    format!("INPUT  : PCM {:.1} KHZ", khz)
+                    crate::ui_format!("INPUT  : PCM {:.1} KHZ", khz)
                 }
             }
-            _ => "INPUT  : USB AUDIO CLASS 2".to_string(),
+            _ => crate::i18n::text("INPUT  : USB AUDIO CLASS 2").to_string(),
         };
         let lines = [
             input,
@@ -158,13 +162,13 @@ pub fn render(
         // entering DAC mode). The line that said so was a comparison with stock, and the handoff
         // (2h) takes it out: the screen says what is happening, not what another player does.
         if ldac {
-            let dev = bt_device.unwrap_or("Bluetooth");
+            let dev = bt_device.unwrap_or(crate::i18n::text("Bluetooth"));
             center(
                 c,
                 f,
                 240.0,
                 542.0,
-                &format!("Playing to {} — {} requested.", dev, codec),
+                &crate::ui_format!("Playing to {} — {} requested.", dev, codec),
                 &sty(Family::Sans, Weight::SemiBold, 15.0, t.acc, 0.0),
             );
         } else {
@@ -173,7 +177,7 @@ pub fn render(
                 f,
                 240.0,
                 542.0,
-                "Connect Bluetooth headphones to send USB audio to them.",
+                crate::i18n::text("Connect Bluetooth headphones to send USB audio to them."),
                 &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
             );
         }
@@ -184,7 +188,7 @@ pub fn render(
             f,
             240.0,
             362.0,
-            "USB-DAC is off",
+            crate::i18n::text("USB-DAC is off"),
             &sty(Family::Sans, Weight::Bold, 21.0, t.dim, 0.0),
         );
         center(
@@ -192,7 +196,7 @@ pub fn render(
             f,
             240.0,
             396.0,
-            "Turn on to use the Walkman as a USB sound card.",
+            crate::i18n::text("Turn on to use the Walkman as a USB sound card."),
             &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
         );
         center(
@@ -200,7 +204,7 @@ pub fn render(
             f,
             240.0,
             418.0,
-            "Plays out of the 3.5 mm jack, or over Bluetooth",
+            crate::i18n::text("Plays out of the 3.5 mm jack, or over Bluetooth"),
             &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
         );
         center(
@@ -208,7 +212,7 @@ pub fn render(
             f,
             240.0,
             438.0,
-            "headphones if any are connected.",
+            crate::i18n::text("headphones if any are connected."),
             &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
         );
     }
@@ -219,7 +223,7 @@ pub fn render(
         f,
         240.0,
         770.0,
-        "CHARGING WHILE IN DAC MODE: ON",
+        crate::i18n::text("CHARGING WHILE IN DAC MODE: ON"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1),
     );
 }

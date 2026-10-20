@@ -145,9 +145,9 @@ pub fn render(
     off: Option<&str>,
 ) {
     c.fill(t.bg);
-    crate::chrome::header(c, t, f, "Equalizer", None);
+    crate::chrome::header(c, t, f, crate::i18n::text("Equalizer"), None);
     // header-right pill: CUSTOM <preset>
-    let plabel = format!("CUSTOM {}", preset);
+    let plabel = crate::ui_format!("CUSTOM {}", preset);
     let ps = sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.12);
     let pw = text::measure(f, &plabel, &ps) as i32 + 18;
     stroke_rect(c, 458 - pw, 52, pw, 26, t.acc, 1);
@@ -173,7 +173,7 @@ pub fn render(
             f,
             (px + pw / 2) as f32,
             (py + ph / 2 + 4) as f32,
-            name,
+            crate::i18n::text(name),
             &st,
         );
     }
@@ -257,7 +257,7 @@ pub fn render(
         f,
         22.0,
         fcy + 4.0,
-        "Reset",
+        crate::i18n::text("Reset"),
         &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0),
     );
     // NOT "Save Sound Preset": there is no save step. Every band change is written to the settings
@@ -277,7 +277,7 @@ pub fn render(
             f,
             458.0,
             fcy + 4.0,
-            "Saved automatically",
+            crate::i18n::text("Saved automatically"),
             &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0),
         ),
     };

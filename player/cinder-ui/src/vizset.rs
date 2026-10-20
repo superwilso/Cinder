@@ -132,7 +132,7 @@ fn vrow(
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "Visualiser", None);
+    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Visualiser"), None);
 
     // ── the preview ──────────────────────────────────────────────────────────────────────────
     // Inset by the same 24 px the Now Playing visualiser uses, so what you tune is the width you
@@ -185,13 +185,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
     // preview that silently shows made-up motion is the exact kind of thing this project keeps
     // taking out of screens.
     let cap = if crate::viz::can_draw(v.kind, v.levels, v.sig) {
-        "LIVE"
+        crate::i18n::text("LIVE")
     } else if v.levels.is_some() && crate::viz::needs_samples(v.kind) {
-        "THIS STYLE NEEDS LIBRARY PLAYBACK"
+        crate::i18n::text("THIS STYLE NEEDS LIBRARY PLAYBACK")
     } else if crate::viz::is_signal_style(v.kind) && v.kind != crate::viz::VizKind::Radial {
-        "NO SIGNAL"
+        crate::i18n::text("NO SIGNAL")
     } else {
-        "NO SIGNAL — DEMO MOTION"
+        crate::i18n::text("NO SIGNAL — DEMO MOTION")
     };
     text::draw(
         c,
@@ -204,12 +204,60 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
 
     // ── the rows ─────────────────────────────────────────────────────────────────────────────
     let mut y = TOP;
-    y = vrow(c, t, f, y, sel == ROW_STYLE, "Style", v.style);
-    y = vrow(c, t, f, y, sel == ROW_COVER, "On the cover", v.cover);
-    y = vrow(c, t, f, y, sel == ROW_SCALE, "Level scale", v.scale);
-    y = vrow(c, t, f, y, sel == ROW_RANGE, "Range", v.range);
-    y = vrow(c, t, f, y, sel == ROW_RESPONSE, "Response", v.response);
-    y = vrow(c, t, f, y, sel == ROW_CURVE, "Curve", v.curve);
+    y = vrow(
+        c,
+        t,
+        f,
+        y,
+        sel == ROW_STYLE,
+        crate::i18n::text("Style"),
+        v.style,
+    );
+    y = vrow(
+        c,
+        t,
+        f,
+        y,
+        sel == ROW_COVER,
+        crate::i18n::text("On the cover"),
+        v.cover,
+    );
+    y = vrow(
+        c,
+        t,
+        f,
+        y,
+        sel == ROW_SCALE,
+        crate::i18n::text("Level scale"),
+        v.scale,
+    );
+    y = vrow(
+        c,
+        t,
+        f,
+        y,
+        sel == ROW_RANGE,
+        crate::i18n::text("Range"),
+        v.range,
+    );
+    y = vrow(
+        c,
+        t,
+        f,
+        y,
+        sel == ROW_RESPONSE,
+        crate::i18n::text("Response"),
+        v.response,
+    );
+    y = vrow(
+        c,
+        t,
+        f,
+        y,
+        sel == ROW_CURVE,
+        crate::i18n::text("Curve"),
+        v.curve,
+    );
     // A toggle, not a cycling value: markers are on or they are not.
     {
         let cy = y + ROW_H / 2;
@@ -222,16 +270,40 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
             f,
             22.0,
             (cy + 5) as f32,
-            "Peak markers",
+            crate::i18n::text("Peak markers"),
             &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0),
         );
         toggle(c, t, 418, cy - 11, 40, 22, 14, v.peaks);
         hline(c, y + ROW_H, t.line);
         y += ROW_H;
     }
-    y = vrow(c, t, f, y, sel == ROW_WINDOW, "Time window", v.window);
-    y = vrow(c, t, f, y, sel == ROW_RATE, "Frame rate", v.rate);
-    let _ = vrow(c, t, f, y, sel == ROW_BANDS, "Bands", v.bands);
+    y = vrow(
+        c,
+        t,
+        f,
+        y,
+        sel == ROW_WINDOW,
+        crate::i18n::text("Time window"),
+        v.window,
+    );
+    y = vrow(
+        c,
+        t,
+        f,
+        y,
+        sel == ROW_RATE,
+        crate::i18n::text("Frame rate"),
+        v.rate,
+    );
+    let _ = vrow(
+        c,
+        t,
+        f,
+        y,
+        sel == ROW_BANDS,
+        crate::i18n::text("Bands"),
+        v.bands,
+    );
 }
 
 #[cfg(test)]

@@ -113,16 +113,16 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
     }
     fill_rect(c, 0, TOP, W as i32, BOTTOM - TOP, t.bg);
 
-    kit::section_label(c, t, f, TOP, "BRIGHTNESS", None);
+    kit::section_label(c, t, f, TOP, crate::i18n::text("BRIGHTNESS"), None);
     let level = (1..=5)
         .contains(&v.brightness)
         .then(|| v.brightness as usize - 1);
     kit::chips(c, t, f, BRIGHT_CHIPS, &LEVELS, level);
 
     let bt_sub = match (v.bt_on, v.bt_device) {
-        (false, _) => "Off",
+        (false, _) => crate::i18n::text("Off"),
         (true, Some(name)) => name,
-        (true, None) => "Not connected",
+        (true, None) => crate::i18n::text("Not connected"),
     };
     kit::row(
         c,
@@ -130,7 +130,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
         f,
         ROW_BT,
         kit::ROW_H,
-        &Row::new("Bluetooth")
+        &Row::new(crate::i18n::text("Bluetooth"))
             .sub(bt_sub)
             .trail(Trail::Switch(v.bt_on)),
     );
@@ -140,12 +140,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
         f,
         ROW_NIGHT,
         kit::ROW_H,
-        &Row::new("Night")
-            .sub("Dims everything after dark")
+        &Row::new(crate::i18n::text("Night"))
+            .sub(crate::i18n::text("Dims everything after dark"))
             .trail(Trail::Switch(v.night)),
     );
 
-    kit::section_label(c, t, f, SLEEP_LABEL, "SLEEP TIMER", None);
+    kit::section_label(c, t, f, SLEEP_LABEL, crate::i18n::text("SLEEP TIMER"), None);
     kit::chips(
         c,
         t,

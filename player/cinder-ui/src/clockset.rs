@@ -220,18 +220,20 @@ pub fn weekday(y: i32, m: i32, d: i32) -> &'static str {
 
 fn label_of(f: usize) -> &'static str {
     match f {
-        F_YEAR => "Year",
-        F_MONTH => "Month",
-        F_DAY => "Day",
-        F_HOUR => "Hour",
-        _ => "Minute",
+        F_YEAR => crate::i18n::text("Year"),
+        F_MONTH => crate::i18n::text("Month"),
+        F_DAY => crate::i18n::text("Day"),
+        F_HOUR => crate::i18n::text("Hour"),
+        _ => crate::i18n::text("Minute"),
     }
 }
 
 fn value_of(fields: &Fields, f: usize) -> String {
     match f {
         F_YEAR => format!("{}", fields[F_YEAR]),
-        F_MONTH => MONTHS[(fields[F_MONTH].clamp(1, 12) - 1) as usize].to_string(),
+        F_MONTH => {
+            crate::i18n::text(MONTHS[(fields[F_MONTH].clamp(1, 12) - 1) as usize]).to_string()
+        }
         F_DAY => format!("{}", fields[F_DAY]),
         F_HOUR => format!("{:02}", fields[F_HOUR]),
         _ => format!("{:02}", fields[F_MIN]),
@@ -240,7 +242,7 @@ fn value_of(fields: &Fields, f: usize) -> String {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usize) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "Date & time", None);
+    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Date & time"), None);
     debug_assert_eq!(y0, TOP, "clock editor top drifted from the hit test");
 
     // Live preview of exactly what Set will write, spelled out — "2026-08-17" is easy to misread
@@ -251,9 +253,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
         let d = fields[F_DAY];
         let s = format!(
             "{} {} {} {} · {:02}:{:02}",
-            weekday(y, m, d),
+            crate::i18n::text(weekday(y, m, d)),
             d,
-            MONTHS[(m - 1) as usize],
+            crate::i18n::text(MONTHS[(m - 1) as usize]),
             y,
             fields[F_HOUR],
             fields[F_MIN]
@@ -277,7 +279,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
             f,
             240.0,
             (TOP + 54) as f32,
-            "UTC — THE DEVICE KEEPS NO TIME ZONE",
+            crate::i18n::text("UTC — THE DEVICE KEEPS NO TIME ZONE"),
             &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16),
         );
     }
@@ -330,7 +332,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
         f,
         (sx + sw / 2) as f32,
         (sy + sh / 2 + 7) as f32,
-        "SET CLOCK",
+        crate::i18n::text("SET CLOCK"),
         &sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc_ink, 0.06),
     );
     center(
@@ -338,7 +340,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
         f,
         240.0,
         (sy + sh + 26) as f32,
-        "Written to the hardware clock, so it survives a power cycle.",
+        crate::i18n::text("Written to the hardware clock, so it survives a power cycle."),
         &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0),
     );
 }

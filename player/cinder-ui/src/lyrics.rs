@@ -57,9 +57,13 @@ impl Lyrics {
             .iter()
             .filter(|l| !l.text.trim().is_empty())
             .count();
-        let unit = if n == 1 { "line" } else { "lines" };
+        let unit = if n == 1 {
+            crate::i18n::text("line")
+        } else {
+            crate::i18n::text("lines")
+        };
         if self.is_synced() {
-            format!("Synced, {n} {unit}")
+            crate::ui_format!("Synced, {n} {unit}", n = n, unit = unit)
         } else {
             format!("{n} {unit}")
         }
@@ -126,22 +130,36 @@ pub fn render(
     sbar_active: bool,
 ) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "Lyrics", None);
+    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Lyrics"), None);
     let Some(lyr) = lyr.filter(|l| !l.lines.is_empty()) else {
         // Reached only if the file went away between the row being built and the tap. Say what
         // would fix it rather than drawing an empty page that reads as a failed load.
         let st = sty(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
-        text::draw(c, f, X, (TOP + 40) as f32, "No lyrics for this song.", &st);
+        text::draw(
+            c,
+            f,
+            X,
+            (TOP + 40) as f32,
+            crate::i18n::text("No lyrics for this song."),
+            &st,
+        );
         let hint = sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0);
         text::draw(
             c,
             f,
             X,
             (TOP + 70) as f32,
-            "Put a .lrc file with the same name",
+            crate::i18n::text("Put a .lrc file with the same name"),
             &hint,
         );
-        text::draw(c, f, X, (TOP + 92) as f32, "next to the song.", &hint);
+        text::draw(
+            c,
+            f,
+            X,
+            (TOP + 92) as f32,
+            crate::i18n::text("next to the song."),
+            &hint,
+        );
         return;
     };
 

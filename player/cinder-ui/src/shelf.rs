@@ -131,7 +131,7 @@ pub fn render(
         f,
         48.0,
         (TOP + 30) as f32,
-        "Shelf",
+        crate::i18n::text("Shelf"),
         &sty(Family::Sans, Weight::Bold, 22.0, t.ink, 0.0),
     );
     right(
@@ -139,14 +139,21 @@ pub fn render(
         f,
         458.0,
         (TOP + 28) as f32,
-        "CLOSE ×",
+        crate::i18n::text("CLOSE ×"),
         &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.08),
     );
 
     let cap = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18);
 
     // THIS PLACE
-    text::draw(c, f, 22.0, caption_y(THIS_Y) as f32, "THIS PLACE", &cap);
+    text::draw(
+        c,
+        f,
+        22.0,
+        caption_y(THIS_Y) as f32,
+        crate::i18n::text("THIS PLACE"),
+        &cap,
+    );
     stroke_rect(c, 22, THIS_Y, 436, THIS_H, t.line, 1);
     let tst = sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0);
     let sst = sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0);
@@ -173,7 +180,7 @@ pub fn render(
         f,
         (px + pw / 2) as f32,
         (py + ph / 2 + 4) as f32,
-        "Pin",
+        crate::i18n::text("Pin"),
         &sty(Family::Sans, Weight::Bold, 14.0, t.acc_ink, 0.0),
     );
 

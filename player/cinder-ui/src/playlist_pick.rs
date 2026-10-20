@@ -99,7 +99,7 @@ pub fn render_targets(
                 f,
                 26.0,
                 (cy + 1) as f32,
-                "+  NEW PLAYLIST",
+                crate::i18n::text("+  NEW PLAYLIST"),
                 &sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc_ink, 0.04),
             );
             text::draw(
@@ -107,7 +107,7 @@ pub fn render_targets(
                 f,
                 26.0,
                 (cy + 19) as f32,
-                "NAME IT, THEN ADD THIS TRACK",
+                crate::i18n::text("NAME IT, THEN ADD THIS TRACK"),
                 &sty(Family::Mono, Weight::Regular, 10.0, t.acc_ink, 0.14),
             );
         } else {
@@ -142,7 +142,7 @@ pub fn render_targets(
                 f,
                 26.0,
                 (cy + 17) as f32,
-                &format!("{} tracks", target.tracks),
+                &crate::ui_format!("{} tracks", target.tracks),
                 &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0),
             );
             crate::icons::chevron(c, 452.0, cy as f32, 13.0, t.faint);
@@ -176,9 +176,9 @@ pub fn render_tracks(
 ) {
     c.fill(t.bg);
     let caption = if added > 0 {
-        format!("{added} ADDED")
+        crate::ui_format!("{added} ADDED", added = added)
     } else {
-        "TAP TO ADD".to_string()
+        crate::i18n::text("TAP TO ADD").to_string()
     };
     crate::chrome::header(c, t, f, playlist, Some(&caption));
 
@@ -196,7 +196,7 @@ pub fn render_tracks(
     let shown = if has {
         query
     } else {
-        "Search titles, artists, albums"
+        crate::i18n::text("Search titles, artists, albums")
     };
     let cy = (TOP + SEARCH_H / 2 + 5) as f32;
     text::draw(c, f, 26.0, cy, &fit(f, shown, &qs, 340.0), &qs);
@@ -273,7 +273,7 @@ pub fn render_tracks(
         f,
         240.0,
         (BOTTOM + 26) as f32,
-        "BACK WHEN YOU ARE DONE",
+        crate::i18n::text("BACK WHEN YOU ARE DONE"),
         &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16),
     );
 }
@@ -281,9 +281,12 @@ pub fn render_tracks(
 fn footer(c: &mut Canvas, t: &Theme, f: &FontSet, sony_count: usize) {
     // Short enough to fit the panel at every UI scale — the first version ran off the right edge.
     let note = if sony_count > 0 {
-        format!("{sony_count} SONY PLAYLIST(S) CANNOT BE EDITED HERE")
+        crate::ui_format!(
+            "{sony_count} SONY PLAYLIST(S) CANNOT BE EDITED HERE",
+            sony_count = sony_count
+        )
     } else {
-        "PLAYLISTS YOU MAKE ARE SAVED ON THE DEVICE".to_string()
+        crate::i18n::text("PLAYLISTS YOU MAKE ARE SAVED ON THE DEVICE").to_string()
     };
     crate::widgets::center(
         c,

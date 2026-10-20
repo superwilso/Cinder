@@ -245,9 +245,9 @@ pub fn render(
         240.0,
         (TEXT_Y + TEXT_H + 26) as f32,
         if shift {
-            "CAPS — NEXT LETTER IS A CAPITAL"
+            crate::i18n::text("CAPS — NEXT LETTER IS A CAPITAL")
         } else {
-            "TAP DONE TO SAVE · BACK TO CANCEL"
+            crate::i18n::text("TAP DONE TO SAVE · BACK TO CANCEL")
         },
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16),
     );
@@ -299,11 +299,11 @@ fn label_of(key: Key, page: u8, shift: bool) -> (String, bool) {
             };
             (ch.to_string(), false)
         }
-        Key::Shift => ("CAPS".to_string(), true),
+        Key::Shift => (crate::i18n::text("CAPS").to_string(), true),
         Key::Page => (if page == 0 { "123" } else { "ABC" }.to_string(), true),
-        Key::Space => ("SPACE".to_string(), true),
-        Key::Backspace => ("DEL".to_string(), true),
-        Key::Done => ("DONE".to_string(), true),
+        Key::Space => (crate::i18n::text("SPACE").to_string(), true),
+        Key::Backspace => (crate::i18n::text("DEL").to_string(), true),
+        Key::Done => (crate::i18n::text("DONE").to_string(), true),
     }
 }
 
@@ -325,6 +325,17 @@ fn tail_that_fits(f: &FontSet, s: &str, style: &text::TextStyle, avail: f32) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spacebar_label_uses_the_keyboard_meaning() {
+        for (language, expected) in [
+            (crate::i18n::Language::English, "SPACE"),
+            (crate::i18n::Language::SimplifiedChinese, "空格"),
+        ] {
+            let _language = crate::i18n::enter(language);
+            assert_eq!(label_of(Key::Space, 0, false).0, expected);
+        }
+    }
 
     #[test]
     fn every_key_is_reachable_by_a_tap_at_its_centre() {

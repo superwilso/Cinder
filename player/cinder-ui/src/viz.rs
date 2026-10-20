@@ -105,38 +105,38 @@ pub fn from_index(i: u8) -> VizKind {
 /// ~20 fps, and `name(i).to_uppercase()` there allocated a `String` on every single frame.
 pub fn name_upper(i: u8) -> &'static str {
     match from_index(i) {
-        VizKind::Bars => "BARS",
-        VizKind::Ribbon => "RIBBON",
-        VizKind::Line => "LINE",
-        VizKind::Mirror => "MIRROR",
-        VizKind::Segments => "SEGMENTS",
-        VizKind::Dots => "DOTS",
-        VizKind::Wave => "WAVE",
-        VizKind::Pulse => "PULSE",
-        VizKind::Scope => "SCOPE",
-        VizKind::Stereo => "STEREO FIELD",
-        VizKind::Spectrogram => "SPECTROGRAM",
-        VizKind::Meters => "METERS",
-        VizKind::Radial => "RADIAL",
+        VizKind::Bars => crate::i18n::text("BARS"),
+        VizKind::Ribbon => crate::i18n::text("RIBBON"),
+        VizKind::Line => crate::i18n::text("LINE"),
+        VizKind::Mirror => crate::i18n::text("MIRROR"),
+        VizKind::Segments => crate::i18n::text("SEGMENTS"),
+        VizKind::Dots => crate::i18n::text("DOTS"),
+        VizKind::Wave => crate::i18n::text("WAVE"),
+        VizKind::Pulse => crate::i18n::text("PULSE"),
+        VizKind::Scope => crate::i18n::text("SCOPE"),
+        VizKind::Stereo => crate::i18n::text("STEREO FIELD"),
+        VizKind::Spectrogram => crate::i18n::text("SPECTROGRAM"),
+        VizKind::Meters => crate::i18n::text("METERS"),
+        VizKind::Radial => crate::i18n::text("RADIAL"),
     }
 }
 
 /// Short display name (for a settings row).
 pub fn name(i: u8) -> &'static str {
     match from_index(i) {
-        VizKind::Bars => "Bars",
-        VizKind::Ribbon => "Ribbon",
-        VizKind::Line => "Line",
-        VizKind::Mirror => "Mirror",
-        VizKind::Segments => "Segments",
-        VizKind::Dots => "Dots",
-        VizKind::Wave => "Wave",
-        VizKind::Pulse => "Pulse",
-        VizKind::Scope => "Scope",
-        VizKind::Stereo => "Stereo field",
-        VizKind::Spectrogram => "Spectrogram",
-        VizKind::Meters => "Meters",
-        VizKind::Radial => "Radial",
+        VizKind::Bars => crate::i18n::text("Bars"),
+        VizKind::Ribbon => crate::i18n::text("Ribbon"),
+        VizKind::Line => crate::i18n::text("Line"),
+        VizKind::Mirror => crate::i18n::text("Mirror"),
+        VizKind::Segments => crate::i18n::text("Segments"),
+        VizKind::Dots => crate::i18n::text("Dots"),
+        VizKind::Wave => crate::i18n::text("Wave"),
+        VizKind::Pulse => crate::i18n::text("Pulse"),
+        VizKind::Scope => crate::i18n::text("Scope"),
+        VizKind::Stereo => crate::i18n::text("Stereo field"),
+        VizKind::Spectrogram => crate::i18n::text("Spectrogram"),
+        VizKind::Meters => crate::i18n::text("Meters"),
+        VizKind::Radial => crate::i18n::text("Radial"),
     }
 }
 
@@ -191,9 +191,9 @@ pub fn columns_for(levels: Option<&[f32]>) -> usize {
 /// Label for the Settings row.
 pub fn size_name(i: u8) -> &'static str {
     match size_from_index(i) {
-        VizSize::Off => "OFF",
-        VizSize::Veil => "VEIL",
-        VizSize::Full => "FULL",
+        VizSize::Off => crate::i18n::text("OFF"),
+        VizSize::Veil => crate::i18n::text("VEIL"),
+        VizSize::Full => crate::i18n::text("FULL"),
     }
 }
 

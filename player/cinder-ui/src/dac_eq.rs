@@ -132,7 +132,7 @@ pub struct DacEq {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "DAC EQ", Some(d.back));
+    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("DAC EQ"), Some(d.back));
     hline(c, y0, t.line);
 
     const AVAIL: f32 = 436.0;
@@ -141,20 +141,26 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         text::draw(c, f, 22.0, (y0 + dy) as f32, &s, &st);
     };
     let (msg, col) = if d.direct {
-        ("Source Direct is on — held flat until it is off", t.acc)
+        (
+            crate::i18n::text("Source Direct is on — held flat until it is off"),
+            t.acc,
+        )
     } else {
-        ("In the DAC chip, after every other effect", t.faint)
+        (
+            crate::i18n::text("In the DAC chip, after every other effect"),
+            t.faint,
+        )
     };
     line(26, msg, sty(Family::Sans, Weight::Regular, 13.0, col, 0.0));
     line(
         46,
-        "Wired headphones only. A boost lowers everything else.",
+        crate::i18n::text("Wired headphones only. A boost lowers everything else."),
         sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
     );
     let jsub = if d.jack {
         "The jack's equalizer \u{b7} the 10-band stays for Bluetooth"
     } else {
-        "Off: the 10-band runs on the jack too, on the processor"
+        crate::i18n::text("Off: the 10-band runs on the jack too, on the processor")
     };
     crate::kit::row(
         c,
@@ -162,7 +168,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         f,
         JACK_ROW_TOP,
         JACK_ROW_H,
-        &crate::kit::Row::new("Use on the headphone jack")
+        &crate::kit::Row::new(crate::i18n::text("Use on the headphone jack"))
             .sub(jsub)
             .trail(crate::kit::Trail::Switch(d.jack)),
     );
@@ -234,7 +240,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         f,
         (W / 2) as f32,
         (by + 52) as f32,
-        "Bass 100 Hz · treble 10 kHz · +6 to −12 dB",
+        crate::i18n::text("Bass 100 Hz · treble 10 kHz · +6 to −12 dB"),
         &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
     );
 
@@ -247,7 +253,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         f,
         22.0,
         fcy + 4.0,
-        "Reset",
+        crate::i18n::text("Reset"),
         &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0),
     );
     right(
@@ -255,7 +261,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         f,
         458.0,
         fcy + 4.0,
-        "Fit my 10-band curve",
+        crate::i18n::text("Fit my 10-band curve"),
         &sty(Family::Sans, Weight::SemiBold, 16.0, t.acc, 0.0),
     );
 }

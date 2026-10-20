@@ -227,8 +227,8 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
         // nothing, and the glyphs behind it matter more than the label does.
         let nst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.18);
         let nx2 = nx + 12.0;
-        if text::measure(f, "NIGHT", &nst) <= (zone_right() - nx2).max(0.0) {
-            text::draw(c, f, nx2, 26.0, "NIGHT", &nst);
+        if text::measure(f, crate::i18n::text("NIGHT"), &nst) <= (zone_right() - nx2).max(0.0) {
+            text::draw(c, f, nx2, 26.0, crate::i18n::text("NIGHT"), &nst);
         }
     }
 
@@ -325,13 +325,13 @@ pub fn np_bar(
     fill_rect(c, NP_BAR_PLAY_W, y + 14, 1, h - 28, t.line);
 
     let cap = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16);
-    let cap_w = text::measure(f, "NOW PLAYING", &cap);
+    let cap_w = text::measure(f, crate::i18n::text("NOW PLAYING"), &cap);
     text::draw(
         c,
         f,
         (crate::W as f32) - 34.0 - cap_w,
         (y + 26) as f32,
-        "NOW PLAYING",
+        crate::i18n::text("NOW PLAYING"),
         &cap,
     );
     // Chevron pointing UP, under the caption: says "this opens something" rather than leaving the
@@ -342,7 +342,7 @@ pub fn np_bar(
     let avail = (crate::W as f32) - 88.0 - cap_w - 34.0;
     let ts = sty(Family::Sans, Weight::Bold, 17.0, t.ink, -0.01);
     let title = if title.is_empty() {
-        "Nothing playing"
+        crate::i18n::text("Nothing playing")
     } else {
         title
     };

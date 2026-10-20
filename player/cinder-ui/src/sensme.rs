@@ -235,8 +235,8 @@ pub fn subtitle(lib: &Library, channel: Option<usize>) -> String {
 
 fn count_label(n: usize) -> String {
     match n {
-        1 => "1 TRACK".to_string(),
-        n => format!("{n} TRACKS"),
+        1 => crate::i18n::text("1 TRACK").to_string(),
+        n => crate::ui_format!("{n} TRACKS", n = n),
     }
 }
 
@@ -257,14 +257,21 @@ fn band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
         f,
         (px + 52) as f32,
         (cy - 3) as f32,
-        "Play channel",
+        crate::i18n::text("Play channel"),
         &lst,
     );
     let cl = count_label(tracks);
     text::draw(c, f, (px + 52) as f32, (cy + 15) as f32, &cl, &sst);
 
     icons::shuffle(c, (sx + 28) as f32, cy as f32, 18.0, t.acc_ink);
-    text::draw(c, f, (sx + 48) as f32, (cy + 6) as f32, "Shuffle", &lst);
+    text::draw(
+        c,
+        f,
+        (sx + 48) as f32,
+        (cy + 6) as f32,
+        crate::i18n::text("Shuffle"),
+        &lst,
+    );
 }
 
 fn name_style(t: &Theme, strong: bool) -> TextStyle {
@@ -442,7 +449,7 @@ pub fn render(
 /// The channel grid and its foot.
 fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot: Foot) {
     use crate::kit;
-    kit::section_label(c, t, f, TOP, "CHANNELS", None);
+    kit::section_label(c, t, f, TOP, crate::i18n::text("CHANNELS"), None);
     let biggest = lib
         .channels
         .iter()
@@ -490,13 +497,20 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
                 t.acc,
                 0.14,
             );
-            let tw = text::measure(f, "NOW", &tst);
-            text::draw(c, f, (x + w - 12) as f32 - tw, (y + 26) as f32, "NOW", &tst);
+            let tw = text::measure(f, crate::i18n::text("NOW"), &tst);
+            text::draw(
+                c,
+                f,
+                (x + w - 12) as f32 - tw,
+                (y + 26) as f32,
+                crate::i18n::text("NOW"),
+                &tst,
+            );
             tw + 8.0
         } else {
             0.0
         };
-        let name = crate::widgets::fit(f, ch.name, &ns, (w - 24) as f32 - tag_w);
+        let name = crate::widgets::fit(f, crate::i18n::text(ch.name), &ns, (w - 24) as f32 - tag_w);
         text::draw(c, f, (x + 12) as f32, (y + 28) as f32, &name, &ns);
         let cl = count_label(ch.tracks.len());
         text::draw(
@@ -518,16 +532,16 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
     // The foot, ruled off from a half-scrolled tile above it.
     hline(c, FOLLOW_Y, t.line);
     let sub = match (foot.follow, foot.hour.map(time_channel_id)) {
-        (false, _) => "Play the channel for the hour".to_string(),
-        (true, None) => "Waiting for the clock".to_string(),
+        (false, _) => crate::i18n::text("Play the channel for the hour").to_string(),
+        (true, None) => crate::i18n::text("Waiting for the clock").to_string(),
         (true, Some(id)) => {
             let name = crate::model::SENSME_TIME_NAMES
                 .iter()
                 .find(|(i, _)| *i == id)
-                .map_or("", |(_, n)| n);
+                .map_or("", |(_, n)| crate::i18n::text(n));
             match now {
-                Some(_) => format!("Now: {name}"),
-                None => format!("Now: {name} — nothing in it yet"),
+                Some(_) => crate::ui_format!("Now: {name}", name = name),
+                None => crate::ui_format!("Now: {name} — nothing in it yet", name = name),
             }
         }
     };
@@ -537,13 +551,13 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
         f,
         FOLLOW_Y,
         kit::ROW_H,
-        &crate::kit::Row::new("Follow the time of day")
+        &crate::kit::Row::new(crate::i18n::text("Follow the time of day"))
             .sub(&sub)
             .trail(crate::kit::Trail::Switch(foot.follow)),
     );
     let label = match now.and_then(|i| lib.channels.get(i)) {
-        Some(ch) => format!("Play {}", ch.name),
-        None => "Shuffle all analysed".to_string(),
+        Some(ch) => crate::ui_format!("Play {}", crate::i18n::text(ch.name)),
+        None => crate::i18n::text("Shuffle all analysed").to_string(),
     };
     kit::primary_button(c, t, f, BUTTON_Y, &label);
 }

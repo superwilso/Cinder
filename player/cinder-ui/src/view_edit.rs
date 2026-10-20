@@ -48,11 +48,11 @@ pub const SECTIONS: [Section; 5] = [
 impl Section {
     fn label(self) -> &'static str {
         match self {
-            Section::Rating => "RATING",
-            Section::Played => "LAST PLAYED",
-            Section::Format => "FORMAT",
-            Section::Sort => "SORT",
-            Section::Shuffle => "SHUFFLE",
+            Section::Rating => crate::i18n::text("RATING"),
+            Section::Played => crate::i18n::text("LAST PLAYED"),
+            Section::Format => crate::i18n::text("FORMAT"),
+            Section::Sort => crate::i18n::text("SORT"),
+            Section::Shuffle => crate::i18n::text("SHUFFLE"),
         }
     }
     pub fn labels(self) -> &'static [&'static str] {
@@ -141,14 +141,20 @@ pub struct ViewEditView<'a> {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ViewEditView) {
     c.fill(t.bg);
-    crate::chrome::header_action(c, t, f, "Smart playlist", "SAVE");
+    crate::chrome::header_action(
+        c,
+        t,
+        f,
+        crate::i18n::text("Smart playlist"),
+        crate::i18n::text("SAVE"),
+    );
     let line = match v.matches {
-        1 => "1 SONG MATCHES".to_string(),
-        n => format!("{n} SONGS MATCH"),
+        1 => crate::i18n::text("1 SONG MATCHES").to_string(),
+        n => crate::ui_format!("{n} SONGS MATCH", n = n),
     };
     kit::strip(c, t, f, HEADER_BOTTOM, &line);
     let name = if v.draft.name.trim().is_empty() {
-        "Choose a name"
+        crate::i18n::text("Choose a name")
     } else {
         v.draft.name.as_str()
     };
@@ -158,7 +164,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ViewEditView) {
         f,
         NAME_Y,
         kit::ROW_H,
-        &Row::new("Name").trail(Trail::Open(name)),
+        &Row::new(crate::i18n::text("Name")).trail(Trail::Open(name)),
     );
     for (i, s) in SECTIONS.iter().enumerate() {
         kit::section_label(c, t, f, section_top(i), s.label(), None);
@@ -171,7 +177,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ViewEditView) {
             f,
             DELETE_Y,
             kit::ROW_H,
-            &Row::new("Delete smart playlist").sub("The songs stay on the player"),
+            &Row::new(crate::i18n::text("Delete smart playlist"))
+                .sub(crate::i18n::text("The songs stay on the player")),
         );
     }
 }

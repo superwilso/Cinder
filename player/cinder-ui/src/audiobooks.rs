@@ -95,8 +95,8 @@ pub fn row_at(lib: &Library, y: i32, scroll: i32) -> Option<usize> {
 /// The header's second line.
 pub fn subtitle(lib: &Library) -> String {
     match lib.books.len() {
-        1 => "1 BOOK".to_string(),
-        n => format!("{n} BOOKS"),
+        1 => crate::i18n::text("1 BOOK").to_string(),
+        n => crate::ui_format!("{n} BOOKS", n = n),
     }
 }
 
@@ -119,7 +119,7 @@ pub fn render(
         c,
         t,
         f,
-        "Audiobooks",
+        crate::i18n::text("Audiobooks"),
         (!lib.books.is_empty()).then_some(&*sub),
     );
     c.set_clip_y(y0, LIST_BOTTOM);
@@ -127,7 +127,14 @@ pub fn render(
     if lib.books.is_empty() {
         let st = sty(Family::Sans, Weight::Regular, crate::scale::ROW, t.dim, 0.0);
         let hint = sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0);
-        text::draw(c, f, 22.0, (TOP + 40) as f32, "No audiobooks yet.", &st);
+        text::draw(
+            c,
+            f,
+            22.0,
+            (TOP + 40) as f32,
+            crate::i18n::text("No audiobooks yet."),
+            &st,
+        );
         text::draw(
             c,
             f,
@@ -135,7 +142,7 @@ pub fn render(
             (TOP + 66) as f32,
             &crate::widgets::fit(
                 f,
-                "Put each book in its own folder inside LEARNING.",
+                crate::i18n::text("Put each book in its own folder inside LEARNING."),
                 &hint,
                 436.0,
             ),

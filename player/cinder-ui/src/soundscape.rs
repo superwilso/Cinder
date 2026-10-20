@@ -65,7 +65,7 @@ pub fn label(id: u8) -> &'static str {
         .iter()
         .find(|s| s.0 == id)
         .map(|s| s.1)
-        .unwrap_or("Off")
+        .unwrap_or(crate::i18n::text("Off"))
 }
 
 /// The level curve: percent on the slider to a linear gain in thousandths, which is what the shell
@@ -138,13 +138,13 @@ impl Route {
     fn words(self) -> &'static str {
         match self {
             Route::Off => "",
-            Route::OverMusic => "OVER THE MUSIC",
-            Route::AloneJack => "ON ITS OWN · HEADPHONES",
-            Route::AloneBt => "ON ITS OWN · BLUETOOTH",
-            Route::OverStream => "OVER USB-DAC / RADIO",
-            Route::NoHook => "SILENT WHILE MUSIC PLAYS",
-            Route::Waiting => "WAITING FOR THE OUTPUT",
-            Route::Unavailable => "NO OUTPUT RIGHT NOW",
+            Route::OverMusic => crate::i18n::text("OVER THE MUSIC"),
+            Route::AloneJack => crate::i18n::text("ON ITS OWN · HEADPHONES"),
+            Route::AloneBt => crate::i18n::text("ON ITS OWN · BLUETOOTH"),
+            Route::OverStream => crate::i18n::text("OVER USB-DAC / RADIO"),
+            Route::NoHook => crate::i18n::text("SILENT WHILE MUSIC PLAYS"),
+            Route::Waiting => crate::i18n::text("WAITING FOR THE OUTPUT"),
+            Route::Unavailable => crate::i18n::text("NO OUTPUT RIGHT NOW"),
         }
     }
 }
@@ -165,7 +165,7 @@ pub struct View {
 /// The one line of state under the header.
 pub fn strip_text(v: &View) -> String {
     if !v.on {
-        return String::from("OFF · TAP A SOUND TO START");
+        return String::from(crate::i18n::text("OFF · TAP A SOUND TO START"));
     }
     let name = label(v.sound).to_uppercase();
     match v.route {
@@ -177,9 +177,11 @@ pub fn strip_text(v: &View) -> String {
 /// The note at the bottom: where over-music mixing reaches, or why it cannot.
 pub fn reach_text(hook: bool) -> &'static str {
     if hook {
-        "Over music it reaches the jack and Bluetooth, after the EQ and before the volume."
+        crate::i18n::text(
+            "Over music it reaches the jack and Bluetooth, after the EQ and before the volume.",
+        )
     } else {
-        "Over music needs Wampy installed (install.md, \"mono\"). On its own, and over USB-DAC or the radio, it always plays."
+        crate::i18n::text("Over music needs Wampy installed (install.md, \"mono\"). On its own, and over USB-DAC or the radio, it always plays.")
     }
 }
 
@@ -261,22 +263,26 @@ fn level_x(pct: u8) -> i32 {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
     c.fill(t.bg);
-    let y = crate::chrome::header(c, t, f, "Soundscapes", None);
+    let y = crate::chrome::header(c, t, f, crate::i18n::text("Soundscapes"), None);
     debug_assert_eq!(y, STRIP_TOP);
     kit::strip(c, t, f, STRIP_TOP, &strip_text(v));
-    let sub = if v.on { label(v.sound) } else { "Off" };
+    let sub = if v.on {
+        crate::i18n::text(label(v.sound))
+    } else {
+        crate::i18n::text("Off")
+    };
     kit::row(
         c,
         t,
         f,
         ROW_SWITCH,
         kit::ROW_H,
-        &Row::new("Soundscape")
+        &Row::new(crate::i18n::text("Soundscape"))
             .sub(sub)
             .trail(Trail::Switch(v.on))
             .sel(sel == SEL_SWITCH),
     );
-    kit::section_label(c, t, f, SOUND_LABEL, "SOUND", None);
+    kit::section_label(c, t, f, SOUND_LABEL, crate::i18n::text("SOUND"), None);
     for (i, (id, name)) in SOUNDS.iter().enumerate() {
         let (x, y, w) = chip_rect(i);
         let chosen = *id == v.sound;
@@ -300,7 +306,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
             ink,
             0.0,
         );
-        let s = fit(f, name, &st, (w - 16) as f32);
+        let s = fit(f, crate::i18n::text(name), &st, (w - 16) as f32);
         let tw = text::measure(f, &s, &st);
         text::draw(
             c,
@@ -311,13 +317,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
             &st,
         );
     }
-    kit::section_label(c, t, f, LEVEL_LABEL, "LEVEL", None);
+    kit::section_label(c, t, f, LEVEL_LABEL, crate::i18n::text("LEVEL"), None);
     level_row(
         c,
         t,
         f,
         ROW_ALONE,
-        "On its own",
+        crate::i18n::text("On its own"),
         v.alone,
         sel == SEL_ALONE,
         v.on,
@@ -327,7 +333,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
         t,
         f,
         ROW_MUSIC,
-        "With music",
+        crate::i18n::text("With music"),
         v.music,
         sel == SEL_MUSIC,
         v.on,

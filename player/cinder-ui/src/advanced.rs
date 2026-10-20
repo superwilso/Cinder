@@ -138,6 +138,7 @@ pub struct Advanced {
     pub dsee_hx: bool,
     /// "Off", or one of [`DSEE_MODES`].
     pub dsee_custom: &'static str,
+    pub dsee_custom_on: bool,
     /// One of [`VINYL_TYPES`]. Only in the path while the Vinyl Processor itself is on, which is
     /// on the Sound screen — said so in the row's subtitle rather than hiding the row, because
     /// "set it up, then switch it on" is a reasonable order to do things in.
@@ -145,7 +146,11 @@ pub struct Advanced {
     pub vinyl_on: bool,
     /// "Off" or the VPT room; "Off" or the DC Phase filter (the Sound screen's values).
     pub vpt: &'static str,
+    /// Domain switch state from Sound; kept separate from the displayed value string.
+    pub vpt_on: bool,
     pub dcphase: &'static str,
+    /// Domain switch state from Sound; kept separate from the displayed value string.
+    pub dcphase_on: bool,
     pub tone_control: bool,
     /// The linear headphone amp is selected (experimental, off by default).
     pub hp_linear: bool,
@@ -153,6 +158,7 @@ pub struct Advanced {
     pub dac_eq_on: bool,
     /// One of [`CLEAR_BASS`], or None where the firmware has no six-band EQ in its chain.
     pub clear_bass: Option<&'static str>,
+    pub clear_bass_on: bool,
     /// Name of whatever upstream control is currently overriding the rest of the chain, if any.
     pub overridden_by: Option<&'static str>,
     /// Walkman One's sound library: its effect chain has no `clearphase` and no `dseeai`
@@ -227,6 +233,8 @@ fn a_row(
     label: &str,
     desc: &str,
 ) -> i32 {
+    let label = crate::i18n::text(label);
+    let desc = crate::i18n::text(desc);
     if dimmed(a, row) {
         dim_row(c, t, f, y, sel, label, desc)
     } else {
@@ -237,7 +245,7 @@ fn a_row(
 /// What a row ends in.
 enum End {
     Switch(bool),
-    Pill(&'static str),
+    Pill(&'static str, bool),
     Open,
 }
 
@@ -252,7 +260,10 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             } else {
                 "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix"
             }),
-            End::Pill(if not_here(a, r) { "Off" } else { a.vpt }),
+            End::Pill(
+                if not_here(a, r) { "Off" } else { a.vpt },
+                !not_here(a, r) && a.vpt_on,
+            ),
         ),
         ROW_DC => (
             "DC Phase Linearizer",
@@ -261,7 +272,10 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             } else {
                 "Analog-amp low-frequency phase"
             }),
-            End::Pill(if not_here(a, r) { "Off" } else { a.dcphase }),
+            End::Pill(
+                if not_here(a, r) { "Off" } else { a.dcphase },
+                !not_here(a, r) && a.dcphase_on,
+            ),
         ),
         ROW_VINYL => (
             "Vinyl Processor",
@@ -304,7 +318,7 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             } else {
                 "DSEE HX is off"
             }),
-            End::Pill(a.dsee_custom),
+            End::Pill(a.dsee_custom, a.dsee_custom_on),
         ),
         ROW_VINYL_TYPE => (
             "Vinyl Character",
@@ -313,7 +327,7 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             } else {
                 "Vinyl Processor is off"
             }),
-            End::Pill(a.vinyl_type),
+            End::Pill(a.vinyl_type, a.vinyl_on),
         ),
         ROW_TONE => (
             "Tone Control",
@@ -366,7 +380,7 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
                 } else {
                     "On \u{2014} the EQ and Tone Control are out of the path"
                 }),
-                End::Pill(level),
+                End::Pill(level, a.clear_bass_on),
             )
         }
     }
@@ -374,7 +388,13 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize, scroll: i32) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "Advanced", Some("Sound"));
+    let y0 = crate::chrome::header(
+        c,
+        t,
+        f,
+        crate::i18n::text("Advanced"),
+        Some(crate::i18n::text("Sound")),
+    );
     debug_assert_eq!(y0, TOP, "advanced list top drifted from the hit test");
     hline(c, y0, t.line);
     let chev = sty(
@@ -395,7 +415,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize, 
         let cy = a_row(c, t, f, a, y, sel == r, r, title, &desc);
         match end {
             End::Switch(on) => toggle(c, t, 418, cy - 11, 40, 22, 14, on),
-            End::Pill(v) => crate::sound::value_pill(c, f, t, 458, cy, v),
+            End::Pill(v, active) => crate::sound::value_pill(c, f, t, 458, cy, v, active),
             End::Open => crate::widgets::right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev),
         }
     }
@@ -415,18 +435,18 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize, 
     if let Some(who) = a.overridden_by {
         line(
             14,
-            &format!("{who} is on"),
+            &crate::ui_format!("{who} is on", who = who),
             sty(Family::Sans, Weight::SemiBold, 13.0, t.acc, 0.0),
         );
         line(
             34,
-            "The effects above are not in the path.",
+            crate::i18n::text("The effects above are not in the path."),
             sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0),
         );
     } else {
         line(
             14,
-            "Set these once for a pair of headphones.",
+            crate::i18n::text("Set these once for a pair of headphones."),
             sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0),
         );
     }
@@ -444,14 +464,18 @@ mod tests {
             dsee_ai: false,
             dsee_hx: false,
             dsee_custom: "Off",
+            dsee_custom_on: false,
             vinyl_type: VINYL_TYPES[0],
             vinyl_on: false,
             vpt: "Off",
+            vpt_on: false,
             dcphase: "Off",
+            dcphase_on: false,
             tone_control: false,
             hp_linear: false,
             dac_eq_on: false,
             clear_bass: None,
+            clear_bass_on: false,
             overridden_by: None,
             w1_chain: false,
         }

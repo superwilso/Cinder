@@ -86,14 +86,14 @@ pub fn render(
     home: usize,
 ) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "Menu", None);
+    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Menu"), None);
     debug_assert_eq!(y0, STRIP_TOP, "menu strip drifted from the hit test");
     let y = kit::strip(c, t, f, y0, strip);
     debug_assert_eq!(y, TOP);
     let rh = row_h(items.len());
     for (i, m) in items.iter().enumerate() {
         let trail = if m.home {
-            Trail::Tag("HOME")
+            Trail::Tag(crate::i18n::text("HOME"))
         } else {
             Trail::Open("")
         };
@@ -104,10 +104,13 @@ pub fn render(
             f,
             yt,
             rh,
-            &Row::new(m.label).sub(m.sub).trail(trail).sel(m.active),
+            &Row::new(crate::i18n::text(m.label))
+                .sub(m.sub)
+                .trail(trail)
+                .sel(m.active),
         );
     }
-    kit::section_label(c, t, f, LABEL_TOP, "START ON", None);
+    kit::section_label(c, t, f, LABEL_TOP, crate::i18n::text("START ON"), None);
     kit::chips(c, t, f, CHIPS_TOP, &HOMES, Some(home.min(HOMES.len() - 1)));
 }
 

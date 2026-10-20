@@ -43,18 +43,18 @@ impl ShuffleBy {
     /// The Settings row's value.
     pub fn label(self) -> &'static str {
         match self {
-            ShuffleBy::Songs => "SONGS",
-            ShuffleBy::Albums => "ALBUMS",
-            ShuffleBy::Artists => "ARTISTS",
+            ShuffleBy::Songs => crate::i18n::text("SONGS"),
+            ShuffleBy::Albums => crate::i18n::text("ALBUMS"),
+            ShuffleBy::Artists => crate::i18n::text("ARTISTS"),
         }
     }
 
     /// What the toast says after a deal.
     pub fn toast(self) -> &'static str {
         match self {
-            ShuffleBy::Songs => "Shuffled",
-            ShuffleBy::Albums => "Shuffled by album",
-            ShuffleBy::Artists => "Shuffled by artist",
+            ShuffleBy::Songs => crate::i18n::text("Shuffled"),
+            ShuffleBy::Albums => crate::i18n::text("Shuffled by album"),
+            ShuffleBy::Artists => crate::i18n::text("Shuffled by artist"),
         }
     }
 

@@ -49,6 +49,7 @@ fn save_png(c: &Canvas, name: &str) {
 
 /// What a run needs to know beyond "render everything".
 struct Opts {
+    language: cinder_ui::i18n::Language,
     /// Reproducible output only. Ignores the `CINDER_PREVIEW_T48` real-cover override, which makes
     /// the pixels depend on a file outside the tree.
     golden: bool,
@@ -98,6 +99,7 @@ fn r4_playlists(lib: &Library) -> Library {
 }
 
 fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
+    let _language = cinder_ui::i18n::enter(opts.language);
     let mut save = |c: &Canvas, name: &str| out(name, c);
     let fonts = FontSet::load();
     // Every theme below comes from these tokens, so `--palette` repaints the whole set, and the
@@ -115,6 +117,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     let pal_locked = tokens.accent.is_some();
     let new_app = || {
         let mut a = cinder_ui::nav::App::unlocked();
+        a.set_language(opts.language);
         if let Some(p) = &opts.palette {
             a.set_palettes(vec![p.clone()], Vec::new());
             a.set_palette_wanted(&p.id);
@@ -262,7 +265,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         mono_live: false,
         vinyl: false,
         vpt: "Studio",
+        vpt_on: true,
         dcphase: "Low A",
+        dcphase_on: true,
         normalizer: true,
         clearaudio: false,
         eq_preset: "A1",
@@ -2798,6 +2803,12 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // Settings scrolled to the end, where the value column is densest.
             let mut app = new_app();
             app.go_for_preview(Screen::Settings);
+            app.tap(
+                240,
+                cinder_ui::settings::LIST_TOP
+                    + cinder_ui::settings::row_top_px(cinder_ui::settings::ROW_MORE)
+                    + 20,
+            );
             app.scroll_px(10_000);
             let mut c = Canvas::new();
             app.render(&mut c, &fonts, &np);
@@ -3085,6 +3096,42 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             save(&c, name);
         }
     }
+
+    // The language picker is a fixed bilingual label even in English mode. Exercise the real
+    // Settings route: unfold More settings, scroll to the end, and render with no Sony font path.
+    // Keep this last because the host's glyph cache intentionally preserves first-use order.
+    {
+        use cinder_ui::nav::Screen;
+        let old_font_dir = std::env::var_os("CINDER_FONT_DIR");
+        let missing_font_dir = std::env::temp_dir()
+            .join(format!("cinder-no-sony-{}", std::process::id()))
+            .join("missing");
+        std::env::set_var("CINDER_FONT_DIR", missing_font_dir);
+        let no_sony_fonts = FontSet::load();
+        let mut app = new_app();
+        app.go_for_preview(Screen::Settings);
+        app.tap(
+            240,
+            cinder_ui::settings::LIST_TOP
+                + cinder_ui::settings::row_top_px(cinder_ui::settings::ROW_MORE)
+                + 20,
+        );
+        app.scroll_px(10_000);
+        let mut c = Canvas::new();
+        app.render(&mut c, &no_sony_fonts, &np);
+        assert_eq!(
+            no_sony_fonts.chain_walks(),
+            0,
+            "fixed language text requested a device font"
+        );
+        assert!(!no_sony_fonts.unresolved_chars().contains(&'语'));
+        assert!(!no_sony_fonts.unresolved_chars().contains(&'言'));
+        match old_font_dir {
+            Some(path) => std::env::set_var("CINDER_FONT_DIR", path),
+            None => std::env::remove_var("CINDER_FONT_DIR"),
+        }
+        save(&c, "language_entry_no_sony");
+    }
 }
 
 // ── Golden pixel hashes ────────────────────────────────────────────────────────────────────────
@@ -3113,6 +3160,7 @@ fn hashes() -> Vec<(String, u64)> {
     render_all(
         &mut |name, c| got.push((name.to_string(), pixel_hash(c))),
         &Opts {
+            language: cinder_ui::i18n::Language::English,
             golden: true,
             palette: None,
         },
@@ -3201,6 +3249,7 @@ fn audit() -> Vec<String> {
             }
         },
         &Opts {
+            language: cinder_ui::i18n::Language::English,
             golden: true,
             palette: None,
         },
@@ -3225,6 +3274,23 @@ fn main() {
             render_all(
                 &mut |name, c| save_png(c, name),
                 &Opts {
+                    language: cinder_ui::i18n::Language::English,
+                    golden: false,
+                    palette: None,
+                },
+            );
+        }
+        Some("--language") => {
+            let token = std::env::args().nth(2).unwrap_or_default();
+            if token != "en" && token != "zh-CN" {
+                eprintln!("usage: cinder-host --language en|zh-CN");
+                std::process::exit(2);
+            }
+            std::fs::create_dir_all("out").ok();
+            render_all(
+                &mut |name, c| save_png(c, name),
+                &Opts {
+                    language: cinder_ui::i18n::Language::from_token(&token),
                     golden: false,
                     palette: None,
                 },
@@ -3267,6 +3333,7 @@ fn main() {
                             n += 1;
                         },
                         &Opts {
+                            language: cinder_ui::i18n::Language::English,
                             golden: false,
                             palette: Some(p),
                         },
