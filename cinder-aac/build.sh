@@ -4,14 +4,15 @@
 #   build.sh test     also runs the encoder test against the firmware's own libFraunhoferAAC.so
 set -eu
 cd "$(dirname "$0")"
-: "${FW:=$HOME/sony/artifacts/rootfs_mnt}"                              # stock rootfs (read only)
-: "${RAMLIB:=$HOME/sony/analysis/ramdisk/lib}"                         # device glibc 2.23 (boot ramdisk /lib)
+: "${FW:=$PWD/../artifacts/rootfs_mnt}"                                # stock rootfs (read only)
+: "${RAMLIB:=$PWD/../analysis/ramdisk/lib}"                            # device glibc 2.23 (boot ramdisk /lib)
 : "${DEVSYS:=$HOME/toolchains/xenial-armhf-sysroot/sysroot}"            # glibc-2.23 headers + crt
 CC=arm-linux-gnueabihf-gcc
 L=$DEVSYS/usr/lib/arm-linux-gnueabihf
 SYS=(-U_TIME_BITS -U_FILE_OFFSET_BITS -nostdinc -isystem "$($CC -print-file-name=include)"
      -isystem "$DEVSYS/usr/include/arm-linux-gnueabihf" -isystem "$DEVSYS/usr/include"
      -isystem /usr/arm-linux-gnueabihf/include)
+# shellcheck disable=SC2054  # the commas are inside linker flags, not between elements
 LIBS=(-nostdlib -L"$RAMLIB" -L"$FW/lib" -L"$FW/usr/lib" -l:libdl.so.2 -l:libpthread.so.0
       -l:libm.so.6 -l:libc.so.6 "$L/libc_nonshared.a" "$($CC -print-libgcc-file-name)"
       -Wl,--allow-shlib-undefined)
@@ -36,7 +37,7 @@ if [ "${1:-}" = test ]; then
     ln -sfn "$RAMLIB" $QROOT/lib; ln -sfn "$FW" $QROOT/system
     # Both encoders: Cinder's fdk-aac 2.x build (when build_fdk.sh has run), then the firmware's.
     libpaths=(/lib:/system/lib:/system/usr/lib)
-    [ -f build/libfdk-aac-enc.so ] && { ln -sfn "$PWD/build" $QROOT/cinder; libpaths=(/cinder:${libpaths[0]} "${libpaths[@]}"); }
+    [ -f build/libfdk-aac-enc.so ] && { ln -sfn "$PWD/build" $QROOT/cinder; libpaths=("/cinder:${libpaths[0]}" "${libpaths[@]}"); }
     for lp in "${libpaths[@]}"; do
         for r in "44100 668" "48000 1005" "44100 1005" "44100 882"; do
             set -- $r

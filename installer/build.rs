@@ -90,9 +90,9 @@ const FILES: &[(&str, &str, &str, bool)] = &[
         "preload",
         false,
     ),
-    // The `bt-aac` component: AAC Bluetooth transmit (the cinder-aac submodule) and the fdk-aac
-    // encoder it prefers. Not `required`: a clone without the submodule builds an installer
-    // that offers everything else.
+    // The `bt-aac` component: AAC Bluetooth transmit (cinder-aac/) and the fdk-aac encoder it
+    // prefers. Not `required` yet, for the same reason as the preload files: the committed
+    // dist/stable predates them, and tools/release.sh is what refuses a release without them.
     (
         "dist/{ch}/libcinder_aac.so",
         "libcinder_aac.so",
@@ -106,12 +106,21 @@ const FILES: &[(&str, &str, &str, bool)] = &[
         false,
     ),
     // The .UPG the Sony updater actually runs. It MUST land on the player as NW_WM_FW.UPG —
-    // that filename is what the device's own "update firmware" flow looks for.
+    // that filename is what the device's own "update firmware" flow looks for. One per key: the
+    // updater drops a package sealed for another model's key without a word, and Walkman One
+    // answers with the NW-WM1A's. `fw:` owners are picked by the firmware, not a component
+    // (stage::staged); the Walkman One one is not `required` until a release carries it.
     (
         "dist/{ch}/cinder_home_install.upg",
         "NW_WM_FW.UPG",
-        "",
+        "fw:nw-a50",
         true,
+    ),
+    (
+        "dist/{ch}/cinder_home_install.nw-wm1a.upg",
+        "NW_WM_FW.UPG",
+        "fw:nw-wm1a",
+        false,
     ),
 ];
 
@@ -123,6 +132,7 @@ const FILES: &[(&str, &str, &str, bool)] = &[
 // and copying a file by hand — the uninstall .UPG was built, committed and published as a release
 // asset the whole time, and the one program the user actually runs could not reach it.
 const UNINSTALL_UPG: &str = "dist/{ch}/cinder_home_uninstall.upg";
+const UNINSTALL_UPG_W1: &str = "dist/{ch}/cinder_home_uninstall.nw-wm1a.upg";
 
 fn main() {
     embed_manifest();
@@ -173,7 +183,19 @@ fn main() {
     }
     src.push_str("];\n");
 
-    // the uninstall package, as its own optional constant
+    // the uninstall packages, as their own optional constants (the Walkman One one is optional)
+    {
+        let p = ch_root.join(UNINSTALL_UPG_W1.replace("{ch}", &channel));
+        println!("cargo:rerun-if-changed={}", p.display());
+        src.push_str(&if p.is_file() {
+            format!(
+                "pub static UNINSTALL_UPG_W1: Option<&[u8]> = Some(include_bytes!({:?}));\n",
+                abs(&p)
+            )
+        } else {
+            "pub static UNINSTALL_UPG_W1: Option<&[u8]> = None;\n".to_string()
+        });
+    }
     {
         let rel = UNINSTALL_UPG.replace("{ch}", &channel);
         let p = ch_root.join(&rel);

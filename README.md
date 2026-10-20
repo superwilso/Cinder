@@ -51,9 +51,6 @@ it has run on hardware (*device-verified*). Per-feature state: [`cinder-home/STA
 
 - **v0.3.9 doesn't start after a fresh install** ([#16](../../issues/16)). Fixed in **v0.3.12**:
   install it over the top.
-- **The release package doesn't install over Walkman One.** Cinder runs on it, but the package
-  has to be sealed with Walkman One's key, and releases don't include one yet. See
-  [Walkman One](#walkman-one).
 - **Bluetooth receiver mode (Walkman as a speaker) is experimental.** Playing from a Windows PC
   works. iPhones won't connect, and some don't list the Walkman at all.
 - **Not built yet:** FM recording.
@@ -101,22 +98,17 @@ drive) to any issue.
 
 ## Walkman One
 
-Cinder runs on Walkman One 3.02 as well as on Sony's stock 1.02. Everything in Cinder works there
-except:
+Cinder runs on Walkman One 3.02 as well as on Sony's stock 1.02, and installs the same way: Walkman
+One changes the key Sony's updater accepts, and the installer asks the player for its key and
+writes the package that key opens. Everything in Cinder works there except:
 
-- **Installing.** Walkman One changes the key Sony's updater accepts, so the release package is
-  dropped without a word: the player restarts into Walkman One and nothing changes. The installer
-  warns when it sees Walkman One's `CFW` folder. For now, either go back to stock 1.02 first and
-  install there, or build a package sealed for Walkman One from source
-  (`cinder-home/tools/pack_upg.sh stable nw-wm1a`). If you try,
-  run `nvpstr kas` on your player and post the output in an issue.
 - **VPT Surround, Clear Phase and DSEE AI** aren't in Walkman One's sound library. Cinder shows
   them as unavailable rather than letting a tap do nothing.
 - **Clear Bass** isn't in Walkman One's sound effects either. The install option *Clear Bass
   (Walkman One 3.02 only)* puts it back, in place of the DC Phase Linearizer.
 - **Noise cancelling** (Sony's NC earphones): Walkman One never starts Sony's noise-cancelling
   engine, so Cinder starts it when you switch NC on. Ambient sound isn't available: Walkman One
-  removed its filter. This arrives in the next release.
+  removed its filter.
 - **Other versions** of Walkman One haven't been tried.
 
 Coming from Walkman One:

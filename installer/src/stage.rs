@@ -67,6 +67,28 @@ pub fn selected(comps: &[Comp], owner: &str) -> bool {
         .unwrap_or(true)
 }
 
+/// Is this payload file staged? A `fw:<model>` owner is the install package sealed for that
+/// model's key: the Walkman One one (`nw-wm1a`) on a player that runs it, stock's otherwise.
+fn staged(comps: &[Comp], owner: &str, w1: bool) -> bool {
+    match owner.strip_prefix("fw:") {
+        Some(model) => (model == "nw-wm1a") == w1,
+        None => selected(comps, owner),
+    }
+}
+
+/// The uninstall package for this player's key.
+fn uninstall_upg(w1: bool) -> Result<&'static [u8], String> {
+    let (bytes, name) = if w1 {
+        (
+            crate::payload::UNINSTALL_UPG_W1,
+            "cinder_home_uninstall.nw-wm1a.upg",
+        )
+    } else {
+        (crate::payload::UNINSTALL_UPG, "cinder_home_uninstall.upg")
+    };
+    bytes.ok_or_else(|| format!("this build has no uninstall package embedded ({name} was missing when it was compiled)"))
+}
+
 /// What an action will write, resolved before a single byte is copied.
 ///
 /// Split out from the copying so the GUI can show an accurate file-by-file plan on the confirm
@@ -87,26 +109,28 @@ impl Plan {
     }
 }
 
-/// Build the plan for `action`. Returns Err when the build cannot carry it out at all — the only
-/// case being an uninstall from a binary whose payload has no uninstall package embedded.
-pub fn plan(action: Action, comps: &[Comp], channel: &str) -> Result<Plan, String> {
+/// Build the plan for `action` on a player that runs Walkman One (`w1`) or not. Returns Err when
+/// the build cannot carry it out at all: no package embedded for this player's key.
+pub fn plan(action: Action, comps: &[Comp], channel: &str, w1: bool) -> Result<Plan, String> {
     if action.is_removal() {
-        let bytes = crate::payload::UNINSTALL_UPG.ok_or_else(|| {
-            "this build has no uninstall package embedded (cinder_home_uninstall.upg was missing \
-             when it was compiled)"
-                .to_string()
-        })?;
+        let bytes = uninstall_upg(w1)?;
         return Ok(Plan {
             files: vec![(UPG_NAME.to_string(), bytes.len())],
             conf: None,
         });
     }
 
-    let files = crate::payload::PAYLOAD
+    let files: Vec<(String, usize)> = crate::payload::PAYLOAD
         .iter()
-        .filter(|(_, owner, _)| selected(comps, owner))
+        .filter(|(_, owner, _)| staged(comps, owner, w1))
         .map(|(name, _, bytes)| ((*name).to_string(), bytes.len()))
         .collect();
+    if !files.iter().any(|(n, _)| n == UPG_NAME) {
+        return Err(format!(
+            "this build has no install package for {} players",
+            if w1 { "Walkman One" } else { "stock-firmware" }
+        ));
+    }
     Ok(Plan {
         files,
         conf: Some(crate::catalogue::conf_text(comps, channel)),
@@ -127,10 +151,11 @@ pub fn write_payload(
     dry: bool,
     mut progress: impl FnMut(&str, usize),
 ) -> io::Result<()> {
+    // The same reading the confirm screen's plan was built from: the drive itself.
+    let w1 = crate::device::running_walkman_one(target);
+    plan(action, comps, channel, w1).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
     if action.is_removal() {
-        let bytes = crate::payload::UNINSTALL_UPG.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "no uninstall package embedded")
-        })?;
+        let bytes = uninstall_upg(w1).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
         if !dry {
             write_verified(&target.join(UPG_NAME), bytes)?;
         }
@@ -139,7 +164,7 @@ pub fn write_payload(
     }
 
     for (name, owner, bytes) in crate::payload::PAYLOAD {
-        if !selected(comps, owner) {
+        if !staged(comps, owner, w1) {
             continue;
         }
         if !dry {
@@ -238,6 +263,25 @@ const RETIRED: &[&str] = &["cinder-probe", "cinder-gpunode"];
 /// pass-through. Keeping one constant is deliberate: two copies of a device command drift.
 #[cfg(any(target_os = "linux", windows))]
 pub const FW_UPGRADE_CDB: [u8; 12] = [0xfc, 0, 0x04, b'd', b'b', b'm', b'n', 0, 0, 0, 0, 0];
+
+/// Read the player's KAS, the key Sony's updater decrypts a package with: DNK property 0x23,
+/// entry 22, 64 bytes of hex text (Rockbox `scsitool get_dnk_prop kas`). Walkman One rewrites it,
+/// so it says which package this player takes. Bytes 8-9 are the length, 7 must be 0xbc.
+#[cfg(any(target_os = "linux", windows))]
+pub const KAS_CDB: [u8; 12] = [0xdd, 0, 0, 0, 0, 0, 0, 0xbc, 0, 64, 0x23, 22];
+
+/// The KAS an NW-A50-series player reports under Walkman One: the NW-WM1A's (`upgtool -m ?`).
+pub const W1_KAS: &str = "e8d171a5d92f35eed9658c03fb9f86a169591659851fd7c49525f587a70b526c";
+
+/// The key text out of a KAS reply: printable bytes up to the first NUL, lower case.
+pub fn kas_text(reply: &[u8]) -> String {
+    reply
+        .iter()
+        .take_while(|&&b| b != 0)
+        .filter(|b| b.is_ascii_graphic())
+        .map(|b| b.to_ascii_lowercase() as char)
+        .collect()
+}
 
 #[cfg(windows)]
 mod scsi {
@@ -349,10 +393,17 @@ fn volume_device_path(target: &Path) -> io::Result<Vec<u16>> {
 /// accepted it — the same contract as the Linux `send_fw_upgrade`.
 #[cfg(windows)]
 fn send_fw_upgrade(vol: scsi::Handle, flag: u8) -> io::Result<()> {
+    let mut cdb = FW_UPGRADE_CDB;
+    cdb[8] = flag;
+    send_cdb(vol, &cdb).map(|_| ())
+}
+
+/// Send one 12-byte vendor CDB that reads from the drive, and return what it sent back.
+#[cfg(windows)]
+fn send_cdb(vol: scsi::Handle, cdb12: &[u8; 12]) -> io::Result<[u8; 128]> {
     let mut buf = scsi::AlignedBuf([0u8; 128]);
     let mut cdb = [0u8; 16];
-    cdb[..FW_UPGRADE_CDB.len()].copy_from_slice(&FW_UPGRADE_CDB);
-    cdb[8] = flag;
+    cdb[..cdb12.len()].copy_from_slice(cdb12);
 
     let mut req = scsi::WithSense {
         spt: scsi::PassThroughDirect {
@@ -361,7 +412,7 @@ fn send_fw_upgrade(vol: scsi::Handle, flag: u8) -> io::Result<()> {
             path_id: 0,
             target_id: 0,
             lun: 0,
-            cdb_length: FW_UPGRADE_CDB.len() as u8,
+            cdb_length: cdb12.len() as u8,
             sense_info_length: 32,
             data_in: scsi::SCSI_IOCTL_DATA_IN,
             data_transfer_length: buf.0.len() as u32,
@@ -399,12 +450,38 @@ fn send_fw_upgrade(vol: scsi::Handle, flag: u8) -> io::Result<()> {
     // request", which is what the wrong flag byte looks like.
     if req.spt.scsi_status != 0 {
         return Err(io::Error::other(format!(
-            "drive rejected the upgrade command (status {:#x}, sense key {:#x})",
+            "drive rejected the command (status {:#x}, sense key {:#x})",
             req.spt.scsi_status,
             req.sense[2] & 0x0f
         )));
     }
-    Ok(())
+    Ok(buf.0)
+}
+
+/// The player's KAS ([`KAS_CDB`]), read through the volume behind `target`. Needs administrator,
+/// as the upgrade command does.
+#[cfg(windows)]
+pub fn read_kas(target: &Path) -> io::Result<String> {
+    let name = volume_device_path(target)?;
+    // SAFETY: name is NUL-terminated and lives across the call.
+    let vol = unsafe {
+        scsi::CreateFileW(
+            name.as_ptr(),
+            scsi::GENERIC_READ | scsi::GENERIC_WRITE,
+            scsi::FILE_SHARE_READ | scsi::FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            scsi::OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if vol == usize::MAX as scsi::Handle {
+        return Err(io::Error::last_os_error());
+    }
+    let r = send_cdb(vol, &KAS_CDB);
+    // SAFETY: vol was opened above and is closed exactly once.
+    unsafe { scsi::CloseHandle(vol) };
+    Ok(kas_text(&r?[..64]))
 }
 
 /// Flush, dismount, then tell the player to reboot into its updater.
@@ -593,11 +670,26 @@ mod sg {
 /// Fire the vendor command at `dev` with one flag byte. Ok(()) means the drive accepted it.
 #[cfg(target_os = "linux")]
 fn send_fw_upgrade(dev: &Path, flag: u8) -> io::Result<()> {
+    let mut cdb = FW_UPGRADE_CDB;
+    cdb[8] = flag;
+    send_cdb(dev, &cdb).map(|_| ())
+}
+
+/// The player's KAS ([`KAS_CDB`]), read from the block device behind `target`. Needs root, as the
+/// upgrade command does.
+#[cfg(target_os = "linux")]
+pub fn read_kas(target: &Path) -> io::Result<String> {
+    let dev = block_device_for(target)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no block device"))?;
+    Ok(kas_text(&send_cdb(&dev, &KAS_CDB)?[..64]))
+}
+
+/// Send one 12-byte vendor CDB that reads from `dev`, and return what it sent back.
+#[cfg(target_os = "linux")]
+fn send_cdb(dev: &Path, cdb: &[u8; 12]) -> io::Result<[u8; 0x80]> {
     use std::os::unix::io::AsRawFd;
 
     let f = fs::OpenOptions::new().read(true).write(true).open(dev)?;
-    let mut cdb = FW_UPGRADE_CDB;
-    cdb[8] = flag;
     let mut buf = [0u8; 0x80];
     let mut sense = [0u8; 32];
 
@@ -642,11 +734,11 @@ fn send_fw_upgrade(dev: &Path, flag: u8) -> io::Result<()> {
     // that is the signal to try the other flag byte, not to fail the install.
     if h.status != 0 || h.host_status != 0 || h.driver_status != 0 {
         return Err(io::Error::other(format!(
-            "drive rejected the upgrade command (status {:#x}, host {:#x}, driver {:#x})",
+            "drive rejected the command (status {:#x}, host {:#x}, driver {:#x})",
             h.status, h.host_status, h.driver_status
         )));
     }
-    Ok(())
+    Ok(buf)
 }
 
 /// Flush, unmount, then tell the player to reboot into its updater.
@@ -689,6 +781,15 @@ pub fn trigger_fw_upgrade(target: &Path, mut log: impl FnMut(&str)) -> io::Resul
             send_fw_upgrade(&dev, 0x00)
         }
     }
+}
+
+/// No raw SCSI on macOS (below): the key cannot be read there.
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn read_kas(_target: &Path) -> io::Result<String> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no raw SCSI on this system",
+    ))
 }
 
 /// macOS has no SG_IO. Raw SCSI passthrough there needs an IOKit `SCSITaskUserClient`, and the
@@ -753,7 +854,7 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
     #[test]
     fn an_uninstall_plan_is_one_file_and_no_conf() {
         let c = parse_catalogue(SAMPLE).unwrap();
-        match plan(Action::Uninstall, &c, "stable") {
+        match plan(Action::Uninstall, &c, "stable", false) {
             Ok(p) => {
                 assert_eq!(p.files.len(), 1);
                 assert_eq!(p.files[0].0, UPG_NAME);
@@ -771,8 +872,8 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
     fn install_and_update_stage_the_same_things() {
         let c = parse_catalogue(SAMPLE).unwrap();
         let (a, b) = (
-            plan(Action::Install, &c, "stable"),
-            plan(Action::Update, &c, "stable"),
+            plan(Action::Install, &c, "stable", false),
+            plan(Action::Update, &c, "stable", false),
         );
         let (a, b) = (a.unwrap(), b.unwrap());
         assert_eq!(a.files.len(), b.files.len());
@@ -902,6 +1003,16 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
             block_device_in(MOUNTINFO, Path::new("/media/me/NOPE")),
             None
         );
+    }
+
+    #[test]
+    fn the_package_follows_the_key_and_the_kas_reply_is_read_as_text() {
+        assert!(staged(&[], "fw:nw-a50", false) && !staged(&[], "fw:nw-a50", true));
+        assert!(staged(&[], "fw:nw-wm1a", true) && !staged(&[], "fw:nw-wm1a", false));
+        let mut reply = [0u8; 64];
+        reply.copy_from_slice(W1_KAS.to_ascii_uppercase().as_bytes());
+        assert_eq!(kas_text(&reply), W1_KAS);
+        assert_eq!(kas_text(&[0u8; 64]), "");
     }
 
     /// The exact bytes Rockbox's scsitool sends (`try_fw_upgrade`): opcode 0xfc, subcommand 0x04,

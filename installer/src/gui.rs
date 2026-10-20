@@ -1391,7 +1391,12 @@ impl App {
             return s;
         }
 
-        let plan = stage::plan(self.action, &self.comps, crate::CHANNEL);
+        let plan = stage::plan(
+            self.action,
+            &self.comps,
+            crate::CHANNEL,
+            self.state.walkman_one,
+        );
         let mut s = format!(
             "{}\r\n\r\nPlayer:  {target}\r\n\r\n",
             self.action.verb().to_uppercase()

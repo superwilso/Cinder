@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Written by `install_cinderhome.sh` and `uninstall_cinderhome.sh` on the device.
 pub const LOG_NAME: &str = "cinder_home_install.log";
@@ -19,23 +20,56 @@ pub const HOME_LOG: &str = "cinderhome.log";
 /// (`settings.txt`, `boot_log.txt` — `analysis/RE_walkmanone_extract.md`). Nothing else writes there.
 pub const W1_DIR: &str = "CFW";
 
-/// Shown whenever the drive carries Walkman One's folder.
+/// Shown when the player is running Walkman One.
 ///
-/// WHY THIS IS A WARNING AND NOT A REFUSAL. A player running Walkman One reports another model's
-/// KAS key (an NW-A55 under W1 answers with the NW-WM1A one), and Sony's updater drops a package
-/// sealed for a different key WITHOUT A WORD: it boots, fails, and restarts into Walkman One. That
-/// is the whole of the report "it boots into the updater for a second, but reboots back into Mr.
-/// Walkman" (r/walkman, 2026-09-21). But the folder is user data on the drive and survives a
-/// revert to stock, so its presence cannot tell "running W1" from "ran it once" — only the person
-/// holding the player can.
-pub const W1_WARNING: &str = "Walkman One files (CFW folder) are on this player. If it is still \
-running Walkman One, this package will not install: the player restarts from its updater without \
-installing and without a message. Revert to stock firmware first. If you already have, carry on.";
+/// A player running Walkman One reports another model's KAS key (an NW-A55 under W1 answers with
+/// the NW-WM1A one), and Sony's updater drops a package sealed for a different key WITHOUT A WORD:
+/// it boots, fails, and restarts into Walkman One ("it boots into the updater for a second, but
+/// reboots back into Mr. Walkman", r/walkman, 2026-09-21). So the installer carries a package sealed
+/// for each key and stages the one this player takes.
+pub const W1_NOTE: &str = "This player runs Walkman One. Cinder installs with the package made \
+for it.";
 
-/// Does the drive carry Walkman One's folder? See [`W1_WARNING`] for what this can and cannot say.
-pub fn walkman_one_marks(root: &Path) -> bool {
-    let cfw = root.join(W1_DIR);
-    cfw.join("settings.txt").is_file() || cfw.join("boot_log.txt").is_file()
+/// Walkman One's boot script appends a block to this at every boot.
+const W1_BOOT_LOG: &str = "boot_log.txt";
+/// How recent that block must be to say Walkman One is what starts now. The folder is user data
+/// and survives a revert to stock, so its presence alone says only "ran it once".
+const W1_FRESH: Duration = Duration::from_secs(7 * 24 * 3600);
+/// cinder-home logs one of these at every boot, from the same check (main.cpp): the first only on
+/// Walkman One's sound library, the second on every firmware.
+const HOME_W1_LINE: &str = "sound: Walkman One sound library";
+const HOME_LIB_LINE: &str = "sound: Clear Bass";
+
+/// Does this player take the package sealed with Walkman One's key? The player's own answer, its
+/// KAS read over USB ([`crate::stage::read_kas`]), when this system and these rights can ask for
+/// it; otherwise [`w1_from_files`].
+pub fn running_walkman_one(root: &Path) -> bool {
+    match crate::stage::read_kas(root) {
+        Ok(kas) if !kas.is_empty() => kas == crate::stage::W1_KAS,
+        _ => w1_from_files(root),
+    }
+}
+
+/// Walkman One read from the drive alone: it wrote its boot log within [`W1_FRESH`], and Cinder's
+/// own last boot, if it logged one, did not find Sony's stock sound library. A boot log dated in
+/// the future (a clock set ahead) counts as recent.
+pub fn w1_from_files(root: &Path) -> bool {
+    let fresh = fs::metadata(root.join(W1_DIR).join(W1_BOOT_LOG))
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t.elapsed().map_or(true, |age| age < W1_FRESH));
+    let home = fs::read(root.join(HOME_LOG)).unwrap_or_default();
+    fresh && last_boot_on_w1(&String::from_utf8_lossy(&home)) != Some(false)
+}
+
+/// What Cinder's last boot found: `Some(true)` Walkman One's sound library, `Some(false)` stock's,
+/// `None` when no boot got as far as checking.
+fn last_boot_on_w1(text: &str) -> Option<bool> {
+    let last = text
+        .rsplit("main: start")
+        .next()
+        .filter(|_| text.contains("main: start"))?;
+    last.contains(HOME_LIB_LINE)
+        .then(|| last.contains(HOME_W1_LINE))
 }
 
 /// Why the LAST boot handed over to Sony's player, if it did.
@@ -147,7 +181,7 @@ pub struct Installed {
     /// script says these are "safe to delete once cinder-home is confirmed" and nothing ever does,
     /// so they accumulate.
     pub leftovers: Vec<String>,
-    /// Walkman One's folder is on the drive. See [`W1_WARNING`].
+    /// The player runs Walkman One: [`running_walkman_one`].
     pub walkman_one: bool,
     /// The reason the launcher gave for the last boot landing on Sony's player, if it did.
     pub last_boot_stock: Option<String>,
@@ -162,11 +196,11 @@ impl Installed {
         )
     }
 
-    /// The one line worth saying under the status, most urgent first: Walkman One (the install
-    /// cannot work), then why the last boot went to Sony's player.
+    /// The one line worth saying under the status: why the last boot went to Sony's player, or
+    /// else that this is a Walkman One player.
     pub fn advisory(&self) -> Option<String> {
-        if self.walkman_one {
-            return Some(W1_WARNING.to_string());
+        if self.last_boot_stock.is_none() && self.walkman_one {
+            return Some(W1_NOTE.to_string());
         }
         self.last_boot_stock
             .as_ref()
@@ -217,7 +251,7 @@ pub fn read_installed(root: &Path, payload_names: &[&str]) -> Installed {
             st.leftovers.push((*name).to_string());
         }
     }
-    st.walkman_one = walkman_one_marks(root);
+    st.walkman_one = running_walkman_one(root);
     // Lossy: the log carries the odd non-UTF-8 byte (a tag string, a raw register dump), and one
     // of those must not cost the whole reading.
     if let Ok(bytes) = fs::read(root.join(HOME_LOG)) {
@@ -302,27 +336,53 @@ mod tests {
     }
 
     #[test]
-    fn walkman_one_is_read_from_its_folder_and_outranks_the_boot_reason() {
+    fn walkman_one_is_its_fresh_boot_log_unless_cinder_last_saw_stock() {
         let tmp = std::env::temp_dir().join(format!("cinder-inst-w1-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
-        let _ = fs::create_dir_all(tmp.join("MUSIC"));
-        let _ = fs::create_dir_all(tmp.join("PC_Application"));
-        fs::write(tmp.join(HOME_LOG), format!("{START}\n{CABLE}\n")).unwrap();
-        let st = read_installed(&tmp, &[]);
-        assert!(!st.walkman_one, "no CFW folder, no warning");
-        assert!(st.advisory().unwrap().contains("USB cable"));
-
-        // An empty CFW folder is not Walkman One's; its settings file is.
         let _ = fs::create_dir_all(tmp.join(W1_DIR));
-        assert!(!read_installed(&tmp, &[]).walkman_one);
-        fs::write(tmp.join(W1_DIR).join("settings.txt"), "ADB=1\n").unwrap();
-        let st = read_installed(&tmp, &[]);
-        assert!(st.walkman_one);
-        assert_eq!(
-            st.advisory().as_deref(),
-            Some(W1_WARNING),
-            "W1 outranks the boot reason"
+        assert!(
+            !w1_from_files(&tmp),
+            "an empty CFW folder is not Walkman One"
         );
+        // Settings alone: the folder survives a revert to stock.
+        fs::write(tmp.join(W1_DIR).join("settings.txt"), "ADB=1\n").unwrap();
+        assert!(!w1_from_files(&tmp));
+        let boot_log = tmp.join(W1_DIR).join(W1_BOOT_LOG);
+        fs::write(&boot_log, "# This is the complete boot #208\n").unwrap();
+        assert!(w1_from_files(&tmp), "W1 wrote its boot log just now");
+        // (read_installed asks the drive for its key first; a temp folder has none to give.)
+        let st = read_installed(&tmp, &[]);
+        assert_eq!(st.advisory().as_deref(), Some(W1_NOTE));
+
+        // Cinder's last boot: the W1 library, the stock one, and one that never got that far.
+        let w1 = format!("{START}\n{HOME_W1_LINE} (no VPT)\n{HOME_LIB_LINE} available\n");
+        let stock = format!("{START}\n{HOME_LIB_LINE} not available\n");
+        for (log, want) in [
+            (w1.clone(), true),
+            (format!("{w1}{stock}"), false),
+            (format!("{stock}{w1}"), true),
+            (format!("{w1}{START}\n"), true),
+        ] {
+            fs::write(tmp.join(HOME_LOG), log).unwrap();
+            assert_eq!(w1_from_files(&tmp), want);
+        }
+        // The reason the last boot went to stock still comes first.
+        fs::write(tmp.join(HOME_LOG), format!("{w1}{CABLE}\n")).unwrap();
+        assert!(read_installed(&tmp, &[])
+            .advisory()
+            .unwrap()
+            .contains("USB cable"));
+
+        // A boot log a week old: Walkman One has not started this player since.
+        let old = std::time::SystemTime::now() - W1_FRESH - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(&boot_log)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        fs::remove_file(tmp.join(HOME_LOG)).unwrap();
+        assert!(!w1_from_files(&tmp));
         let _ = fs::remove_dir_all(&tmp);
     }
 

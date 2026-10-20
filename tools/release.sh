@@ -173,8 +173,12 @@ bash cinder-home/build.sh stable >/tmp/cinder-release-build.log 2>&1 \
 # committed for hours with the packed cinder_home_install.upg still holding the version before it.
 # It would have shipped, verified, with a green tick — because the verification rebuilt the
 # binaries beside it and never the package itself.
-bash cinder-home/tools/pack_upg.sh stable >>/tmp/cinder-release-build.log 2>&1 \
-    || { tail -20 /tmp/cinder-release-build.log; die "pack_upg failed — see /tmp/cinder-release-build.log"; }
+# Twice: once per key. A player running Walkman One answers with the NW-WM1A's, and the installer
+# stages the package its key opens (installer/src/stage.rs, read_kas).
+for model in nw-a50 nw-wm1a; do
+    bash cinder-home/tools/pack_upg.sh stable "$model" >>/tmp/cinder-release-build.log 2>&1 \
+        || { tail -20 /tmp/cinder-release-build.log; die "pack_upg $model failed — see /tmp/cinder-release-build.log"; }
+done
 AFTER="$(find cinder-home/dist/stable -type f -exec md5sum {} + | sort -k2)"
 
 if [ "$BEFORE" != "$AFTER" ]; then
@@ -285,6 +289,8 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/cinder_components.conf
     cinder-home/dist/stable/cinder_home_install.upg
     cinder-home/dist/stable/cinder_home_uninstall.upg
+    cinder-home/dist/stable/cinder_home_install.nw-wm1a.upg
+    cinder-home/dist/stable/cinder_home_uninstall.nw-wm1a.upg
 )
 MISSING=0
 for f in "${PAYLOAD_FILES[@]}"; do

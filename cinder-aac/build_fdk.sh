@@ -6,7 +6,7 @@
 set -eu
 cd "$(dirname "$0")"
 : "${DEVSYS:=$HOME/toolchains/xenial-armhf-sysroot/sysroot}"
-: "${RAMLIB:=$HOME/sony/analysis/ramdisk/lib}"
+: "${RAMLIB:=$PWD/../analysis/ramdisk/lib}"
 SRC=third_party/fdk-aac-2.0.3
 CXX=arm-linux-gnueabihf-g++
 [ -f $SRC/Makefile.am ] || { mkdir -p third_party && curl -fsSL \

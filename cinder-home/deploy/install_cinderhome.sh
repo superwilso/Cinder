@@ -790,7 +790,7 @@ else
     fi
 fi
 
-# 1g4) AAC Bluetooth transmit and SBC XQ: the `bt-aac` component (the cinder-aac submodule). Two
+# 1g4) AAC Bluetooth transmit and SBC XQ: the `bt-aac` component (cinder-aac/). Two
 #      libraries the wrapper from 1g3 loads into the Bluetooth service, so they go on only where
 #      the wrapper is in place; anywhere else nothing would load them. Taken off by every install
 #      that does not select it. The switches are flags in /data, written with the others below.

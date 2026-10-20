@@ -16,17 +16,24 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.19] — 2026-10-20
+
 ### Added
 
+- **The installer installs over Walkman One.** It reads the player's key over USB (the one Sony's
+  updater opens a package with, which Walkman One changes) and writes the package made for that
+  key; until now a Walkman One player dropped the package without a word. Where the key cannot be
+  read (macOS, or without administrator/root rights) it judges from Walkman One's own boot log.
+  Walkman One 3.02 is now listed as supported in the README, with what differs there.
+  *Device-unverified: this installer has not yet been run on a Walkman One player.*
 - **Bluetooth AAC, and SBC XQ, as installer options** (`bt-aac`, `bt-sbc-xq`, both off by
   default, both need the `preload` component). AAC is for AirPods, Beats and other headphones
   without LDAC or aptX. All five codecs are offered: AAC and aptX HD share the stack's fourth
   slot, so moving between those two restarts Bluetooth and reconnects. The Sound quality chips
-  show AAC (and SBC XQ) only when this start of the player offers them. An AAC link is reported as AAC, not as
-  the SBC Sony's status claims. The code lives in its own repo,
-  [cinder-aac](https://github.com/superwilso/cinder-aac), included here as a git submodule
-  (`git submodule update --init`). AAC transmit *device-verified* by hand-install 10-20; the
-  installer path and the live AAC/SBC switch are *device-unverified*.
+  show AAC (and SBC XQ) only when this start of the player offers them, three to a row so every
+  name fits at the larger text sizes. An AAC link is reported as AAC, not as the SBC Sony's
+  status claims. The code is in [`cinder-aac/`](cinder-aac/). *AAC transmit device-verified by
+  hand-install 10-20; the installer path and swapping AAC and aptX HD are device-unverified.*
 - **Simplified Chinese**, translated by @yin8ruo (#28). Device-verified on stock 1.02 by the
   contributor.
 - **Pick your languages in the installer.** Each language is a checkbox, with English ticked by
@@ -2837,7 +2844,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.18...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.19...HEAD
+[0.3.19]: https://github.com/superwilso/Cinder/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/superwilso/Cinder/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/superwilso/Cinder/compare/v0.3.16...v0.3.17-rc3
 [0.3.16]: https://github.com/superwilso/Cinder/compare/v0.3.15...v0.3.16

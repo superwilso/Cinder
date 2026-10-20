@@ -161,7 +161,7 @@ pub fn run(
             }
         }
 
-        let plan = match stage::plan(action, &comps, crate::CHANNEL) {
+        let plan = match stage::plan(action, &comps, crate::CHANNEL, state.walkman_one) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("\nERROR: {e}");
