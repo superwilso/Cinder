@@ -21,10 +21,12 @@ chmod +x "$T/real"
 build() {   # build <out> <real>
     ${CC:-cc} -Os -Wall -Wextra -Werror -o "$1" "$HERE/src/cinder-hagowrap.c" \
         -DHAGO_REAL="\"$2\"" -DHAGO_SHIM="\"$T/shim.so\"" \
-        -DHAGO_OFF="\"$T/off\"" -DHAGO_OFF_MSC="\"$T/off_msc\"" || { echo "BUILD FAILED"; exit 1; }
+        -DHAGO_OFF="\"$T/off\"" -DHAGO_OFF_MSC="\"$T/off_msc\"" -DHAGO_DIR="\"$T/pre\"" \
+        || { echo "BUILD FAILED"; exit 1; }
 }
 build "$T/wrap" "$T/real"
-reset() { rm -f "$T/off" "$T/off_msc"; echo shim > "$T/shim.so"; }
+mkdir -p "$T/pre"
+reset() { rm -f "$T/off" "$T/off_msc" "$T/pre/"*; echo shim > "$T/shim.so"; }
 run()   { env -u LD_PRELOAD "$@" 2>&1; }
 
 reset
@@ -52,6 +54,28 @@ reset; out=$(LD_PRELOAD="" env LD_PRELOAD=/else.so "$T/wrap" SoundServiceFw 2>&1
 [[ "$out" == "preload=/else.so $T/shim.so" ]] && ok "an existing preload is kept, ours after it" || bad "existing preload: $out"
 out=$(env LD_PRELOAD="$T/shim.so" "$T/wrap" SoundServiceFw 2>&1 | grep '^preload=')
 [[ "$out" == "preload=$T/shim.so" ]] && ok "already named: not added twice" || bad "added twice: $out"
+
+# A shim for one service, by name, from a separate project.
+reset; echo bt > "$T/pre/BtCommonService.so"; out=$(run "$T/wrap" BtCommonService BtTransmitterService)
+[[ "$out" == *"preload=$T/pre/BtCommonService.so"* && "$out" == *"args=BtCommonService BtTransmitterService"* ]] \
+    && ok "a service's own shim is preloaded into it" || bad "per-service shim: $out"
+out=$(run "$T/wrap" PlayerService)
+[[ "$out" == *"preload=unset"* ]] && ok "another service's shim stays out" || bad "shim leaked to another service: $out"
+echo ss > "$T/pre/SoundServiceFw.so"; out=$(run "$T/wrap" SoundServiceFw | grep '^preload=')
+[[ "$out" == "preload=$T/shim.so $T/pre/SoundServiceFw.so" ]] && ok "SoundServiceFw: mono shim, then its own" || bad "both shims: $out"
+rm -f "$T/shim.so"; out=$(run "$T/wrap" SoundServiceFw | grep '^preload=')
+[[ "$out" == "preload=$T/pre/SoundServiceFw.so" ]] && ok "one shim missing does not stop the other" || bad "one of two: $out"
+reset; echo x > "$T/pre/BtCommonService.so"; touch "$T/off"; out=$(run "$T/wrap" BtCommonService)
+[[ "$out" == *"preload=unset"* ]] && ok "the off switch covers per-service shims" || bad "off switch vs per-service: $out"
+reset; : > "$T/pre/BtCommonService.so"; out=$(run "$T/wrap" BtCommonService)
+[[ "$out" == *"preload=unset"* ]] && ok "an empty per-service shim: pass-through" || bad "empty per-service shim: $out"
+reset; mkdir -p "$T/pre/x"; echo x > "$T/pre/x/y.so"; echo x > "$T/x.so"
+for name in "x/y" "../x" "" "Bt.Common"; do
+    out=$(run "$T/wrap" "$name")
+    [[ "$out" == *"preload=unset"* ]] || { bad "name '$name' reached a file: $out"; continue; }
+done
+ok "a name with anything but letters, digits and _ is never a path"
+rm -rf "$T/pre/x" "$T/x.so"
 
 build "$T/wrap_noreal" "$T/does-not-exist"
 out=$(run "$T/wrap_noreal" SoundServiceFw); rc=$?
