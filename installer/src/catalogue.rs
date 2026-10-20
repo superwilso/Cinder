@@ -437,7 +437,10 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
             assert!(comps[i].kind == Kind::Bool, "{} is a checkbox", comps[i].id);
             assert_eq!(comps[i].is_on(), comps[i].var == "CINDER_LANG_EN");
         }
-        let zh = comps.iter().position(|c| c.var == "CINDER_LANG_ZH_CN").unwrap();
+        let zh = comps
+            .iter()
+            .position(|c| c.var == "CINDER_LANG_ZH_CN")
+            .unwrap();
         comps[zh].cycle();
         let conf = conf_text(&comps, "stable");
         assert!(conf.contains("CINDER_LANG_EN=1") && conf.contains("CINDER_LANG_ZH_CN=1"));
