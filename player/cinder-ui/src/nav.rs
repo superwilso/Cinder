@@ -86,6 +86,8 @@ pub enum Screen {
     /// with its colours, the files that were refused and why, sortable by name or date added. See
     /// `palette_list.rs`.
     Palette,
+    /// Settings ▸ Language — the installed languages, to pick one. See `language.rs`.
+    Language,
     /// Settings ▸ Device — the hardware's vital signs: battery (level, voltage, health, charger
     /// state) plus die temperatures, CPU clock and governor, memory, storage and uptime. Its own
     /// screen because the Settings row could show exactly one fact, and because everything here is
@@ -1020,6 +1022,7 @@ pub struct App {
     /// Palette picker sort: index into `palette_list::SORTS` (0 name, 1 date added).
     palette_sort: usize,
     palette_scroll_px: i32,
+    language_scroll_px: i32,
     /// Help & controls' scroll offset; reset each time it is opened from the Menu.
     help_scroll_px: i32,
     /// Settings was opened since the folder was last read. The shell rescans on its next frame, so
@@ -1718,6 +1721,7 @@ impl Default for App {
             palette_skipped: Vec::new(),
             palette_sort: 0,
             palette_scroll_px: 0,
+            language_scroll_px: 0,
             help_scroll_px: 0,
             palettes_stale: false,
             locked: true,
@@ -3673,8 +3677,8 @@ impl App {
         }
         match self.settings_sel {
             crate::settings::ROW_LANGUAGE => {
-                let i = self.languages.iter().position(|l| *l == self.language);
-                self.language = self.languages[i.map_or(0, |i| (i + 1) % self.languages.len())];
+                self.language_scroll_px = 0;
+                self.push(Screen::Language);
                 vec![]
             }
             crate::settings::ROW_MORE => {
@@ -4513,6 +4517,15 @@ impl App {
                 if crate::help::item_at(x, y, self.help_scroll_px, self.quick_enabled).is_some() {
                     self.onboarding_page = 0;
                     self.push(Screen::Onboarding);
+                }
+                vec![]
+            }
+            Screen::Language => {
+                // Stay on the page, like the palette picker: it repaints in the language just
+                // picked, which is the proof it took.
+                let n = self.languages.len();
+                if let Some(i) = crate::language::row_at(y, self.language_scroll_px, n) {
+                    self.language = self.languages[i];
                 }
                 vec![]
             }
@@ -6418,6 +6431,10 @@ impl App {
             Screen::Help => {
                 let max = crate::help::max_scroll(self.quick_enabled);
                 self.help_scroll_px = (self.help_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::Language => {
+                let max = crate::language::max_scroll(self.languages.len());
+                self.language_scroll_px = (self.language_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Palette => {
                 let max = crate::palette_list::max_scroll(
@@ -9488,6 +9505,14 @@ impl App {
                 };
                 crate::display::render(c, &theme, fonts, self.display_sel, &view)
             }
+            Screen::Language => crate::language::render(
+                c,
+                &theme,
+                fonts,
+                &self.languages,
+                self.language,
+                self.language_scroll_px,
+            ),
             Screen::Palette => {
                 let entries: Vec<crate::palette_list::Entry> = self
                     .palette_order()
@@ -11918,6 +11943,7 @@ fn screen_title(s: Screen) -> &'static str {
         Screen::UpNext => crate::i18n::text("Up Next"),
         Screen::Display => crate::i18n::text("Display"),
         Screen::Palette => crate::i18n::text("Palette"),
+        Screen::Language => crate::i18n::text("Language"),
         Screen::Eq => crate::i18n::text("Equalizer"),
         s => MENU
             .iter()
@@ -11998,13 +12024,18 @@ mod language_tests {
         a.set_languages(&Language::ALL);
         a.playing = true;
         a.brightness = 3;
+        a.go(Screen::Settings);
         a.settings_sel = crate::settings::ROW_LANGUAGE;
         assert_eq!(a.language(), Language::English);
         assert!(a.settings_activate().is_empty());
+        assert_eq!(a.current(), Screen::Language, "the row opens the list");
+        let row = |i: i32| crate::language::TOP + i * crate::kit::ROW_H + crate::kit::ROW_H / 2;
+        a.tap(240, row(1));
         assert_eq!(a.language(), Language::SimplifiedChinese);
+        assert_eq!(a.current(), Screen::Language, "picking stays on the page");
         assert!(a.playing);
         assert_eq!(a.brightness, 3);
-        assert!(a.settings_activate().is_empty());
+        a.tap(240, row(0));
         assert_eq!(a.language(), Language::English);
         assert!(a.playing);
         assert_eq!(a.brightness, 3);

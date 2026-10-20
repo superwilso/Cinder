@@ -64,6 +64,50 @@ struct RECT {
     bottom: i32,
 }
 
+/// The ListView's item and column records, as far as this file uses them (commctrl.h).
+#[repr(C)]
+struct LVITEMW {
+    mask: u32,
+    iItem: i32,
+    iSubItem: i32,
+    state: u32,
+    stateMask: u32,
+    pszText: *const u16,
+    cchTextMax: i32,
+    iImage: i32,
+    lParam: LPARAM,
+    iIndent: i32,
+    iGroupId: i32,
+    cColumns: u32,
+    puColumns: *mut u32,
+    piColFmt: *mut i32,
+    iGroup: i32,
+}
+
+#[repr(C)]
+struct LVCOLUMNW {
+    mask: u32,
+    fmt: i32,
+    cx: i32,
+    pszText: *const u16,
+    cchTextMax: i32,
+    iSubItem: i32,
+    iImage: i32,
+    iOrder: i32,
+    cxMin: i32,
+    cxDefault: i32,
+    cxIdeal: i32,
+}
+
+/// The head of every WM_NOTIFY; a list's LVN_ITEMCHANGED carries the item right after it.
+#[repr(C)]
+struct NMLISTVIEW {
+    hwndFrom: HWND,
+    idFrom: usize,
+    code: i32,
+    iItem: i32,
+}
+
 #[repr(C)]
 struct MSG {
     hwnd: HWND,
@@ -241,6 +285,26 @@ const CB_ADDSTRING: u32 = 0x0143;
 const CB_SETCURSEL: u32 = 0x014E;
 const CB_GETCURSEL: u32 = 0x0147;
 const CB_SETDROPPEDWIDTH: u32 = 0x0160;
+const WM_NOTIFY: u32 = 0x004E;
+const LVS_REPORT: u32 = 0x0001;
+const LVS_SINGLESEL: u32 = 0x0004;
+const LVS_SHOWSELALWAYS: u32 = 0x0008;
+const LVS_NOCOLUMNHEADER: u32 = 0x4000;
+const LVS_EX_CHECKBOXES: usize = 0x0004;
+const LVS_EX_FULLROWSELECT: usize = 0x0020;
+const LVS_EX_DOUBLEBUFFER: usize = 0x0001_0000;
+const LVM_GETITEMRECT: u32 = 0x1000 + 14;
+const LVM_SETCOLUMNWIDTH: u32 = 0x1000 + 30;
+const LVM_SETITEMSTATE: u32 = 0x1000 + 43;
+const LVM_GETITEMSTATE: u32 = 0x1000 + 44;
+const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = 0x1000 + 54;
+const LVM_INSERTITEMW: u32 = 0x1000 + 77;
+const LVM_INSERTCOLUMNW: u32 = 0x1000 + 97;
+const LVIF_TEXT: u32 = 0x0001;
+const LVCF_WIDTH: u32 = 0x0002;
+/// The checkbox is the item's state image: 1 unticked, 2 ticked.
+const LVIS_STATEIMAGEMASK: u32 = 0xF000;
+const LVN_ITEMCHANGED: i32 = -101;
 const EM_SETSEL: u32 = 0x00B1;
 const EM_REPLACESEL: u32 = 0x00C2;
 
@@ -296,6 +360,7 @@ const ID_STATUS: usize = 109;
 const ID_BODY: usize = 110;
 const ID_HINT: usize = 111;
 const ID_CLEAN: usize = 112;
+const ID_LANGS: usize = 113;
 const ID_COMP_BASE: usize = 200;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -319,6 +384,10 @@ struct App {
     kids: Vec<HWND>,
     /// (component index, its control, its label or null) for the options page.
     comp_ctl: Vec<(usize, HWND, HWND)>,
+    /// The Languages list on the options page, and the component behind each of its items. It
+    /// is one row of `comp_ctl` (under the first language), however many languages there are.
+    langs: HWND,
+    lang_ids: Vec<usize>,
     /// Home-page buttons, held by name. Reaching them by position in `kids` was one inserted
     /// control away from moving the wrong window, and would have panicked on the index.
     b_rescan: HWND,
@@ -498,11 +567,11 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
             }
         };
         let sc = |px: i32| px * dpi as i32 / 96;
-        // Taller than it was (620), for the Options page's description panel — but never taller
-        // than the work area, or the Continue button would open below the taskbar.
+        // Taller than it was (620, then 680), for the Options page's description panel — but
+        // never taller than the work area, or the Continue button would open below the taskbar.
         let (ww, wh) = (
             sc(760),
-            sc(680).min(GetSystemMetrics(SM_CYMAXIMIZED)).max(sc(560)),
+            sc(720).min(GetSystemMetrics(SM_CYMAXIMIZED)).max(sc(560)),
         );
         // MEASURED FROM THE LAYOUT, not guessed: the Home page needs the band (84), the drive
         // row and the state line (74), three 72 px cards, two lines of footer and the bottom
@@ -579,6 +648,8 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
             state: Installed::default(),
             kids: Vec::new(),
             comp_ctl: Vec::new(),
+            langs: std::ptr::null_mut(),
+            lang_ids: Vec::new(),
             b_rescan: std::ptr::null_mut(),
             b_install: std::ptr::null_mut(),
             b_update: std::ptr::null_mut(),
@@ -918,6 +989,14 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
             with_app(|a| a.on_command(id));
             0
         }
+        WM_NOTIFY => {
+            // SAFETY: for WM_NOTIFY lParam is the sender's NMHDR; only a list's carries the item
+            // field, and it is read only when the sender is the Languages list.
+            let n = &*(lp as *const NMLISTVIEW);
+            let item = if n.idFrom == ID_LANGS { n.iItem } else { -1 };
+            with_app(|a| a.on_notify(n.idFrom, n.code, item));
+            0
+        }
         WM_APP_LOG => {
             with_app(|a| a.drain_log());
             0
@@ -1027,6 +1106,8 @@ impl App {
             unsafe { DestroyWindow(h) };
         }
         self.comp_ctl.clear();
+        self.langs = std::ptr::null_mut();
+        self.lang_ids.clear();
         for h in [
             &mut self.b_rescan,
             &mut self.b_install,
@@ -1153,6 +1234,16 @@ impl App {
                     let c = self.comps[i].clone();
                     let id = ID_COMP_BASE + i;
                     let mut label: HWND = std::ptr::null_mut();
+                    if c.is_language() {
+                        if self.langs.is_null() {
+                            label = self.mk("STATIC", "Languages:", SS_NOPREFIX, id + 1000, f);
+                            self.langs = self.languages_list(f);
+                            self.comp_ctl.push((i, self.langs, label));
+                        }
+                        self.add_language(&c);
+                        self.lang_ids.push(i);
+                        continue;
+                    }
                     let h = match &c.kind {
                         Kind::Bool => {
                             let h =
@@ -1305,7 +1396,11 @@ impl App {
             "{}\r\n\r\nPlayer:  {target}\r\n\r\n",
             self.action.verb().to_uppercase()
         );
-        for c in &self.comps {
+        s.push_str(&format!(
+            "    Languages:  {}\r\n",
+            crate::catalogue::languages_shown(&self.comps)
+        ));
+        for c in self.comps.iter().filter(|c| !c.is_language()) {
             s.push_str(&format!("    {}:  {}\r\n", c.title, c.shown()));
         }
         match plan {
@@ -1341,8 +1436,118 @@ impl App {
         unsafe { SetWindowTextW(self.hint, t.as_ptr()) };
     }
 
+    /// A list with a checkbox per item, in the slot a drop-down takes: the same height for two
+    /// languages as for forty, because past four rows it scrolls.
+    fn languages_list(&mut self, f: HFONT) -> HWND {
+        let h = self.mk(
+            "SysListView32",
+            "",
+            LVS_REPORT
+                | LVS_NOCOLUMNHEADER
+                | LVS_SINGLESEL
+                | LVS_SHOWSELALWAYS
+                | WS_BORDER
+                | WS_TABSTOP,
+            ID_LANGS,
+            f,
+        );
+        let ex = LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER;
+        let col = LVCOLUMNW {
+            mask: LVCF_WIDTH,
+            fmt: 0,
+            cx: self.s(200),
+            pszText: std::ptr::null(),
+            cchTextMax: 0,
+            iSubItem: 0,
+            iImage: 0,
+            iOrder: 0,
+            cxMin: 0,
+            cxDefault: 0,
+            cxIdeal: 0,
+        };
+        // SAFETY: h is live; col outlives the call.
+        unsafe {
+            SendMessageW(h, LVM_SETEXTENDEDLISTVIEWSTYLE, ex, ex as LPARAM);
+            SendMessageW(h, LVM_INSERTCOLUMNW, 0, &col as *const _ as LPARAM);
+        }
+        h
+    }
+
+    fn add_language(&mut self, c: &Comp) {
+        let text = w(c.language_native());
+        let mut item = LVITEMW {
+            mask: LVIF_TEXT,
+            iItem: self.lang_ids.len() as i32,
+            iSubItem: 0,
+            state: 0,
+            stateMask: 0,
+            pszText: text.as_ptr(),
+            cchTextMax: 0,
+            iImage: 0,
+            lParam: 0,
+            iIndent: 0,
+            iGroupId: 0,
+            cColumns: 0,
+            puColumns: std::ptr::null_mut(),
+            piColFmt: std::ptr::null_mut(),
+            iGroup: 0,
+        };
+        // SAFETY: the list is live; item and text outlive both calls.
+        unsafe {
+            let n = SendMessageW(self.langs, LVM_INSERTITEMW, 0, &item as *const _ as LPARAM);
+            item.stateMask = LVIS_STATEIMAGEMASK;
+            item.state = if c.is_on() { 2 << 12 } else { 1 << 12 };
+            SendMessageW(
+                self.langs,
+                LVM_SETITEMSTATE,
+                n as usize,
+                &item as *const _ as LPARAM,
+            );
+        }
+    }
+
+    /// The Languages list's height: up to four items and its border, from the list's own row
+    /// height so it is right at every display scale.
+    fn languages_height(&self) -> i32 {
+        if self.langs.is_null() {
+            return 0;
+        }
+        let mut rc = RECT::default(); // left = LVIR_BOUNDS
+                                      // SAFETY: the list is live and rc outlives the call.
+        unsafe { SendMessageW(self.langs, LVM_GETITEMRECT, 0, &mut rc as *mut _ as LPARAM) };
+        let row = (rc.bottom - rc.top).max(self.s(18));
+        row * self.lang_ids.len().clamp(1, 4) as i32 + self.s(4)
+    }
+
+    /// The list told us an item changed: picked or ticked. Either way, say what it is.
+    fn on_notify(&mut self, id: usize, code: i32, item: i32) {
+        if id == ID_LANGS && code == LVN_ITEMCHANGED {
+            if let Some(&i) = usize::try_from(item)
+                .ok()
+                .and_then(|n| self.lang_ids.get(n))
+            {
+                self.show_desc(i);
+            }
+        }
+    }
+
     fn read_controls(&mut self) {
+        for (n, &i) in self.lang_ids.iter().enumerate() {
+            // SAFETY: the list is live while the options page is up.
+            let state = unsafe {
+                SendMessageW(
+                    self.langs,
+                    LVM_GETITEMSTATE,
+                    n,
+                    LVIS_STATEIMAGEMASK as LPARAM,
+                )
+            };
+            self.comps[i].value = if (state as u32 >> 12) == 2 { "1" } else { "0" }.into();
+        }
         for (i, h, _) in self.comp_ctl.clone() {
+            if h == self.langs {
+                continue;
+            }
             let kind = self.comps[i].kind.clone();
             match kind {
                 Kind::Bool => {
@@ -1623,35 +1828,51 @@ impl App {
                 // description and the buttons, which is not a clipped label but an invisible
                 // control the user can still click. The panel takes the slack that is left, the
                 // rows take what remains, and the step tightens before anything overlaps.
+                // The Languages list is one row, as tall as up to four of its items: it scrolls
+                // past that, so a catalogue with forty languages lays out like one with two.
+                let langs_h = self.languages_height();
                 let n = self.comp_ctl.len().max(1) as i32;
-                let rows_h = n * self.s(30);
+                let extra = (langs_h + self.s(6) - self.s(30)).max(0);
+                let rows_h = n * self.s(30) + extra;
+                // The description keeps room for its first few lines: a panel that shows one line
+                // of a nine-line explanation is a scrollbar, not a description.
                 let hint_h =
-                    (bottom - self.s(10) - (y + rows_h + self.s(8))).clamp(self.s(52), self.s(260));
+                    (bottom - self.s(10) - (y + rows_h + self.s(8))).clamp(self.s(96), self.s(260));
                 let hint_top = bottom - hint_h - self.s(10);
                 let space = (hint_top - y - self.s(8)).max(self.s(24));
                 let step = if rows_h > space {
-                    (space / n).max(self.s(22))
+                    ((space - extra) / n).max(self.s(22))
                 } else {
                     self.s(30)
                 };
+                // Labels start where a checkbox's text does, so every option reads down one
+                // column; the controls on the right line up in a fixed slot.
+                let text_x = pad + self.s(4) + self.s(17);
+                let cw = self.s(210);
 
                 for (_, h, label) in self.comp_ctl.clone() {
                     if label.is_null() {
                         mv(h, pad + self.s(4), y, wd - pad * 2 - self.s(8), self.s(24));
-                    } else {
-                        // An enum row is "Label:  [combo]" — the label takes the left, the combo a
-                        // fixed slot on the right so the drop-downs line up down the page.
-                        let cw = self.s(210);
-                        mv(
-                            label,
-                            pad + self.s(4),
-                            y + self.s(4),
-                            wd - pad * 2 - cw - self.s(16),
-                            self.s(20),
-                        );
-                        mv(h, wd - pad - cw, y, cw, self.s(240));
+                        y += step;
+                        continue;
                     }
-                    y += step;
+                    let label_w = wd - pad - cw - self.s(12) - text_x;
+                    mv(label, text_x, y + self.s(4), label_w, self.s(20));
+                    if h == self.langs {
+                        mv(h, wd - pad - cw, y, cw, langs_h);
+                        // The one column fills what is inside the border and any scrollbar, so
+                        // a long name ends in "…" rather than growing a sideways scrollbar.
+                        let mut inner = RECT::default();
+                        // SAFETY: the list is live and inner outlives the call.
+                        unsafe {
+                            GetClientRect(h, &mut inner);
+                            SendMessageW(h, LVM_SETCOLUMNWIDTH, 0, inner.right as LPARAM);
+                        }
+                        y += step.max(langs_h + self.s(6));
+                    } else {
+                        mv(h, wd - pad - cw, y, cw, self.s(240));
+                        y += step;
+                    }
                 }
                 mv(self.hint, pad, hint_top, wd - pad * 2, hint_h);
                 mv(self.back, pad, bottom, self.s(110), btn_h);

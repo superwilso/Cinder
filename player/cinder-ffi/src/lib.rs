@@ -2124,7 +2124,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 45] = [
+const SCREEN_NAMES: [&str; 46] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2172,6 +2172,7 @@ const SCREEN_NAMES: [&str; 45] = [
     "?",
     "Presets",
     "Books",
+    "Language",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2223,6 +2224,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Nc => 41,
         S::Presets => 43,
         S::Books => 44,
+        S::Language => 45,
     }
 }
 
@@ -8831,6 +8833,7 @@ mod tests {
             S::Nc,
             S::Presets,
             S::Books,
+            S::Language,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
         const RESERVED: usize = 1;

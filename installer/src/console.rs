@@ -169,7 +169,11 @@ pub fn run(
             }
         };
         println!("\n  About to write to {}:", target.display());
-        for c in &comps {
+        println!(
+            "    Languages: {}",
+            crate::catalogue::languages_shown(&comps)
+        );
+        for c in comps.iter().filter(|c| !c.is_language()) {
             println!("    {}: {}", c.title, c.shown());
         }
         println!(

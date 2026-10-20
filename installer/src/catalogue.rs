@@ -76,6 +76,24 @@ impl Comp {
         }
     }
 
+    /// One of the Language checkboxes (`CINDER_LANG_<TAG>`). The window shows them together, as
+    /// one list, however many there are.
+    pub fn is_language(&self) -> bool {
+        self.var.starts_with("CINDER_LANG_")
+    }
+
+    /// The language as that list names it: the title without its "Language: ".
+    pub fn language_name(&self) -> &str {
+        self.title.strip_prefix("Language: ").unwrap_or(&self.title)
+    }
+
+    /// The language in its own name only, as language pickers show it: "简体中文", without the
+    /// "(Simplified Chinese)" the confirmation and the description keep.
+    pub fn language_native(&self) -> &str {
+        let name = self.language_name();
+        name.split_once(" (").map_or(name, |(native, _)| native)
+    }
+
     /// The current value, as `label_of` puts it.
     pub fn shown(&self) -> String {
         self.label_of(&self.value)
@@ -105,6 +123,21 @@ impl Comp {
             s.push_str(r);
         }
         s
+    }
+}
+
+/// The ticked languages on one line, for the confirmation; English when none is, which is what
+/// the player then shows.
+pub fn languages_shown(comps: &[Comp]) -> String {
+    let on: Vec<&str> = comps
+        .iter()
+        .filter(|c| c.is_language() && c.is_on())
+        .map(Comp::language_name)
+        .collect();
+    if on.is_empty() {
+        "English".into()
+    } else {
+        on.join(", ")
     }
 }
 
@@ -444,6 +477,15 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
         comps[zh].cycle();
         let conf = conf_text(&comps, "stable");
         assert!(conf.contains("CINDER_LANG_EN=1") && conf.contains("CINDER_LANG_ZH_CN=1"));
+        assert_eq!(
+            languages_shown(&comps),
+            "English, 简体中文 (Simplified Chinese)"
+        );
+        for c in comps.iter_mut().filter(|c| c.is_language()) {
+            c.value = "0".into();
+        }
+        assert_eq!(languages_shown(&comps), "English", "none ticked is English");
+        assert_eq!(comps[zh].language_native(), "简体中文");
     }
 
     /// The Audiobooks option is a number on its own in the picker, like FM radio: off until chosen

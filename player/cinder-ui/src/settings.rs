@@ -256,7 +256,7 @@ pub fn row_top_px(r: usize) -> i32 {
 /// The trailing value of row `r`.
 fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
     match r {
-        ROW_LANGUAGE => Trail::Value(crate::i18n::current().name()),
+        ROW_LANGUAGE => Trail::Open(crate::i18n::current().name()),
         ROW_DISPLAY => Trail::Open(""),
         ROW_BRIGHTNESS => Trail::Value(v.brightness),
         ROW_SCREEN_OFF => Trail::Value(v.screen_off),

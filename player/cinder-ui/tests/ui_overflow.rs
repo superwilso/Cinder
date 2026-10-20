@@ -157,6 +157,9 @@ fn at(screen: Screen) -> App {
         return a;
     }
     a.push_for_test(screen);
+    if screen == Screen::Language {
+        a.set_languages(&cinder_ui::i18n::Language::ALL);
+    }
     if screen == Screen::Keyboard {
         // A full-length name is the state that can overflow the field; an empty one never could.
         a.type_for_test(&"Late Night On The Bus Mix ".repeat(3));
@@ -264,6 +267,8 @@ const SCREENS: &[Screen] = &[
     Screen::Display,
     // Its palette picker (handoff 5j).
     Screen::Palette,
+    // Settings ▸ Language, the installed languages in their own names.
+    Screen::Language,
     // Help & controls as one list (handoff 5i).
     Screen::Help,
     // The playlist editor (5b) and the saved-view editor (5c).

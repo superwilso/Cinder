@@ -27,6 +27,7 @@ pub mod i18n;
 pub mod icons;
 pub mod keyboard;
 pub mod kit;
+pub mod language;
 pub mod library;
 pub mod lock;
 pub mod lyrics;

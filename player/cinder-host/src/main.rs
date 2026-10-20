@@ -3101,6 +3101,17 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         }
     }
 
+    // Settings ▸ Language, at both ends of the text scale.
+    for pct in [100u32, 140] {
+        cinder_ui::text::set_scale_pct(pct);
+        let mut app = new_app();
+        app.go_for_preview(cinder_ui::nav::Screen::Language);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, &format!("language_picker_{pct}"));
+    }
+    cinder_ui::text::set_scale_pct(100);
+
     // The language picker is a fixed bilingual label even in English mode. Exercise the real
     // Settings route: unfold More settings, scroll to the end, and render with no Sony font path.
     // Keep this last because the host's glyph cache intentionally preserves first-use order.
