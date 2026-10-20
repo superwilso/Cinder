@@ -3,7 +3,7 @@
 [![ci](https://github.com/superwilso/Cinder/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/superwilso/Cinder/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/superwilso/Cinder?sort=semver&include_prereleases)](https://github.com/superwilso/Cinder/releases)
 [![downloads](https://img.shields.io/github/downloads/superwilso/Cinder/total)](https://github.com/superwilso/Cinder/releases)
-[![license](https://img.shields.io/github/license/superwilso/Cinder)](LICENSE)
+[![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 
 **A replacement music player for the Sony NW-A55 Walkman and the rest of the NW-A50 series.**
 It replaces Sony's music app with a faster one and keeps Sony's audio services, effects and DAC path
@@ -162,8 +162,13 @@ All 40 screens, from Now Playing to the Windows installer: [`docs/SCREENSHOTS.md
 
 ## License
 
-Cinder's code is MIT ([`LICENSE`](LICENSE)). Bundled fonts are SIL OFL 1.1 (`*-OFL.txt` beside
-each). The repository contains no Sony code or artwork; the reverse-engineering notes describe
+Cinder is free to use, change and share for any non-commercial purpose: your own player, study,
+hobby projects, clubs and charities. Selling it, or building it into something you sell, is not
+allowed. The terms are the [PolyForm Noncommercial License 1.0.0](LICENSE). Releases up to v0.3.18
+were MIT, and those copies stay MIT; contributions made before the change keep their MIT notice.
+
+Bundled fonts are SIL OFL 1.1 (`*-OFL.txt` beside each). The fdk-aac encoder that the `bt-aac`
+option installs has its own licence ([`cinder-aac/NOTICE.fdk-aac`](cinder-aac/NOTICE.fdk-aac)). The repository contains no Sony code or artwork; the reverse-engineering notes describe
 interfaces only. Rockbox's `nwztools` (GPL) is used as an external tool, not vendored.
 
 Not affiliated with or endorsed by Sony. "Walkman" and "SensMe" are Sony's marks.

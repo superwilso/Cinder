@@ -18,6 +18,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [0.3.19] — 2026-10-20
 
+### Changed
+
+- **New licence: PolyForm Noncommercial 1.0.0.** Cinder stays free to use, change and share for
+  anything non-commercial; selling it, or building it into a product that is sold, is no longer
+  allowed. Releases up to v0.3.18 were MIT, and those copies stay MIT.
+
 ### Added
 
 - **The installer installs over Walkman One.** It reads the player's key over USB (the one Sony's

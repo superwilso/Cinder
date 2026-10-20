@@ -144,6 +144,10 @@ open one: **fork the repository, push your branch to your fork, and open a pull 
 model, not a sign the change is unwelcome. A draft PR with a rough diff is better than a fix that
 stays on one machine.
 
+By opening a pull request you agree that your contribution is licensed under the project's
+[licence](LICENSE) (PolyForm Noncommercial 1.0.0), and that the maintainer may also license it under
+other terms.
+
 ## Cutting a release
 
 The ARM binaries cannot be built in CI: `cinder-home` needs a glibc-2.23 + libc++-3.9.0 cross

@@ -108,7 +108,7 @@ Files taken from Sony's NW-A50-series Walkman firmware while building
 They moved here from Cinder's repository in September 2026. What was learned from them is written up
 in Cinder's own documentation; Cinder does not need these files to build or run.
 
-These files are Sony's. Cinder's MIT license does not cover them and no license is granted for them
+These files are Sony's. Cinder's license does not cover them and no license is granted for them
 here. They are kept for interoperability research.
 EOF
 git add README.md

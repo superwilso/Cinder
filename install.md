@@ -344,8 +344,8 @@ against the table it expects, so a file with the right name but the wrong conten
 malformed table fed to the amplifier is the risk this guards against. On Walkman One the helper
 finds W1's own copy of the WM1A table, so nothing needs copying there.
 
-**Why Cinder does not just include them.** The tables are Sony's copyrighted files. Cinder is MIT
-licensed, and it cannot put someone else's files under that licence or ship them inside its
+**Why Cinder does not just include them.** The tables are Sony's copyrighted files. Cinder cannot
+put someone else's files under its own licence or ship them inside its
 installer. Keeping them out of this repository and out of every release is the same rule that took
 Sony's UI assets and decompilations out of the tree (`docs/HISTORY_REWRITE.md`). Copying a table
 from a firmware you own onto a player you own, for it to work with other software, is a different
