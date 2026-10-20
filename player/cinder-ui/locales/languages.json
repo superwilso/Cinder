@@ -1,0 +1,17 @@
+[
+  {
+    "tag": "en",
+    "id": "English",
+    "name": "English",
+    "english": "English",
+    "word": "Language"
+  },
+  {
+    "tag": "zh-CN",
+    "id": "SimplifiedChinese",
+    "name": "简体中文",
+    "english": "Simplified Chinese",
+    "word": "语言",
+    "cjk_font": true
+  }
+]

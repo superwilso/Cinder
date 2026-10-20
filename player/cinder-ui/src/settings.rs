@@ -181,33 +181,45 @@ pub struct SettingsView<'a> {
     pub shuffle_by: &'a str,
     /// More settings is unfolded (`ROW_MORE`).
     pub more: bool,
+    /// The languages this install offers, from the installer. The Language row is shown only when
+    /// there is more than one to switch between.
+    pub languages: &'a [crate::i18n::Language],
+}
+
+/// The Language row's title: the word for "language" in every installed language, in its own
+/// script, so whoever is stuck in a language they cannot read still finds the way out.
+pub fn language_title(languages: &[crate::i18n::Language]) -> String {
+    let mut words: Vec<&str> = languages.iter().map(|l| l.word()).collect();
+    words.dedup();
+    words.join(" / ")
 }
 
 /// Total height of the row content, from the top of the screen to the bottom of the last row.
 /// Exceeds the 800px panel, which is why this screen scrolls.
-pub fn content_height(more: bool) -> i32 {
-    row_span(0, more)
+pub fn content_height(more: bool, lang: bool) -> i32 {
+    row_span(0, more, lang)
         .last()
         .map_or(LIST_TOP, |(_, top)| top + RH)
 }
 
 /// How far this screen can scroll. 0 would mean everything fits (it doesn't).
-pub fn max_scroll_px(more: bool) -> i32 {
-    (content_height(more) + 8 - crate::canvas::H as i32).max(0)
+pub fn max_scroll_px(more: bool, lang: bool) -> i32 {
+    (content_height(more, lang) + 8 - crate::canvas::H as i32).max(0)
 }
 
 /// Which selectable row is at touch-y `y`, given the current `scroll` offset? Mirrors `render`'s
 /// vertical layout exactly: header ends at 91, each section label is `kit::SECTION_H`, and every
-/// row is `RH` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow).
-pub fn row_at(y: i32, scroll: i32, more: bool) -> Option<usize> {
-    row_span(scroll, more)
+/// row is `RH` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow). `lang`: the
+/// Language row is shown (`SettingsView::languages` has more than one).
+pub fn row_at(y: i32, scroll: i32, more: bool, lang: bool) -> Option<usize> {
+    row_span(scroll, more, lang)
         .find(|(_, top)| y >= *top && y < *top + RH)
         .map(|(r, _)| r)
 }
 
 /// Every row as `(index, screen-y of its top)`, in order — the one place the vertical layout is
 /// expressed. `render` walks the same section table, so the two cannot drift.
-fn row_span(scroll: i32, more: bool) -> impl Iterator<Item = (usize, i32)> {
+fn row_span(scroll: i32, more: bool, lang: bool) -> impl Iterator<Item = (usize, i32)> {
     let mut out = Vec::with_capacity(ROWS);
     let mut yy = LIST_TOP - scroll;
     let mut r = 0;
@@ -217,6 +229,10 @@ fn row_span(scroll: i32, more: bool) -> impl Iterator<Item = (usize, i32)> {
         }
         yy += label_h(label);
         for _ in 0..*n {
+            if r == ROW_LANGUAGE && !lang {
+                r += 1;
+                continue;
+            }
             out.push((r, yy));
             r += 1;
             yy += RH;
@@ -231,7 +247,7 @@ pub const LIST_TOP: i32 = 91;
 
 /// Content-space top y of row `r` (i.e. at scroll 0, measured from LIST_TOP).
 pub fn row_top_px(r: usize) -> i32 {
-    row_span(0, true)
+    row_span(0, true, true)
         .find(|(i, _)| *i == r)
         .map(|(_, top)| top - 91)
         .unwrap_or(0)
@@ -240,11 +256,7 @@ pub fn row_top_px(r: usize) -> i32 {
 /// The trailing value of row `r`.
 fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
     match r {
-        ROW_LANGUAGE => Trail::Value(if crate::i18n::is_chinese() {
-            "简体中文"
-        } else {
-            "English"
-        }),
+        ROW_LANGUAGE => Trail::Value(crate::i18n::current().name()),
         ROW_DISPLAY => Trail::Open(""),
         ROW_BRIGHTNESS => Trail::Value(v.brightness),
         ROW_SCREEN_OFF => Trail::Value(v.screen_off),
@@ -298,7 +310,6 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
 
 fn title(r: usize) -> &'static str {
     match r {
-        ROW_LANGUAGE => "Language / 语言",
         ROW_DISPLAY => crate::i18n::text("Display"),
         ROW_BRIGHTNESS => crate::i18n::text("Brightness"),
         ROW_SCREEN_OFF => crate::i18n::text("Screen-off timer"),
@@ -346,6 +357,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
             y = kit::section_label(c, t, f, y, label, None);
         }
         for _ in 0..n {
+            if r == ROW_LANGUAGE && v.languages.len() < 2 {
+                r += 1;
+                continue;
+            }
             let sub = match r {
                 ROW_DISPLAY => DISPLAY_SUB,
                 ROW_MORE => MORE_SUB,
@@ -354,12 +369,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                 ROW_BT_IDLE_OFF => BT_IDLE_OFF_SUB,
                 _ => "",
             };
-            let row = Row::new(title(r))
-                .sub(crate::i18n::text(sub))
-                .trail(trail(r, v))
-                .sel(sel == r);
+            let language_title = language_title(v.languages);
+            let row = Row::new(if r == ROW_LANGUAGE {
+                &language_title
+            } else {
+                title(r)
+            })
+            .sub(crate::i18n::text(sub))
+            .trail(trail(r, v))
+            .sel(sel == r);
             y = if r == ROW_LANGUAGE {
-                crate::text::with_fixed_ui_chinese_glyphs(|| kit::row(c, t, f, y, RH, &row))
+                crate::text::with_fixed_ui_glyphs(|| kit::row(c, t, f, y, RH, &row))
             } else {
                 kit::row(c, t, f, y, RH, &row)
             };
@@ -393,6 +413,7 @@ mod tests {
             quick: false,
             shuffle_by: "SONGS",
             more: true,
+            languages: &crate::i18n::Language::ALL,
         }
     }
 
@@ -403,10 +424,17 @@ mod tests {
         let theme = Theme::day();
         let fonts = FontSet::load();
         let mut canvas = Canvas::new();
-        render(&mut canvas, &theme, &fonts, 0, max_scroll_px(true), &view());
+        render(
+            &mut canvas,
+            &theme,
+            &fonts,
+            0,
+            max_scroll_px(true, true),
+            &view(),
+        );
 
         let glyph_font =
-            crate::text::with_fixed_ui_chinese_glyphs(|| crate::text::probe_glyph(&fonts, '语'));
+            crate::text::with_fixed_ui_glyphs(|| crate::text::probe_glyph(&fonts, '语'));
         assert_eq!(
             glyph_font, 8,
             "the fixed bilingual label uses the bundled subset"
@@ -440,7 +468,13 @@ mod tests {
         let mut base = Canvas::new();
         render(&mut base, &t, &f, 0, 0, &view());
 
-        for scroll in [1, 17, 60, max_scroll_px(true) / 2, max_scroll_px(true)] {
+        for scroll in [
+            1,
+            17,
+            60,
+            max_scroll_px(true, true) / 2,
+            max_scroll_px(true, true),
+        ] {
             let mut c = Canvas::new();
             render(&mut c, &t, &f, 0, scroll, &view());
             for y in 0..crate::chrome::HEADER_BOTTOM {
@@ -463,7 +497,7 @@ mod tests {
         let t = Theme::day();
         let f = FontSet::load();
         let mut c = Canvas::new();
-        render(&mut c, &t, &f, 0, max_scroll_px(true), &view());
+        render(&mut c, &t, &f, 0, max_scroll_px(true, true), &view());
         // A full-screen fill must reach row 0 again; if the clip leaked, the top band stays put.
         c.fill(t.acc);
         assert_eq!(
@@ -482,7 +516,7 @@ mod tests {
         let mut a = Canvas::new();
         render(&mut a, &t, &f, 0, 0, &view());
         let mut b = Canvas::new();
-        render(&mut b, &t, &f, 0, max_scroll_px(true), &view());
+        render(&mut b, &t, &f, 0, max_scroll_px(true, true), &view());
         let band = (crate::chrome::HEADER_BOTTOM as usize)..(crate::canvas::H);
         let differing = band
             .flat_map(|y| (0..crate::canvas::W).map(move |x| y * crate::canvas::W + x))
@@ -491,6 +525,39 @@ mod tests {
         assert!(
             differing > 5000,
             "scrolling barely changed the list ({differing} px)"
+        );
+    }
+
+    /// One installed language: no Language row, and everything after it moves up into its place,
+    /// in the hit test and the drawing alike.
+    #[test]
+    fn a_single_language_install_has_no_language_row() {
+        let firmware = |lang| {
+            let top = row_span(0, true, lang)
+                .find(|(r, _)| *r == ROW_FIRMWARE)
+                .unwrap()
+                .1;
+            assert_eq!(row_at(top + RH / 2, 0, true, lang), Some(ROW_FIRMWARE));
+            top
+        };
+        assert_eq!(firmware(false), firmware(true) - RH);
+        assert!(row_span(0, true, false).all(|(r, _)| r != ROW_LANGUAGE));
+        assert_eq!(max_scroll_px(true, false), max_scroll_px(true, true) - RH);
+
+        let _scale = crate::text::scale_guard();
+        let (t, f) = (Theme::day(), FontSet::load());
+        let (mut one, mut both) = (Canvas::new(), Canvas::new());
+        let single = [crate::i18n::Language::English];
+        let v1 = SettingsView {
+            languages: &single,
+            ..view()
+        };
+        render(&mut one, &t, &f, 0, max_scroll_px(true, false), &v1);
+        render(&mut both, &t, &f, 0, max_scroll_px(true, true), &view());
+        assert_ne!(one.buf, both.buf);
+        assert_eq!(
+            language_title(&crate::i18n::Language::ALL),
+            "Language / 语言"
         );
     }
 }
@@ -518,10 +585,10 @@ mod volume_limit_tests {
         for r in 0..ROWS {
             let top = row_top_px(r) + LIST_TOP;
             let scroll =
-                (top + RH / 2 - (crate::canvas::H as i32 / 2)).clamp(0, max_scroll_px(true));
+                (top + RH / 2 - (crate::canvas::H as i32 / 2)).clamp(0, max_scroll_px(true, true));
             let y = top - scroll + RH / 2;
             assert_eq!(
-                row_at(y, scroll, true),
+                row_at(y, scroll, true, true),
                 Some(r),
                 "row {r} not hittable at y={y} scroll={scroll}"
             );
@@ -534,16 +601,20 @@ mod volume_limit_tests {
     fn folded_is_the_everyday_rows_and_fits_the_screen() {
         assert_eq!(ROW_DISPLAY, 0);
         assert_eq!(ROW_MORE + 1, EVERYDAY);
-        assert_eq!(max_scroll_px(false), 0, "the folded list must not scroll");
-        let last = LIST_TOP + EVERYDAY as i32 * RH - RH / 2;
-        assert_eq!(row_at(last, 0, false), Some(ROW_MORE));
         assert_eq!(
-            row_at(last + RH, 0, false),
+            max_scroll_px(false, true),
+            0,
+            "the folded list must not scroll"
+        );
+        let last = LIST_TOP + EVERYDAY as i32 * RH - RH / 2;
+        assert_eq!(row_at(last, 0, false, true), Some(ROW_MORE));
+        assert_eq!(
+            row_at(last + RH, 0, false, true),
             None,
             "nothing below More settings while folded"
         );
         assert_eq!(
-            row_at(last + RH + kit::SECTION_H, 0, true),
+            row_at(last + RH + kit::SECTION_H, 0, true, true),
             Some(ROW_IGNORE_THE)
         );
     }

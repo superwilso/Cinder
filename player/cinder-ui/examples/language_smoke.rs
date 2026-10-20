@@ -39,6 +39,7 @@ fn main() {
     app.push_for_test(Screen::Settings);
     let mut english = Canvas::new();
     app.render(&mut english, &fonts, &np);
+    app.set_languages(&Language::ALL);
     app.set_language(Language::SimplifiedChinese);
     let mut chinese = Canvas::new();
     app.render(&mut chinese, &fonts, &np);
@@ -56,6 +57,7 @@ fn main() {
     assert_eq!(app.language().token(), "en");
     for language in [Language::English, Language::SimplifiedChinese] {
         let mut fm = App::unlocked();
+        fm.set_languages(&Language::ALL);
         fm.set_language(language);
         fm.push_for_test(Screen::Fm);
         let mut canvas = Canvas::new();

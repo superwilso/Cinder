@@ -995,6 +995,8 @@ enum Scrub {
 pub struct App {
     stack: Vec<Screen>,
     language: crate::i18n::Language,
+    /// What the installer put on this player, in `Language::ALL` order; never empty.
+    languages: Vec<crate::i18n::Language>,
     pub night: bool,
     /// The chosen accent colour. Purely a render input — no shell action, no Sony service, so
     /// changing it costs one repaint and a settings write.
@@ -1705,6 +1707,7 @@ impl Default for App {
         App {
             stack: vec![Screen::Lock],
             language: crate::i18n::Language::English,
+            languages: vec![crate::i18n::Language::English],
             album_cover: None,
             night: false,
             accent: Accent::default(),
@@ -2021,8 +2024,31 @@ impl App {
         self.language
     }
 
+    /// Only an installed language: a settings file from another install cannot pick one.
     pub fn set_language(&mut self, language: crate::i18n::Language) {
-        self.language = language;
+        if self.languages.contains(&language) {
+            self.language = language;
+        }
+    }
+
+    /// The languages the installer put on this player. None means English; the language in use
+    /// moves to the first of them if it is not one.
+    pub fn set_languages(&mut self, languages: &[crate::i18n::Language]) {
+        self.languages = crate::i18n::Language::ALL
+            .into_iter()
+            .filter(|l| languages.contains(l))
+            .collect();
+        if self.languages.is_empty() {
+            self.languages.push(crate::i18n::Language::English);
+        }
+        if !self.languages.contains(&self.language) {
+            self.language = self.languages[0];
+        }
+    }
+
+    /// The Settings Language row is on screen: there is more than one language to switch between.
+    fn settings_lang(&self) -> bool {
+        self.languages.len() > 1
     }
 
     // ── test-only entry points ──────────────────────────────────────────────────────────────
@@ -3647,7 +3673,8 @@ impl App {
         }
         match self.settings_sel {
             crate::settings::ROW_LANGUAGE => {
-                self.language = self.language.next();
+                let i = self.languages.iter().position(|l| *l == self.language);
+                self.language = self.languages[i.map_or(0, |i| (i + 1) % self.languages.len())];
                 vec![]
             }
             crate::settings::ROW_MORE => {
@@ -3656,7 +3683,7 @@ impl App {
                 self.settings_more = !self.settings_more;
                 self.settings_scroll_px = if self.settings_more {
                     crate::settings::row_top_px(crate::settings::ROW_MORE)
-                        .min(crate::settings::max_scroll_px(true))
+                        .min(crate::settings::max_scroll_px(true, self.settings_lang()))
                 } else {
                     0
                 };
@@ -4470,9 +4497,12 @@ impl App {
                 vec![]
             }
             Screen::Settings => {
-                if let Some(row) =
-                    crate::settings::row_at(y, self.settings_scroll_px, self.settings_more)
-                {
+                if let Some(row) = crate::settings::row_at(
+                    y,
+                    self.settings_scroll_px,
+                    self.settings_more,
+                    self.settings_lang(),
+                ) {
                     self.settings_sel = row;
                     return self.settings_activate();
                 }
@@ -6397,7 +6427,7 @@ impl App {
                 self.palette_scroll_px = (self.palette_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Settings => {
-                let max = crate::settings::max_scroll_px(self.settings_more);
+                let max = crate::settings::max_scroll_px(self.settings_more, self.settings_lang());
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Advanced => {
@@ -8477,10 +8507,16 @@ impl App {
             Screen::Settings => match b {
                 Button::Up => {
                     self.settings_sel = self.settings_sel.saturating_sub(1);
+                    if self.settings_sel == crate::settings::ROW_LANGUAGE && !self.settings_lang() {
+                        self.settings_sel -= 1;
+                    }
                     vec![]
                 }
                 Button::Down => {
                     if self.settings_sel + 1 < crate::settings::rows(self.settings_more) {
+                        self.settings_sel += 1;
+                    }
+                    if self.settings_sel == crate::settings::ROW_LANGUAGE && !self.settings_lang() {
                         self.settings_sel += 1;
                     }
                     vec![]
@@ -9423,6 +9459,7 @@ impl App {
                     boot_stock: boot_stock_lbl,
                     clock: &clock_lbl,
                     more: self.settings_more,
+                    languages: &self.languages,
                 };
                 crate::settings::render(
                     c,
@@ -11931,9 +11968,34 @@ mod language_tests {
         }
     }
 
+    /// The installer decides which languages exist on the player; the saved choice only picks
+    /// among them.
+    #[test]
+    fn only_installed_languages_can_be_chosen() {
+        let mut a = App::unlocked();
+        a.set_language(Language::SimplifiedChinese);
+        assert_eq!(a.language(), Language::English, "English-only by default");
+        a.set_languages(&[Language::SimplifiedChinese]);
+        assert_eq!(a.language(), Language::SimplifiedChinese);
+        a.set_language(Language::English);
+        assert_eq!(a.language(), Language::SimplifiedChinese);
+        assert!(!a.settings_lang());
+        a.set_languages(&[]);
+        assert_eq!(a.language(), Language::English);
+        // Hidden row: the cursor steps over it.
+        a.settings_more = true;
+        a.go(Screen::Settings);
+        a.settings_sel = crate::settings::ROW_RESET;
+        a.press(Button::Down);
+        assert_eq!(a.settings_sel, crate::settings::ROW_FIRMWARE);
+        a.press(Button::Up);
+        assert_eq!(a.settings_sel, crate::settings::ROW_RESET);
+    }
+
     #[test]
     fn language_is_reversible_without_a_transport_action_or_losing_preferences() {
         let mut a = App::unlocked();
+        a.set_languages(&Language::ALL);
         a.playing = true;
         a.brightness = 3;
         a.settings_sel = crate::settings::ROW_LANGUAGE;
@@ -11950,7 +12012,7 @@ mod language_tests {
             + crate::settings::row_top_px(crate::settings::ROW_LANGUAGE);
         let scroll = (top - 200).max(0);
         assert_eq!(
-            crate::settings::row_at(top - scroll + 20, scroll, true),
+            crate::settings::row_at(top - scroll + 20, scroll, true, true),
             Some(crate::settings::ROW_LANGUAGE)
         );
     }
@@ -13219,9 +13281,9 @@ mod tests {
     fn every_settings_row_is_reachable_at_some_scroll_position() {
         use crate::settings::{max_scroll_px, row_at, ROWS};
         let mut hit: Vec<usize> = Vec::new();
-        for scroll in 0..=max_scroll_px(true) {
+        for scroll in 0..=max_scroll_px(true, true) {
             for y in 0..crate::canvas::H as i32 {
-                if let Some(r) = row_at(y, scroll, true) {
+                if let Some(r) = row_at(y, scroll, true, true) {
                     if !hit.contains(&r) {
                         hit.push(r);
                     }
@@ -14861,7 +14923,7 @@ mod tests {
         assert!(a.boot_stock_armed);
         let y = crate::settings::LIST_TOP + crate::kit::ROW_H / 2;
         assert_eq!(
-            crate::settings::row_at(y, 0, false),
+            crate::settings::row_at(y, 0, false, false),
             Some(crate::settings::ROW_DISPLAY)
         );
         a.settings_scroll_px = 0;
@@ -14927,11 +14989,11 @@ mod tests {
     fn settings_scrolls_far_enough_to_reach_the_last_row() {
         use crate::settings::{content_height, max_scroll_px};
         assert!(
-            max_scroll_px(true) > 0,
+            max_scroll_px(true, true) > 0,
             "content is taller than the panel; it must scroll"
         );
         assert!(
-            content_height(true) - max_scroll_px(true) <= crate::canvas::H as i32,
+            content_height(true, true) - max_scroll_px(true, true) <= crate::canvas::H as i32,
             "bottom of the content is still off-screen at full scroll"
         );
     }

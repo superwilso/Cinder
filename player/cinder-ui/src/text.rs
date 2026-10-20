@@ -193,7 +193,8 @@ const FALLBACK_DIR: &str = "/system/vendor/sony/lib/fonts";
 /// Chinese). At most one of these is ever resident — see `fallback`.
 const CJK_FALLBACKS: [usize; 3] = [1, 2, 3];
 
-/// Small OFL font subset for Chinese UI copy. Loaded only when a Chinese UI render needs a glyph.
+/// Small OFL CJK subset for translated UI copy (`Language::uses_cjk_ui_font`). Loaded only when such
+/// a render needs a glyph.
 fn chinese_ui_font() -> &'static Font {
     static FONT: std::sync::OnceLock<Font> = std::sync::OnceLock::new();
     FONT.get_or_init(|| {
@@ -206,24 +207,25 @@ fn chinese_ui_font() -> &'static Font {
 }
 
 fn is_chinese_ui_subset_char(ch: char) -> bool {
-    (crate::i18n::is_chinese() || FIXED_UI_CHINESE_GLYPHS.with(std::cell::Cell::get))
+    (crate::i18n::current().uses_cjk_ui_font() || FIXED_UI_GLYPHS.with(std::cell::Cell::get))
         && ((0x3000..=0x9fff).contains(&(ch as u32)) || (0xff00..=0xffef).contains(&(ch as u32)))
 }
 
 thread_local! {
-    static FIXED_UI_CHINESE_GLYPHS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FIXED_UI_GLYPHS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Render fixed bilingual UI chrome with the bundled CJK subset, independent of the selected UI
-/// language. Keep the scope around that explicit text only; user metadata keeps its normal chain.
-pub fn with_fixed_ui_chinese_glyphs<T>(draw: impl FnOnce() -> T) -> T {
+/// Render fixed multilingual UI chrome (the Language row names every installed language in its own
+/// script) with the bundled subset, whatever the UI language. Keep the scope around that text
+/// only; user metadata keeps its normal chain.
+pub fn with_fixed_ui_glyphs<T>(draw: impl FnOnce() -> T) -> T {
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
-            FIXED_UI_CHINESE_GLYPHS.with(|value| value.set(self.0));
+            FIXED_UI_GLYPHS.with(|value| value.set(self.0));
         }
     }
-    let previous = FIXED_UI_CHINESE_GLYPHS.with(|value| value.replace(true));
+    let previous = FIXED_UI_GLYPHS.with(|value| value.replace(true));
     let _restore = Restore(previous);
     draw()
 }
@@ -570,20 +572,51 @@ mod localization_tests {
         assert!(is_chinese_ui_subset_char('中'));
         assert!(!is_chinese_ui_subset_char('A'));
     }
+    /// Every character of every translation draws from the fonts Cinder ships, never the player's
+    /// own: a glyph only Sony's fonts have costs tens of MB, and one none has can run the player
+    /// out of memory. The Settings row's language names are checked the same way, in English.
     #[test]
-    fn the_embedded_subset_covers_the_chinese_catalog_and_language_picker() {
-        let font = chinese_ui_font();
-        let catalog = include_str!("../locales/zh-CN.json");
-        for ch in catalog
-            .chars()
-            .chain("Language / 语言English简体中文".chars())
-        {
-            let cp = ch as u32;
-            if (0x3000..=0x9fff).contains(&cp)
-                || (0xf900..=0xfaff).contains(&cp)
-                || (0xff00..=0xffef).contains(&cp)
-            {
-                assert_ne!(font.lookup_glyph_index(ch), 0, "missing {ch:?}");
+    fn every_translation_draws_from_the_bundled_fonts() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+        let names: String = crate::i18n::Language::ALL
+            .iter()
+            .flat_map(|l| [l.name(), l.word()])
+            .collect();
+        let mut checks = vec![(
+            crate::i18n::Language::English,
+            "languages.json".into(),
+            names,
+        )];
+        for l in &crate::i18n::Language::ALL[1..] {
+            let file = format!("{}.json", l.tag());
+            checks.push((
+                *l,
+                file.clone(),
+                std::fs::read_to_string(dir.join(&file)).unwrap(),
+            ));
+        }
+        for (language, file, text) in checks {
+            let _language = crate::i18n::enter(language);
+            let fonts = FontSet::load();
+            // Only the language names get the fixed-label scope; a translation gets exactly what
+            // its language gets at run time.
+            let check = || {
+                for ch in text
+                    .chars()
+                    .filter(|c| !c.is_whitespace() && !c.is_control())
+                {
+                    assert!(
+                        probe_glyph(&fonts, ch) != u8::MAX && fonts.chain_walks() == 0,
+                        "locales/{file}: {ch:?} (U+{:04X}) is not in Cinder's bundled fonts; \
+                         docs/LOCALIZATION.md, \"Fonts\"",
+                        ch as u32
+                    );
+                }
+            };
+            if language == crate::i18n::Language::English {
+                with_fixed_ui_glyphs(check)
+            } else {
+                check()
             }
         }
     }

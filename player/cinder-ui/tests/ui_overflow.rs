@@ -394,34 +394,37 @@ fn collisions_of(app: &mut App, fonts: &FontSet, np: &NowPlaying) -> Vec<(String
 }
 
 #[test]
-fn chinese_screens_keep_text_on_the_panel_and_apart_at_every_scale() {
+fn translated_screens_keep_text_on_the_panel_and_apart_at_every_scale() {
     use cinder_ui::i18n::{enter, Language};
-    let _language = enter(Language::SimplifiedChinese);
     let fonts = FontSet::load();
     let mut bad = Vec::new();
-    for idx in 0..cinder_ui::text::SCALE_STEPS.len() {
-        let _scale = scale_lock(idx);
-        for &screen in SCREENS {
-            for night in [false, true] {
-                let mut app = at(screen);
-                app.set_language(Language::SimplifiedChinese);
-                app.night = night;
-                let n = overflow_of(&mut app, &fonts, &np_hostile());
-                if n > 0 {
-                    bad.push(format!(
-                        "{screen:?} scale={idx} night={night}: {n} pixels off panel"
+    for language in &Language::ALL[1..] {
+        let _language = enter(*language);
+        for idx in 0..cinder_ui::text::SCALE_STEPS.len() {
+            let _scale = scale_lock(idx);
+            for &screen in SCREENS {
+                for night in [false, true] {
+                    let mut app = at(screen);
+                    app.set_languages(&Language::ALL);
+                    app.set_language(*language);
+                    app.night = night;
+                    let n = overflow_of(&mut app, &fonts, &np_hostile());
+                    if n > 0 {
+                        bad.push(format!(
+                        "{language:?} {screen:?} scale={idx} night={night}: {n} pixels off panel"
                     ));
-                }
-                for (a, b, n) in collisions_of(&mut app, &fonts, &np_hostile()) {
-                    bad.push(format!(
-                        "{screen:?} scale={idx} night={night}: {a:?} x {b:?} ({n}px)"
+                    }
+                    for (a, b, n) in collisions_of(&mut app, &fonts, &np_hostile()) {
+                        bad.push(format!(
+                        "{language:?} {screen:?} scale={idx} night={night}: {a:?} x {b:?} ({n}px)"
                     ));
+                    }
                 }
             }
         }
     }
     let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
-    assert!(bad.is_empty(), "Chinese layouts:\n{}", bad.join("\n"));
+    assert!(bad.is_empty(), "Translated layouts:\n{}", bad.join("\n"));
 }
 
 /// Text that stays ON the panel but runs into other text — an artist into the codec beside it, a

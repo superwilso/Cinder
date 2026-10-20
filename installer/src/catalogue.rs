@@ -423,6 +423,26 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
         }
     }
 
+    /// Languages are one checkbox each, English ticked and the rest not, in the shape
+    /// install_cinderhome.sh reads without knowing the list: CINDER_LANG_<TAG>=1.
+    #[test]
+    fn languages_are_checkboxes_with_english_ticked() {
+        let mut comps =
+            parse_catalogue(crate::CATALOGUE.expect("components.conf is embedded")).unwrap();
+        let langs: Vec<usize> = (0..comps.len())
+            .filter(|&i| comps[i].var.starts_with("CINDER_LANG_"))
+            .collect();
+        assert!(langs.len() >= 2, "English and at least one translation");
+        for &i in &langs {
+            assert!(comps[i].kind == Kind::Bool, "{} is a checkbox", comps[i].id);
+            assert_eq!(comps[i].is_on(), comps[i].var == "CINDER_LANG_EN");
+        }
+        let zh = comps.iter().position(|c| c.var == "CINDER_LANG_ZH_CN").unwrap();
+        comps[zh].cycle();
+        let conf = conf_text(&comps, "stable");
+        assert!(conf.contains("CINDER_LANG_EN=1") && conf.contains("CINDER_LANG_ZH_CN=1"));
+    }
+
     /// The Audiobooks option is a number on its own in the picker, like FM radio: off until chosen
     /// (it is new), and the answer reaches the device in `cinder_components.conf`.
     #[test]

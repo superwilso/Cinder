@@ -117,6 +117,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     let pal_locked = tokens.accent.is_some();
     let new_app = || {
         let mut a = cinder_ui::nav::App::unlocked();
+        a.set_languages(&cinder_ui::i18n::Language::ALL);
         a.set_language(opts.language);
         if let Some(p) = &opts.palette {
             a.set_palettes(vec![p.clone()], Vec::new());
@@ -1313,6 +1314,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     0,
                     &settings::SettingsView {
                         more: false,
+                        languages: &cinder_ui::i18n::Language::ALL,
                         shuffle_by: "SONGS",
                         ignore_the: false,
                         quick: false,
@@ -2024,9 +2026,10 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 &theme,
                 &fonts,
                 settings::ROW_RESTART,
-                settings::max_scroll_px(true),
+                settings::max_scroll_px(true, true),
                 &settings::SettingsView {
                     more: true,
+                    languages: &cinder_ui::i18n::Language::ALL,
                     shuffle_by: "SONGS",
                     ignore_the: false,
                     quick: false,
@@ -2062,6 +2065,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 settings::row_top_px(settings::ROW_MORE),
                 &settings::SettingsView {
                     more: true,
+                    languages: &cinder_ui::i18n::Language::ALL,
                     shuffle_by: "SONGS",
                     ignore_the: false,
                     quick: false,
@@ -3282,15 +3286,19 @@ fn main() {
         }
         Some("--language") => {
             let token = std::env::args().nth(2).unwrap_or_default();
-            if token != "en" && token != "zh-CN" {
-                eprintln!("usage: cinder-host --language en|zh-CN");
+            let Some(language) = cinder_ui::i18n::Language::parse(&token) else {
+                let tags: Vec<&str> = cinder_ui::i18n::Language::ALL
+                    .iter()
+                    .map(|l| l.tag())
+                    .collect();
+                eprintln!("usage: cinder-host --language {}", tags.join("|"));
                 std::process::exit(2);
-            }
+            };
             std::fs::create_dir_all("out").ok();
             render_all(
                 &mut |name, c| save_png(c, name),
                 &Opts {
-                    language: cinder_ui::i18n::Language::from_token(&token),
+                    language,
                     golden: false,
                     palette: None,
                 },

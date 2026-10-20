@@ -1277,6 +1277,18 @@ fn save_settings(r: &mut Render) {
     }
 }
 
+/// The installer's Language checkboxes (`install_cinderhome.sh`): the ticked tags, one per line,
+/// e.g. `EN` and `ZH_CN`. No file, or nothing in it that names a language, means English only.
+const LANGUAGES_PATH: &str = "/data/cinder/languages";
+
+fn installed_languages(path: &str) -> Vec<cinder_ui::i18n::Language> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(cinder_ui::i18n::Language::parse)
+        .collect()
+}
+
 /// Where the saved views live, beside the liked list and the playlists.
 const VIEWS_PATH: &str = "/contents/cinder_views.conf";
 
@@ -6711,6 +6723,8 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
     }
     let mut loaded = 0;
     if let Some(r) = cell().lock().unwrap().as_mut() {
+        // Before the saved choice, which may only pick among them.
+        r.app.set_languages(&installed_languages(LANGUAGES_PATH));
         if let Ok(body) = std::fs::read_to_string(&p) {
             loaded = 1;
             // The spare A/B setup, accumulated across however many `bank_*` lines the file has and
@@ -9962,6 +9976,22 @@ mod tests {
         assert_eq!(np.elapsed, "0:00");
         assert_eq!(np.remaining, "");
         assert_eq!(np.progress, 0.0);
+    }
+
+    /// The file install_cinderhome.sh writes, as it writes it; unknown tags (a language a newer
+    /// installer knows) are skipped, and no file is English only.
+    #[test]
+    fn installed_languages_read_the_installers_tags() {
+        use cinder_ui::i18n::Language;
+        let path = std::env::temp_dir().join(format!("cinder_langs_{}", std::process::id()));
+        std::fs::write(&path, "EN ZH_CN XX_YY\n").unwrap();
+        let p = path.to_str().unwrap();
+        assert_eq!(
+            installed_languages(p),
+            [Language::English, Language::SimplifiedChinese]
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(installed_languages(p).is_empty());
     }
 
     /// The URI copy must report the FULL length, not the copied length, so the caller can tell a

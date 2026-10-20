@@ -1474,6 +1474,18 @@ else
     echo 1 > /data/cinder/scrobble_off 2>/dev/null && "$BB" chmod 644 /data/cinder/scrobble_off 2>/dev/null \
         && echo "scrobble log: off"
 fi
+# Languages: one checkbox each (CINDER_LANG_<TAG>=1). Every ticked tag goes to the player as it is,
+# so a new language needs no change here; none ticked, or no answers at all, means English only.
+# 0644 for the same umask reason as search_on.
+LANGS="$("$BB" grep -E '^CINDER_LANG_[A-Z0-9_]+=1[[:space:]]*$' "$COMPONENTS" 2>/dev/null \
+    | "$BB" cut -d= -f1 | "$BB" cut -c13-)"
+if [ -n "$LANGS" ]; then
+    echo "$LANGS" > /data/cinder/languages 2>/dev/null && "$BB" chmod 644 /data/cinder/languages 2>/dev/null \
+        && echo "languages: $(echo "$LANGS" | "$BB" tr "\n" " ")"
+else
+    "$BB" rm -f /data/cinder/languages 2>/dev/null
+    echo "languages: EN"
+fi
 "$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot /contents/cinderhome_once 2>/dev/null
 echo "cleared prior disable flags (fresh install = enabled)"
 echo "left staged binary at $SRC (safe to delete once cinder-home is confirmed)"

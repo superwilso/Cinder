@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild the OFL UI subset: python -m pip install fonttools==4.63.0; see docs/LOCALIZATION.md."""
+"""Rebuild the OFL CJK UI subset from the languages marked cjk_font: pip install fonttools==4.63.0; docs/LOCALIZATION.md."""
 import argparse,hashlib,json
 from pathlib import Path
 from fontTools import subset
@@ -11,8 +11,11 @@ SOURCE_SHA256='2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b'
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('source',type=Path);args=parser.parse_args()
     if hashlib.sha256(args.source.read_bytes()).hexdigest()!=SOURCE_SHA256:raise SystemExit('Unexpected Noto source font; see docs/LOCALIZATION.md')
-    cat=json.loads((ROOT/'player/cinder-ui/locales/zh-CN.json').read_text(encoding='utf8'))
-    chars=sorted(set(c for c in ''.join(cat.values())+'Language / 语言English简体中文' if 0x3000<=ord(c)<=0x9fff or 0xf900<=ord(c)<=0xfaff or 0xff00<=ord(c)<=0xffef))
+    loc=ROOT/'player/cinder-ui/locales';langs=json.loads((loc/'languages.json').read_text(encoding='utf8'))
+    # Every language marked cjk_font, plus every language's name and word for the Settings row.
+    text=''.join(''.join(json.loads((loc/f"{l['tag']}.json").read_text(encoding='utf8')).values()) for l in langs if l.get('cjk_font'))
+    text+=''.join(l['name']+l['word'] for l in langs)
+    chars=sorted(set(c for c in text if 0x3000<=ord(c)<=0x9fff or 0xf900<=ord(c)<=0xfaff or 0xff00<=ord(c)<=0xffef))
     font=TTFont(args.source,recalcTimestamp=False)
     missing=[c for c in chars if ord(c) not in font.getBestCmap()]
     if missing:raise SystemExit('Missing source glyphs: '+''.join(missing))

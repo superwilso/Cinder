@@ -7,6 +7,9 @@ ships setuid-root helpers. **The device has no public DFU or EDL recovery path.*
 So the bar here is not "does it compile". It is: *if this is wrong, can the user still get their
 player back?*
 
+**Translating?** None of the device risk below applies to you. Follow
+[`docs/LOCALIZATION.md`](docs/LOCALIZATION.md): it needs Python and a text editor, nothing else.
+
 ## Before you start
 
 Read [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — the safety rules at the top,

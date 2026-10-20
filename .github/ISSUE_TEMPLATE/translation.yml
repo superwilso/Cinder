@@ -1,0 +1,47 @@
+name: Translation
+description: Translate Cinder into a language, or fix an existing translation.
+labels: ["translation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. [`docs/LOCALIZATION.md`](https://github.com/superwilso/Cinder/blob/main/docs/LOCALIZATION.md)
+        has every step. Open this issue before you start, so two people don't translate the same
+        language at once.
+
+  - type: input
+    id: language
+    attributes:
+      label: Language
+      description: Its name and its tag, such as "German (de)" or "Brazilian Portuguese (pt-BR)".
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What you want to do
+      options:
+        - Add a new language
+        - Finish or update an existing translation
+        - Fix a wrong or unclear translation
+    validations:
+      required: true
+
+  - type: dropdown
+    id: script
+    attributes:
+      label: Writing system
+      description: Only Latin-script and Chinese text can be drawn today; other scripts need a font first (LOCALIZATION.md, "Fonts").
+      options:
+        - Latin (English, German, French, Spanish, Polish…)
+        - Chinese characters
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: For a fix, the English, what it says now and what it should say.

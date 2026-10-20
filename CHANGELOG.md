@@ -16,6 +16,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Simplified Chinese**, translated by @yin8ruo (#28). Device-verified on stock 1.02 by the
+  contributor.
+- **Pick your languages in the installer.** Each language is a checkbox, with English ticked by
+  default. Tick more than one and Settings › Language switches between them; with one, the row is
+  not shown. *Device-unverified.*
+- **Anyone can add a language.** [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) is the guide: one
+  JSON file, one registry entry and one installer checkbox, with
+  `tools/generate_locales.py --new <tag>` to start and `--status <tag>` to see what is left.
+  There is a *Translation* issue template.
+
 ## [0.3.18] — 2026-10-19
 
 ### Fixed

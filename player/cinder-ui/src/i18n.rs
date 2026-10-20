@@ -8,40 +8,32 @@ use std::cell::Cell;
 #[path = "i18n_catalog.rs"]
 mod catalog;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Language {
-    #[default]
-    English,
-    SimplifiedChinese,
-}
+/// Generated from `locales/languages.json`, so adding a language is a data change.
+pub use catalog::Language;
 
 impl Language {
+    /// The language a saved or installer-written tag names. Case and `-`/`_` do not matter, so
+    /// the device installer's `ZH_CN` and the settings file's `zh-CN` are the same language.
+    pub fn parse(token: &str) -> Option<Self> {
+        let norm = |t: &str| t.trim().to_ascii_lowercase().replace('_', "-");
+        let want = norm(token);
+        Self::ALL.into_iter().find(|l| norm(l.tag()) == want)
+    }
+
+    /// [`Language::parse`], with English for anything unknown or missing.
     pub fn from_token(token: &str) -> Self {
-        match token {
-            "zh-CN" => Self::SimplifiedChinese,
-            _ => Self::English,
-        }
+        Self::parse(token).unwrap_or_default()
     }
 
+    /// The tag that is saved: `en`, `zh-CN`.
     pub fn token(self) -> &'static str {
-        match self {
-            Self::English => "en",
-            Self::SimplifiedChinese => "zh-CN",
-        }
+        self.tag()
     }
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::English => "English",
-            Self::SimplifiedChinese => "简体中文",
-        }
-    }
-
+    /// The one after this in [`Language::ALL`], wrapping.
     pub fn next(self) -> Self {
-        match self {
-            Self::English => Self::SimplifiedChinese,
-            Self::SimplifiedChinese => Self::English,
-        }
+        let i = Self::ALL.iter().position(|l| *l == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
     }
 }
 
@@ -66,37 +58,26 @@ pub fn enter(language: Language) -> LanguageGuard {
     )
 }
 
-pub fn is_chinese() -> bool {
-    CURRENT.with(|value| value.get() == Language::SimplifiedChinese)
+/// The language this thread is rendering in.
+pub fn current() -> Language {
+    CURRENT.with(Cell::get)
 }
 
 /// Translate an explicitly identified UI message. Unknown messages remain readable as supplied.
 pub fn text(source: &str) -> &str {
-    if is_chinese() {
-        catalog::chinese(source).unwrap_or(source)
-    } else {
-        source
-    }
+    catalog::lookup(current(), source).unwrap_or(source)
 }
 
 /// Translate a message whose visible English wording is shared by more than one UI meaning.
 /// `key` is an explicit semantic catalog identity; English keeps the supplied source wording.
 pub fn text_with_key<'a>(source: &'a str, key: &str) -> &'a str {
-    if is_chinese() {
-        catalog::chinese(key).unwrap_or(source)
-    } else {
-        source
-    }
+    catalog::lookup(current(), key).unwrap_or(source)
 }
 
 /// Format a known message key with owned, named arguments at the display boundary.
 /// Inserted values are appended verbatim and are never parsed as message syntax.
 pub fn format_template(source: &str, args: &[(&str, &str)]) -> String {
-    let template = if is_chinese() {
-        catalog::chinese(source).unwrap_or(source)
-    } else {
-        source
-    };
+    let template = text(source);
     let mut output = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
     let mut positional = 0usize;
