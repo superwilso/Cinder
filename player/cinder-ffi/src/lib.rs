@@ -1151,6 +1151,7 @@ fn settings_body(r: &Render) -> String {
         r.app.setup_idx(),
         r.app.clear_bass_step(),
     );
+    body.push_str(&format!("language={}\n", r.app.language().token()));
     body.push_str(&setup_body(&r.app.setup_inactive()));
     // Saved presets (Sound ▸ Presets): the spare's keys, numbered — `preset1_eq=` and so on.
     body.push_str(&presets_body(r.app.presets()));
@@ -4255,12 +4256,14 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     refresh_playlists(r);
                     // Stay on Up Next: the list you saved is the one on screen, and the toast says
                     // where it went.
-                    let songs = if n == 1 {
-                        "1 song".to_string()
+                    if n == 1 {
+                        r.app.notify_format("Saved to Playlists · 1 song", vec![]);
                     } else {
-                        format!("{n} songs")
-                    };
-                    r.app.notify(&format!("Saved to Playlists \u{b7} {songs}"));
+                        r.app.notify_format(
+                            "Saved to Playlists · {n} songs",
+                            vec![("n", n.to_string())],
+                        );
+                    }
                     eprintln!(
                         "cinder-ffi: Up Next saved as {name:?}: {n} of {} tracks",
                         tracks.len()
@@ -6435,7 +6438,7 @@ pub extern "C" fn cinder_toast(msg: *const c_char) {
         return;
     }
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.notify(s);
+        r.app.notify_raw(s);
         r.dirty = true;
     }
 }
@@ -6719,6 +6722,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                 let k = it.next().unwrap_or("").trim();
                 let v = it.next().unwrap_or("").trim();
                 match k {
+                    "language" => r.app.set_language(cinder_ui::i18n::Language::from_token(v)),
                     // NIGHT IS NOT RESTORED. It is still WRITTEN to the settings file (one line
                     // below), because losing it would mean losing the accent/theme pair a user set
                     // — but it is deliberately not read back, so every boot starts in day.
@@ -9966,7 +9970,7 @@ mod tests {
     /// practice with deep UTF-8 (CJK) paths, which is why the buffer size is not a safe assumption.
     #[test]
     fn uri_copy_reports_full_length_so_truncation_is_detectable() {
-        let mut buf = [0i8; 32];
+        let mut buf = [0 as std::ffi::c_char; 32];
         let long = "/contents/MUSIC/".to_string() + &"ま".repeat(50) + "/track.flac";
         assert!(
             long.len() > buf.len(),

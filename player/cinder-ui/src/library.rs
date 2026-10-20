@@ -581,7 +581,14 @@ fn filter_strip(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, y: i32) {
     let cy = y + FILTER_H / 2;
     fill_rect(c, 0, y, W as i32, FILTER_H, t.panel);
     let lst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18);
-    text::draw(c, f, 22.0, (cy + 4) as f32, "FILTER", &lst);
+    text::draw(
+        c,
+        f,
+        22.0,
+        (cy + 4) as f32,
+        crate::i18n::text("FILTER"),
+        &lst,
+    );
     // The value carries the accent when something is actually filtering, so an active filter is
     // visible at a glance rather than needing to be read.
     let on = lib.filtered();
@@ -592,7 +599,9 @@ fn filter_strip(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, y: i32) {
         if on { t.acc } else { t.dim },
         0.1,
     );
-    let label = lib.filter_name().unwrap_or_else(|| "ALL".to_string());
+    let label = lib
+        .filter_name()
+        .unwrap_or_else(|| crate::i18n::text("ALL").to_string());
     let label = crate::widgets::fit(f, &label.to_uppercase(), &vs, 300.0);
     let w = text::measure(f, &label, &vs);
     text::draw(c, f, 440.0 - w, (cy + 4) as f32, &label, &vs);
@@ -698,9 +707,9 @@ pub fn swipe_reveal(
     // sense — the track is already queued — so both directions mean remove, and the label says so
     // rather than leaving the direction to carry a meaning it no longer has.
     let label = match intent {
-        SwipeIntent::Remove => "REMOVE",
-        SwipeIntent::Queue if dx > 0 => "QUEUE",
-        SwipeIntent::Queue => "PLAY NEXT",
+        SwipeIntent::Remove => crate::i18n::text("REMOVE"),
+        SwipeIntent::Queue if dx > 0 => crate::i18n::text("QUEUE"),
+        SwipeIntent::Queue => crate::i18n::text("PLAY NEXT"),
     };
     let lw = text::measure(f, label, &st);
     let icon_w = 18.0;
@@ -1286,10 +1295,10 @@ const TABS: [(Tab, &str); 4] = [
 
 fn count_caption(tab: Tab, lib: &Library) -> String {
     match tab {
-        Tab::Songs => format!("{} TRACKS", group_thousands(lib.songs.len())),
-        Tab::Albums => format!("{} ALBUMS", lib.album_count()),
-        Tab::Artists => format!("{} ARTISTS", lib.artists.len()),
-        Tab::Playlists => format!("{} PLAYLISTS", lib.playlists.len()),
+        Tab::Songs => crate::ui_format!("{} TRACKS", group_thousands(lib.songs.len())),
+        Tab::Albums => crate::ui_format!("{} ALBUMS", lib.album_count()),
+        Tab::Artists => crate::ui_format!("{} ARTISTS", lib.artists.len()),
+        Tab::Playlists => crate::ui_format!("{} PLAYLISTS", lib.playlists.len()),
     }
 }
 
@@ -1601,6 +1610,7 @@ pub fn tab_layout(f: &FontSet) -> Vec<(Tab, f32, f32)> {
     let mut out = Vec::with_capacity(TABS.len());
     let mut x = 22.0;
     for (tab, label) in TABS {
+        let label = crate::i18n::text(label);
         let st = sty(
             Family::Mono,
             Weight::Regular,
@@ -1632,7 +1642,7 @@ fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab) -> i32 {
             (y0 + 20) as f32,
             TABS.iter()
                 .find(|(tt, _)| *tt == tab)
-                .map(|(_, l)| *l)
+                .map(|(_, l)| crate::i18n::text(l))
                 .unwrap_or(""),
             &st,
         );
@@ -1662,15 +1672,15 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
             // next hour of listening.
             let scope = lib
                 .filter_name()
-                .map(|g| format!("Shuffle {g}"))
-                .unwrap_or_else(|| "Shuffle all songs".to_string());
+                .map(|g| crate::ui_format!("Shuffle {g}", g = g))
+                .unwrap_or_else(|| crate::i18n::text("Shuffle all songs").to_string());
             shuffle_row(
                 c,
                 t,
                 f,
                 y,
                 &scope,
-                &format!(
+                &crate::ui_format!(
                     "{} TRACKS · RANDOM ORDER",
                     group_thousands(lib.visible_songs())
                 ),
@@ -1682,8 +1692,8 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
                 t,
                 f,
                 y,
-                "Shuffle by album",
-                "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE",
+                crate::i18n::text("Shuffle by album"),
+                crate::i18n::text("RANDOM ALBUM ORDER · TRACKS IN SEQUENCE"),
             );
         }
         Tab::Artists => {
@@ -1692,8 +1702,8 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
                 t,
                 f,
                 y,
-                "Shuffle by artist",
-                "RANDOM ARTIST · SHUFFLED WITHIN ARTIST",
+                crate::i18n::text("Shuffle by artist"),
+                crate::i18n::text("RANDOM ARTIST · SHUFFLED WITHIN ARTIST"),
             );
         }
         Tab::Playlists => {
@@ -1702,8 +1712,8 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
                 t,
                 f,
                 y,
-                "Shuffle a playlist",
-                "RANDOM PLAYLIST · SHUFFLED",
+                crate::i18n::text("Shuffle a playlist"),
+                crate::i18n::text("RANDOM PLAYLIST · SHUFFLED"),
             );
             new_playlist_row(c, t, f, hide);
         }
@@ -1829,21 +1839,22 @@ pub fn empty_note(tab: Tab, lib: &Library) -> Option<(String, String)> {
     if matches!(tab, Tab::Songs | Tab::Albums) && lib.filtered() && !lib.songs.is_empty() {
         let name = lib
             .filter_name()
-            .unwrap_or_else(|| "this filter".to_string());
+            .unwrap_or_else(|| crate::i18n::text("this filter").to_string());
         return Some((
-            format!("Nothing matches {name}."),
-            "Tap the filter row above to change it.".to_string(),
+            crate::ui_format!("Nothing matches {name}.", name = name),
+            crate::i18n::text("Tap the filter row above to change it.").to_string(),
         ));
     }
     Some(match tab {
         // Playlists is the one tab that is legitimately empty on a working device.
         Tab::Playlists => (
-            "No playlists yet.".to_string(),
-            "Use NEW PLAYLIST above, or drop .m3u8 files in /contents.".to_string(),
+            crate::i18n::text("No playlists yet.").to_string(),
+            crate::i18n::text("Use NEW PLAYLIST above, or drop .m3u8 files in /contents.")
+                .to_string(),
         ),
         _ => (
-            "No music found.".to_string(),
-            "Connect the player to a PC and copy music to it.".to_string(),
+            crate::i18n::text("No music found.").to_string(),
+            crate::i18n::text("Connect the player to a PC and copy music to it.").to_string(),
         ),
     })
 }
@@ -1967,8 +1978,8 @@ pub fn render(
     c.fill(t.bg);
     // Songs shows a tappable SORT chip; Albums an ORDER chip; the others show their count.
     let short = match tab {
-        Tab::Songs => SORTS[sort.min(SORTS.len() - 1)],
-        Tab::Albums => ALBUM_SORTS[album_sort.min(ALBUM_SORTS.len() - 1)],
+        Tab::Songs => crate::i18n::text(SORTS[sort.min(SORTS.len() - 1)]),
+        Tab::Albums => crate::i18n::text(ALBUM_SORTS[album_sort.min(ALBUM_SORTS.len() - 1)]),
         _ => "",
     };
     let rc = match tab {
@@ -1984,9 +1995,26 @@ pub fn render(
     // The title may come to 8 px short of the button's zone: its icon is centred in it, so that
     // still leaves a 20 px gap to the drawn glyph.
     let y0 = if has_sort_chip(tab) {
-        crate::chrome::header_chip(c, t, f, "Library", &rc, short, (vx0 + 8) as f32, x1 as f32)
+        crate::chrome::header_chip(
+            c,
+            t,
+            f,
+            crate::i18n::text("Library"),
+            &rc,
+            short,
+            (vx0 + 8) as f32,
+            x1 as f32,
+        )
     } else {
-        crate::chrome::header_around(c, t, f, "Library", Some(&rc), (vx0 + 8) as f32, x1 as f32)
+        crate::chrome::header_around(
+            c,
+            t,
+            f,
+            crate::i18n::text("Library"),
+            Some(&rc),
+            (vx0 + 8) as f32,
+            x1 as f32,
+        )
     };
     if search {
         crate::icons::search(c, ((SEARCH_X0 + SEARCH_X1) / 2) as f32, 62.0, 24.0, t.dim);
@@ -2060,7 +2088,7 @@ pub fn render(
                     c,
                     f,
                     78.0,
-                    (cy + 16) as f32,
+                    (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
                     &crate::widgets::fit(f, &sgn.artist, &ast, 320.0),
                     &ast,
                 );
@@ -2208,16 +2236,16 @@ pub fn render(
                             &tst,
                         );
                         let sub = if al.year.is_empty() {
-                            format!("{} tracks", al.tracks)
+                            crate::ui_format!("{} tracks", al.tracks)
                         } else {
-                            format!("{} · {} tracks", al.year, al.tracks)
+                            crate::ui_format!("{} · {} tracks", al.year, al.tracks)
                         };
                         let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
                         text::draw(
                             c,
                             f,
                             80.0,
-                            (cy + 16) as f32,
+                            (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
                             &crate::widgets::fit(f, &sub, &sst, 356.0),
                             &sst,
                         );
@@ -2363,12 +2391,13 @@ pub fn render(
                     &crate::widgets::fit(f, &ar.name, &tst, 402.0 - tx),
                     &tst,
                 );
-                let sub = format!("{} · {} tracks", plural(ar.albums, "album"), ar.tracks);
+                let sub =
+                    crate::ui_format!("{} · {} tracks", plural(ar.albums, "album"), ar.tracks);
                 text::draw(
                     c,
                     f,
                     tx,
-                    (cy + 16) as f32,
+                    (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
                     &sub,
                     &body_label(Family::Sans, Weight::Regular, 15.0, t.dim),
                 );
@@ -2416,7 +2445,7 @@ pub fn render(
                             pl.cover_album_id,
                             &pl.art,
                             &pl.name,
-                            &format!("{} tracks", pl.tracks),
+                            &crate::ui_format!("{} tracks", pl.tracks),
                             idx == current,
                         );
                     }
@@ -2453,8 +2482,15 @@ pub fn render(
                         t.acc,
                         0.1,
                     );
-                    right(c, f, 436.0, (cy + 5) as f32, "EDITED", &tst);
-                    text::measure(f, "EDITED", &tst) + 14.0
+                    right(
+                        c,
+                        f,
+                        436.0,
+                        (cy + 5) as f32,
+                        crate::i18n::text("EDITED"),
+                        &tst,
+                    );
+                    text::measure(f, crate::i18n::text("EDITED"), &tst) + 14.0
                 } else {
                     0.0
                 };
@@ -2475,14 +2511,14 @@ pub fn render(
                 let sub = if pl.smart {
                     format!("{} tracks \u{b7} {}", pl.tracks, pl.rules)
                 } else {
-                    format!("{} tracks", pl.tracks)
+                    crate::ui_format!("{} tracks", pl.tracks)
                 };
                 let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
                 text::draw(
                     c,
                     f,
                     80.0,
-                    (cy + 16) as f32,
+                    (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
                     &crate::widgets::fit(f, &sub, &sst, 356.0 - tag_w),
                     &sst,
                 );
@@ -2532,7 +2568,7 @@ pub fn album_view(
         f,
         50.0,
         66.0,
-        "ALBUM",
+        crate::i18n::text("ALBUM"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2),
     );
     // THE RIGHT SLOT: the album's rating, when any of its tracks is rated. A readout, not a
@@ -2575,9 +2611,9 @@ pub fn album_view(
         &ast,
     );
     let meta = if album.year.is_empty() {
-        format!("{} TRACKS", album.tracks)
+        crate::ui_format!("{} TRACKS", album.tracks)
     } else {
-        format!("{} · {} TRACKS", album.year, album.tracks)
+        crate::ui_format!("{} · {} TRACKS", album.year, album.tracks)
     };
     let mst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
     text::draw(
@@ -2594,8 +2630,8 @@ pub fn album_view(
         t,
         f,
         ALBUM_BAND_Y,
-        "Play album",
-        "IN ORDER · THEN SHUFFLE",
+        crate::i18n::text("Play album"),
+        crate::i18n::text("IN ORDER · THEN SHUFFLE"),
     );
     let top = album_tracks_top();
     let rh = ALBUM_TRACK_RH;
@@ -2928,14 +2964,14 @@ pub fn artist_view(
         f,
         50.0,
         66.0,
-        "ARTIST",
+        crate::i18n::text("ARTIST"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2),
     );
 
     let nst = sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
     let name = crate::widgets::fit(f, page.name, &nst, W as f32 - 44.0);
     text::draw(c, f, 22.0, 104.0, &name, &nst);
-    let stats = format!(
+    let stats = crate::ui_format!(
         "{} ALBUMS · {} TRACKS",
         page.albums.len(),
         page.tracks.len()
@@ -2953,8 +2989,8 @@ pub fn artist_view(
         t,
         f,
         ARTIST_BAND_Y,
-        "Shuffle artist",
-        &format!("ALL {} TRACKS · RANDOM ORDER", page.tracks.len()),
+        crate::i18n::text("Shuffle artist"),
+        &crate::ui_format!("ALL {} TRACKS · RANDOM ORDER", page.tracks.len()),
     );
 
     let top = artist_content_top();
@@ -2975,7 +3011,7 @@ pub fn artist_view(
                     f,
                     22.0,
                     (y + 24) as f32,
-                    &format!("ALBUMS · {}", page.albums.len()),
+                    &crate::ui_format!("ALBUMS · {}", page.albums.len()),
                     &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
                 );
             }
@@ -2986,12 +3022,16 @@ pub fn artist_view(
                     f,
                     22.0,
                     (y + 30) as f32,
-                    &format!("SONGS · {}", page.tracks.len()),
+                    &crate::ui_format!("SONGS · {}", page.tracks.len()),
                     &cap,
                 );
                 if !page.albums.is_empty() {
                     // Words, not a chevron glyph: the label says what a tap will do.
-                    let word = if page.songs_open { "HIDE" } else { "SHOW ALL" };
+                    let word = if page.songs_open {
+                        crate::i18n::text("HIDE")
+                    } else {
+                        crate::i18n::text("SHOW ALL")
+                    };
                     let act = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18);
                     let w = text::measure(f, word, &act);
                     text::draw(c, f, W as f32 - 22.0 - w, (y + 30) as f32, word, &act);
@@ -3003,7 +3043,7 @@ pub fn artist_view(
                     f,
                     22.0,
                     (y + 24) as f32,
-                    "MOST PLAYED",
+                    crate::i18n::text("MOST PLAYED"),
                     &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
                 );
             }
@@ -3030,16 +3070,16 @@ pub fn artist_view(
                     c,
                     f,
                     58.0,
-                    (cy + 16) as f32,
+                    (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
                     &crate::widgets::fit(f, tr.album, &ast, 300.0),
                     &ast,
                 );
                 // The count is the reason the row is here, so it takes the place of the duration.
                 let plays = lib.stat(tr.song.object_id).plays;
                 let n = if plays == 1 {
-                    "1 PLAY".to_string()
+                    crate::i18n::text("1 PLAY").to_string()
                 } else {
-                    format!("{plays} PLAYS")
+                    crate::ui_format!("{plays} PLAYS", plays = plays)
                 };
                 right(
                     c,
@@ -3084,9 +3124,9 @@ pub fn artist_view(
                     &tst,
                 );
                 let sub = if al.year.is_empty() {
-                    format!("{} tracks", al.tracks)
+                    crate::ui_format!("{} tracks", al.tracks)
                 } else {
-                    format!("{} · {} tracks", al.year, al.tracks)
+                    crate::ui_format!("{} · {} tracks", al.year, al.tracks)
                 };
                 // The album's rating (handoff 5m: "albums … with their ratings") on the second
                 // line, right-aligned before the chevron, so the name keeps the whole first line.
@@ -3097,7 +3137,7 @@ pub fn artist_view(
                     c,
                     f,
                     80.0,
-                    (cy + 16) as f32,
+                    (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
                     &crate::widgets::fit(f, &sub, &sst, sub_w),
                     &sst,
                 );
@@ -3153,7 +3193,7 @@ pub fn artist_view(
                     c,
                     f,
                     58.0,
-                    (cy + 16) as f32,
+                    (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
                     &crate::widgets::fit(f, tr.album, &ast, 300.0),
                     &ast,
                 );
@@ -3278,7 +3318,7 @@ fn playlist_band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
         f,
         (px + 42) as f32,
         (cy - 4) as f32,
-        &crate::widgets::fit(f, "Play", &lst, lw),
+        &crate::widgets::fit(f, crate::i18n::text("Play"), &lst, lw),
         &lst,
     );
     text::draw(
@@ -3286,7 +3326,12 @@ fn playlist_band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
         f,
         (px + 42) as f32,
         (cy + 14) as f32,
-        &crate::widgets::fit(f, &format!("{} TRACKS · IN ORDER", tracks), &sst, lw),
+        &crate::widgets::fit(
+            f,
+            &crate::ui_format!("{} TRACKS · IN ORDER", tracks),
+            &sst,
+            lw,
+        ),
         &sst,
     );
     // SHUFFLE half.
@@ -3297,7 +3342,7 @@ fn playlist_band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
         f,
         (sx + 38) as f32,
         (cy - 4) as f32,
-        &crate::widgets::fit(f, "Shuffle", &lst, sw_txt),
+        &crate::widgets::fit(f, crate::i18n::text("Shuffle"), &lst, sw_txt),
         &lst,
     );
     text::draw(
@@ -3305,7 +3350,7 @@ fn playlist_band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
         f,
         (sx + 38) as f32,
         (cy + 14) as f32,
-        &crate::widgets::fit(f, "RANDOM", &sst, sw_txt),
+        &crate::widgets::fit(f, crate::i18n::text("RANDOM"), &sst, sw_txt),
         &sst,
     );
 }
@@ -3353,15 +3398,15 @@ fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet, hide: i32) {
         f,
         80.0,
         (cy - 2) as f32,
-        &crate::widgets::fit(f, "NEW PLAYLIST", &lst, lw),
+        &crate::widgets::fit(f, crate::i18n::text("NEW PLAYLIST"), &lst, lw),
         &lst,
     );
     text::draw(
         c,
         f,
         80.0,
-        (cy + 16) as f32,
-        &crate::widgets::fit(f, "NAME IT, THEN ADD TRACKS", &sst, lw),
+        (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
+        &crate::widgets::fit(f, crate::i18n::text("NAME IT, THEN ADD TRACKS"), &sst, lw),
         &sst,
     );
     // SMART: a playlist made of rules. The diamond is the mark smart rows carry in the list.
@@ -3372,15 +3417,15 @@ fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet, hide: i32) {
         f,
         (NEW_SPLIT_X + 40) as f32,
         (cy - 2) as f32,
-        &crate::widgets::fit(f, "SMART", &lst, rw),
+        &crate::widgets::fit(f, crate::i18n::text("SMART"), &lst, rw),
         &lst,
     );
     text::draw(
         c,
         f,
         (NEW_SPLIT_X + 40) as f32,
-        (cy + 16) as f32,
-        &crate::widgets::fit(f, "BY RULES", &sst, rw),
+        (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
+        &crate::widgets::fit(f, crate::i18n::text("BY RULES"), &sst, rw),
         &sst,
     );
 }
@@ -3462,9 +3507,9 @@ pub fn playlist_view(
     c.fill(t.bg);
     icons::back(c, 30.0, 62.0, 20.0, t.dim);
     let eyebrow = if pl.smart {
-        "SMART PLAYLIST"
+        crate::i18n::text("SMART PLAYLIST")
     } else {
-        "PLAYLIST"
+        crate::i18n::text("PLAYLIST")
     };
     text::draw(
         c,
@@ -3482,7 +3527,7 @@ pub fn playlist_view(
             f,
             458.0,
             66.0,
-            "EDIT",
+            crate::i18n::text("EDIT"),
             &sty(
                 Family::Mono,
                 Weight::Regular,
@@ -3517,9 +3562,9 @@ pub fn playlist_view(
             pl.rules.to_uppercase()
         )
     } else if pl.track_list.len() as u32 == pl.tracks {
-        plural(pl.tracks, "TRACK").to_uppercase()
+        plural(pl.tracks, crate::i18n::text("TRACK")).to_uppercase()
     } else {
-        format!("{} OF {} TRACKS AVAILABLE", pl.track_list.len(), pl.tracks)
+        crate::ui_format!("{} OF {} TRACKS AVAILABLE", pl.track_list.len(), pl.tracks)
     };
     let stst = sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1);
     text::draw(
@@ -3556,7 +3601,7 @@ pub fn playlist_view(
             f,
             22.0,
             (top + 40) as f32,
-            "Nothing in this playlist.",
+            crate::i18n::text("Nothing in this playlist."),
             &sty(
                 Family::Sans,
                 Weight::SemiBold,
@@ -3569,11 +3614,11 @@ pub fn playlist_view(
         // playlist you just made is empty because you have not added anything yet, while a Sony
         // one that renders empty has members whose files no longer resolve.
         let why = if pl.user {
-            "Use + TRACKS above to put something in it."
+            crate::i18n::text("Use + TRACKS above to put something in it.")
         } else if pl.smart {
-            "No song matches its rules yet. EDIT changes them."
+            crate::i18n::text("No song matches its rules yet. EDIT changes them.")
         } else {
-            "Its tracks are missing from the library."
+            crate::i18n::text("Its tracks are missing from the library.")
         };
         text::draw(c, f, 22.0, (top + 66) as f32, why, &st);
         c.clear_clip();
@@ -3634,7 +3679,7 @@ pub fn playlist_view(
             c,
             f,
             110.0,
-            (cy + 16) as f32,
+            (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
             &crate::widgets::fit(f, &sgn.artist, &ast, 268.0),
             &ast,
         );
@@ -3659,7 +3704,7 @@ pub fn playlist_view(
                     f,
                     428.0,
                     (cy + 4) as f32,
-                    "REMOVE?",
+                    crate::i18n::text("REMOVE?"),
                     &sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.08),
                 );
             } else {

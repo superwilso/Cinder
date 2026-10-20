@@ -144,7 +144,7 @@ pub struct DisplayView<'a> {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &DisplayView) {
     c.fill(t.bg);
-    let mut y = crate::chrome::header(c, t, f, "Display", None);
+    let mut y = crate::chrome::header(c, t, f, crate::i18n::text("Display"), None);
     let mut r = 0usize;
     for (label, n) in SECTIONS {
         y = kit::section_label(c, t, f, y, label, None);
@@ -190,7 +190,9 @@ fn draw_row(
                 f,
                 y,
                 kit::ROW_H,
-                &Row::new("Palette").trail(Trail::Open(&name)).sel(sel),
+                &Row::new(crate::i18n::text("Palette"))
+                    .trail(Trail::Open(&name))
+                    .sel(sel),
             );
             let vx = kit::RIGHT - 20 - text::measure(f, &name, &vst) as i32 - 14;
             let x0 = vx - swatch_w;
@@ -209,8 +211,8 @@ fn draw_row(
                     f,
                     y,
                     kit::ROW_H,
-                    &Row::new("Accent")
-                        .sub("Set by the palette")
+                    &Row::new(crate::i18n::text("Accent"))
+                        .sub(crate::i18n::text("Set by the palette"))
                         .trail(Trail::Value("—"))
                         .sel(sel),
                 );
@@ -226,7 +228,7 @@ fn draw_row(
                 f,
                 y,
                 kit::ROW_H,
-                &Row::new("Accent")
+                &Row::new(crate::i18n::text("Accent"))
                     .sub(&name)
                     .trail(Trail::Reserve(swatches))
                     .sel(sel),
@@ -250,8 +252,8 @@ fn draw_row(
             f,
             y,
             kit::ROW_H,
-            &Row::new("Night")
-                .sub("Dims everything after dark")
+            &Row::new(crate::i18n::text("Night"))
+                .sub(crate::i18n::text("Dims everything after dark"))
                 .trail(Trail::Switch(v.night))
                 .sel(sel),
         ),
@@ -286,13 +288,22 @@ fn draw_row(
             f,
             y,
             kit::ROW_H,
-            &Row::new("Visualiser").trail(Trail::Open(v.viz)).sel(sel),
+            &Row::new(crate::i18n::text("Visualiser"))
+                .trail(Trail::Open(v.viz))
+                .sel(sel),
         ),
     }
 }
 
 fn size_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool) -> i32 {
-    let next = kit::row(c, t, f, y, kit::ROW_H, &Row::new("Size").sel(sel));
+    let next = kit::row(
+        c,
+        t,
+        f,
+        y,
+        kit::ROW_H,
+        &Row::new(crate::i18n::text("Size")).sel(sel),
+    );
     let cy = y + kit::ROW_H / 2;
     let n = text::SCALE_STEPS.len() as i32;
     let idx = text::scale_idx() as i32;

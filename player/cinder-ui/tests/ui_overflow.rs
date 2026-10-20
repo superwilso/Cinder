@@ -393,6 +393,37 @@ fn collisions_of(app: &mut App, fonts: &FontSet, np: &NowPlaying) -> Vec<(String
     out
 }
 
+#[test]
+fn chinese_screens_keep_text_on_the_panel_and_apart_at_every_scale() {
+    use cinder_ui::i18n::{enter, Language};
+    let _language = enter(Language::SimplifiedChinese);
+    let fonts = FontSet::load();
+    let mut bad = Vec::new();
+    for idx in 0..cinder_ui::text::SCALE_STEPS.len() {
+        let _scale = scale_lock(idx);
+        for &screen in SCREENS {
+            for night in [false, true] {
+                let mut app = at(screen);
+                app.set_language(Language::SimplifiedChinese);
+                app.night = night;
+                let n = overflow_of(&mut app, &fonts, &np_hostile());
+                if n > 0 {
+                    bad.push(format!(
+                        "{screen:?} scale={idx} night={night}: {n} pixels off panel"
+                    ));
+                }
+                for (a, b, n) in collisions_of(&mut app, &fonts, &np_hostile()) {
+                    bad.push(format!(
+                        "{screen:?} scale={idx} night={night}: {a:?} x {b:?} ({n}px)"
+                    ));
+                }
+            }
+        }
+    }
+    let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
+    assert!(bad.is_empty(), "Chinese layouts:\n{}", bad.join("\n"));
+}
+
 /// Text that stays ON the panel but runs into other text — an artist into the codec beside it, a
 /// row's value into its title — or that something drawn after it covers (a swatch, a button). `no_screen_draws_off_the_panel` cannot see it (every pixel is on the
 /// glass), and it is just as unreadable. Every screen, plain and hostile strings, day and night,

@@ -79,41 +79,41 @@ impl Ask {
     pub fn text(self) -> (&'static str, &'static str, &'static str) {
         match self {
             Ask::Restart => (
-                "Restart?",
-                "Cinder will close and the player will start again.",
-                "Restart",
+                crate::i18n::text("Restart?"),
+                crate::i18n::text("Cinder will close and the player will start again."),
+                crate::i18n::text("Restart"),
             ),
             Ask::PowerOff => (
-                "Power off?",
-                "The device will switch off. Hold Power to turn it back on.",
-                "Power off",
+                crate::i18n::text("Power off?"),
+                crate::i18n::text("The device will switch off. Hold Power to turn it back on."),
+                crate::i18n::text("Power off"),
             ),
-            Ask::PowerMenu => ("Power", "", ""),
-            Ask::QueueOnPlay => ("Play this now?", "", ""),
+            Ask::PowerMenu => (crate::i18n::text("Power"), "", ""),
+            Ask::QueueOnPlay => (crate::i18n::text("Play this now?"), "", ""),
             Ask::ResetSettings => (
-                "Reset settings?",
-                "Every preference goes back to its default. Your music, playlists and pins are untouched.",
-                "Reset",
+                crate::i18n::text("Reset settings?"),
+                crate::i18n::text("Every preference goes back to its default. Your music, playlists and pins are untouched."),
+                crate::i18n::text("Reset"),
             ),
             Ask::DeletePlaylist => (
-                "Delete this playlist?",
-                "The playlist is deleted. The music in it stays on the device.",
-                "Delete",
+                crate::i18n::text("Delete this playlist?"),
+                crate::i18n::text("The playlist is deleted. The music in it stays on the device."),
+                crate::i18n::text("Delete"),
             ),
             Ask::DeleteView => (
-                "Delete this smart playlist?",
-                "Its rules are deleted. The music it listed stays on the device.",
-                "Delete",
+                crate::i18n::text("Delete this smart playlist?"),
+                crate::i18n::text("Its rules are deleted. The music it listed stays on the device."),
+                crate::i18n::text("Delete"),
             ),
             Ask::SonyReceiver => (
-                "Use Sony's receiver?",
-                "The Walkman restarts into Sony's player with its receiver open. Restart again to come back to Cinder.",
-                "Restart",
+                crate::i18n::text("Use Sony's receiver?"),
+                crate::i18n::text("The Walkman restarts into Sony's player with its receiver open. Restart again to come back to Cinder."),
+                crate::i18n::text("Restart"),
             ),
             Ask::ClearQueue => (
-                "Clear Up Next?",
-                "Every track after the one playing is removed. The song playing now finishes, then playback stops.",
-                "Clear",
+                crate::i18n::text("Clear Up Next?"),
+                crate::i18n::text("Every track after the one playing is removed. The song playing now finishes, then playback stops."),
+                crate::i18n::text("Clear"),
             ),
         }
     }
@@ -256,25 +256,16 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, ask: Ask) {
         title,
         &sty(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0),
     );
-    // The body wraps by hand at a word boundary rather than mid-word: these strings are short and
-    // known, so a real wrapper would be machinery for two sentences.
-    let (l1, l2) = split_body(body);
-    center(
-        c,
-        f,
-        240.0,
-        (CARD_Y + 96) as f32,
-        l1,
-        &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0),
-    );
-    if !l2.is_empty() {
+    // UTF-8 warnings need measured wrapping; slicing an arbitrary byte can panic in Chinese.
+    let (body_style, lines) = body_layout(f, t, body);
+    for (i, line) in lines.iter().enumerate() {
         center(
             c,
             f,
             240.0,
-            (CARD_Y + 118) as f32,
-            l2,
-            &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0),
+            (CARD_Y + 96 + i as i32 * 24) as f32,
+            line,
+            &body_style,
         );
     }
 
@@ -290,7 +281,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, ask: Ask) {
         f,
         (CARD_X + CARD_W / 4) as f32,
         by,
-        "Cancel",
+        crate::i18n::text("Cancel"),
         &sty(Family::Sans, Weight::SemiBold, 18.0, t.dim, 0.0),
     );
     // CONFIRM on the right, filled with the accent — deliberately the more emphatic target, but it
@@ -350,22 +341,22 @@ fn render_menu(c: &mut Canvas, t: &Theme, f: &FontSet, ask: Ask) {
             f,
             240.0,
             (ry + MENU_ROW_H / 2 + 7) as f32,
-            label,
+            crate::i18n::text(label),
             &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, col, 0.0),
         );
     }
 }
 
-/// Split a one-line body at the last space before it would overrun the card.
-fn split_body(body: &str) -> (&str, &str) {
-    const MAX: usize = 46;
-    if body.len() <= MAX {
-        return (body, "");
+fn body_layout(f: &FontSet, t: &Theme, body: &str) -> (crate::text::TextStyle, Vec<String>) {
+    for size in (12..=16).rev() {
+        let st = sty(Family::Sans, Weight::Regular, size as f32, t.dim, 0.0);
+        let lines = crate::track_info::wrap(f, body, &st, (CARD_W - 40) as f32);
+        let last = CARD_Y + 96 + (lines.len() as i32 - 1) * 24;
+        if last + 6 < BTN_Y || size == 12 {
+            return (st, lines);
+        }
     }
-    match body[..MAX].rfind(' ') {
-        Some(i) => (&body[..i], &body[i + 1..]),
-        None => (body, ""),
-    }
+    unreachable!()
 }
 
 #[cfg(test)]
@@ -427,11 +418,28 @@ mod tests {
     /// The body must fit the card on both lines — an overrun would run out past the panel edge.
     #[test]
     fn bodies_wrap_within_the_card() {
-        for ask in [Ask::Restart, Ask::PowerOff] {
-            let (_, body, _) = ask.text();
-            let (a, b) = split_body(body);
-            assert!(a.len() <= 46, "{ask:?} line 1 too long: {a:?}");
-            assert!(b.len() <= 46, "{ask:?} line 2 too long: {b:?}");
+        let _scale = crate::text::scale_guard();
+        let f = FontSet::load();
+        for language in [
+            crate::i18n::Language::English,
+            crate::i18n::Language::SimplifiedChinese,
+        ] {
+            let _language = crate::i18n::enter(language);
+            for pct in crate::text::SCALE_STEPS {
+                crate::text::set_scale_pct(pct);
+                for ask in ALL.iter().filter(|a| !a.is_menu()) {
+                    let (_, body, _) = ask.text();
+                    let (st, lines) = body_layout(&f, &Theme::day(), body);
+                    assert_eq!(lines.concat(), body, "a warning must not lose text");
+                    for line in &lines {
+                        assert!(crate::text::measure(&f, line, &st) <= (CARD_W - 40) as f32);
+                    }
+                    assert!(
+                        CARD_Y + 96 + (lines.len() as i32 - 1) * 24 + 6 < BTN_Y,
+                        "{ask:?} {language:?} {pct}%"
+                    );
+                }
+            }
         }
     }
 

@@ -169,7 +169,7 @@ fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
         y += h;
     };
     push(Part::Strip, STRIP_H);
-    push(Part::Label("TRANSMIT CODEC"), SECTION_H);
+    push(Part::Label(crate::i18n::text("TRANSMIT CODEC")), SECTION_H);
     push(Part::Codecs, CHIP_H + 8);
     if ldac {
         push(Part::Label("LDAC"), SECTION_H);
@@ -177,7 +177,7 @@ fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
             push(Part::Ldac(k), ROW_H);
         }
     }
-    push(Part::Label("VOLUME CONTROL"), SECTION_H);
+    push(Part::Label(crate::i18n::text("VOLUME CONTROL")), SECTION_H);
     push(Part::Enhanced, ROW_H);
     push(Part::Fine, ROW_H);
     out
@@ -358,7 +358,7 @@ fn codec_strip(bt: &Bt) -> String {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     c.fill(t.bg);
-    let _y0 = crate::chrome::header(c, t, f, "Bluetooth", None);
+    let _y0 = crate::chrome::header(c, t, f, crate::i18n::text("Bluetooth"), None);
     // Header right slot: the kit's switch (handoff: a header's right slot is a caption, a switch,
     // an icon or nothing). Sits low in the header band, away from the status strip the user kept
     // catching, and near the middle of its much larger touch target (see `hit`).
@@ -373,8 +373,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         // "am I actually getting LDAC" — the radio falls back silently, so the codec radio list
         // below (which is only a request) can say LDAC while the link is running something else.
         let tag = match bt.link_codec.map(link_codec_label) {
-            Some(codec) => format!("CONNECTED · {}", codec.to_uppercase()),
-            None => "CONNECTED".to_string(),
+            Some(codec) => crate::ui_format!("CONNECTED · {}", codec.to_uppercase()),
+            None => crate::i18n::text("CONNECTED").to_string(),
         };
         text::draw(
             c,
@@ -414,7 +414,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             f,
             (dx + dw / 2) as f32,
             (dy + dh / 2 + 4) as f32,
-            "Disconnect",
+            crate::i18n::text("Disconnect"),
             &sty(Family::Sans, Weight::SemiBold, 14.0, t.dim, 0.0),
         );
     } else if bt.on && bt.connecting {
@@ -428,7 +428,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             f,
             64.0,
             (CARD_Y + 24) as f32,
-            "CONNECTING",
+            crate::i18n::text("CONNECTING"),
             &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18),
         );
         text::draw(
@@ -436,7 +436,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             f,
             64.0,
             (CARD_Y + 52) as f32,
-            "Linking to device…",
+            crate::i18n::text("Linking to device…"),
             &sty(Family::Sans, Weight::Regular, 18.0, t.dim, 0.0),
         );
         crate::widgets::spinner(c, 42, CARD_Y + CARD_H / 2, 9, 3, bt.busy_phase, t.acc);
@@ -448,11 +448,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             dx += 11;
         }
         let msg = if !bt.on {
-            "Bluetooth is off"
+            crate::i18n::text("Bluetooth is off")
         } else if bt.link_known {
-            "No device connected"
+            crate::i18n::text("No device connected")
         } else {
-            "Link state unavailable on this firmware"
+            crate::i18n::text("Link state unavailable on this firmware")
         };
         center(
             c,
@@ -477,11 +477,18 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     // "Pair new device", which is the route to the rest, an obvious next step rather than a
     // guess.
     let head = if bt.on && bt.paired.len() > PAIRED_SHOWN {
-        format!("PAIRED DEVICES · {} OF {}", PAIRED_SHOWN, bt.paired.len())
+        crate::ui_format!("PAIRED DEVICES · {} OF {}", PAIRED_SHOWN, bt.paired.len())
     } else {
-        "PAIRED DEVICES".to_string()
+        crate::i18n::text("PAIRED DEVICES").to_string()
     };
-    crate::kit::section_label(c, t, f, PAIRED_LABEL_Y, &head, bt.on.then_some("PAIR NEW"));
+    crate::kit::section_label(
+        c,
+        t,
+        f,
+        PAIRED_LABEL_Y,
+        &head,
+        bt.on.then_some(crate::i18n::text("PAIR NEW")),
+    );
     if !bt.on {
         // Nothing here is actionable with the radio off, and greyed rows invite taps that do
         // nothing. Say why the list is empty instead of showing a dead one.
@@ -490,7 +497,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             f,
             240.0,
             (PAIRED_Y0 + 40) as f32,
-            "Turn Bluetooth on to see your devices",
+            crate::i18n::text("Turn Bluetooth on to see your devices"),
             &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
         );
     } else if bt.paired.is_empty() {
@@ -499,7 +506,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             f,
             240.0,
             (PAIRED_Y0 + 40) as f32,
-            "No paired devices yet",
+            crate::i18n::text("No paired devices yet"),
             &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
         );
     } else {
@@ -521,7 +528,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             // Leave room for the right-hand status word rather than running under it.
             crate::widgets::draw_fit(c, f, 64.0, (cy - 2) as f32, &d.name, &nst, 360.0);
             let sub = if d.connected {
-                "CONNECTED"
+                crate::i18n::text("CONNECTED")
             } else {
                 d.kind.as_str()
             };
@@ -540,7 +547,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
                 f,
                 458.0,
                 (cy + 4) as f32,
-                if d.connected { "\u{2022}" } else { "CONNECT" },
+                if d.connected {
+                    "\u{2022}"
+                } else {
+                    crate::i18n::text("CONNECT")
+                },
                 &sty(
                     Family::Mono,
                     Weight::Regular,
@@ -557,7 +568,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     // quarter of the screen. Codec and Enhanced Mode are set once and then never touched, so they
     // were paying for prime screen space with the thing people actually came for. The row still
     // SHOWS what is in use, because that is the part worth glancing at.
-    crate::kit::section_label(c, t, f, THIS_DEVICE_Y, "THIS DEVICE", None);
+    crate::kit::section_label(
+        c,
+        t,
+        f,
+        THIS_DEVICE_Y,
+        crate::i18n::text("THIS DEVICE"),
+        None,
+    );
     let live = bt.link_codec.map(link_codec_label);
     let want = CODECS[(bt.codec_sel as usize).min(CODECS.len() - 1)].0;
     let detail = match live {
@@ -580,14 +598,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         f,
         ADV_Y,
         ADV_H,
-        &crate::kit::Row::new("Sound quality")
+        &crate::kit::Row::new(crate::i18n::text("Sound quality"))
             .sub(&detail)
             .trail(crate::kit::Trail::Open(&value)),
     );
     let dsub = if bt.debug_log {
-        "Recording · switch off to save it to the drive"
+        crate::i18n::text("Recording · switch off to save it to the drive")
     } else {
-        "Record the radio's traffic for a bug report"
+        crate::i18n::text("Record the radio's traffic for a bug report")
     };
     crate::kit::row(
         c,
@@ -595,7 +613,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         f,
         DEBUG_Y,
         DEBUG_H,
-        &crate::kit::Row::new("Debug log")
+        &crate::kit::Row::new(crate::i18n::text("Debug log"))
             .sub(dsub)
             .trail(crate::kit::Trail::Switch(bt.debug_log)),
     );
@@ -610,7 +628,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         46.0,
         458.0,
         780.0,
-        "NFC · TOUCH DEVICE TO REAR PANEL",
+        crate::i18n::text("NFC · TOUCH DEVICE TO REAR PANEL"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
         "RECEIVER MODE \u{203a}",
         &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08),
@@ -628,7 +646,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
 pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     use crate::kit::{self, Row, Trail};
     c.fill(t.bg);
-    crate::chrome::header(c, t, f, "Sound quality", None);
+    crate::chrome::header(c, t, f, crate::i18n::text("Sound quality"), None);
     let ldac = bt.codec_sel == LDAC;
     let mut bottom = 0;
     for (p, top, h) in codec_parts(ldac) {
@@ -651,12 +669,12 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
                 let q = LDAC_ORDER[k];
                 let chosen = bt.on && bt.ldac_quality as usize == q;
                 let sub = if q == 0 {
-                    "Adapts the rate to the link"
+                    crate::i18n::text("Adapts the rate to the link")
                 } else {
                     ""
                 };
-                let value = QUALITIES[q].to_uppercase();
-                let r = Row::new(LDAC_NAMES[q])
+                let value = crate::i18n::text(QUALITIES[q]).to_uppercase();
+                let r = Row::new(crate::i18n::text(LDAC_NAMES[q]))
                     .sub(sub)
                     .trail(Trail::Value(&value))
                     .sel(chosen);
@@ -670,13 +688,13 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
                 // preference internally ("Not control absolute volume mode"), so the shell must set
                 // it — reading IsSupportedAbsoluteVolume alone is not enough.
                 let sub = if !bt.enhanced_supported {
-                    "Not supported by the connected device"
+                    crate::i18n::text("Not supported by the connected device")
                 } else if bt.enhanced {
                     "Sets the headphone's level \u{b7} no button beep"
                 } else {
                     "Sends key presses \u{b7} on if volume won't change"
                 };
-                let r = Row::new("Use Enhanced Mode")
+                let r = Row::new(crate::i18n::text("Use Enhanced Mode"))
                     .sub(sub)
                     .trail(Trail::Switch(bt.on && bt.enhanced));
                 row_or_off(c, t, f, top, h, &r, bt.on);
@@ -687,12 +705,14 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
                 // measured in AVRCP units but not in dB. The trim rides on the EQ, so a curve
                 // already at the service's floor leaves nothing to trim with.
                 let sub = if bt.fine_volume == "OFF" {
-                    "One Bluetooth step per press (~2 dB)"
+                    crate::i18n::text("One Bluetooth step per press (~2 dB)")
                 } else {
-                    "Splits each Bluetooth step, via the EQ"
+                    crate::i18n::text("Splits each Bluetooth step, via the EQ")
                 };
                 let value = bt.fine_volume.to_uppercase();
-                let r = Row::new("Fine volume").sub(sub).trail(Trail::Value(&value));
+                let r = Row::new(crate::i18n::text("Fine volume"))
+                    .sub(sub)
+                    .trail(Trail::Value(&value));
                 row_or_off(c, t, f, top, h, &r, bt.on);
             }
         }
@@ -708,7 +728,7 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     );
     let note = crate::widgets::fit(
         f,
-        "Used everywhere, USB-DAC to LDAC included.",
+        crate::i18n::text("Used everywhere, USB-DAC to LDAC included."),
         &st,
         (kit::RIGHT - kit::LEFT) as f32,
     );

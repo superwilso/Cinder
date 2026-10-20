@@ -67,6 +67,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ matrix.dir }}
+      - name: Check generated localization catalog
+        if: matrix.dir == 'player'
+        working-directory: .
+        run: python tools/generate_locales.py --check
       - name: Test
         working-directory: ${{ matrix.dir }}
         run: cargo test --release

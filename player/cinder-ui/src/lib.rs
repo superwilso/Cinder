@@ -23,6 +23,7 @@ pub mod eq;
 pub mod fm;
 pub mod folders;
 pub mod help;
+pub mod i18n;
 pub mod icons;
 pub mod keyboard;
 pub mod kit;

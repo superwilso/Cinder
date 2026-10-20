@@ -57,21 +57,21 @@ pub fn switch_hit(_x: i32, y: i32) -> bool {
 /// The status lines for a state, most important first. Split out so it is testable.
 pub fn status_lines(rx: &Rx) -> Vec<String> {
     if !rx.radio && !rx.on {
-        return vec!["Bluetooth is off. Turn it on first.".into()];
+        return vec![crate::i18n::text("Bluetooth is off. Turn it on first.").into()];
     }
     match (rx.on, rx.phase) {
         (false, _) => vec![
-            "Off.".into(),
-            "Turn it on, then pair from your phone or PC:".into(),
-            "look for this Walkman in its Bluetooth list.".into(),
+            crate::i18n::text("Off.").into(),
+            crate::i18n::text("Turn it on, then pair from your phone or PC:").into(),
+            crate::i18n::text("look for this Walkman in its Bluetooth list.").into(),
         ],
         (true, 0) | (true, 1) => vec![
-            "Waiting for a device.".into(),
-            "Pair or connect from your phone or PC now.".into(),
-            "If a code appears, check it matches, then YES.".into(),
+            crate::i18n::text("Waiting for a device.").into(),
+            crate::i18n::text("Pair or connect from your phone or PC now.").into(),
+            crate::i18n::text("If a code appears, check it matches, then YES.").into(),
         ],
         (true, 2) => vec![
-            format!(
+            crate::ui_format!(
                 "Connected{}",
                 if rx.peer.is_empty() {
                     String::new()
@@ -79,15 +79,15 @@ pub fn status_lines(rx: &Rx) -> Vec<String> {
                     format!(": {}", rx.peer)
                 }
             ),
-            "Start playing on the other device.".into(),
+            crate::i18n::text("Start playing on the other device.").into(),
         ],
         (true, _) => vec![
-            format!(
+            crate::ui_format!(
                 "Playing{}",
                 if rx.peer.is_empty() {
                     String::new()
                 } else {
-                    format!(" from {}", rx.peer)
+                    crate::ui_format!(" from {}", rx.peer)
                 }
             ),
             // Sony's codec enum, named where it is known (`bluetooth::link_codec_label`): 0x03 is
@@ -108,12 +108,18 @@ pub fn status_lines(rx: &Rx) -> Vec<String> {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
     c.fill(t.bg);
-    crate::chrome::header(c, t, f, "BT Receiver", Some("EXPERIMENTAL"));
+    crate::chrome::header(
+        c,
+        t,
+        f,
+        crate::i18n::text("BT Receiver"),
+        Some(crate::i18n::text("EXPERIMENTAL")),
+    );
 
     let sub = if rx.on {
-        "On · your music is paused"
+        crate::i18n::text("On · your music is paused")
     } else {
-        "Play from a phone or PC into this Walkman"
+        crate::i18n::text("Play from a phone or PC into this Walkman")
     };
     kit::row(
         c,
@@ -121,7 +127,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         f,
         SWITCH_Y,
         SWITCH_H,
-        &Row::new("Receiver mode")
+        &Row::new(crate::i18n::text("Receiver mode"))
             .sub(sub)
             .trail(Trail::Switch(rx.on)),
     );
@@ -135,8 +141,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         f,
         SONY_Y,
         SONY_H,
-        &Row::new("Use Sony's receiver")
-            .sub("Restarts into the Sony player")
+        &Row::new(crate::i18n::text("Use Sony's receiver"))
+            .sub(crate::i18n::text("Restarts into the Sony player"))
             .trail(Trail::Open("")),
     );
 
@@ -160,9 +166,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
     }
 
     let notes = [
-        "Sound comes out of the headphone jack.",
-        "Bluetooth headphones do not reconnect while it is on.",
-        "Leaving this page turns it off and gives the music back.",
+        crate::i18n::text("Sound comes out of the headphone jack."),
+        crate::i18n::text("Bluetooth headphones do not reconnect while it is on."),
+        crate::i18n::text("Leaving this page turns it off and gives the music back."),
     ];
     let nst = sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0);
     let mut ny = 600.0;
@@ -178,7 +184,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         f,
         240.0,
         770.0,
-        "EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE",
+        crate::i18n::text("EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1),
     );
 }

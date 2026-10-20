@@ -73,16 +73,28 @@ fn parts(n: usize) -> Vec<(Part, i32, i32)> {
         y += h;
     };
     push(Part::Row(Hit::Save), kit::ROW_H, &mut v);
-    push(Part::Label("SAVED"), kit::SECTION_H, &mut v);
+    push(
+        Part::Label(crate::i18n::text("SAVED")),
+        kit::SECTION_H,
+        &mut v,
+    );
     if n == 0 {
         push(Part::Empty, kit::ROW_H, &mut v);
     }
     for i in 0..n.min(MAX) {
         push(Part::Row(Hit::Load(i)), kit::ROW_H, &mut v);
     }
-    push(Part::Label("A/B COMPARE"), kit::SECTION_H, &mut v);
+    push(
+        Part::Label(crate::i18n::text("A/B COMPARE")),
+        kit::SECTION_H,
+        &mut v,
+    );
     push(Part::Row(Hit::Copy), kit::ROW_H, &mut v);
-    push(Part::Label("ALSO SAVED"), kit::SECTION_H, &mut v);
+    push(
+        Part::Label(crate::i18n::text("ALSO SAVED")),
+        kit::SECTION_H,
+        &mut v,
+    );
     for (bit, _, _) in FOLLOWS {
         push(Part::Row(Hit::Follow(bit)), kit::ROW_H, &mut v);
     }
@@ -130,7 +142,13 @@ pub struct Presets<'a> {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Presets) {
     c.fill(t.bg);
-    crate::chrome::header(c, t, f, "Presets", Some("Sound"));
+    crate::chrome::header(
+        c,
+        t,
+        f,
+        crate::i18n::text("Presets"),
+        Some(crate::i18n::text("Sound")),
+    );
     let other = if p.live == "A" { "B" } else { "A" };
     let n = p.saved.len();
     for (part, top, h) in parts(n) {
@@ -142,7 +160,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Presets) {
                 let sub = if n >= MAX {
                     "All four are in use \u{b7} delete one to save another".to_string()
                 } else {
-                    format!("Keeps what {} sounds like now, as Preset {}", p.live, n + 1)
+                    crate::ui_format!("Keeps what {} sounds like now, as Preset {}", p.live, n + 1)
                 };
                 kit::row(
                     c,
@@ -150,9 +168,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Presets) {
                     f,
                     top,
                     h,
-                    &Row::new("Save current sound")
+                    &Row::new(crate::i18n::text("Save current sound"))
                         .sub(&sub)
-                        .trail(Trail::Tag("SAVE")),
+                        .trail(Trail::Tag(crate::i18n::text("SAVE"))),
                 );
             }
             Part::Empty => {
@@ -164,15 +182,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Presets) {
                     0.0,
                 );
                 let w = (kit::RIGHT - kit::LEFT) as f32;
-                let s = fit(f, "Nothing saved yet. Save the sound you have now.", &st, w);
+                let s = fit(
+                    f,
+                    crate::i18n::text("Nothing saved yet. Save the sound you have now."),
+                    &st,
+                    w,
+                );
                 text::draw(c, f, kit::LEFT as f32, (top + h / 2 + 5) as f32, &s, &st);
             }
             Part::Row(Hit::Load(i)) => {
-                let title = format!("Preset {}", i + 1);
+                let title = crate::ui_format!("Preset {}", i + 1);
                 let trail = if p.armed == Some(i) {
-                    "SURE?"
+                    crate::i18n::text("SURE?")
                 } else {
-                    "DELETE"
+                    crate::i18n::text("DELETE")
                 };
                 kit::row(
                     c,
@@ -184,10 +207,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Presets) {
                 );
             }
             Part::Row(Hit::Copy) => {
-                let title = format!("Copy {} to {other}", p.live);
-                let sub = format!(
+                let title = crate::ui_format!("Copy {} to {other}", p.live, other = other);
+                let sub = crate::ui_format!(
                     "{other} starts as {}, to change one thing and compare",
-                    p.live
+                    p.live,
+                    other = other
                 );
                 kit::row(c, t, f, top, h, &Row::new(&title).sub(&sub));
             }

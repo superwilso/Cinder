@@ -69,9 +69,9 @@ impl Style {
     /// One line for the Display page, under the chips.
     pub fn about(self) -> &'static str {
         match self {
-            Style::Cinder => "Full-bleed cover, big controls",
-            Style::Nocturne => "Quiet: inset cover, thin lines",
-            Style::Terminal => "Framed cover, text buttons",
+            Style::Cinder => crate::i18n::text("Full-bleed cover, big controls"),
+            Style::Nocturne => crate::i18n::text("Quiet: inset cover, thin lines"),
+            Style::Terminal => crate::i18n::text("Framed cover, text buttons"),
         }
     }
 }

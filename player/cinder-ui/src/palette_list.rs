@@ -93,19 +93,19 @@ fn parts(entries: usize, skipped: usize) -> Vec<(Part, i32, i32)> {
         out.push((p, y, h));
         y += h;
     };
-    push(Part::Label("SORT"), kit::SECTION_H);
+    push(Part::Label(crate::i18n::text("SORT")), kit::SECTION_H);
     push(Part::Chips, kit::CHIP_H + 8);
-    push(Part::Label("PALETTES"), kit::SECTION_H);
+    push(Part::Label(crate::i18n::text("PALETTES")), kit::SECTION_H);
     for i in 0..entries {
         push(Part::Row(Item::Entry(i)), kit::ROW_H);
     }
     if skipped > 0 {
-        push(Part::Label("SKIPPED"), kit::SECTION_H);
+        push(Part::Label(crate::i18n::text("SKIPPED")), kit::SECTION_H);
         for i in 0..skipped {
             push(Part::Row(Item::Skipped(i)), kit::ROW_H);
         }
     }
-    push(Part::Label("ADD"), kit::SECTION_H);
+    push(Part::Label(crate::i18n::text("ADD")), kit::SECTION_H);
     push(Part::Row(Item::Add), kit::ROW_H);
     out
 }
@@ -150,7 +150,7 @@ pub fn render(
     scroll: i32,
 ) {
     c.fill(t.bg);
-    crate::chrome::header(c, t, f, "Palette", None);
+    crate::chrome::header(c, t, f, crate::i18n::text("Palette"), None);
     c.set_clip_y(TOP, H as i32);
     for (p, top, h) in parts(entries.len(), skipped.len()) {
         let y = TOP + top - scroll;
@@ -203,7 +203,8 @@ pub fn render(
                     f,
                     y,
                     kit::ROW_H,
-                    &Row::new("Add a palette").sub("Copy .palette files to cinder_palettes/"),
+                    &Row::new(crate::i18n::text("Add a palette"))
+                        .sub(crate::i18n::text("Copy .palette files to cinder_palettes/")),
                 );
             }
             Part::Row(Item::Sort(_)) => {}

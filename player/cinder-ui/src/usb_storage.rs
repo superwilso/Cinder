@@ -27,15 +27,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
 
     icons::usb(c, cx, (cy - 120) as f32, 44.0, t.acc);
 
-    let title = "USB Storage";
+    let title = crate::i18n::text("USB Storage");
     let tst = sty(Family::Sans, Weight::ExtraBold, 29.0, t.ink, -0.01);
     crate::widgets::center(c, f, cx, (cy - 40) as f32, title, &tst);
 
     let lines = [
-        "Storage is connected to your computer.",
-        "Music and files are unavailable until you're done.",
+        crate::i18n::text("Storage is connected to your computer."),
+        crate::i18n::text("Music and files are unavailable until you're done."),
         "",
-        "Unplug the cable or turn off below to return.",
+        crate::i18n::text("Unplug the cable or turn off below to return."),
     ];
     let mut y = cy + 8;
     for l in lines {
@@ -50,5 +50,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
     let (bx, by, bw, bh) = OFF_BTN;
     fill_rect(c, bx, by, bw, bh, t.acc);
     let bst = sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc_ink, 0.06);
-    crate::widgets::center(c, f, cx, (by + bh / 2 + 6) as f32, "TURN OFF", &bst);
+    crate::widgets::center(
+        c,
+        f,
+        cx,
+        (by + bh / 2 + 6) as f32,
+        crate::i18n::text("TURN OFF"),
+        &bst,
+    );
 }

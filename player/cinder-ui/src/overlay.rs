@@ -91,7 +91,11 @@ pub fn volume_trimmed(
     //
     // So the word changes rather than the behaviour: the bottom of the Bluetooth scale is MIN.
     let at_floor = level == 0;
-    let floor_word = if bt_route { "MIN" } else { "MUTE" };
+    let floor_word = if bt_route {
+        crate::i18n::text("MIN")
+    } else {
+        crate::i18n::text("MUTE")
+    };
     let pill_h = 40;
     let x0 = 24;
     let y0 = crate::chrome::STATUS_H + 12;
@@ -237,7 +241,7 @@ pub fn queue_chip(c: &mut Canvas, t: &Theme, f: &FontSet, row_y: i32, progress: 
         f,
         (x0 + 16) as f32,
         (y0 + 23) as f32,
-        "+ QUEUED",
+        crate::i18n::text("+ QUEUED"),
         &sty(Family::Mono, Weight::Bold, 14.0, t.acc_ink, 0.12),
     );
 }

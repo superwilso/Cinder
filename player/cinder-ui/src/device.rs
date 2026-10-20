@@ -171,53 +171,71 @@ fn row(label: &str, value: String) -> Item {
 /// its hit target come from one place and cannot drift apart.
 pub fn items(v: &DeviceView) -> Vec<Item> {
     vec![
-        Item::Section("BATTERY"),
+        Item::Section(crate::i18n::text("BATTERY")),
         Item::Row {
-            label: "Battery care".into(),
+            label: crate::i18n::text("Battery care").into(),
             value: String::new(),
             toggle: true,
         },
-        row("Voltage", volts_label(v.millivolts)),
-        row("Health", text_or_dash(v.health, true)),
-        Item::Section("CHARGER"),
+        row(crate::i18n::text("Voltage"), volts_label(v.millivolts)),
+        row(crate::i18n::text("Health"), text_or_dash(v.health, true)),
+        Item::Section(crate::i18n::text("CHARGER")),
         // The charger IC is only read by the helper. Without it this row would be a dash that
         // looks like a reading failed, when nothing was ever asked.
         if helper(v) {
-            row("Charger", charger_label(v.chg_state, v.chg_fault))
+            row(
+                crate::i18n::text("Charger"),
+                charger_label(v.chg_state, v.chg_fault),
+            )
         } else {
             Item::Note {
-                title: "Needs the battery helper",
-                sub: "Reinstall with the battery component on",
+                title: crate::i18n::text("Needs the battery helper"),
+                sub: crate::i18n::text("Reinstall with the battery component on"),
             }
         },
-        Item::Section("TEMPERATURE"),
-        row("CPU", temp_label(v.temp_cpu)),
-        row("Power IC", temp_label(v.temp_pmic)),
-        row("Analog block", temp_label(v.temp_abb)),
-        Item::Section("PROCESSOR"),
-        row("Clock", clock_label(v.cpu_khz)),
-        row("Maximum", clock_label(v.cpu_max_khz)),
-        row("Cores online", cores_label(v.cores_online, v.cores_total)),
-        row("Governor", text_or_dash(v.governor, true)),
-        Item::Section("MEMORY"),
-        row("RAM", mem_label(v.mem_total_kb, v.mem_avail_kb)),
+        Item::Section(crate::i18n::text("TEMPERATURE")),
+        row(crate::i18n::text("CPU"), temp_label(v.temp_cpu)),
+        row(crate::i18n::text("Power IC"), temp_label(v.temp_pmic)),
+        row(crate::i18n::text("Analog block"), temp_label(v.temp_abb)),
+        Item::Section(crate::i18n::text("PROCESSOR")),
+        row(crate::i18n::text("Clock"), clock_label(v.cpu_khz)),
+        row(crate::i18n::text("Maximum"), clock_label(v.cpu_max_khz)),
         row(
-            "Free",
+            crate::i18n::text("Cores online"),
+            cores_label(v.cores_online, v.cores_total),
+        ),
+        row(
+            crate::i18n::text("Governor"),
+            text_or_dash(v.governor, true),
+        ),
+        Item::Section(crate::i18n::text("MEMORY")),
+        row(
+            crate::i18n::text("RAM"),
+            mem_label(v.mem_total_kb, v.mem_avail_kb),
+        ),
+        row(
+            crate::i18n::text("Free"),
             if v.mem_avail_kb <= 0 {
                 "—".into()
             } else {
                 format!("{} MB", v.mem_avail_kb / 1024)
             },
         ),
-        Item::Section("STORAGE"),
-        row("Music", size_pair(v.music_total_mb, v.music_free_mb)),
-        row("Music free", mb_label(v.music_free_mb)),
-        row("App data free", mb_label(v.data_free_mb)),
-        Item::Section("SYSTEM"),
-        row("Uptime", uptime_label(v.uptime_s)),
-        row("Kernel", text_or_dash(v.kernel, false)),
-        row("Firmware", text_or_dash(v.firmware, false)),
-        row("Base", text_or_dash(v.base_fw, false)),
+        Item::Section(crate::i18n::text("STORAGE")),
+        row(
+            crate::i18n::text("Music"),
+            size_pair(v.music_total_mb, v.music_free_mb),
+        ),
+        row(crate::i18n::text("Music free"), mb_label(v.music_free_mb)),
+        row(crate::i18n::text("App data free"), mb_label(v.data_free_mb)),
+        Item::Section(crate::i18n::text("SYSTEM")),
+        row(crate::i18n::text("Uptime"), uptime_label(v.uptime_s)),
+        row(crate::i18n::text("Kernel"), text_or_dash(v.kernel, false)),
+        row(
+            crate::i18n::text("Firmware"),
+            text_or_dash(v.firmware, false),
+        ),
+        row(crate::i18n::text("Base"), text_or_dash(v.base_fw, false)),
     ]
 }
 
@@ -309,7 +327,7 @@ pub fn cores_label(online: i32, total: i32) -> String {
     if online <= 0 || total <= 0 {
         return "—".into();
     }
-    format!("{} OF {}", online, total)
+    crate::ui_format!("{} OF {}", online, total)
 }
 
 /// Used-of-total in MB, computed from what /proc/meminfo actually gives.
@@ -379,16 +397,16 @@ pub fn charger_label(state: i32, fault: i32) -> String {
     // describes the missing input. Every other state still lets a fault code through, because a
     // fault while charging is exactly what this row exists to show.
     if state == CHG_NO_INPUT {
-        return "ON BATTERY".into();
+        return crate::i18n::text("ON BATTERY").into();
     }
     if fault > 0 {
-        return format!("FAULT {}", fault);
+        return crate::ui_format!("FAULT {}", fault);
     }
     match state {
-        0 => "READY".into(),
-        1 => "CHARGING".into(),
-        2 => "CHARGE DONE".into(),
-        3 => "FAULT".into(),
+        0 => crate::i18n::text("READY").into(),
+        1 => crate::i18n::text("CHARGING").into(),
+        2 => crate::i18n::text("CHARGE DONE").into(),
+        3 => crate::i18n::text("FAULT").into(),
         _ => "—".into(),
     }
 }
@@ -422,7 +440,7 @@ pub fn is_charging(status: &str) -> bool {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i32) {
     c.fill(t.bg);
-    let head_bottom = crate::chrome::header(c, t, f, "Device", None);
+    let head_bottom = crate::chrome::header(c, t, f, crate::i18n::text("Device"), None);
     // Clip below the header for the same reason Settings does: this screen scrolls, and content
     // sliding up must stop at the header rather than painting over it.
     c.set_clip_y(head_bottom, crate::canvas::H as i32);
@@ -483,7 +501,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
                     Trail::Value(value)
                 };
                 let sub = if *is_toggle {
-                    "Stops the charge near 4.09 V"
+                    crate::i18n::text("Stops the charge near 4.09 V")
                 } else {
                     ""
                 };
@@ -519,7 +537,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
         y as f32,
         &crate::widgets::fit(
             f,
-            "NO FUEL GAUGE — NO CURRENT, NO CYCLE COUNT.",
+            crate::i18n::text("NO FUEL GAUGE — NO CURRENT, NO CYCLE COUNT."),
             &foot,
             foot_w,
         ),
@@ -546,7 +564,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
             y as f32,
             &crate::widgets::fit(
                 f,
-                "CARE ON: 100% HERE IS ~4.09 V, NOT 4.2 V.",
+                crate::i18n::text("CARE ON: 100% HERE IS ~4.09 V, NOT 4.2 V."),
                 &foot,
                 foot_w,
             ),

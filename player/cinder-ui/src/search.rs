@@ -25,11 +25,11 @@ pub fn render(
     c.fill(t.bg);
     let has = !query.trim().is_empty();
     let caption = if has {
-        format!("{} FOUND", songs.len())
+        crate::ui_format!("{} FOUND", songs.len())
     } else {
-        format!("{total} SONGS")
+        crate::ui_format!("{total} SONGS", total = total)
     };
-    crate::chrome::header(c, t, f, "Search", Some(&caption));
+    crate::chrome::header(c, t, f, crate::i18n::text("Search"), Some(&caption));
 
     // ── the search band: shows the query, and a tap on it edits it ────────────────────────────
     fill_rect(c, 0, TOP, crate::canvas::W as i32, SEARCH_H, t.panel);
@@ -41,7 +41,11 @@ pub fn render(
         if has { t.ink } else { t.faint },
         0.0,
     );
-    let shown = if has { query } else { "Title, artist or album" };
+    let shown = if has {
+        query
+    } else {
+        crate::i18n::text("Title, artist or album")
+    };
     text::draw(
         c,
         f,
@@ -55,9 +59,9 @@ pub fn render(
         // Say which of the two empty states this is: nothing asked, or nothing found.
         let st = sty(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
         let note = if has {
-            "Nothing matches."
+            crate::i18n::text("Nothing matches.")
         } else {
-            "Tap above and start typing."
+            crate::i18n::text("Tap above and start typing.")
         };
         text::draw(c, f, 26.0, (LIST_TOP + 44) as f32, note, &st);
         return;

@@ -155,15 +155,28 @@ fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, s: &SongRow, lifted: bool
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
     c.fill(t.bg);
-    crate::chrome::header_action(c, t, f, "Edit playlist", "DONE");
+    crate::chrome::header_action(
+        c,
+        t,
+        f,
+        crate::i18n::text("Edit playlist"),
+        crate::i18n::text("DONE"),
+    );
     kit::strip(c, t, f, STRIP_Y, &v.name.to_uppercase());
     let n = v.rows.len();
     let count = if n == 1 {
-        "1 TRACK".to_string()
+        crate::i18n::text("1 TRACK").to_string()
     } else {
-        format!("{n} TRACKS")
+        crate::ui_format!("{n} TRACKS", n = n)
     };
-    kit::section_label(c, t, f, LABEL_Y, &count, v.can_undo.then_some("UNDO"));
+    kit::section_label(
+        c,
+        t,
+        f,
+        LABEL_Y,
+        &count,
+        v.can_undo.then_some(crate::i18n::text("UNDO")),
+    );
 
     let scroll = v.scroll_px.clamp(0, max_scroll(n));
     c.set_clip_y(LIST_TOP, LIST_BOTTOM);
@@ -177,7 +190,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
         );
         let msg = fit(
             f,
-            "Every track removed. DONE saves it empty.",
+            crate::i18n::text("Every track removed. DONE saves it empty."),
             &st,
             (kit::RIGHT - kit::LEFT) as f32,
         );

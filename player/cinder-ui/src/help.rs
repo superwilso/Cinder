@@ -161,13 +161,13 @@ fn parts(pull_down: bool) -> Vec<(Part, i32, i32)> {
         .chain(pull_down.then_some(PULL_DOWN))
         .collect();
     let sections: [(&'static str, &[Line]); 7] = [
-        ("THE WAY BACK TO SONY", &WAY_BACK),
-        ("GETTING AROUND", &GETTING_AROUND),
-        ("ON ANY SONG", &ANY_SONG),
-        ("IN UP NEXT", &UP_NEXT),
-        ("NOW PLAYING", &NOW_PLAYING),
-        ("ANYWHERE", &anywhere),
-        ("BUTTONS", &BUTTONS),
+        (crate::i18n::text("THE WAY BACK TO SONY"), &WAY_BACK),
+        (crate::i18n::text("GETTING AROUND"), &GETTING_AROUND),
+        (crate::i18n::text("ON ANY SONG"), &ANY_SONG),
+        (crate::i18n::text("IN UP NEXT"), &UP_NEXT),
+        (crate::i18n::text("NOW PLAYING"), &NOW_PLAYING),
+        (crate::i18n::text("ANYWHERE"), &anywhere),
+        (crate::i18n::text("BUTTONS"), &BUTTONS),
     ];
     for (label, lines) in sections {
         push(Part::Label(label), kit::SECTION_H);
@@ -182,7 +182,7 @@ fn parts(pull_down: bool) -> Vec<(Part, i32, i32)> {
             );
         }
     }
-    push(Part::Label("AGAIN"), kit::SECTION_H);
+    push(Part::Label(crate::i18n::text("AGAIN")), kit::SECTION_H);
     push(Part::Replay, LINE_H);
     out
 }
@@ -209,7 +209,7 @@ pub fn item_at(_x: i32, y: i32, scroll: i32, pull_down: bool) -> Option<Item> {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, scroll: i32, pull_down: bool) {
     c.fill(t.bg);
-    crate::chrome::header(c, t, f, "Help & controls", None);
+    crate::chrome::header(c, t, f, crate::i18n::text("Help & controls"), None);
     c.set_clip_y(TOP, H as i32);
     for (p, top, h) in parts(pull_down) {
         let y = TOP + top - scroll;
@@ -224,7 +224,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, scroll: i32, pull_down: bo
                 let trail = if line.how.is_empty() {
                     Trail::None
                 } else {
-                    Trail::Value(line.how)
+                    Trail::Value(crate::i18n::text(line.how))
                 };
                 kit::row(
                     c,
@@ -232,9 +232,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, scroll: i32, pull_down: bo
                     f,
                     y,
                     h,
-                    &Row::new(line.title)
+                    &Row::new(crate::i18n::text(line.title))
                         .lead(line.lead)
-                        .sub(line.sub)
+                        .sub(crate::i18n::text(line.sub))
                         .trail(trail),
                 );
             }
@@ -245,7 +245,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, scroll: i32, pull_down: bo
                     f,
                     y,
                     h,
-                    &Row::new("Replay the introduction").trail(Trail::Open("")),
+                    &Row::new(crate::i18n::text("Replay the introduction")).trail(Trail::Open("")),
                 );
             }
         }

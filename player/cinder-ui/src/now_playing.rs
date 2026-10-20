@@ -468,11 +468,11 @@ pub const REPEAT_ALBUM: u8 = 3;
 
 pub fn sleep_badge(c: &mut Canvas, t: &Theme, f: &FontSet, min: u32, end_of_song: bool) {
     let label = if end_of_song {
-        "SLEEP AT SONG END".to_string()
+        crate::i18n::text("SLEEP AT SONG END").to_string()
     } else if min == 0 {
         return;
     } else {
-        format!("SLEEP {}M", min)
+        crate::ui_format!("SLEEP {}M", min)
     };
     let st = s(Family::Mono, Weight::Bold, 12.0, t.acc_ink, 0.08);
     let w = text::measure(f, &label, &st) as i32 + 22;
@@ -521,7 +521,12 @@ pub fn hit_lyrics(x: i32, y: i32, shown: bool) -> bool {
 
 pub(crate) fn lyrics_chip(c: &mut Canvas, t: &Theme, f: &FontSet) {
     let st = lyrics_style(t);
-    let label = crate::widgets::fit(f, LYRICS_LABEL, &st, (LYRICS_HIT_W - 24 - LYRICS_X0) as f32);
+    let label = crate::widgets::fit(
+        f,
+        crate::i18n::text(LYRICS_LABEL),
+        &st,
+        (LYRICS_HIT_W - 24 - LYRICS_X0) as f32,
+    );
     let w = text::measure(f, &label, &st) as i32 + 24;
     fill_rect(c, LYRICS_X0, LYRICS_Y0, w, LYRICS_H, t.panel);
     crate::widgets::stroke_rect(c, LYRICS_X0, LYRICS_Y0, w, LYRICS_H, t.ctrl(), 1);
@@ -579,13 +584,19 @@ pub(crate) fn viz_absent_text(np: &NowPlaying) -> (&'static str, &'static str) {
     let kind = crate::viz::from_index(np.viz_kind);
     if np.viz_levels.is_some() && crate::viz::needs_samples(kind) {
         (
-            "Needs library playback",
-            "FM, USB-DAC AND THE RECEIVER GIVE BANDS ONLY",
+            crate::i18n::text("Needs library playback"),
+            crate::i18n::text("FM, USB-DAC AND THE RECEIVER GIVE BANDS ONLY"),
         )
     } else if np.viz_levels.is_some() {
-        ("Gathering", "THE PICTURE BUILDS AS THE MUSIC PLAYS")
+        (
+            crate::i18n::text("Gathering"),
+            crate::i18n::text("THE PICTURE BUILDS AS THE MUSIC PLAYS"),
+        )
     } else {
-        ("No audio signal", "PLAY SOMETHING TO SEE THE SPECTRUM")
+        (
+            crate::i18n::text("No audio signal"),
+            crate::i18n::text("PLAY SOMETHING TO SEE THE SPECTRUM"),
+        )
     }
 }
 
@@ -710,7 +721,7 @@ fn peak_label(v: i32, buf: &mut [u8; 8]) -> &str {
     let s = dec(v, &mut d);
     let n = 5 + s.len();
     buf[5..n].copy_from_slice(s.as_bytes());
-    core::str::from_utf8(&buf[..n]).unwrap_or("PEAK")
+    core::str::from_utf8(&buf[..n]).unwrap_or(crate::i18n::text("PEAK"))
 }
 
 /// PAGE 3 — output level. One big meter, a peak marker, and a scale. No per-band detail: this is
@@ -728,7 +739,7 @@ fn level_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         f,
         240.0,
         label_y,
-        "OUTPUT LEVEL",
+        crate::i18n::text("OUTPUT LEVEL"),
         &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
     );
 
@@ -802,7 +813,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             f,
             240.0,
             cy,
-            "Nothing playing",
+            crate::i18n::text("Nothing playing"),
             &s(Family::Sans, Weight::Regular, 22.0, t.dim, 0.0),
         );
         crate::widgets::center(
@@ -810,7 +821,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             f,
             240.0,
             cy + 26.0,
-            "CHOOSE A TRACK FROM YOUR LIBRARY",
+            crate::i18n::text("CHOOSE A TRACK FROM YOUR LIBRARY"),
             &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
         );
         idle_chrome(c, t, f);
@@ -1040,7 +1051,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             f,
             436.0,
             ty + 27.0,
-            "ALBUM",
+            crate::i18n::text("ALBUM"),
             &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1),
         );
     }

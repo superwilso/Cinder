@@ -193,6 +193,41 @@ const FALLBACK_DIR: &str = "/system/vendor/sony/lib/fonts";
 /// Chinese). At most one of these is ever resident — see `fallback`.
 const CJK_FALLBACKS: [usize; 3] = [1, 2, 3];
 
+/// Small OFL font subset for Chinese UI copy. Loaded only when a Chinese UI render needs a glyph.
+fn chinese_ui_font() -> &'static Font {
+    static FONT: std::sync::OnceLock<Font> = std::sync::OnceLock::new();
+    FONT.get_or_init(|| {
+        Font::from_bytes(
+            include_bytes!("../assets/fonts/CinderHansUI-Regular.otf") as &[u8],
+            FontSettings::default(),
+        )
+        .expect("bundled Chinese UI font")
+    })
+}
+
+fn is_chinese_ui_subset_char(ch: char) -> bool {
+    (crate::i18n::is_chinese() || FIXED_UI_CHINESE_GLYPHS.with(std::cell::Cell::get))
+        && ((0x3000..=0x9fff).contains(&(ch as u32)) || (0xff00..=0xffef).contains(&(ch as u32)))
+}
+
+thread_local! {
+    static FIXED_UI_CHINESE_GLYPHS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Render fixed bilingual UI chrome with the bundled CJK subset, independent of the selected UI
+/// language. Keep the scope around that explicit text only; user metadata keeps its normal chain.
+pub fn with_fixed_ui_chinese_glyphs<T>(draw: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FIXED_UI_CHINESE_GLYPHS.with(|value| value.set(self.0));
+        }
+    }
+    let previous = FIXED_UI_CHINESE_GLYPHS.with(|value| value.replace(true));
+    let _restore = Restore(previous);
+    draw()
+}
+
 /// Every distinct bundled font, as (family, weight) pairs that `pick` maps to different files.
 /// Order matters only for looks — the first one carrying the glyph wins — so the regular weights
 /// come first and the display weights last.
@@ -386,6 +421,12 @@ impl FontSet {
         if (ch as u32) < 0x80 || primary.lookup_glyph_index(ch) != 0 {
             return (id, primary);
         }
+        if is_chinese_ui_subset_char(ch) {
+            let ui = chinese_ui_font();
+            if ui.lookup_glyph_index(ch) != 0 {
+                return (8, ui);
+            }
+        }
         for i in 0..FALLBACK_FONTS.len() {
             if !fallback_covers_script(i, ch) {
                 continue;
@@ -516,6 +557,53 @@ pub fn probe_glyph(fonts: &FontSet, ch: char) -> u8 {
         id
     } else {
         u8::MAX
+    }
+}
+
+#[cfg(test)]
+mod localization_tests {
+    use super::*;
+    #[test]
+    fn cjk_subset_is_scoped_to_simplified_chinese_ui() {
+        assert!(!is_chinese_ui_subset_char('中'));
+        let _language = crate::i18n::enter(crate::i18n::Language::SimplifiedChinese);
+        assert!(is_chinese_ui_subset_char('中'));
+        assert!(!is_chinese_ui_subset_char('A'));
+    }
+    #[test]
+    fn the_embedded_subset_covers_the_chinese_catalog_and_language_picker() {
+        let font = chinese_ui_font();
+        let catalog = include_str!("../locales/zh-CN.json");
+        for ch in catalog
+            .chars()
+            .chain("Language / 语言English简体中文".chars())
+        {
+            let cp = ch as u32;
+            if (0x3000..=0x9fff).contains(&cp)
+                || (0xf900..=0xfaff).contains(&cp)
+                || (0xff00..=0xffef).contains(&cp)
+            {
+                assert_ne!(font.lookup_glyph_index(ch), 0, "missing {ch:?}");
+            }
+        }
+    }
+    #[test]
+    fn raw_metadata_is_not_automatically_translated_by_the_text_engine() {
+        let _scale = scale_guard();
+        let fonts = FontSet::load();
+        let st = TextStyle {
+            fam: Family::Sans,
+            weight: Weight::Regular,
+            size: 16.0,
+            color: Rgb888::new(255, 255, 255),
+            tracking: 0.0,
+        };
+        let mut en = Canvas::new();
+        draw(&mut en, &fonts, 20.0, 40.0, "Settings", &st);
+        let _language = crate::i18n::enter(crate::i18n::Language::SimplifiedChinese);
+        let mut zh = Canvas::new();
+        draw(&mut zh, &fonts, 20.0, 40.0, "Settings", &st);
+        assert_eq!(en.buf, zh.buf, "a song named Settings must keep its title");
     }
 }
 

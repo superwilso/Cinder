@@ -175,9 +175,9 @@ pub fn render_prompt(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Prompt) {
     fill_rect(c, px, py, pw, ph, t.panel);
     stroke_rect(c, px, py, pw, ph, t.acc, 1);
     let title = if p.kind == PROMPT_PASSKEY {
-        "PASSKEY"
+        crate::i18n::text("PASSKEY")
     } else {
-        "CONFIRM PAIRING"
+        crate::i18n::text("CONFIRM PAIRING")
     };
     center(
         c,
@@ -204,9 +204,9 @@ pub fn render_prompt(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Prompt) {
         &sty(Family::Mono, Weight::Regular, 38.0, t.ink, 0.22),
     );
     let hint = if p.kind == PROMPT_PASSKEY {
-        "ENTER THIS CODE ON THE OTHER DEVICE"
+        crate::i18n::text("ENTER THIS CODE ON THE OTHER DEVICE")
     } else {
-        "DOES THE OTHER DEVICE SHOW THIS CODE?"
+        crate::i18n::text("DOES THE OTHER DEVICE SHOW THIS CODE?")
     };
     center(
         c,
@@ -227,7 +227,7 @@ pub fn render_prompt(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Prompt) {
             f,
             240.0,
             (oy + oh / 2 + 5) as f32,
-            "DISMISS",
+            crate::i18n::text("DISMISS"),
             &sty(
                 Family::Sans,
                 Weight::SemiBold,
@@ -243,7 +243,7 @@ pub fn render_prompt(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Prompt) {
             f,
             (ox + ow / 2) as f32,
             (oy + oh / 2 + 5) as f32,
-            "YES, PAIR",
+            crate::i18n::text("YES, PAIR"),
             &sty(Family::Sans, Weight::Bold, 16.0, t.acc_ink, 0.0),
         );
         stroke_rect(c, nx, ny, nw, nh, t.line, 1);
@@ -252,7 +252,7 @@ pub fn render_prompt(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Prompt) {
             f,
             (nx + nw / 2) as f32,
             (ny + nh / 2 + 5) as f32,
-            "CANCEL",
+            crate::i18n::text("CANCEL"),
             &sty(
                 Family::Sans,
                 Weight::SemiBold,
@@ -374,7 +374,7 @@ pub fn render(
     page: usize,
 ) {
     c.fill(t.bg);
-    crate::chrome::header(c, t, f, "Devices", None);
+    crate::chrome::header(c, t, f, crate::i18n::text("Devices"), None);
 
     // Scan panel. This replaced a decorative NFC card: tap-to-pair isn't wired, so the most useful
     // thing this space can hold is the control that does work.
@@ -388,7 +388,7 @@ pub fn render(
         f,
         40.0,
         (CARD_Y + 30) as f32,
-        "Scan for new devices",
+        crate::i18n::text("Scan for new devices"),
         &sty(
             Family::Sans,
             Weight::SemiBold,
@@ -399,11 +399,11 @@ pub fn render(
         text_end,
     );
     let sub = if scanning {
-        format!("SEARCHING… {} FOUND", found.len())
+        crate::ui_format!("SEARCHING… {} FOUND", found.len())
     } else if found.is_empty() {
-        "PUT THE DEVICE IN PAIRING MODE FIRST".to_string()
+        crate::i18n::text("PUT THE DEVICE IN PAIRING MODE FIRST").to_string()
     } else {
-        format!("{} FOUND · SCAN AGAIN TO REFRESH", found.len())
+        crate::ui_format!("{} FOUND · SCAN AGAIN TO REFRESH", found.len())
     };
     crate::widgets::draw_fit(
         c,
@@ -431,7 +431,11 @@ pub fn render(
         f,
         (sx + sw / 2) as f32,
         (sy + sh / 2 + 4) as f32,
-        if scanning { "STOP" } else { "SCAN" },
+        if scanning {
+            crate::i18n::text("STOP")
+        } else {
+            crate::i18n::text("SCAN")
+        },
         &sty(
             Family::Sans,
             Weight::SemiBold,
@@ -448,14 +452,14 @@ pub fn render(
     // Say WHICH ones these are once there is more than one page. "PAIRED · 6" over four rows was
     // technically true and actively misleading.
     let head = if pages > 1 {
-        format!(
+        crate::ui_format!(
             "PAIRED · {}-{} OF {}",
             start + 1,
             start + prows,
             devices.len()
         )
     } else {
-        format!("PAIRED · {}", devices.len())
+        crate::ui_format!("PAIRED · {}", devices.len())
     };
     crate::widgets::draw_fit(
         c,
@@ -484,7 +488,7 @@ pub fn render(
             f,
             58.0,
             (LIST_Y0 + 26) as f32,
-            "Nothing paired yet",
+            crate::i18n::text("Nothing paired yet"),
             &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
             458.0,
         );
@@ -494,13 +498,13 @@ pub fn render(
         // (forget_armed, busy) is an ABSOLUTE index, because that is what the taps returned.
         let ai = start + i;
         let sub = if busy == Some(ai) {
-            "CONNECTING…".to_string()
+            crate::i18n::text("CONNECTING…").to_string()
         } else if d.connected {
-            "CONNECTED · TAP TO DISCONNECT".to_string()
+            crate::i18n::text("CONNECTED · TAP TO DISCONNECT").to_string()
         } else if d.kind.is_empty() {
-            "TAP TO CONNECT".to_string()
+            crate::i18n::text("TAP TO CONNECT").to_string()
         } else {
-            format!("{} · TAP TO CONNECT", d.kind.to_uppercase())
+            crate::ui_format!("{} · TAP TO CONNECT", d.kind.to_uppercase())
         };
         let armed = forget_armed == Some(ai);
         let ry = LIST_Y0 + i as i32 * ROW_H;
@@ -512,7 +516,11 @@ pub fn render(
             &d.name,
             &sub,
             d.connected,
-            Some(if armed { "TAP AGAIN" } else { "FORGET" }),
+            Some(if armed {
+                crate::i18n::text("TAP AGAIN")
+            } else {
+                crate::i18n::text("FORGET")
+            }),
             armed,
         );
         // A moving indicator on the row that is actually attempting. "CONNECTING…" on its own is
@@ -532,7 +540,7 @@ pub fn render(
             f,
             22.0,
             hy as f32,
-            &format!("FOUND · {}", found.len()),
+            &crate::ui_format!("FOUND · {}", found.len()),
             &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18),
             458.0,
         );
@@ -544,7 +552,7 @@ pub fn render(
                 f,
                 58.0,
                 (fy0 + 26) as f32,
-                "Searching…",
+                crate::i18n::text("Searching…"),
                 &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
                 458.0,
             );
@@ -554,9 +562,9 @@ pub fn render(
         }
         for (i, d) in found.iter().take(cap).enumerate() {
             let sub = if d.kind.is_empty() {
-                "TAP TO PAIR".to_string()
+                crate::i18n::text("TAP TO PAIR").to_string()
             } else {
-                format!("{} · TAP TO PAIR", d.kind.to_uppercase())
+                crate::ui_format!("{} · TAP TO PAIR", d.kind.to_uppercase())
             };
             row(
                 c,
@@ -566,7 +574,7 @@ pub fn render(
                 &d.name,
                 &sub,
                 false,
-                Some("PAIR"),
+                Some(crate::i18n::text("PAIR")),
                 true,
             );
         }
@@ -589,7 +597,7 @@ pub fn render(
         f,
         22.0,
         760.0,
-        "PIN AND CONFIRM PROMPTS APPEAR HERE WHEN A DEVICE ASKS",
+        crate::i18n::text("PIN AND CONFIRM PROMPTS APPEAR HERE WHEN A DEVICE ASKS"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1),
         458.0,
     );
@@ -599,7 +607,7 @@ pub fn render(
         f,
         46.0,
         780.0,
-        "OR TAP THE DEVICE TO THE REAR PANEL (NFC)",
+        crate::i18n::text("OR TAP THE DEVICE TO THE REAR PANEL (NFC)"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
         458.0,
     );

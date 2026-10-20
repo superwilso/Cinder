@@ -89,7 +89,7 @@ pub fn row_at(lib: &Library, dir: Option<usize>, y: i32, scroll: i32) -> Option<
 pub fn title(lib: &Library, dir: Option<usize>) -> &str {
     match dir.and_then(|i| lib.folders.get(i)) {
         Some(f) => &f.name,
-        None => "Folders",
+        None => crate::i18n::text("Folders"),
     }
 }
 
@@ -105,8 +105,8 @@ pub fn subtitle(lib: &Library, dir: Option<usize>) -> &str {
 
 fn count_label(f: &FolderRow) -> String {
     match f.total {
-        1 => "1 TRACK".to_string(),
-        n => format!("{n} TRACKS"),
+        1 => crate::i18n::text("1 TRACK").to_string(),
+        n => crate::ui_format!("{n} TRACKS", n = n),
     }
 }
 
@@ -145,9 +145,9 @@ pub fn render(
     if all.is_empty() {
         let st = sty(Family::Sans, Weight::Regular, crate::scale::ROW, t.dim, 0.0);
         let msg = if lib.folders.is_empty() {
-            "No folders — the library has not been read yet."
+            crate::i18n::text("No folders — the library has not been read yet.")
         } else {
-            "This folder holds no tracks."
+            crate::i18n::text("This folder holds no tracks.")
         };
         text::draw(c, f, 22.0, (TOP + 40) as f32, msg, &st);
         c.clear_clip();

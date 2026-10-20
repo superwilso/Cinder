@@ -41,6 +41,11 @@ const RIGHT: f32 = 458.0;
 const ROW_H: i32 = 44;
 const WRAP_H: i32 = 20;
 
+// Fallback CJK glyphs grow with UI scale; row spacing must follow the measured text.
+fn wrap_h() -> i32 {
+    (text::scaled(WRAP_H as f32).ceil() as i32).max(WRAP_H)
+}
+
 fn label_style(t: &Theme) -> TextStyle {
     sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18)
 }
@@ -97,7 +102,7 @@ pub(crate) fn wrap(f: &FontSet, v: &str, st: &TextStyle, w: f32) -> Vec<String> 
 
 /// Height of one row, given how many lines its value wrapped to.
 fn row_h(lines: usize) -> i32 {
-    ROW_H + (lines.saturating_sub(1) as i32) * WRAP_H
+    ROW_H + (lines.saturating_sub(1) as i32) * wrap_h()
 }
 
 /// Total scrollable height. Shares `wrap` with the render, so the scrollbar and the last row agree
@@ -188,14 +193,21 @@ pub fn render(
 ) {
     let scroll = scroll_px.clamp(0, max_scroll_px(f, t, rows));
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "Track information", None);
+    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Track information"), None);
     c.set_clip_y(y0, BOTTOM);
 
     if rows.is_empty() {
         // Nothing playing, or a URI the library does not know. Say so rather than drawing an
         // empty frame that reads as a failed load.
         let st = sty(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
-        text::draw(c, f, LABEL_X, (TOP + 40) as f32, "Nothing is playing.", &st);
+        text::draw(
+            c,
+            f,
+            LABEL_X,
+            (TOP + 40) as f32,
+            crate::i18n::text("Nothing is playing."),
+            &st,
+        );
         c.clear_clip();
         return; // and NO action band: there is no track to add.
     }
@@ -218,7 +230,14 @@ pub fn render(
             if y >= BOTTOM {
                 break;
             }
-            text::draw(c, f, LABEL_X, (y + 27) as f32, &label.to_uppercase(), &ls);
+            text::draw(
+                c,
+                f,
+                LABEL_X,
+                (y + 27) as f32,
+                &crate::i18n::text(label).to_uppercase(),
+                &ls,
+            );
             if is_rating(label) {
                 crate::kit::stars(
                     c,
@@ -233,7 +252,14 @@ pub fn render(
             }
             let st = if link { &link_vs } else { &vs };
             for (i, line) in lines.iter().enumerate().filter(|_| !is_rating(label)) {
-                text::draw(c, f, VALUE_X, (y + 27 + i as i32 * WRAP_H) as f32, line, st);
+                text::draw(
+                    c,
+                    f,
+                    VALUE_X,
+                    (y + 27 + i as i32 * wrap_h()) as f32,
+                    line,
+                    st,
+                );
             }
             if link {
                 // Right-aligned against the same edge the values wrap to, so it never lands on one.
@@ -273,7 +299,7 @@ fn action_band(c: &mut Canvas, t: &Theme, f: &FontSet) {
         f,
         (w / 2) as f32,
         (BOTTOM + ACTION_H / 2 + 6) as f32,
-        "+  ADD TO PLAYLIST",
+        crate::i18n::text("+  ADD TO PLAYLIST"),
         &sty(Family::Mono, Weight::Bold, 13.0, t.acc, 0.14),
     );
 }

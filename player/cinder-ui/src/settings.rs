@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 22;
+pub const ROWS: usize = 23;
 /// Rows shown while the list is folded: the everyday ones and `ROW_MORE` itself.
 pub const EVERYDAY: usize = 10;
 /// More settings: unfolds every row after it, in place, and folds them away again.
@@ -91,8 +91,9 @@ pub const ROW_POWER_OFF: usize = 8;
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
 pub const ROW_RESET: usize = 19;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 20;
-pub const ROW_MODEL: usize = 21;
+pub const ROW_LANGUAGE: usize = 20;
+pub const ROW_FIRMWARE: usize = 21;
+pub const ROW_MODEL: usize = 22;
 
 const RH: i32 = kit::ROW_H;
 /// Section labels and how many rows sit under each — the single source both `content_height` and
@@ -102,7 +103,7 @@ const SECTIONS: [(&str, usize); 5] = [
     ("", EVERYDAY),
     ("LIBRARY", 2),
     ("POWER SAVING", 2),
-    ("SYSTEM", 6),
+    ("SYSTEM", 7),
     ("ABOUT", 2),
 ];
 /// Height of a section's label; the unlabelled first group has none.
@@ -239,6 +240,11 @@ pub fn row_top_px(r: usize) -> i32 {
 /// The trailing value of row `r`.
 fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
     match r {
+        ROW_LANGUAGE => Trail::Value(if crate::i18n::is_chinese() {
+            "简体中文"
+        } else {
+            "English"
+        }),
         ROW_DISPLAY => Trail::Open(""),
         ROW_BRIGHTNESS => Trail::Value(v.brightness),
         ROW_SCREEN_OFF => Trail::Value(v.screen_off),
@@ -246,10 +252,18 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         // The volume limit is a value row rather than a switch because the interesting half is
         // WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number the
         // user did not choose, and the number is Sony's per-output AVLS threshold, read live.
-        ROW_VOLUME_LIMIT => Trail::Value(if v.volume_limit { "SAFE LEVEL" } else { "OFF" }),
+        ROW_VOLUME_LIMIT => Trail::Value(if v.volume_limit {
+            crate::i18n::text("SAFE LEVEL")
+        } else {
+            crate::i18n::text("OFF")
+        }),
         ROW_SLEEP => Trail::Value(v.sleep),
         ROW_SHUFFLE => Trail::Value(v.shuffle_by),
-        ROW_IGNORE_THE => Trail::Value(if v.ignore_the { "ON" } else { "OFF" }),
+        ROW_IGNORE_THE => Trail::Value(if v.ignore_the {
+            crate::i18n::text("ON")
+        } else {
+            crate::i18n::text("OFF")
+        }),
         // Database: CHEVRON, because tapping does something — it asks Sony's MediaStore to rescan
         // the music tree. The value carries the library size, so the row also answers "did it work".
         ROW_DATABASE => Trail::Open(v.database),
@@ -262,13 +276,21 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_BATTERY => Trail::Open(v.device),
         // The value is the live clock, so the row doubles as the place you notice it is wrong.
         ROW_CLOCK => Trail::Open(v.clock),
-        ROW_USB_MODE => Trail::Open(if v.usb_dac { "DAC" } else { "MASS STORAGE" }),
+        ROW_USB_MODE => Trail::Open(if v.usb_dac {
+            "DAC"
+        } else {
+            crate::i18n::text("MASS STORAGE")
+        }),
         // The value doubles as the confirmation prompt (see nav: first tap arms, second goes).
         ROW_BOOT_STOCK => Trail::Open(v.boot_stock),
         ROW_RESTART | ROW_POWER_OFF => Trail::Open(""),
-        ROW_MORE => Trail::Value(if v.more { "HIDE" } else { "SHOW" }),
+        ROW_MORE => Trail::Value(if v.more {
+            crate::i18n::text("HIDE")
+        } else {
+            crate::i18n::text("SHOW")
+        }),
         // Names the SCOPE, since "reset" on a music player could just as easily mean the library.
-        ROW_RESET => Trail::Open("PREFERENCES"),
+        ROW_RESET => Trail::Open(crate::i18n::text("PREFERENCES")),
         ROW_FIRMWARE => Trail::Value(FIRMWARE_LABEL),
         _ => Trail::Value("SONY NW-A55"),
     }
@@ -276,34 +298,35 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
 
 fn title(r: usize) -> &'static str {
     match r {
-        ROW_DISPLAY => "Display",
-        ROW_BRIGHTNESS => "Brightness",
-        ROW_SCREEN_OFF => "Screen-off timer",
-        ROW_QUICK => "Pull-down panel",
-        ROW_VOLUME_LIMIT => "Volume limit",
-        ROW_SLEEP => "Sleep timer",
-        ROW_SHUFFLE => "Shuffle",
-        ROW_IGNORE_THE => "Ignore \"The\" in artists",
-        ROW_DATABASE => "Database",
-        ROW_AUTO_OFF => "Auto power off",
-        ROW_BT_IDLE_OFF => "Bluetooth auto off",
-        ROW_STORAGE => "Storage",
-        ROW_BATTERY => "Device",
-        ROW_CLOCK => "Date & time",
-        ROW_USB_MODE => "USB mode",
-        ROW_BOOT_STOCK => "Boot to stock",
-        ROW_RESTART => "Restart",
-        ROW_POWER_OFF => "Power off",
-        ROW_MORE => "More settings",
-        ROW_RESET => "Reset settings",
-        ROW_FIRMWARE => "Firmware",
-        _ => "Model",
+        ROW_LANGUAGE => "Language / 语言",
+        ROW_DISPLAY => crate::i18n::text("Display"),
+        ROW_BRIGHTNESS => crate::i18n::text("Brightness"),
+        ROW_SCREEN_OFF => crate::i18n::text("Screen-off timer"),
+        ROW_QUICK => crate::i18n::text("Pull-down panel"),
+        ROW_VOLUME_LIMIT => crate::i18n::text("Volume limit"),
+        ROW_SLEEP => crate::i18n::text("Sleep timer"),
+        ROW_SHUFFLE => crate::i18n::text("Shuffle"),
+        ROW_IGNORE_THE => crate::i18n::text("Ignore \"The\" in artists"),
+        ROW_DATABASE => crate::i18n::text("Database"),
+        ROW_AUTO_OFF => crate::i18n::text("Auto power off"),
+        ROW_BT_IDLE_OFF => crate::i18n::text("Bluetooth auto off"),
+        ROW_STORAGE => crate::i18n::text("Storage"),
+        ROW_BATTERY => crate::i18n::text("Device"),
+        ROW_CLOCK => crate::i18n::text("Date & time"),
+        ROW_USB_MODE => crate::i18n::text("USB mode"),
+        ROW_BOOT_STOCK => crate::i18n::text("Boot to stock"),
+        ROW_RESTART => crate::i18n::text("Restart"),
+        ROW_POWER_OFF => crate::i18n::text("Power off"),
+        ROW_MORE => crate::i18n::text("More settings"),
+        ROW_RESET => crate::i18n::text("Reset settings"),
+        ROW_FIRMWARE => crate::i18n::text("Firmware"),
+        _ => crate::i18n::text("Model"),
     }
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v: &SettingsView) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "Settings", None);
+    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Settings"), None);
     // Content is taller than the panel, so it scrolls. Rows are drawn shifted up by `scroll`;
     // row_at applies the same shift, so the hit test can't drift from the render.
     //
@@ -331,14 +354,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                 ROW_BT_IDLE_OFF => BT_IDLE_OFF_SUB,
                 _ => "",
             };
-            y = kit::row(
-                c,
-                t,
-                f,
-                y,
-                RH,
-                &Row::new(title(r)).sub(sub).trail(trail(r, v)).sel(sel == r),
-            );
+            let row = Row::new(title(r))
+                .sub(crate::i18n::text(sub))
+                .trail(trail(r, v))
+                .sel(sel == r);
+            y = if r == ROW_LANGUAGE {
+                crate::text::with_fixed_ui_chinese_glyphs(|| kit::row(c, t, f, y, RH, &row))
+            } else {
+                kit::row(c, t, f, y, RH, &row)
+            };
             r += 1;
         }
     }
@@ -370,6 +394,34 @@ mod tests {
             shuffle_by: "SONGS",
             more: true,
         }
+    }
+
+    #[test]
+    fn english_language_entry_uses_the_bundled_glyphs_without_device_fallbacks() {
+        let _scale = crate::text::scale_guard();
+        let _language = crate::i18n::enter(crate::i18n::Language::English);
+        let theme = Theme::day();
+        let fonts = FontSet::load();
+        let mut canvas = Canvas::new();
+        render(&mut canvas, &theme, &fonts, 0, max_scroll_px(true), &view());
+
+        let glyph_font =
+            crate::text::with_fixed_ui_chinese_glyphs(|| crate::text::probe_glyph(&fonts, '语'));
+        assert_eq!(
+            glyph_font, 8,
+            "the fixed bilingual label uses the bundled subset"
+        );
+        assert_eq!(
+            fonts.chain_walks(),
+            0,
+            "the label must not request system fonts"
+        );
+        assert!(!fonts.unresolved_chars().contains(&'语'));
+        assert!(!fonts.unresolved_chars().contains(&'言'));
+        assert!(canvas
+            .buf
+            .iter()
+            .any(|pixel| *pixel != crate::canvas::to_u32(theme.bg)));
     }
 
     /// Scrolling must never repaint the header. The rows move UP as you scroll, and without a clip

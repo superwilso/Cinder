@@ -48,6 +48,8 @@ pub fn section_label(
     action: Option<&str>,
 ) -> i32 {
     let base = (y + SECTION_H - 8) as f32;
+    let label = crate::i18n::text(label);
+    let action = action.map(crate::i18n::text);
     let st = sty(
         Family::Mono,
         Weight::Regular,
@@ -277,7 +279,14 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
             t.dim,
             0.0,
         );
-        text::draw(c, f, x, (cy + 18) as f32, &fit(f, r.sub, &sst, avail), &sst);
+        text::draw(
+            c,
+            f,
+            x,
+            (cy + 18) as f32 + (text::scaled(20.0) - 20.0).max(0.0).ceil(),
+            &fit(f, r.sub, &sst, avail),
+            &sst,
+        );
     }
     hline(c, y + h - 1, t.line);
     y + h
@@ -350,6 +359,7 @@ pub fn chips(
     sel: Option<usize>,
 ) -> i32 {
     for (i, l) in labels.iter().enumerate() {
+        let l = crate::i18n::text(l);
         let (x, w) = chip_span(i, labels.len());
         let on = sel == Some(i);
         if on {

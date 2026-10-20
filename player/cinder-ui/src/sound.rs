@@ -10,9 +10,9 @@ use crate::widgets::{center, fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Logical row ids on the Sound screen. These are IDENTITIES, not positions: the screen draws them
-/// in [`ORDER`], grouped under ENHANCE / SPACE / LEVEL (design handoff 2a), and the ids stayed what
-/// they were before the grouping so every caller that names a row by number still names the same
-/// one.
+/// in [`ORDER`], grouped under ENHANCE / LEVEL. The 0.3.18 Advanced screen owns the SPACE effects.
+/// The ids stayed what they were before the grouping so every caller that names a row by number
+/// still names the same one.
 ///
 /// "High gain output" USED to sit between Clear+ and Balance. It was cut on 2026-08-17 after being
 /// measured on the device: the control (`headphone smaster gain mode` / `headphone smaster se gain
@@ -122,7 +122,7 @@ pub const BALANCE_MAX: usize = 100;
 pub fn balance_label(pos: usize) -> String {
     let i = pos.min(BALANCE_MAX);
     match i.cmp(&BALANCE_CENTRE) {
-        std::cmp::Ordering::Equal => "Centre".to_string(),
+        std::cmp::Ordering::Equal => crate::i18n::text("Centre").to_string(),
         std::cmp::Ordering::Less => format!("L {}", BALANCE_CENTRE - i),
         std::cmp::Ordering::Greater => format!("R {}", i - BALANCE_CENTRE),
     }
@@ -158,7 +158,7 @@ pub fn nc_top(scroll: i32) -> i32 {
 pub enum Part {
     /// The Direct / Custom / ClearAudio+ control.
     Mode,
-    /// A section label (ENHANCE, SPACE, LEVEL).
+    /// A section label (ENHANCE, SPACE, or LEVEL).
     Label(&'static str),
     /// A row, by logical id.
     Row(usize),
@@ -167,8 +167,11 @@ pub enum Part {
 /// Which section label, if any, comes before row `r` in [`ORDER`].
 fn label_before(r: usize) -> Option<&'static str> {
     match r {
-        ROW_EQ => Some("ENHANCE"),
-        ROW_NORM => Some("LEVEL"),
+        ROW_EQ => Some(crate::i18n::text("ENHANCE")),
+        ROW_NORM => Some(crate::i18n::text("LEVEL")),
+        // VPT moved to Advanced in 0.3.18 and is not in Sound::ORDER. Keep the semantic mapping
+        // here so a Sound-space section still uses its own key if that row is restored later.
+        ROW_VPT => Some(crate::i18n::text_with_key("SPACE", "Sound-space section")),
         _ => None,
     }
 }
@@ -350,8 +353,10 @@ pub fn hit_ab(x: i32, y: i32) -> Option<usize> {
 pub struct Sound {
     pub dsee: bool,
     pub vinyl: bool,
-    pub vpt: &'static str,     // Off / Studio / Club / Concert Hall
-    pub dcphase: &'static str, // Off / Standard A.. / Low B
+    pub vpt: &'static str, // Studio / Club / Concert Hall
+    pub vpt_on: bool,
+    pub dcphase: &'static str, // Standard A.. / Low B
+    pub dcphase_on: bool,
     pub normalizer: bool,
     pub clearaudio: bool,
     pub eq_preset: &'static str,
@@ -415,10 +420,17 @@ pub struct Sound {
     pub vpt_gone: bool,
 }
 
-/// Outlined value pill ending at `xr`; accent when value != "Off".
-pub(crate) fn value_pill(c: &mut Canvas, f: &FontSet, t: &Theme, xr: i32, cy: i32, label: &str) {
-    let active = !label.eq_ignore_ascii_case("off");
-    let up = label.to_uppercase();
+/// Outlined value pill ending at `xr`; state is independent of the localized display label.
+pub(crate) fn value_pill(
+    c: &mut Canvas,
+    f: &FontSet,
+    t: &Theme,
+    xr: i32,
+    cy: i32,
+    label: &str,
+    active: bool,
+) {
+    let up = crate::i18n::text(label).to_uppercase();
     let col = if active { t.acc } else { t.faint };
     let bord = if active { t.acc } else { t.line };
     let st = sty(Family::Mono, Weight::Regular, 12.0, col, 0.08);
@@ -437,6 +449,8 @@ pub(crate) fn row(
     label: &str,
     desc: &str,
 ) -> i32 {
+    let label = crate::i18n::text(label);
+    let desc = crate::i18n::text(desc);
     let rh = ROW_H;
     let cy = y + rh / 2;
     if sel {
@@ -567,7 +581,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
         f,
         22.0,
         (y + 36) as f32,
-        "Balance",
+        crate::i18n::text("Balance"),
         &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0),
     );
     // THE SUBTITLE SAYS WHAT IS ACTUALLY REACHED, in every state. Mono first, because when it is
@@ -579,15 +593,24 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
         // silently does nothing to what you are hearing is the defect this screen has had cleaned
         // out of it twice.
         (
-            "Mono — not reachable on this output; USB-DAC to Bluetooth only",
+            crate::i18n::text("Mono — not reachable on this output; USB-DAC to Bluetooth only"),
             true,
         )
     } else if s.mono {
-        ("Mono — both ears carry the same signal", true)
+        (
+            crate::i18n::text("Mono — both ears carry the same signal"),
+            true,
+        )
     } else if s.bt_route {
-        ("Wired output only — Bluetooth is not affected", true)
+        (
+            crate::i18n::text("Wired output only — Bluetooth is not affected"),
+            true,
+        )
     } else {
-        ("Drag the slider to shift the stereo image", false)
+        (
+            crate::i18n::text("Drag the slider to shift the stereo image"),
+            false,
+        )
     };
     // BELOW the two buttons, not beside them. At the old y+58 the subtitle's cap height reached
     // into the y+12..y+50 button band, so it had to be squeezed into the 204 px left of MONO —
@@ -630,7 +653,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
             f,
             (rx + rw / 2) as f32,
             (ry + rh / 2 + 5) as f32,
-            "MONO",
+            crate::i18n::text("MONO"),
             &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14),
         );
     }
@@ -648,7 +671,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
             f,
             (rx + rw / 2) as f32,
             (ry + rh / 2 + 5) as f32,
-            "CENTRE",
+            crate::i18n::text("CENTRE"),
             &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14),
         );
     }
@@ -715,7 +738,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
     let readout = if live {
         balance_label(s.balance).to_uppercase()
     } else {
-        "BOTH CHANNELS".to_string()
+        crate::i18n::text("BOTH CHANNELS").to_string()
     };
     center(
         c,
@@ -748,7 +771,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
 pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
     let out = match s.bt_codec {
         Some(codec) => format!("BT·{codec}"),
-        None => "AMP → 3.5MM".to_string(),
+        None => crate::i18n::text("AMP → 3.5MM").to_string(),
     };
     // Both setups are real chains — B is not "bypassed", it is the other one — so the path reads
     // the same way for either and just names which is live.
@@ -756,29 +779,36 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
     // SHORT, deliberately. `fit` truncates from the end, and the end is the verb: on the device at
     // the owner's UI scale the old "…EQ AND MANUAL DSP BYPASSED" came out as "…DSP BYPAS…".
     let warn = if s.source_direct {
-        Some("! DIRECT MODE: ALL BYPASSED")
+        Some(crate::i18n::text("! DIRECT MODE: ALL BYPASSED"))
     } else if s.clearaudio {
-        Some("! CLEARAUDIO+: EQ + FX BYPASSED")
+        Some(crate::i18n::text("! CLEARAUDIO+: EQ + FX BYPASSED"))
     } else {
         None
     };
     if s.source_direct {
         // Nothing between the source and the amp. Say exactly that, rather than drawing a chain and
         // adding a footnote underneath that contradicts the line above it.
-        return (format!("SIGNAL PATH ({ab}): SOURCE → {out}"), warn);
+        return (
+            crate::ui_format!("SIGNAL PATH ({ab}): SOURCE → {out}", ab = ab, out = out),
+            warn,
+        );
     }
     // ClearAudio+ REPLACES the tone stage and the manual effects — the warning below says so, and
     // a chain drawn above it naming the EQ and DSEE HX said the opposite in the same breath.
     if s.clearaudio {
         return (
-            format!("SIGNAL PATH ({ab}): SOURCE → CLEARAUDIO+ → {out}"),
+            crate::ui_format!(
+                "SIGNAL PATH ({ab}): SOURCE → CLEARAUDIO+ → {out}",
+                ab = ab,
+                out = out
+            ),
             warn,
         );
     }
     // Which tone system is really in the chain. Sony picks ONE of the two, so naming the wrong one
     // is the same lie as naming both.
     let tone_stage = if s.tone_control {
-        "TONE".to_string()
+        crate::i18n::text("TONE").to_string()
     } else if s.eq_on_dac {
         // The curve is in the DAC, after every effect: Sony's 10-band is held flat.
         String::new()
@@ -790,23 +820,34 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
         parts.push("DSEE HX".into());
     }
     if s.vinyl {
-        parts.push("VINYL".into());
+        parts.push(crate::i18n::text("VINYL").into());
     }
-    if !s.vpt.eq_ignore_ascii_case("off") {
+    if s.vpt_on {
         parts.push(format!("VPT·{}", s.vpt.to_uppercase()));
     }
-    if !s.dcphase.eq_ignore_ascii_case("off") {
-        parts.push("DC PHASE".into());
+    if s.dcphase_on {
+        parts.push(crate::i18n::text("DC PHASE").into());
     }
     let mid = if parts.is_empty() {
-        "NO EFFECTS".to_string()
+        crate::i18n::text("NO EFFECTS").to_string()
     } else {
         parts.join(" → ")
     };
     let path = if tone_stage.is_empty() {
-        format!("SIGNAL PATH ({ab}): SOURCE → {mid} → DAC EQ → {out}")
+        crate::ui_format!(
+            "SIGNAL PATH ({ab}): SOURCE → {mid} → DAC EQ → {out}",
+            ab = ab,
+            mid = mid,
+            out = out
+        )
     } else {
-        format!("SIGNAL PATH ({ab}): SOURCE → {tone_stage} → {mid} → {out}")
+        crate::ui_format!(
+            "SIGNAL PATH ({ab}): SOURCE → {tone_stage} → {mid} → {out}",
+            ab = ab,
+            tone_stage = tone_stage,
+            mid = mid,
+            out = out
+        )
     };
     (path, warn)
 }
@@ -816,10 +857,10 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
 /// does. Precedence as `signal_path`: Source Direct is the outer bypass.
 pub fn bypass_reasons(s: &Sound) -> (Option<&'static str>, Option<&'static str>) {
     if s.source_direct {
-        let r = Some("Off in Direct mode");
+        let r = Some(crate::i18n::text("Off in Direct mode"));
         (r, r)
     } else if s.clearaudio {
-        (Some("Off in ClearAudio+ mode"), None)
+        (Some(crate::i18n::text("Off in ClearAudio+ mode")), None)
     } else {
         (None, None)
     }
@@ -849,22 +890,22 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
     // every effect row including ClearAudio+ itself.
     let (fx_over, all_over) = bypass_reasons(s);
     let t = |title: &str, sub: &str, over: Option<&str>, trail: RowTrail| RowText {
-        title: title.to_string(),
-        sub: over.unwrap_or(sub).to_string(),
+        title: crate::i18n::text(title).to_string(),
+        sub: crate::i18n::text(over.unwrap_or(sub)).to_string(),
         trail,
         dim: over.is_some(),
     };
-    let pill = |v: &str| RowTrail::Value(v.to_uppercase());
+    let pill = |v: &str| RowTrail::Value(crate::i18n::text(v).to_uppercase());
     match r {
         ROW_PROFILE => RowText {
-            title: "Presets".into(),
+            title: crate::i18n::text("Presets").into(),
             sub: match s.presets_saved {
-                0 => format!(
+                0 => crate::ui_format!(
                     "Save the sound on {} to come back to it",
                     crate::profile::letter(setup)
                 ),
-                1 => "1 saved".into(),
-                n => format!("{n} saved"),
+                1 => crate::i18n::text("1 saved").into(),
+                n => crate::ui_format!("{n} saved", n = n),
             },
             trail: RowTrail::Open(String::new()),
             dim: false,
@@ -872,69 +913,69 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         // Tone Control and the 10-band EQ are ALTERNATIVES in Sony's chain (`SetSelectUsingEq`),
         // so the row names the one that is actually in the path.
         ROW_EQ if s.tone_control => t(
-            "Equalizer",
-            "Tone Control is in the path instead (Advanced)",
+            crate::i18n::text("Equalizer"),
+            crate::i18n::text("Tone Control is in the path instead (Advanced)"),
             fx_over,
-            RowTrail::Open("TONE".into()),
+            RowTrail::Open(crate::i18n::text("TONE").into()),
         ),
         // On the jack the curve is the DAC chip's own five bands: no processor time at all.
         ROW_EQ if s.eq_on_dac => t(
-            "Equalizer",
+            crate::i18n::text("Equalizer"),
             "In the DAC \u{b7} no battery cost on the jack",
             fx_over,
             RowTrail::Open("DAC".into()),
         ),
         ROW_EQ => t(
-            "Equalizer",
+            crate::i18n::text("Equalizer"),
             "10-band \u{b7} tap to edit the curve",
             fx_over,
             RowTrail::Open(s.eq_preset.to_uppercase()),
         ),
         ROW_DSEE => t(
             "DSEE HX",
-            "Upscale compressed audio to near hi-res",
+            crate::i18n::text("Upscale compressed audio to near hi-res"),
             fx_over,
             RowTrail::Switch(s.dsee),
         ),
         ROW_VPT if s.vpt_gone => RowText {
-            title: "VPT Surround".into(),
-            sub: "Not in Walkman One's sound library".into(),
-            trail: RowTrail::Value("OFF".into()),
+            title: crate::i18n::text("VPT Surround").into(),
+            sub: crate::i18n::text("Not in Walkman One's sound library").into(),
+            trail: RowTrail::Value(crate::i18n::text("OFF").into()),
             dim: true,
         },
         ROW_VPT => t(
-            "VPT Surround",
+            crate::i18n::text("VPT Surround"),
             "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix",
             fx_over,
             pill(s.vpt),
         ),
         ROW_DC if s.dc_gone => RowText {
-            title: "DC Phase Linearizer".into(),
+            title: crate::i18n::text("DC Phase Linearizer").into(),
             sub: "Not on this player \u{b7} Clear Bass has its place".into(),
-            trail: RowTrail::Value("OFF".into()),
+            trail: RowTrail::Value(crate::i18n::text("OFF").into()),
             dim: true,
         },
         ROW_DC => t(
-            "DC Phase Linearizer",
-            "Analog-amp low-frequency phase",
+            crate::i18n::text("DC Phase Linearizer"),
+            crate::i18n::text("Analog-amp low-frequency phase"),
             fx_over,
             pill(s.dcphase),
         ),
         ROW_VINYL => t(
-            "Vinyl Processor",
-            "Tonearm resonance, surface noise",
+            crate::i18n::text("Vinyl Processor"),
+            crate::i18n::text("Tonearm resonance, surface noise"),
             fx_over,
             RowTrail::Switch(s.vinyl),
         ),
         ROW_NORM => t(
-            "Dynamic Normalizer",
-            "Even out volume between tracks",
+            crate::i18n::text("Dynamic Normalizer"),
+            crate::i18n::text("Even out volume between tracks"),
             all_over,
             RowTrail::Switch(s.normalizer),
         ),
         _ => RowText {
-            title: "Advanced".into(),
-            sub: "Surround, DC Phase, Vinyl, Tone Control, DAC EQ".into(),
+            title: crate::i18n::text("Advanced").into(),
+            sub: crate::i18n::text("Surround, DC Phase, Vinyl, Tone Control, DAC EQ").into(),
             trail: RowTrail::Open(String::new()),
             dim: false,
         },
@@ -960,7 +1001,7 @@ fn mode_part(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, scroll: i32, y: 
             if on { t.acc_ink } else { t.dim },
             0.0,
         );
-        let fitted = crate::widgets::fit(f, label, &st, (sw - 12) as f32);
+        let fitted = crate::widgets::fit(f, crate::i18n::text(label), &st, (sw - 12) as f32);
         center(
             c,
             f,
@@ -975,9 +1016,9 @@ fn mode_part(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, scroll: i32, y: 
         // took 0.6 % of a core in Direct and 10.3 % with the 10-band EQ and the normalizer on.
         // Each line is under 48 characters: more than that is cut short at the largest text size.
         // Hours of battery are not measured, so the line says "processor", not "battery".
-        MODE_DIRECT => "No effects. The least processor work.",
-        MODE_CLEARAUDIO => "Sony's automatic tuning replaces the EQ.",
-        _ => "Your EQ and effects. More processor work.",
+        MODE_DIRECT => crate::i18n::text("No effects. The least processor work."),
+        MODE_CLEARAUDIO => crate::i18n::text("Sony's automatic tuning replaces the EQ."),
+        _ => crate::i18n::text("Your EQ and effects. More processor work."),
     };
     let ds = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
     let (_, sy, _, sh) = mode_rect(0, scroll, n);
@@ -1003,7 +1044,7 @@ pub fn render(
 ) {
     c.fill(t.bg);
     // No subtitle here — the A/B compare control occupies the header's right side.
-    let y0 = crate::chrome::header(c, t, f, "Sound", None);
+    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Sound"), None);
 
     // A/B (top-right of the header): which side of the compare is live. Two segments, the active one
     // in accent. Tapped; this player has no Option button, so the hint that used to read
@@ -1041,7 +1082,7 @@ pub fn render(
             f,
             (x0 - 12) as f32,
             (AB_TOP + AB_H / 2 + 4) as f32,
-            "COMPARE",
+            crate::i18n::text("COMPARE"),
             &hint,
         );
     }
@@ -1060,7 +1101,7 @@ pub fn render(
         "sound list top drifted from the hit test"
     );
 
-    // ── the grouped list (handoff 2a): Profile, then ENHANCE / SPACE / LEVEL ────────────────────
+    // ── grouped list: Profile, then ENHANCE / LEVEL ────────────────────────────────────────────
     // CLIPPED to below the strip, so a scrolled row cannot paint over the path or the header.
     let dim = t.scaled(45);
     c.set_clip_y(TOP, crate::canvas::H as i32);
@@ -1204,7 +1245,9 @@ mod tests {
             dsee: true,
             vinyl: true,
             vpt: "Club",
+            vpt_on: true,
             dcphase: "Low A",
+            dcphase_on: true,
             normalizer: true,
             clearaudio: false,
             eq_preset: "Rock",
@@ -1376,6 +1419,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn vpt_and_dc_phase_path_state_is_language_independent() {
+        for language in [
+            crate::i18n::Language::English,
+            crate::i18n::Language::SimplifiedChinese,
+        ] {
+            let _language = crate::i18n::enter(language);
+            let dc_phase_label = if language == crate::i18n::Language::SimplifiedChinese {
+                "直流相位"
+            } else {
+                "DC PHASE"
+            };
+            let off = Sound {
+                vpt: "Off",
+                vpt_on: false,
+                dcphase: "Off",
+                dcphase_on: false,
+                ..loud()
+            };
+            let path = signal_path(&off, 0).0;
+            assert!(!path.contains("VPT·"), "off VPT entered path: {path}");
+            assert!(
+                !path.contains(dc_phase_label),
+                "off DC Phase entered path: {path}"
+            );
+            let off_label = if language == crate::i18n::Language::SimplifiedChinese {
+                "关闭"
+            } else {
+                "OFF"
+            };
+            for row in [ROW_VPT, ROW_DC] {
+                assert!(matches!(
+                    row_text(&off, row, 0).trail,
+                    RowTrail::Value(ref value) if value == off_label
+                ));
+            }
+
+            let on = Sound {
+                vpt_on: true,
+                dcphase_on: true,
+                ..off
+            };
+            let path = signal_path(&on, 0).0;
+            assert!(
+                path.contains("VPT·"),
+                "enabled VPT missing from path: {path}"
+            );
+            assert!(
+                path.contains(dc_phase_label),
+                "enabled DC Phase missing from path: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_pill_emphasis_uses_the_boolean_in_both_languages() {
+        let _scale = crate::text::scale_guard();
+        let fonts = FontSet::load();
+        let theme = Theme::day();
+        for language in [
+            crate::i18n::Language::English,
+            crate::i18n::Language::SimplifiedChinese,
+        ] {
+            let _language = crate::i18n::enter(language);
+            let mut off = Canvas::new();
+            value_pill(&mut off, &fonts, &theme, 200, 100, "Off", false);
+            let mut on = Canvas::new();
+            value_pill(&mut on, &fonts, &theme, 200, 100, "Off", true);
+            assert_ne!(
+                off.buf, on.buf,
+                "active styling did not follow state in {language:?}"
+            );
+        }
+    }
+
     /// Source Direct bypasses the whole chain. The footer used to have no field for it at all, so
     /// it drew the full chain over a total bypass and said nothing.
     #[test]
@@ -1474,7 +1592,9 @@ mod tests {
             dsee: false,
             vinyl: false,
             vpt: "Off",
+            vpt_on: false,
             dcphase: "Off",
+            dcphase_on: false,
             ..loud()
         };
         let (p, _) = signal_path(&quiet, 0);

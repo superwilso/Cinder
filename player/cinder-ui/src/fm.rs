@@ -174,7 +174,7 @@ pub struct Fm {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     c.fill(t.bg);
-    crate::chrome::header(c, t, f, "FM Radio", None);
+    crate::chrome::header(c, t, f, crate::i18n::text("FM Radio"), None);
 
     // power pill
     let (px, py, pw, ph) = POWER;
@@ -187,7 +187,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         f,
         (px + pw / 2) as f32,
         (py + ph / 2 + 4) as f32,
-        if s.playing { "ON" } else { "OFF" },
+        if s.playing {
+            crate::i18n::text("ON")
+        } else {
+            crate::i18n::text("OFF")
+        },
         &sty(
             Family::Mono,
             Weight::Regular,
@@ -209,7 +213,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         f,
         (bx + bw / 2) as f32,
         (by + bh / 2 + 4) as f32,
-        "BT OUT",
+        crate::i18n::text("BT OUT"),
         &sty(
             Family::Mono,
             Weight::Regular,
@@ -255,7 +259,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
                 f,
                 (METER_X + METER_W - 30) as f32,
                 (METER_Y - 8) as f32,
-                "ST",
+                crate::i18n::text("ST"),
                 &sty(Family::Mono, Weight::Regular, 10.0, t.acc, 0.10),
             );
         }
@@ -309,9 +313,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
 
     // presets = what the scan found
     let cap = if s.n_stations == 0 {
-        "PRESETS — RUN A SCAN"
+        crate::i18n::text("PRESETS — RUN A SCAN")
     } else {
-        "STATIONS FOUND"
+        crate::i18n::text("STATIONS FOUND")
     };
     text::draw(
         c,
@@ -370,9 +374,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
 
     // scan button / progress
     let scan_label = if s.scanning {
-        format!("SCANNING… {}%", s.scan_pct)
+        crate::ui_format!("SCANNING… {}%", s.scan_pct)
     } else {
-        "SCAN THE BAND".to_string()
+        crate::i18n::text("SCAN THE BAND").to_string()
     };
     stroke_rect(
         c,
@@ -405,9 +409,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     // What the scan actually costs depends on which route is live, and the difference is two
     // orders of magnitude — so say which one the user is about to get.
     let scan_note = if s.hw {
-        "reads the chip's own signal meter — about ten seconds"
+        crate::i18n::text("reads the chip's own signal meter — about ten seconds")
     } else {
-        "no register access — measured from the audio, about a minute"
+        crate::i18n::text("no register access — measured from the audio, about a minute")
     };
     center(
         c,
@@ -420,11 +424,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
 
     hline(c, 740, t.line);
     let note = if !s.antenna {
-        "NO AERIAL — PLUG IN WIRED HEADPHONES"
+        crate::i18n::text("NO AERIAL — PLUG IN WIRED HEADPHONES")
     } else if s.bt_out {
-        "AERIAL: CABLE IN THE JACK  ·  AUDIO OVER BLUETOOTH"
+        crate::i18n::text("AERIAL: CABLE IN THE JACK  ·  AUDIO OVER BLUETOOTH")
     } else {
-        "ANTENNA: HEADPHONE CABLE"
+        crate::i18n::text("ANTENNA: HEADPHONE CABLE")
     };
     center(
         c,

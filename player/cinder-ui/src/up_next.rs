@@ -434,13 +434,13 @@ impl Layout {
 
 fn section_label(sec: Section, album: &str) -> String {
     match sec {
-        Section::History => "PREVIOUSLY PLAYED".into(),
-        Section::Now => "NOW PLAYING".into(),
+        Section::History => crate::i18n::text("PREVIOUSLY PLAYED").into(),
+        Section::Now => crate::i18n::text("NOW PLAYING").into(),
         Section::Next => {
             if album.is_empty() {
-                "NEXT UP".into()
+                crate::i18n::text("NEXT UP").into()
             } else {
-                format!("NEXT FROM {}", album.to_uppercase())
+                crate::ui_format!("NEXT FROM {}", album.to_uppercase())
             }
         }
     }
@@ -468,9 +468,9 @@ pub struct QueueView<'a> {
 /// The header caption: how much is still to come, or what a drag does.
 pub fn caption(left: usize, dragging: bool) -> String {
     match (dragging, left) {
-        (true, _) => String::from("DRAG TO REORDER"),
-        (false, 1) => String::from("1 TRACK LEFT"),
-        (false, n) => format!("{n} TRACKS LEFT"),
+        (true, _) => String::from(crate::i18n::text("DRAG TO REORDER")),
+        (false, 1) => String::from(crate::i18n::text("1 TRACK LEFT")),
+        (false, n) => crate::ui_format!("{n} TRACKS LEFT", n = n),
     }
 }
 
@@ -481,13 +481,13 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     let l = layout(v.history.len(), v.tracks.len(), v.current);
 
     if l.slots.is_empty() {
-        let _ = crate::chrome::header(c, t, f, "Up Next", None);
+        let _ = crate::chrome::header(c, t, f, crate::i18n::text("Up Next"), None);
         text::draw(
             c,
             f,
             22.0,
             360.0,
-            "Up Next is empty.",
+            crate::i18n::text("Up Next is empty."),
             &sty(
                 Family::Sans,
                 Weight::SemiBold,
@@ -501,20 +501,20 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
             f,
             22.0,
             386.0,
-            "Play or queue a track and it appears here.",
+            crate::i18n::text("Play or queue a track and it appears here."),
             &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0),
         );
         return l;
     }
 
-    let y0 = crate::chrome::header(c, t, f, "Up Next", None);
+    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Up Next"), None);
     // CLEAR empties what is still to come, so it only appears when something is. SHUFFLE needs
     // two tracks besides the playing one — one other track has only one order.
     let left = l.upcoming_len();
     let can_clear = left > 0;
     let can_shuffle = v.current.is_some() && v.tracks.len() >= 3;
     if can_clear {
-        chip(c, t, f, CLEAR_CHIP, "CLEAR");
+        chip(c, t, f, CLEAR_CHIP, crate::i18n::text("CLEAR"));
     }
     if can_shuffle {
         let (sx, sy, sw, sh) = SHUFFLE_CHIP;
@@ -525,7 +525,7 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
             f,
             (sx + 46) as f32,
             (sy + sh / 2 + 4) as f32,
-            "MIX",
+            crate::i18n::text("MIX"),
             &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14),
         );
     }
@@ -542,12 +542,13 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     };
     if v.current.is_some() {
         let cs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
-        let room = (cap_right - 12) as f32 - (crate::chrome::header_title_end(f, "Up Next") + 12.0);
+        let room = (cap_right - 12) as f32
+            - (crate::chrome::header_title_end(f, crate::i18n::text("Up Next")) + 12.0);
         let long = caption(left, v.drag.is_some());
         let short = if v.drag.is_some() {
-            String::from("DRAG")
+            String::from(crate::i18n::text("DRAG"))
         } else {
-            format!("{left} LEFT")
+            crate::ui_format!("{left} LEFT", left = left)
         };
         if let Some(cap) = [long, short]
             .into_iter()
@@ -608,8 +609,8 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                 let lbl = crate::widgets::fit(f, &section_label(sec, v.album), &hs, budget);
                 text::draw(c, f, 22.0, (y + HDR_H - 11) as f32, &lbl, &hs);
                 let action = match sec {
-                    Section::History => Some("CLEAR"),
-                    Section::Now => Some("SAVE"),
+                    Section::History => Some(crate::i18n::text("CLEAR")),
+                    Section::Now => Some(crate::i18n::text("SAVE")),
                     Section::Next => None,
                 };
                 if let Some(a) = action {

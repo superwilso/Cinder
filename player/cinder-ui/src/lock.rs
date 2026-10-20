@@ -74,7 +74,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, l: &Lock) {
 
     // bottom hint: lock glyph + caption. The Hold switch unlocks (touch is disabled); the side
     // transport keys stay live; Power just wakes the screen.
-    let hint = "HOLD LOCK · SIDE KEYS ACTIVE · SLIDE HOLD OFF";
+    let hint = crate::i18n::text("HOLD LOCK · SIDE KEYS ACTIVE · SLIDE HOLD OFF");
     let hs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16);
     let hw = text::measure(f, hint, &hs);
     let total = 12.0 + 9.0 + hw;

@@ -42,8 +42,8 @@ impl Scale {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Scale::Dynamic => "DYNAMIC",
-            Scale::Fixed => "FIXED",
+            Scale::Dynamic => crate::i18n::text("DYNAMIC"),
+            Scale::Fixed => crate::i18n::text("FIXED"),
         }
     }
 }
@@ -77,8 +77,8 @@ impl Interp {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Interp::Smooth => "SMOOTH",
-            Interp::Linear => "LINEAR",
+            Interp::Smooth => crate::i18n::text("SMOOTH"),
+            Interp::Linear => crate::i18n::text("LINEAR"),
         }
     }
 }
@@ -132,10 +132,10 @@ pub const RESPONSE_COUNT: u8 = 4;
 
 pub fn response_from_index(i: u8) -> (f32, f32, &'static str) {
     match i % RESPONSE_COUNT {
-        0 => (40.0, 320.0, "NORMAL"),
-        1 => (10.0, 120.0, "FAST"),
-        2 => (90.0, 700.0, "SMOOTH"),
-        _ => (5.0, 60.0, "RAW"),
+        0 => (40.0, 320.0, crate::i18n::text("NORMAL")),
+        1 => (10.0, 120.0, crate::i18n::text("FAST")),
+        2 => (90.0, 700.0, crate::i18n::text("SMOOTH")),
+        _ => (5.0, 60.0, crate::i18n::text("RAW")),
     }
 }
 
@@ -167,10 +167,10 @@ pub fn window_ms_from_index(i: u8) -> u16 {
 
 pub fn window_name(i: u8) -> &'static str {
     match i % WINDOW_COUNT {
-        0 => "AUTO",
-        1 => "25 MS",
-        2 => "60 MS",
-        _ => "125 MS",
+        0 => crate::i18n::text("AUTO"),
+        1 => crate::i18n::text("25 MS"),
+        2 => crate::i18n::text("60 MS"),
+        _ => crate::i18n::text("125 MS"),
     }
 }
 

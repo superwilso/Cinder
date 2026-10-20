@@ -31,8 +31,8 @@ impl Output {
     /// Row title (unused since the profiles were retired).
     pub fn label(self) -> &'static str {
         match self {
-            Output::Jack => "Headphone jack",
-            Output::Bluetooth => "Bluetooth",
+            Output::Jack => crate::i18n::text("Headphone jack"),
+            Output::Bluetooth => crate::i18n::text("Bluetooth"),
             Output::UsbDac => "USB-DAC",
         }
     }
@@ -41,7 +41,7 @@ impl Output {
     pub fn short(self) -> &'static str {
         match self {
             Output::Jack => "3.5 MM",
-            Output::Bluetooth => "BLUETOOTH",
+            Output::Bluetooth => crate::i18n::text("BLUETOOTH"),
             Output::UsbDac => "USB-DAC",
         }
     }

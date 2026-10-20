@@ -139,7 +139,14 @@ fn audio_page(
             }
         }
         NpPage::Level => {
-            widgets::center(c, f, mid, (y + 24) as f32, "OUTPUT LEVEL", &caption);
+            widgets::center(
+                c,
+                f,
+                mid,
+                (y + 24) as f32,
+                crate::i18n::text("OUTPUT LEVEL"),
+                &caption,
+            );
             let (mean, peak) = np::level_stats(np);
             let (mx, mw, my, mh) = (x + 16, w - 32, y + h / 2 - 40, 48);
             fill_rect(c, mx, my, mw, mh, t.panel);
@@ -205,9 +212,9 @@ fn cover_viz(c: &mut Canvas, t: &Theme, np: &NowPlaying, x: i32, w: i32, bottom:
 
 fn nothing_playing(c: &mut Canvas, t: &Theme, f: &FontSet, cx: f32, cy: f32, upper: bool) {
     let head = if upper {
-        "NOTHING PLAYING"
+        crate::i18n::text("NOTHING PLAYING")
     } else {
-        "Nothing playing"
+        crate::i18n::text("Nothing playing")
     };
     let fam = if upper { Family::Mono } else { Family::Sans };
     widgets::center(
@@ -223,7 +230,7 @@ fn nothing_playing(c: &mut Canvas, t: &Theme, f: &FontSet, cx: f32, cy: f32, upp
         f,
         cx,
         cy + 26.0,
-        "CHOOSE A TRACK FROM YOUR LIBRARY",
+        crate::i18n::text("CHOOSE A TRACK FROM YOUR LIBRARY"),
         &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
     );
 }
@@ -473,7 +480,7 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
             f,
             x,
             y + 24.0,
-            "ALBUM",
+            crate::i18n::text("ALBUM"),
             &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1),
         );
     }
@@ -481,6 +488,7 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     // The toolbar: four words under a hairline.
     hline(c, TOOLBAR_TOP, t.line);
     for (i, word) in TOOLBAR_WORDS.iter().enumerate() {
+        let word = crate::i18n::text(word);
         let (x, _) = centre(l, Hit::Toolbar(i as u8));
         let col = if quiet && i == 0 { t.acc } else { t.dim };
         let st = s(Family::Mono, Weight::Regular, 11.0, col, 0.16);
@@ -641,7 +649,14 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
 
     // The readout: where you are, which page, what is playing.
     let cap = mono(11.0, Weight::Regular, t.faint);
-    text::draw(c, f, TEXT_X, READOUT_Y, "// NOW PLAYING", &cap);
+    text::draw(
+        c,
+        f,
+        TEXT_X,
+        READOUT_Y,
+        crate::i18n::text("// NOW PLAYING"),
+        &cap,
+    );
     if !quiet {
         let mut pg = *b"[1/3]";
         pg[1] = b'1' + (np.page % np::PAGES);
@@ -672,7 +687,7 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
             f,
             TEXT_X,
             ARTIST_Y,
-            &format!("BY {}", np.artist.to_uppercase()),
+            &crate::ui_format!("BY {}", np.artist.to_uppercase()),
             &mono(13.0, Weight::Regular, t.dim),
             TEXT_W,
         );
@@ -724,9 +739,9 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
         c,
         Hit::PlayPause,
         if np.playing && !quiet {
-            "|| PAUSE"
+            crate::i18n::text("|| PAUSE")
         } else {
-            "> PLAY"
+            crate::i18n::text("> PLAY")
         },
         t.acc,
     );
@@ -735,14 +750,14 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     word(
         c,
         Hit::Shuffle,
-        "[SHUF]",
+        crate::i18n::text("[SHUF]"),
         if np.shuffle && !quiet { t.acc } else { t.faint },
     );
     let rpt = match np.repeat {
-        _ if quiet => "[RPT]",
-        1 => "[RPT1]",
-        np::REPEAT_ALBUM => "[ALBM]",
-        _ => "[RPT]",
+        _ if quiet => crate::i18n::text("[RPT]"),
+        1 => crate::i18n::text("[RPT1]"),
+        np::REPEAT_ALBUM => crate::i18n::text("[ALBM]"),
+        _ => crate::i18n::text("[RPT]"),
     };
     word(
         c,
@@ -758,6 +773,7 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     // The toolbar.
     hline(c, TOOLBAR_TOP, t.line);
     for (i, label) in TERMINAL_TOOLBAR.iter().enumerate() {
+        let label = crate::i18n::text(label);
         let col = if quiet && i == 0 { t.acc } else { t.dim };
         word(c, Hit::Toolbar(i as u8), label, col);
     }

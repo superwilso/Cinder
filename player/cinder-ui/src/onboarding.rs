@@ -53,7 +53,7 @@ fn welcome(c: &mut Canvas, t: &Theme, f: &FontSet) {
         f,
         38.0,
         340.0,
-        "Your music, clean and quiet.",
+        crate::i18n::text("Your music, clean and quiet."),
         &sty(Family::Sans, Weight::Regular, 18.0, t.ink, 0.0),
         458.0,
     );
@@ -62,7 +62,7 @@ fn welcome(c: &mut Canvas, t: &Theme, f: &FontSet) {
         f,
         38.0,
         366.0,
-        "A replacement player for the Walkman.",
+        crate::i18n::text("A replacement player for the Walkman."),
         &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
         458.0,
     );
@@ -152,10 +152,24 @@ fn icon_row(
 /// none of it is labelled on the glass: the clock is a Now Playing button, the strip is the Menu,
 /// the bookmark is the Shelf.
 fn getting_around(c: &mut Canvas, t: &Theme, f: &FontSet) {
-    title(c, t, f, "Getting around");
-    section(c, t, f, 124, "THE TOP STRIP, ON EVERY SCREEN");
+    title(c, t, f, crate::i18n::text("Getting around"));
+    section(
+        c,
+        t,
+        f,
+        124,
+        crate::i18n::text("THE TOP STRIP, ON EVERY SCREEN"),
+    );
     let mut y = 152;
-    icon_row(c, t, f, y, None, "Clock", "Back to Now Playing");
+    icon_row(
+        c,
+        t,
+        f,
+        y,
+        None,
+        crate::i18n::text("Clock"),
+        crate::i18n::text("Back to Now Playing"),
+    );
     y += 46;
     icon_row(
         c,
@@ -163,8 +177,8 @@ fn getting_around(c: &mut Canvas, t: &Theme, f: &FontSet) {
         f,
         y,
         Some(icons::menu),
-        "Menu",
-        "Every screen, one tap",
+        crate::i18n::text("Menu"),
+        crate::i18n::text("Every screen, one tap"),
     );
     y += 46;
     icon_row(
@@ -173,27 +187,46 @@ fn getting_around(c: &mut Canvas, t: &Theme, f: &FontSet) {
         f,
         y,
         Some(icons::bookmark),
-        "Shelf",
-        "Save your place, jump back",
+        crate::i18n::text("Shelf"),
+        crate::i18n::text("Save your place, jump back"),
     );
     y += 64;
-    section(c, t, f, y - 28, "GOING BACK");
+    section(c, t, f, y - 28, crate::i18n::text("GOING BACK"));
     icon_row(
         c,
         t,
         f,
         y,
         Some(icons::back),
-        "Arrow",
-        "Top left of every screen",
+        crate::i18n::text("Arrow"),
+        crate::i18n::text("Top left of every screen"),
     );
     y += 46;
-    icon_row(c, t, f, y, None, "Swipe \u{2192}", "In from the left edge");
+    icon_row(
+        c,
+        t,
+        f,
+        y,
+        None,
+        "Swipe \u{2192}",
+        crate::i18n::text("In from the left edge"),
+    );
     y += 64;
-    section(c, t, f, y - 28, "NOW PLAYING'S BOTTOM BAR");
+    section(
+        c,
+        t,
+        f,
+        y - 28,
+        crate::i18n::text("NOW PLAYING'S BOTTOM BAR"),
+    );
     // Drawn as the real bar is: four icons in the same slots, each named underneath.
     let row = y + 8;
-    let labels = ["Library", "Up Next", "Bluetooth", "Settings"];
+    let labels = [
+        crate::i18n::text("Library"),
+        crate::i18n::text("Up Next"),
+        crate::i18n::text("Bluetooth"),
+        crate::i18n::text("Settings"),
+    ];
     let lst = sty(Family::Sans, Weight::Regular, 14.0, t.ink, 0.0);
     for (i, cx) in crate::now_playing::TOOLBAR_CX.iter().enumerate() {
         let x = *cx as f32;
@@ -211,7 +244,7 @@ fn getting_around(c: &mut Canvas, t: &Theme, f: &FontSet) {
         f,
         38.0,
         y as f32,
-        "Lists show a Now Playing strip at the bottom:",
+        crate::i18n::text("Lists show a Now Playing strip at the bottom:"),
         &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
         458.0,
     );
@@ -220,7 +253,7 @@ fn getting_around(c: &mut Canvas, t: &Theme, f: &FontSet) {
         f,
         38.0,
         (y + 22) as f32,
-        "tap it to go back to the song.",
+        crate::i18n::text("tap it to go back to the song."),
         &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
         458.0,
     );
@@ -228,27 +261,45 @@ fn getting_around(c: &mut Canvas, t: &Theme, f: &FontSet) {
 
 /// PLAYING AND UP NEXT — the rules the queue follows since it became one list (2026-09-23).
 fn playing(c: &mut Canvas, t: &Theme, f: &FontSet) {
-    title(c, t, f, "Playing & Up Next");
-    section(c, t, f, 124, "ON ANY SONG");
+    title(c, t, f, crate::i18n::text("Playing & Up Next"));
+    section(c, t, f, 124, crate::i18n::text("ON ANY SONG"));
     let mut y = 152;
     let rows: [(&str, &str); 3] = [
-        ("Tap", "Play from there, in order"),
-        ("Swipe \u{2192}", "Add to Up Next, at the end"),
-        ("Swipe \u{2190}", "Play next, after this song"),
+        (
+            crate::i18n::text("Tap"),
+            crate::i18n::text("Play from there, in order"),
+        ),
+        (
+            "Swipe \u{2192}",
+            crate::i18n::text("Add to Up Next, at the end"),
+        ),
+        (
+            "Swipe \u{2190}",
+            crate::i18n::text("Play next, after this song"),
+        ),
     ];
     for (k, a) in rows {
         ctl(c, t, f, y, k, a);
         y += 46;
     }
     y += 18;
-    section(c, t, f, y, "IN UP NEXT");
+    section(c, t, f, y, crate::i18n::text("IN UP NEXT"));
     y += 28;
     let rows: [(&str, &str); 5] = [
-        ("Tap", "Jump to that song"),
-        ("Drag \u{2261}", "Move it anywhere"),
-        ("Swipe", "Remove it"),
-        ("MIX", "Shuffle the whole list"),
-        ("CLEAR", "Empty what is left"),
+        (
+            crate::i18n::text("Tap"),
+            crate::i18n::text("Jump to that song"),
+        ),
+        ("Drag \u{2261}", crate::i18n::text("Move it anywhere")),
+        (crate::i18n::text("Swipe"), crate::i18n::text("Remove it")),
+        (
+            crate::i18n::text("MIX"),
+            crate::i18n::text("Shuffle the whole list"),
+        ),
+        (
+            crate::i18n::text("CLEAR"),
+            crate::i18n::text("Empty what is left"),
+        ),
     ];
     for (k, a) in rows {
         ctl(c, t, f, y, k, a);
@@ -259,35 +310,44 @@ fn playing(c: &mut Canvas, t: &Theme, f: &FontSet) {
         f,
         38.0,
         (y + 4) as f32,
-        "Shuffle off puts the list back in order.",
+        crate::i18n::text("Shuffle off puts the list back in order."),
         &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
         458.0,
     );
 }
 
 fn controls(c: &mut Canvas, t: &Theme, f: &FontSet) {
-    title(c, t, f, "Buttons");
+    title(c, t, f, crate::i18n::text("Buttons"));
 
     // The physical buttons (the only ones the device has) — all transport + power.
-    section(c, t, f, 124, "ON THE SIDE");
+    section(c, t, f, 124, crate::i18n::text("ON THE SIDE"));
     let mut y = 152;
     let buttons: [(&str, &str); 4] = [
-        ("PLAY", "Play / pause"),
-        ("\u{25C1} REWIND", "Previous track"),
-        ("SKIP \u{25B7}", "Next track"),
-        ("VOL + / \u{2212}", "Volume"),
+        (crate::i18n::text("PLAY"), crate::i18n::text("Play / pause")),
+        ("\u{25C1} REWIND", crate::i18n::text("Previous track")),
+        ("SKIP \u{25B7}", crate::i18n::text("Next track")),
+        ("VOL + / \u{2212}", crate::i18n::text("Volume")),
     ];
     for (k, a) in buttons {
         ctl(c, t, f, y, k, a);
         y += 46;
     }
     y += 18;
-    section(c, t, f, y, "POWER AND HOLD");
+    section(c, t, f, y, crate::i18n::text("POWER AND HOLD"));
     y += 28;
     let power: [(&str, &str); 3] = [
-        ("POWER", "Screen on / off"),
-        ("HOLD POWER", "Power off or restart"),
-        ("HOLD switch", "Locks the screen; buttons work"),
+        (
+            crate::i18n::text("POWER"),
+            crate::i18n::text("Screen on / off"),
+        ),
+        (
+            crate::i18n::text("HOLD POWER"),
+            crate::i18n::text("Power off or restart"),
+        ),
+        (
+            crate::i18n::text("HOLD switch"),
+            crate::i18n::text("Locks the screen; buttons work"),
+        ),
     ];
     for (k, a) in power {
         ctl(c, t, f, y, k, a);
@@ -302,17 +362,23 @@ fn controls(c: &mut Canvas, t: &Theme, f: &FontSet) {
 ///   * bottom edge     -> the shell's `SHELF_EDGE_Y` band + `nav::shelf_swipe_open`
 ///   * the long press  -> `App::reorder_begin_hold`
 fn gestures(c: &mut Canvas, t: &Theme, f: &FontSet) {
-    title(c, t, f, "Gestures");
+    title(c, t, f, crate::i18n::text("Gestures"));
 
-    section(c, t, f, 124, "NOW PLAYING");
+    section(c, t, f, 124, crate::i18n::text("NOW PLAYING"));
     let mut y = 152;
     let np: [(&str, &str); 3] = [
         (
             "Swipe \u{2194} art",
             "Cover \u{00b7} spectrum \u{00b7} level",
         ),
-        ("Swipe \u{2194} below", "Previous / next track"),
-        ("Tap the title", "Track info \u{00b7} add to a playlist"),
+        (
+            "Swipe \u{2194} below",
+            crate::i18n::text("Previous / next track"),
+        ),
+        (
+            crate::i18n::text("Tap the title"),
+            "Track info \u{00b7} add to a playlist",
+        ),
     ];
     for (k, a) in np {
         ctl(c, t, f, y, k, a);
@@ -320,12 +386,18 @@ fn gestures(c: &mut Canvas, t: &Theme, f: &FontSet) {
     }
 
     y += 18;
-    section(c, t, f, y, "ANYWHERE");
+    section(c, t, f, y, crate::i18n::text("ANYWHERE"));
     y += 28;
     let any: [(&str, &str); 3] = [
-        ("Swipe \u{2191}", "From the bottom: the Shelf"),
-        ("Swipe \u{2195}", "Scroll a list"),
-        ("Hold a row", "Up Next: pick it up to move"),
+        (
+            "Swipe \u{2191}",
+            crate::i18n::text("From the bottom: the Shelf"),
+        ),
+        ("Swipe \u{2195}", crate::i18n::text("Scroll a list")),
+        (
+            crate::i18n::text("Hold a row"),
+            crate::i18n::text("Up Next: pick it up to move"),
+        ),
     ];
     for (k, a) in any {
         ctl(c, t, f, y, k, a);
@@ -362,7 +434,7 @@ fn features(c: &mut Canvas, t: &Theme, f: &FontSet) {
         f,
         36.0,
         92.0,
-        "What's inside",
+        crate::i18n::text("What's inside"),
         &sty(Family::Sans, Weight::Bold, 32.0, t.ink, 0.0),
         458.0,
     );
@@ -372,31 +444,31 @@ fn features(c: &mut Canvas, t: &Theme, f: &FontSet) {
     // than one that stays vague.
     let items: [(&str, &str); 7] = [
         (
-            "Library",
+            crate::i18n::text("Library"),
             "Songs, albums, artists, folders \u{2014} thousands of tracks.",
         ),
         (
-            "Up Next",
+            crate::i18n::text("Up Next"),
             "One list in play order \u{2014} add, move, remove anything.",
         ),
         (
-            "Playlists",
+            crate::i18n::text("Playlists"),
             "Make them on the device \u{2014} rename, add and remove tracks.",
         ),
         (
-            "Sound",
-            "10-band EQ + DSEE/VPT/Vinyl/ClearAudio+, A/B compare.",
+            crate::i18n::text("Sound"),
+            crate::i18n::text("10-band EQ + DSEE/VPT/Vinyl/ClearAudio+, A/B compare."),
         ),
         (
-            "Bluetooth & USB-DAC",
-            "LDAC out, and a USB sound card that keeps Bluetooth.",
+            crate::i18n::text("Bluetooth & USB-DAC"),
+            crate::i18n::text("LDAC out, and a USB sound card that keeps Bluetooth."),
         ),
         (
-            "Visualiser",
+            crate::i18n::text("Visualiser"),
             "Thirteen styles: scope, stereo field, spectrogram\u{2026}",
         ),
         (
-            "Sleep timer & battery care",
+            crate::i18n::text("Sleep timer & battery care"),
             "In Settings \u{2014} pauses playback; caps charging at 90%.",
         ),
     ];
@@ -409,9 +481,23 @@ fn features(c: &mut Canvas, t: &Theme, f: &FontSet) {
 fn done(c: &mut Canvas, t: &Theme, f: &FontSet) {
     icons::note(c, 240.0, 280.0, 40.0, t.acc);
     let st = sty(Family::Sans, Weight::Bold, 32.0, t.ink, 0.0);
-    crate::widgets::center(c, f, (W / 2) as f32, 360.0, "You're all set", &st);
+    crate::widgets::center(
+        c,
+        f,
+        (W / 2) as f32,
+        360.0,
+        crate::i18n::text("You're all set"),
+        &st,
+    );
     let s2 = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
-    crate::widgets::center(c, f, (W / 2) as f32, 392.0, "Tap to start listening.", &s2);
+    crate::widgets::center(
+        c,
+        f,
+        (W / 2) as f32,
+        392.0,
+        crate::i18n::text("Tap to start listening."),
+        &s2,
+    );
 }
 
 // Page-position dots near the bottom.

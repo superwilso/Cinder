@@ -103,22 +103,31 @@ pub struct Tone {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "Tone Control", Some("Advanced"));
+    let y0 = crate::chrome::header(
+        c,
+        t,
+        f,
+        crate::i18n::text("Tone Control"),
+        Some(crate::i18n::text("Advanced")),
+    );
     hline(c, y0, t.line);
 
     // ── the state line ──────────────────────────────────────────────────────────────────────
     // Three things can make these sliders inaudible and only one of them is on this screen, so
     // say which. Ordered by which you would have to undo FIRST.
     let (msg, col) = if let Some(who) = tc.overridden_by {
-        (format!("{who} is on — nothing here is in the path"), t.acc)
+        (
+            crate::ui_format!("{who} is on — nothing here is in the path", who = who),
+            t.acc,
+        )
     } else if !tc.on {
         (
-            "Tone Control is off — switch it on in Advanced".to_string(),
+            crate::i18n::text("Tone Control is off — switch it on in Advanced").to_string(),
             t.dim,
         )
     } else {
         (
-            "In the path, in place of the Equalizer".to_string(),
+            crate::i18n::text("In the path, in place of the Equalizer").to_string(),
             t.faint,
         )
     };
@@ -135,7 +144,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
         f,
         22.0,
         (y0 + 46) as f32,
-        "Sony saves the two separately; only one is ever applied.",
+        crate::i18n::text("Sony saves the two separately; only one is ever applied."),
         &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
     );
 
@@ -213,7 +222,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
         f,
         (W / 2) as f32,
         (by + 52) as f32,
-        "dB   ·   tap above or below the line",
+        crate::i18n::text("dB   ·   tap above or below the line"),
         &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
     );
 
@@ -226,7 +235,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
         f,
         22.0,
         fcy + 4.0,
-        "Reset",
+        crate::i18n::text("Reset"),
         &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0),
     );
     right(
@@ -234,7 +243,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
         f,
         458.0,
         fcy + 4.0,
-        "Saved automatically",
+        crate::i18n::text("Saved automatically"),
         &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0),
     );
 }

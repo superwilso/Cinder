@@ -302,26 +302,26 @@ pub fn describe_setup(s: &SoundSetup) -> String {
     }
     let mut on: Vec<&str> = Vec::new();
     if s.tone {
-        on.push("Tone Control");
+        on.push(crate::i18n::text("Tone Control"));
     } else if s.eq_bands != [0; 10] {
         on.push("EQ");
     }
     if s.dac_eq != [0; crate::dac_eq::BANDS] {
-        on.push("DAC EQ");
+        on.push(crate::i18n::text("DAC EQ"));
     }
     for (flag, name) in [
         (s.dsee, "DSEE HX"),
-        (s.norm, "Normalizer"),
-        (s.vinyl, "Vinyl"),
+        (s.norm, crate::i18n::text("Normalizer")),
+        (s.vinyl, crate::i18n::text("Vinyl")),
         (s.vpt, "VPT"),
-        (s.dc, "DC Phase"),
+        (s.dc, crate::i18n::text("DC Phase")),
     ] {
         if flag {
             on.push(name);
         }
     }
     if s.balance != crate::sound::BALANCE_CENTRE {
-        on.push("Balance");
+        on.push(crate::i18n::text("Balance"));
     }
     if on.is_empty() {
         "Flat \u{b7} no effects".into()
@@ -680,18 +680,18 @@ pub const AUTO_OFF_PRESETS: [u32; 4] = [0, 15, 30, 60];
 /// Label for an auto power-off preset.
 pub fn auto_off_label(mins: u32) -> String {
     if mins == 0 {
-        "OFF".to_string()
+        crate::i18n::text("OFF").to_string()
     } else {
-        format!("{mins} MIN")
+        crate::ui_format!("{mins} MIN", mins = mins)
     }
 }
 
 /// Label for a screen-off preset, matching the row's other mono values.
 pub fn screen_off_label(secs: u32) -> String {
     match secs {
-        0 => String::from("OFF"),
-        s if s < 60 => format!("{s} SEC"),
-        s if s % 60 == 0 => format!("{} MIN", s / 60),
+        0 => String::from(crate::i18n::text("OFF")),
+        s if s < 60 => crate::ui_format!("{s} SEC", s = s),
+        s if s % 60 == 0 => crate::ui_format!("{} MIN", s / 60),
         s => format!("{}:{:02}", s / 60, s % 60),
     }
 }
@@ -706,6 +706,12 @@ pub(crate) struct MenuSubtitles {
     pub bluetooth: String,
     pub usb_dac: String,
     pub soundscape: String,
+}
+
+#[derive(Clone, Debug)]
+struct ToastTemplate {
+    key: &'static str,
+    args: Vec<(String, String)>,
 }
 
 /// A pinned place on the Shelf: enough route context to jump straight back — and that means the
@@ -988,6 +994,7 @@ enum Scrub {
 
 pub struct App {
     stack: Vec<Screen>,
+    language: crate::i18n::Language,
     pub night: bool,
     /// The chosen accent colour. Purely a render input — no shell action, no Sony service, so
     /// changing it costs one repaint and a settings write.
@@ -1589,6 +1596,9 @@ pub struct App {
     history: Vec<SongRow>,
     /// Transient bottom toast ("Added to queue — …"): text + frames left (fades via tick()).
     toast: String,
+    toast_raw: bool,
+    /// Dynamic notices retain their message key and owned parameters until each render.
+    toast_template: Option<ToastTemplate>,
     toast_frames: u8,
     /// Swipe-to-queue feedback animation: a "+ QUEUED" chip slides right from the swiped row and
     /// fades. `queue_anim_y` = the row's y (UI coords); frames count down via tick().
@@ -1694,6 +1704,7 @@ impl Default for App {
     fn default() -> Self {
         App {
             stack: vec![Screen::Lock],
+            language: crate::i18n::Language::English,
             album_cover: None,
             night: false,
             accent: Accent::default(),
@@ -1946,6 +1957,8 @@ impl Default for App {
             history: Vec::new(),
             mono: false,
             toast: String::new(),
+            toast_raw: false,
+            toast_template: None,
             toast_frames: 0,
             queue_anim_y: 0,
             queue_anim_frames: 0,
@@ -2004,6 +2017,14 @@ impl App {
         }
     }
 
+    pub fn language(&self) -> crate::i18n::Language {
+        self.language
+    }
+
+    pub fn set_language(&mut self, language: crate::i18n::Language) {
+        self.language = language;
+    }
+
     // ── test-only entry points ──────────────────────────────────────────────────────────────
     // The overflow audit (tests/ui_overflow.rs) has to reach every screen and overlay. These do
     // that without making `stack`, `shelf_open` or `confirm` public, which would let any caller
@@ -2058,10 +2079,10 @@ impl App {
             Screen::TrackInfo => {
                 // Needs rows, or it renders an empty page and audits nothing.
                 self.track_info = vec![
-                    ("Rating".into(), "-".into()),
-                    ("Title".into(), "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364".into()),
-                    ("Artist".into(), "Королевский филармонический оркестр / 東京都交響楽団".into()),
-                    ("Path".into(), "/contents_ext/Music/Classical/Mozart/Sinfonia concertante K364/03 - III. Presto.flac".into()),
+                    (crate::i18n::text("Rating").into(), "-".into()),
+                    (crate::i18n::text("Title").into(), "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364".into()),
+                    (crate::i18n::text("Artist").into(), "Королевский филармонический оркестр / 東京都交響楽団".into()),
+                    (crate::i18n::text("Path").into(), "/contents_ext/Music/Classical/Mozart/Sinfonia concertante K364/03 - III. Presto.flac".into()),
                 ];
             }
             Screen::Lyrics => {
@@ -2103,17 +2124,17 @@ impl App {
     #[doc(hidden)]
     pub fn kb_title_for_test(&self) -> String {
         match self.kb_purpose {
-            KbPurpose::Rename(_) => "Rename playlist".to_string(),
-            KbPurpose::SaveQueue => "Save Up Next".to_string(),
-            KbPurpose::ViewName => "Name it".to_string(),
+            KbPurpose::Rename(_) => crate::i18n::text("Rename playlist").to_string(),
+            KbPurpose::SaveQueue => crate::i18n::text("Save Up Next").to_string(),
+            KbPurpose::ViewName => crate::i18n::text("Name it").to_string(),
             KbPurpose::TrackSearch => {
                 if self.kb_text.trim().is_empty() {
-                    "Find a song".to_string()
+                    crate::i18n::text("Find a song").to_string()
                 } else {
-                    format!("{} matching", self.track_pick_order.len())
+                    crate::ui_format!("{} matching", self.track_pick_order.len())
                 }
             }
-            _ => "New playlist".to_string(),
+            _ => crate::i18n::text("New playlist").to_string(),
         }
     }
     #[doc(hidden)]
@@ -2216,8 +2237,7 @@ impl App {
         // The kept library is still sorted under the old preference; put it back in default order.
         self.set_ignore_the(false);
         self.lib.views = self.lib_views;
-        self.toast = "Settings reset".to_string();
-        self.toast_frames = TOAST_FRAMES;
+        self.notify(crate::i18n::text("Settings reset"));
         vec![Action::SettingsReset]
     }
 
@@ -2321,7 +2341,7 @@ impl App {
         if self.context.is_empty() {
             self.set_play_context(
                 vec![SongRow {
-                    title: "NOW".into(),
+                    title: crate::i18n::text("NOW").into(),
                     object_id: -1,
                     ..Default::default()
                 }],
@@ -2525,7 +2545,10 @@ impl App {
     /// pinning. Derived from the live nav state (no shell round-trip needed).
     fn place_label(&self) -> (String, String) {
         match self.current() {
-            Screen::NowPlaying => ("Now Playing".into(), "Current track".into()),
+            Screen::NowPlaying => (
+                crate::i18n::text("Now Playing").into(),
+                crate::i18n::text("Current track").into(),
+            ),
             // ALBUMS TAB: name the OPEN ALBUM, not the tab. The Albums tab is an accordion — the
             // only way to "be at" an album without leaving the list is to have it expanded — so a
             // pin taken there used to read "Library / Albums" and was indistinguishable from any
@@ -2535,24 +2558,33 @@ impl App {
             Screen::Library => match (self.lib_tab, self.album_expanded) {
                 (Tab::Albums, Some(flat)) => match self.lib.albums_flat().get(flat) {
                     Some(al) => (al.name.clone(), al.artist.clone()),
-                    None => ("Library".into(), tab_name(self.lib_tab).into()),
+                    None => (
+                        crate::i18n::text("Library").into(),
+                        tab_name(self.lib_tab).into(),
+                    ),
                 },
-                _ => ("Library".into(), tab_name(self.lib_tab).into()),
+                _ => (
+                    crate::i18n::text("Library").into(),
+                    tab_name(self.lib_tab).into(),
+                ),
             },
             Screen::Album => match self.lib.albums_flat().get(self.album_view) {
                 Some(al) => (al.name.clone(), al.artist.clone()),
-                None => ("Album".into(), String::new()),
+                None => (crate::i18n::text("Album").into(), String::new()),
             },
             Screen::Artist => match self.lib.artists.get(self.artist_view) {
                 Some(ar) => (
                     ar.name.clone(),
-                    format!("{} albums · {} tracks", ar.albums, ar.tracks),
+                    crate::ui_format!("{} albums · {} tracks", ar.albums, ar.tracks),
                 ),
-                None => ("Artist".into(), String::new()),
+                None => (crate::i18n::text("Artist").into(), String::new()),
             },
             Screen::Playlist => match self.playlist_row() {
-                Some(p) => (p.name.clone(), format!("{} tracks", p.track_list.len())),
-                None => ("Playlist".into(), String::new()),
+                Some(p) => (
+                    p.name.clone(),
+                    crate::ui_format!("{} tracks", p.track_list.len()),
+                ),
+                None => (crate::i18n::text("Playlist").into(), String::new()),
             },
             s => (screen_title(s).into(), String::new()),
         }
@@ -2703,7 +2735,7 @@ impl App {
             ShelfHit::Close => self.shelf_open = false,
             ShelfHit::PinTo(i) => {
                 if !pinnable(self.current()) {
-                    self.notify("Nothing to pin here");
+                    self.notify(crate::i18n::text("Nothing to pin here"));
                 } else {
                     let replaced = self.pins[i].is_some();
                     self.pins[i] = Some(self.capture_pin());
@@ -2713,11 +2745,14 @@ impl App {
                         .unwrap_or_default();
                     // Say what happened AND which slot — the old silent "first empty, else
                     // clobber slot 0" left the user guessing.
-                    self.notify(&if replaced {
-                        format!("Slot {} replaced — {}", i + 1, name)
-                    } else {
-                        format!("Pinned to slot {} — {}", i + 1, name)
-                    });
+                    self.notify_format(
+                        if replaced {
+                            "Slot {} replaced — {}"
+                        } else {
+                            "Pinned to slot {} — {}"
+                        },
+                        vec![("0", (i + 1).to_string()), ("1", name)],
+                    );
                 }
             }
             ShelfHit::Go(i) => {
@@ -2729,7 +2764,7 @@ impl App {
             ShelfHit::Clear(i) => {
                 if let Some(slot) = self.pins.get_mut(i) {
                     if slot.take().is_some() {
-                        self.notify(&format!("Slot {} cleared", i + 1));
+                        self.notify_format("Slot {} cleared", vec![("0", (i + 1).to_string())]);
                     }
                 }
             }
@@ -2745,7 +2780,51 @@ impl App {
     /// message that appears twice in the life of a charge would be the wrong trade.
     pub fn notify(&mut self, msg: &str) {
         self.toast = msg.to_string();
+        self.toast_raw = false;
+        self.toast_template = None;
         self.toast_frames = TOAST_FRAMES;
+    }
+
+    /// Show an external message verbatim; it is not a UI catalog key.
+    pub fn notify_raw(&mut self, msg: &str) {
+        self.toast = msg.to_string();
+        self.toast_raw = true;
+        self.toast_template = None;
+        self.toast_frames = TOAST_FRAMES;
+    }
+
+    /// Cache a dynamic notice by its exact catalog key and parameter names. Formatting at render
+    /// time keeps the notice responsive to a language change after the action has happened.
+    pub fn notify_format(&mut self, key: &'static str, args: Vec<(&'static str, String)>) {
+        let owned: Vec<(String, String)> = args
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect();
+        let english = crate::i18n::enter(crate::i18n::Language::English);
+        let borrowed: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        self.toast = crate::i18n::format_template(key, &borrowed);
+        self.toast_raw = false;
+        drop(english);
+        self.toast_template = Some(ToastTemplate { key, args: owned });
+        self.toast_frames = TOAST_FRAMES;
+    }
+
+    fn toast_for_render(&self) -> String {
+        match &self.toast_template {
+            Some(template) => {
+                let args: Vec<(&str, &str)> = template
+                    .args
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .collect();
+                crate::i18n::format_template(template.key, &args)
+            }
+            None if self.toast_raw => self.toast.clone(),
+            None => crate::i18n::text(&self.toast).to_string(),
+        }
     }
 
     // ── Shelf pin persistence ───────────────────────────────────────────────────────────────
@@ -3212,7 +3291,7 @@ impl App {
             if self.current() == Screen::PlaylistEdit {
                 self.row_drag = None;
                 if self.pl_edit.take().is_some_and(|e| e.changed()) {
-                    self.notify("Changes not saved");
+                    self.notify(crate::i18n::text("Changes not saved"));
                 }
             }
             if self.current() == Screen::ViewEdit {
@@ -3435,9 +3514,9 @@ impl App {
     pub(crate) fn menu_subtitles(&self) -> MenuSubtitles {
         MenuSubtitles {
             library: if self.lib.is_empty() {
-                String::from("Empty")
+                String::from(crate::i18n::text("Empty"))
             } else {
-                format!(
+                crate::ui_format!(
                     "{} albums · {} tracks",
                     self.lib.album_count(),
                     self.lib.songs.len()
@@ -3447,27 +3526,31 @@ impl App {
             // an empty SensMe list is not a small library, it is an untagged one, and the screen
             // behind the row says what tags it.
             sensme: match (self.lib.channels.len(), self.lib.sensme_tracks) {
-                (0, _) => String::from("Not analysed"),
-                (1, n) => format!("1 channel · {n} tracks"),
-                (c, n) => format!("{c} channels · {n} tracks"),
+                (0, _) => String::from(crate::i18n::text("Not analysed")),
+                (1, n) => crate::ui_format!("1 channel · {n} tracks", n = n),
+                (c, n) => crate::ui_format!("{c} channels · {n} tracks", c = c, n = n),
             },
             // Counts the DIRECTORIES, which is the thing this row leads to — the track total is
             // already on the Library row above it and repeating it would say nothing new.
             folders: match self.lib.folders.len() {
-                0 => String::from("Empty"),
-                1 => String::from("1 folder"),
-                n => format!("{n} folders"),
+                0 => String::from(crate::i18n::text("Empty")),
+                1 => String::from(crate::i18n::text("1 folder")),
+                n => crate::ui_format!("{n} folders", n = n),
             },
             bluetooth: crate::bluetooth::CODECS[self.bt_codec as usize]
                 .0
                 .to_string(),
-            usb_dac: String::from(if self.usb_dac_on { "On" } else { "Off" }),
+            usb_dac: String::from(if self.usb_dac_on {
+                crate::i18n::text("On")
+            } else {
+                crate::i18n::text("Off")
+            }),
             // The sound, and which of the two levels is in force is not worth the width: the page
             // says it. "Off" when switched off, even though a sound stays chosen.
             soundscape: if self.ambient_on {
-                crate::soundscape::label(self.ambient_sound).to_string()
+                crate::i18n::text(crate::soundscape::label(self.ambient_sound)).to_string()
             } else {
-                String::from("Off")
+                String::from(crate::i18n::text("Off"))
             },
             // Name the effects actually engaged; "Off" when the chain is clean.
             // What is actually shaping the sound, in the order the Sound screen's footer resolves
@@ -3475,21 +3558,21 @@ impl App {
             // ClearAudio+ — it was listed here as "Clear Phase", which is a different effect on
             // the Advanced screen.
             sound: if self.adv_source_direct {
-                String::from("Source Direct")
+                String::from(crate::i18n::text("Source Direct"))
             } else {
                 let on: Vec<&str> = if self.snd_clear {
                     let mut v = vec!["ClearAudio+"];
                     if self.snd_norm {
-                        v.push("Normaliser");
+                        v.push(crate::i18n::text("Normaliser"));
                     }
                     v
                 } else {
                     [
                         ("DSEE HX", self.snd_dsee),
-                        ("Vinyl", self.snd_vinyl),
+                        (crate::i18n::text("Vinyl"), self.snd_vinyl),
                         ("VPT", self.snd_vpt),
-                        ("DC Phase", self.snd_dc),
-                        ("Normaliser", self.snd_norm),
+                        (crate::i18n::text("DC Phase"), self.snd_dc),
+                        (crate::i18n::text("Normaliser"), self.snd_norm),
                     ]
                     .iter()
                     .filter(|(_, en)| *en)
@@ -3497,7 +3580,7 @@ impl App {
                     .collect()
                 };
                 if on.is_empty() {
-                    String::from("Off")
+                    String::from(crate::i18n::text("Off"))
                 } else {
                     on.join(" · ")
                 }
@@ -3520,7 +3603,7 @@ impl App {
             crate::display::ROW_ACCENT => {
                 if self.palette_pins_accent() {
                     // Cycling here would change a colour nothing is drawn in. Say why instead.
-                    self.notify("This palette sets its own accent");
+                    self.notify(crate::i18n::text("This palette sets its own accent"));
                 } else {
                     self.accent = self.accent.next();
                 }
@@ -3563,6 +3646,10 @@ impl App {
             self.boot_stock_armed = false;
         }
         match self.settings_sel {
+            crate::settings::ROW_LANGUAGE => {
+                self.language = self.language.next();
+                vec![]
+            }
             crate::settings::ROW_MORE => {
                 // Unfold with the first hidden row just under the header, so the tap visibly
                 // produces something; fold back to the top, where the whole short list shows.
@@ -3705,11 +3792,11 @@ impl App {
     /// the Sound screen's footer uses, so the two screens give the same answer.
     fn eq_off_reason(&self) -> Option<&'static str> {
         if self.adv_source_direct {
-            Some("Off: Source Direct is on")
+            Some(crate::i18n::text("Off: Source Direct is on"))
         } else if self.snd_clear {
-            Some("Off: ClearAudio+ is on")
+            Some(crate::i18n::text("Off: ClearAudio+ is on"))
         } else if self.adv_tone {
-            Some("Off: Tone Control is on")
+            Some(crate::i18n::text("Off: Tone Control is on"))
         } else {
             None
         }
@@ -3787,9 +3874,9 @@ impl App {
         };
         if bypassed {
             self.notify(if self.adv_source_direct {
-                "Saved — off in Direct mode"
+                crate::i18n::text("Saved — off in Direct mode")
             } else {
-                "Saved — off in ClearAudio+ mode"
+                crate::i18n::text("Saved — off in ClearAudio+ mode")
             });
         }
         vec![Action::SoundChanged]
@@ -3954,7 +4041,7 @@ impl App {
                 }
                 crate::confirm::Hit::Confirm => match ask {
                     crate::confirm::Ask::ClearQueue => {
-                        self.notify("Up Next cleared");
+                        self.notify(crate::i18n::text("Up Next cleared"));
                         self.queue_clear()
                     }
                     crate::confirm::Ask::Restart => vec![Action::Restart],
@@ -3967,7 +4054,7 @@ impl App {
                                 // Leave the page first: it is about to stop existing, and the row
                                 // index it is holding would point at whatever slid into its place.
                                 self.pop();
-                                self.notify("Playlist deleted");
+                                self.notify(crate::i18n::text("Playlist deleted"));
                                 vec![Action::PlaylistDelete(id)]
                             }
                             None => vec![],
@@ -4190,7 +4277,7 @@ impl App {
                     if let Some(oid) = self.playing_object_id() {
                         self.open_playlist_pick(oid);
                     } else {
-                        self.notify("Nothing is playing");
+                        self.notify(crate::i18n::text("Nothing is playing"));
                     }
                     return vec![];
                 }
@@ -4227,7 +4314,7 @@ impl App {
                     // A tag can name something the library does not have under that spelling.
                     // Say so rather than swallowing the tap, which reads as a dead control.
                     if !went {
-                        self.notify("Not in the library");
+                        self.notify(crate::i18n::text("Not in the library"));
                     }
                 }
                 vec![]
@@ -4266,7 +4353,7 @@ impl App {
                     y,
                     self.queue_scroll_px,
                 ) {
-                    self.notify("History cleared");
+                    self.notify(crate::i18n::text("History cleared"));
                     return self.history_clear();
                 }
                 // SAVE on the NOW PLAYING heading: Up Next as a playlist, named on the keyboard.
@@ -4461,8 +4548,7 @@ impl App {
             }
             Screen::ClockSet => {
                 if crate::clockset::hit_set(x, y) {
-                    self.toast = "Clock set".to_string();
-                    self.toast_frames = TOAST_FRAMES;
+                    self.notify(crate::i18n::text("Clock set"));
                     return vec![Action::ClockSet];
                 }
                 // A tap on a row's label half only moves the cursor — reading the screen must not
@@ -4674,7 +4760,9 @@ impl App {
                 }
                 if crate::dac_eq::fit_at(x, y) {
                     let fitted = crate::dac_eq::fit(self.eq_bands);
-                    self.notify("Your 10-band curve, fitted to the DAC's five bands");
+                    self.notify(crate::i18n::text(
+                        "Your 10-band curve, fitted to the DAC's five bands",
+                    ));
                     if fitted == self.dac_eq {
                         return vec![];
                     }
@@ -5277,7 +5365,7 @@ impl App {
     /// changes at once, and the action has the shell write it down.
     fn rate_playing(&mut self, stars: u8) -> Vec<Action> {
         let Some(id) = self.playing_object_id() else {
-            self.notify("Nothing is playing");
+            self.notify(crate::i18n::text("Nothing is playing"));
             return vec![];
         };
         let mut st = self.lib.stat(id);
@@ -5391,7 +5479,7 @@ impl App {
             self.playlist_track_idx = 0;
             self.playlist_scroll_px = 0;
             self.pl_edit_done = Some((id, ids));
-            self.notify("Playlist saved");
+            self.notify(crate::i18n::text("Playlist saved"));
             return vec![Action::PlaylistSaveEdit(id)];
         }
         if !e.undo.is_empty() && pe::hit_undo(x, y) {
@@ -5418,7 +5506,7 @@ impl App {
     /// Open the saved-view editor: on view `at`, or on a new one.
     fn open_view_edit(&mut self, at: Option<usize>) {
         if at.is_none() && self.views.len() >= crate::views::MAX_VIEWS {
-            self.notify("No room for another smart playlist");
+            self.notify(crate::i18n::text("No room for another smart playlist"));
             return;
         }
         let draft = at
@@ -5461,7 +5549,7 @@ impl App {
             if at.is_none() {
                 self.open_playlist_by_id(id);
             }
-            self.notify("Smart playlist saved");
+            self.notify(crate::i18n::text("Smart playlist saved"));
             return vec![];
         }
         if ve::hit_name(y) {
@@ -5501,7 +5589,7 @@ impl App {
             self.pop();
         }
         self.rebuild_smart(None);
-        self.notify("Smart playlist deleted");
+        self.notify(crate::i18n::text("Smart playlist deleted"));
         vec![]
     }
 
@@ -5769,7 +5857,7 @@ impl App {
             if let Some(row) = hit {
                 if self.playlist_remove_arm == Some(row) {
                     self.playlist_remove_arm = None;
-                    self.notify("Removed");
+                    self.notify(crate::i18n::text("Removed"));
                     return vec![Action::PlaylistRemoveAt(id, row as u32)];
                 }
                 self.playlist_remove_arm = Some(row);
@@ -5818,7 +5906,7 @@ impl App {
             }
         }
         if stops.len() < 2 {
-            self.notify("Only one album in this playlist");
+            self.notify(crate::i18n::text("Only one album in this playlist"));
             return vec![];
         }
         // Where the cycle is now: automatic sits at stop 0, so a custom cover that matches stop 0
@@ -5830,11 +5918,11 @@ impl App {
             .unwrap_or(0);
         let next = (at + 1) % stops.len();
         if next == 0 {
-            self.notify("Cover: automatic");
+            self.notify(crate::i18n::text("Cover: automatic"));
             return vec![Action::PlaylistSetCover(id, 0)];
         }
         let (_, object_id, label) = stops[next].clone();
-        self.notify(&format!("Cover: {label}"));
+        self.notify_format("Cover: {label}", vec![("label", label.to_string())]);
         vec![Action::PlaylistSetCover(id, object_id)]
     }
 
@@ -5920,7 +6008,7 @@ impl App {
             Some(first) if !first.art.is_empty() && rest.iter().all(|s| s.art == first.art) => {
                 first.art.clone()
             }
-            _ => "Up Next".to_string(),
+            _ => crate::i18n::text("Up Next").to_string(),
         }
     }
 
@@ -5936,7 +6024,7 @@ impl App {
                 let (id, name, _) = targets[index - 1].clone();
                 let track = self.pick_track;
                 self.pop();
-                self.notify(&format!("Added to {name}"));
+                self.notify_format("Added to {name}", vec![("name", name)]);
                 vec![Action::PlaylistAddTrack(id, track)]
             }
             None => vec![],
@@ -5971,10 +6059,10 @@ impl App {
             .map(|p| p.track_list.iter().any(|s| s.object_id == song.0))
             .unwrap_or(false)
         {
-            self.notify("Already in this playlist");
+            self.notify(crate::i18n::text("Already in this playlist"));
             return vec![];
         }
-        self.notify(&format!("Added {}", song.1));
+        self.notify_format("Added {}", vec![("0", song.1.clone())]);
         vec![Action::PlaylistAddTrack(id, song.0)]
     }
 
@@ -7278,11 +7366,15 @@ impl App {
         if album.track_list.is_empty() {
             return vec![];
         }
-        self.toast = match at {
-            QueueAt::Next => format!("Playing next — {}", album.name),
-            QueueAt::Later => format!("Album added to Up Next — {}", album.name),
-        };
-        self.toast_frames = TOAST_FRAMES;
+        match at {
+            QueueAt::Next => {
+                self.notify_format("Playing next — {}", vec![("0", album.name.clone())])
+            }
+            QueueAt::Later => self.notify_format(
+                "Album added to Up Next — {}",
+                vec![("0", album.name.clone())],
+            ),
+        }
         self.queue_anim_y = y;
         self.queue_anim_frames = QUEUE_ANIM_FRAMES;
         self.insert_rows(album.track_list.clone(), at)
@@ -7293,11 +7385,12 @@ impl App {
     /// The toast names WHICH it was, because the two gestures are mirror images and the only way to
     /// know a left-swipe registered as "next" rather than "later" is to be told.
     fn enqueue_at(&mut self, s: SongRow, y: i32, at: QueueAt) -> Vec<Action> {
-        self.toast = match at {
-            QueueAt::Next => format!("Playing next — {}", s.title),
-            QueueAt::Later => format!("Added to Up Next — {}", s.title),
-        };
-        self.toast_frames = TOAST_FRAMES;
+        match at {
+            QueueAt::Next => self.notify_format("Playing next — {}", vec![("0", s.title.clone())]),
+            QueueAt::Later => {
+                self.notify_format("Added to Up Next — {}", vec![("0", s.title.clone())])
+            }
+        }
         self.queue_anim_y = y;
         self.queue_anim_frames = QUEUE_ANIM_FRAMES;
         self.insert_rows(vec![s], at)
@@ -7372,7 +7465,7 @@ impl App {
                 pre.remove(j);
             }
         }
-        self.notify(&format!("Removed — {}", gone.title));
+        self.notify_format("Removed — {}", vec![("0", gone.title)]);
         // The list just got shorter, so the scroll may now be past its end.
         self.queue_scroll_px = self
             .queue_scroll_px
@@ -7642,7 +7735,7 @@ impl App {
     /// shuffle.
     pub fn queue_shuffle(&mut self) -> Vec<Action> {
         if self.context.len() < 3 {
-            self.notify("Nothing to shuffle");
+            self.notify(crate::i18n::text("Nothing to shuffle"));
             return vec![];
         }
         // REMEMBER THE ORDER BEFORE THE FIRST SHUFFLE TOUCHES IT, so shuffle-off has something to
@@ -7716,7 +7809,7 @@ impl App {
             x ^= x << 17;
             tail.swap(i, (x % (i as u64 + 1)) as usize);
         }
-        self.notify("Shuffled");
+        self.notify(crate::i18n::text("Shuffled"));
         vec![Action::QueueChanged]
     }
 
@@ -7764,7 +7857,7 @@ impl App {
             .position(|(_, i, _)| *i == playing)
             .unwrap_or(0);
         self.context = ranked.into_iter().map(|(_, _, t)| t).collect();
-        self.notify("Playing in order");
+        self.notify(crate::i18n::text("Playing in order"));
         vec![Action::QueueChanged]
     }
 
@@ -7902,13 +7995,13 @@ impl App {
     /// the library it would rescan — which is the number people open that row to check.
     pub fn database_label(&self) -> String {
         if self.rescanning {
-            return "Rescanning…".to_string();
+            return crate::i18n::text("Rescanning…").to_string();
         }
         let n = self.library().songs.len();
         if n == 0 {
-            return "Empty".to_string();
+            return crate::i18n::text("Empty").to_string();
         }
-        format!("{n} tracks")
+        crate::ui_format!("{n} tracks", n = n)
     }
 
     pub fn set_library(&mut self, mut lib: Library) {
@@ -8559,8 +8652,7 @@ impl App {
                     vec![]
                 }
                 Button::Select => {
-                    self.toast = "Clock set".to_string();
-                    self.toast_frames = TOAST_FRAMES;
+                    self.notify(crate::i18n::text("Clock set"));
                     vec![Action::ClockSet]
                 }
                 Button::Back => {
@@ -8620,6 +8712,7 @@ impl App {
     /// Draw the current screen. Live now-playing data comes from the shell (`np`); list/
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
+        let _language = crate::i18n::enter(self.language);
         self.reconcile_playing(np.playing);
         // The shell owns the shuffle flag; the MIX chip only needs to know which way it points.
         self.shuffle_on = np.shuffle;
@@ -8687,9 +8780,9 @@ impl App {
                 let subs = self.menu_subtitles();
                 // The strip answers "what's on?" without a trip to the player.
                 let strip = if np.title.is_empty() {
-                    String::from("NOTHING PLAYING")
+                    String::from(crate::i18n::text("NOTHING PLAYING"))
                 } else {
-                    let mut line = format!("NOW › {}", np.title);
+                    let mut line = crate::ui_format!("NOW › {}", np.title);
                     // No elapsed time: the strip is one fitted line, and the tail is what gets cut —
                     // a clock that reads "1:…" says less than no clock.
                     if !np.artist.is_empty() {
@@ -8716,7 +8809,7 @@ impl App {
                             Screen::Bluetooth => &subs.bluetooth,
                             Screen::UsbDac => &subs.usb_dac,
                             Screen::Soundscape => &subs.soundscape,
-                            _ => value,
+                            _ => crate::i18n::text(value),
                         },
                         home: home_row == Some(*screen),
                         active: i == self.menu_idx,
@@ -9033,11 +9126,13 @@ impl App {
                     } else {
                         "Off"
                     },
+                    vpt_on: self.snd_vpt,
                     dcphase: if self.snd_dc {
                         DC_PHASE_TYPES[self.snd_dc_type.min(DC_PHASE_TYPES.len() - 1)]
                     } else {
                         "Off"
                     },
+                    dcphase_on: self.snd_dc,
                     normalizer: self.snd_norm,
                     clearaudio: self.snd_clear,
                     balance: self.snd_balance,
@@ -9104,8 +9199,8 @@ impl App {
             }
             Screen::DacEq => {
                 let back = match self.stack.iter().rev().nth(1) {
-                    Some(Screen::Sound) => "Sound",
-                    _ => "Advanced",
+                    Some(Screen::Sound) => crate::i18n::text("Sound"),
+                    _ => crate::i18n::text("Advanced"),
                 };
                 let d = crate::dac_eq::DacEq {
                     bands: self.dac_eq,
@@ -9124,7 +9219,7 @@ impl App {
                     bands: self.tone_bands,
                     on: self.adv_tone,
                     overridden_by: if self.adv_source_direct {
-                        Some("Direct mode")
+                        Some(crate::i18n::text("Direct mode"))
                     } else if self.snd_clear {
                         Some("ClearAudio+")
                     } else {
@@ -9151,6 +9246,7 @@ impl App {
                     } else {
                         "Off"
                     },
+                    dsee_custom_on: self.adv_dsee_custom,
                     vinyl_type: crate::advanced::VINYL_TYPES[self
                         .adv_vinyl_type
                         .min(crate::advanced::VINYL_TYPES.len() - 1)],
@@ -9160,22 +9256,25 @@ impl App {
                     } else {
                         "Off"
                     },
+                    vpt_on: self.snd_vpt,
                     dcphase: if self.snd_dc {
                         DC_PHASE_TYPES[self.snd_dc_type.min(DC_PHASE_TYPES.len() - 1)]
                     } else {
                         "Off"
                     },
+                    dcphase_on: self.snd_dc,
                     tone_control: self.adv_tone,
                     hp_linear: self.adv_hp_linear,
                     dac_eq_on: self.dac_eq != [0; crate::dac_eq::BANDS],
                     clear_bass: self
                         .clear_bass_available
                         .then(|| crate::advanced::CLEAR_BASS[self.adv_clear_bass]),
+                    clear_bass_on: self.adv_clear_bass != 0,
                     // Which upstream control is hiding the rest, if any. Source Direct wins the
                     // naming when both are on: it is the outer bypass, so it is what you would
                     // have to turn off FIRST.
                     overridden_by: if self.adv_source_direct {
-                        Some("Direct mode")
+                        Some(crate::i18n::text("Direct mode"))
                     } else if self.snd_clear {
                         Some("ClearAudio+")
                     } else {
@@ -9220,7 +9319,7 @@ impl App {
             }
             Screen::Bluetooth => {
                 let bt = Bt {
-                    fine_volume: "OFF", // not drawn on this screen; the row lives on the codec page
+                    fine_volume: crate::i18n::text("OFF"), // not drawn on this screen; the row lives on the codec page
                     on: self.bt_on,
                     // The REAL connected device, pushed by the shell from
                     // GetConnectInformation(vector<uint8_t>& addr, string& name). Before that call
@@ -9248,7 +9347,7 @@ impl App {
             }
             Screen::BtCodec => {
                 let fine_lbl: &str = match self.bt_fine_span() {
-                    0 => "OFF",
+                    0 => crate::i18n::text("OFF"),
                     1 => "±1 dB",
                     2 => "±2 dB",
                     _ => "±3 dB",
@@ -9291,7 +9390,7 @@ impl App {
             Screen::Settings => {
                 let sleep_lbl = self.sleep_label();
                 let brightness_lbl = if self.brightness == 0 {
-                    "BACKLIGHT OFF".to_string()
+                    crate::i18n::text("BACKLIGHT OFF").to_string()
                 } else {
                     format!("{} / 5", self.brightness)
                 };
@@ -9300,7 +9399,7 @@ impl App {
                 // The row value doubles as the confirmation prompt — no extra screen needed, and
                 // the armed state is impossible to miss because it replaces the value in place.
                 let boot_stock_lbl = if self.boot_stock_armed {
-                    "TAP AGAIN"
+                    crate::i18n::text("TAP AGAIN")
                 } else {
                     "SONY"
                 };
@@ -9360,7 +9459,7 @@ impl App {
                         let (name, sub, tokens) = match slot {
                             None => (
                                 crate::palette::BUILTIN_NAME.to_string(),
-                                "Built in".to_string(),
+                                crate::i18n::text("Built in").to_string(),
                                 crate::theme::CINDER,
                             ),
                             Some(i) => {
@@ -9452,27 +9551,39 @@ impl App {
                 // search to add doesn't actually search the songs". The filter was fine; the screen
                 // was lying about its own job.
                 let (title, placeholder) = match self.kb_purpose {
-                    KbPurpose::Rename(_) => ("Rename playlist".to_string(), "Playlist name"),
+                    KbPurpose::Rename(_) => (
+                        crate::i18n::text("Rename playlist").to_string(),
+                        crate::i18n::text("Playlist name"),
+                    ),
                     KbPurpose::TrackSearch => (
                         // The live count is the proof that it IS searching, while you type.
                         if self.kb_text.trim().is_empty() {
-                            "Find a song".to_string()
+                            crate::i18n::text("Find a song").to_string()
                         } else {
-                            format!("{} matching", self.track_pick_order.len())
+                            crate::ui_format!("{} matching", self.track_pick_order.len())
                         },
-                        "Title, artist or album",
+                        crate::i18n::text("Title, artist or album"),
                     ),
                     KbPurpose::LibrarySearch => (
                         if self.kb_text.trim().is_empty() {
-                            "Search the library".to_string()
+                            crate::i18n::text("Search the library").to_string()
                         } else {
-                            format!("{} matching", self.search_order.len())
+                            crate::ui_format!("{} matching", self.search_order.len())
                         },
-                        "Title, artist or album",
+                        crate::i18n::text("Title, artist or album"),
                     ),
-                    KbPurpose::SaveQueue => ("Save Up Next".to_string(), "Playlist name"),
-                    KbPurpose::ViewName => ("Name it".to_string(), "Smart playlist name"),
-                    _ => ("New playlist".to_string(), "Playlist name"),
+                    KbPurpose::SaveQueue => (
+                        crate::i18n::text("Save Up Next").to_string(),
+                        crate::i18n::text("Playlist name"),
+                    ),
+                    KbPurpose::ViewName => (
+                        crate::i18n::text("Name it").to_string(),
+                        crate::i18n::text("Smart playlist name"),
+                    ),
+                    _ => (
+                        crate::i18n::text("New playlist").to_string(),
+                        crate::i18n::text("Playlist name"),
+                    ),
                 };
                 crate::keyboard::render(
                     c,
@@ -9540,7 +9651,7 @@ impl App {
                     c,
                     &theme,
                     fonts,
-                    "Add to playlist",
+                    crate::i18n::text("Add to playlist"),
                     &track,
                     &rows,
                     sony,
@@ -9683,7 +9794,7 @@ impl App {
             }
         }
         if self.toast_frames > 0 && self.current() != Screen::Lock {
-            crate::overlay::toast(c, &theme, fonts, &self.toast);
+            crate::overlay::toast(c, &theme, fonts, &self.toast_for_render());
         }
 
         // The confirmation modal is drawn LAST OF ALL — over every screen, the status strip, the
@@ -10265,8 +10376,10 @@ impl App {
         if !self.swap_to_setup(idx) {
             return vec![];
         }
-        self.toast = format!("Comparing {}", crate::profile::letter(idx));
-        self.toast_frames = TOAST_FRAMES;
+        self.notify_format(
+            "Comparing {}",
+            vec![("0", crate::profile::letter(idx).to_string())],
+        );
         // ONE action, and it has to be SoundChanged. The FFI hands the shell a single code per tap
         // or press — the first shell-visible action — so the old `[EqChanged, SoundChanged]` only
         // ever reached the shell as EqChanged: switching setups moved the EQ and left DSEE, VPT,
@@ -10328,11 +10441,14 @@ impl App {
         match h {
             Hit::Save => {
                 if self.presets.len() >= crate::presets::MAX {
-                    self.notify("All four are in use: delete one first");
+                    self.notify(crate::i18n::text("All four are in use: delete one first"));
                     return vec![];
                 }
                 self.presets.push(self.setup());
-                self.notify(&format!("Saved as Preset {}", self.presets.len()));
+                self.notify_format(
+                    "Saved as Preset {}",
+                    vec![("0", self.presets.len().to_string())],
+                );
                 vec![]
             }
             Hit::Load(i) => {
@@ -10341,18 +10457,20 @@ impl App {
                 };
                 p.share_unfollowed(&self.setup(), self.profile_follow);
                 self.set_setup(p);
-                self.notify(&format!(
+                self.notify_format(
                     "Preset {} on {}",
-                    i + 1,
-                    crate::profile::letter(self.setup_idx)
-                ));
+                    vec![
+                        ("0", (i + 1).to_string()),
+                        ("1", crate::profile::letter(self.setup_idx).to_string()),
+                    ],
+                );
                 vec![Action::SoundChanged]
             }
             Hit::Delete(i) => {
                 if self.preset_armed == Some(i) && i < self.presets.len() {
                     self.presets.remove(i);
                     self.preset_armed = None;
-                    self.notify(&format!("Preset {} deleted", i + 1));
+                    self.notify_format("Preset {} deleted", vec![("0", (i + 1).to_string())]);
                 } else {
                     self.preset_armed = Some(i);
                 }
@@ -10371,7 +10489,10 @@ impl App {
                 self.setup_other = self.setup();
                 let other = crate::profile::letter(1 - self.setup_idx);
                 let live = crate::profile::letter(self.setup_idx);
-                self.notify(&format!("{other} is now a copy of {live}"));
+                self.notify_format(
+                    "{other} is now a copy of {live}",
+                    vec![("other", other.to_string()), ("live", live.to_string())],
+                );
                 vec![]
             }
         }
@@ -10692,11 +10813,11 @@ impl App {
     }
     pub fn sleep_label(&self) -> String {
         if self.stop_after {
-            "END OF SONG".to_string()
+            crate::i18n::text("END OF SONG").to_string()
         } else if self.sleep_min == 0 {
-            "OFF".to_string()
+            crate::i18n::text("OFF").to_string()
         } else {
-            format!("{} MIN", self.sleep_min)
+            crate::ui_format!("{} MIN", self.sleep_min)
         }
     }
 
@@ -11746,26 +11867,119 @@ fn prev_tab(t: Tab) -> Tab {
 }
 fn tab_name(t: Tab) -> &'static str {
     match t {
-        Tab::Songs => "Songs",
-        Tab::Albums => "Albums",
-        Tab::Artists => "Artists",
-        Tab::Playlists => "Playlists",
+        Tab::Songs => crate::i18n::text("Songs"),
+        Tab::Albums => crate::i18n::text("Albums"),
+        Tab::Artists => crate::i18n::text("Artists"),
+        Tab::Playlists => crate::i18n::text("Playlists"),
     }
 }
 /// Display title for a Screen, taken from the Menu table (falls back to the app name).
 fn screen_title(s: Screen) -> &'static str {
     match s {
         // The two places that are not Menu rows (see `MENU`), named as the Menu used to name them.
-        Screen::NowPlaying => "Now Playing",
-        Screen::UpNext => "Up Next",
-        Screen::Display => "Display",
-        Screen::Palette => "Palette",
-        Screen::Eq => "Equalizer",
+        Screen::NowPlaying => crate::i18n::text("Now Playing"),
+        Screen::UpNext => crate::i18n::text("Up Next"),
+        Screen::Display => crate::i18n::text("Display"),
+        Screen::Palette => crate::i18n::text("Palette"),
+        Screen::Eq => crate::i18n::text("Equalizer"),
         s => MENU
             .iter()
             .find(|m| m.0 == s)
             .map(|m| m.1)
             .unwrap_or("Cinder"),
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+    use crate::i18n::{enter, Language};
+
+    #[test]
+    fn moved_sound_controls_and_nc_keep_their_domain_values_in_both_languages() {
+        for language in [Language::English, Language::SimplifiedChinese] {
+            let _language = enter(language);
+            let mut a = App::unlocked();
+            a.set_language(language);
+            a.push_for_test(Screen::Sound);
+            a.set_nc_plug(true, true);
+            assert!(a.tap(240, crate::sound::TOP + 10).is_empty());
+            assert_eq!(a.current(), Screen::Nc);
+            let auto = crate::nc::centre(crate::nc::Hit::Mode(1), 0, true);
+            assert!(a.tap(240, auto).is_empty());
+            assert_eq!(a.nc_items(), Some(("ainc", "nw500n")));
+            a.set_language(language.next());
+            assert_eq!(a.nc_items(), Some(("ainc", "nw500n")));
+            a.set_nc_plug(false, false);
+            assert_eq!(a.current(), Screen::Sound);
+            assert_eq!(a.nc_items(), None);
+            a.tap(
+                240,
+                crate::sound::row_top(crate::sound::ROW_ADVANCED, 0) + 20,
+            );
+            assert_eq!(a.current(), Screen::Advanced);
+            let vpt = crate::advanced::row_top(crate::advanced::ROW_VPT, false, 0) + 20;
+            assert_eq!(a.tap(240, vpt), vec![Action::SoundChanged]);
+            assert!(a.snd_vpt);
+            a.scroll_px(10_000);
+            assert_eq!(a.adv_scroll_px, crate::advanced::max_scroll(false));
+            a.tap(
+                240,
+                crate::advanced::row_top(crate::advanced::ROW_DAC_EQ, false, a.adv_scroll_px) + 20,
+            );
+            assert_eq!(a.current(), Screen::DacEq);
+        }
+    }
+
+    #[test]
+    fn language_is_reversible_without_a_transport_action_or_losing_preferences() {
+        let mut a = App::unlocked();
+        a.playing = true;
+        a.brightness = 3;
+        a.settings_sel = crate::settings::ROW_LANGUAGE;
+        assert_eq!(a.language(), Language::English);
+        assert!(a.settings_activate().is_empty());
+        assert_eq!(a.language(), Language::SimplifiedChinese);
+        assert!(a.playing);
+        assert_eq!(a.brightness, 3);
+        assert!(a.settings_activate().is_empty());
+        assert_eq!(a.language(), Language::English);
+        assert!(a.playing);
+        assert_eq!(a.brightness, 3);
+        let top = crate::chrome::HEADER_BOTTOM
+            + crate::settings::row_top_px(crate::settings::ROW_LANGUAGE);
+        let scroll = (top - 200).max(0);
+        assert_eq!(
+            crate::settings::row_at(top - scroll + 20, scroll, true),
+            Some(crate::settings::ROW_LANGUAGE)
+        );
+    }
+
+    #[test]
+    fn fm_actions_and_english_track_information_keys_work_in_both_languages() {
+        for language in [Language::English, Language::SimplifiedChinese] {
+            let _language = enter(language);
+            let mut a = App::unlocked();
+            a.set_language(language);
+            a.push_for_test(Screen::Fm);
+            assert_eq!(a.tap(400, 63), vec![Action::FmPower(true)]);
+            assert_eq!(a.tap(400, 63), vec![Action::FmPower(false)]);
+            assert_eq!(a.tap(180, 355), vec![Action::FmSeek(-1)]);
+            assert_eq!(a.tap(280, 355), vec![Action::FmSeek(1)]);
+            assert_eq!(a.tap(240, 640), vec![Action::FmScan]);
+
+            let mut b = App::unlocked();
+            b.set_language(language);
+            let artist = b.lib.artists[0].name.clone();
+            b.push_for_test(Screen::TrackInfo);
+            b.set_track_info(vec![("Artist".into(), artist.clone())]);
+            b.set_track_info_rows_for_test(vec![44]);
+            b.tap(240, crate::track_info::TOP + 4);
+            assert_eq!(b.current(), Screen::Artist);
+            assert_eq!(b.track_info_rows()[0], ("Artist".into(), artist));
+            assert!(crate::track_info::is_rating("Rating"));
+            assert!(!crate::track_info::is_rating("评分"));
+        }
     }
 }
 
@@ -16712,6 +16926,56 @@ mod tests {
             Screen::PlaylistPick,
             "picking a playlist closes the picker"
         );
+    }
+
+    #[test]
+    fn menu_soundscape_localizes_the_builtin_name_without_changing_the_id() {
+        let mut app = unlocked();
+        app.ambient_on = true;
+        app.ambient_sound = 4;
+        assert_eq!(app.menu_subtitles().soundscape, "Rain");
+        {
+            let _language = crate::i18n::enter(crate::i18n::Language::SimplifiedChinese);
+            assert_eq!(app.menu_subtitles().soundscape, "雨声");
+            assert_eq!(app.ambient_sound, 4);
+        }
+        assert_eq!(app.menu_subtitles().soundscape, "Rain");
+    }
+
+    #[test]
+    fn cached_playlist_and_queue_notices_keep_identity_across_language_changes() {
+        let mut playlist = own_and_sony();
+        playlist.lib.playlists[0].name = "Up Next — Blue".into();
+        playlist.set_play_context(playlist.lib.songs.clone(), 1);
+        playlist.open_playlist_pick(901);
+        let row = crate::playlist_pick::TOP + crate::playlist_pick::ROW_H + 4;
+        assert_eq!(
+            playlist.tap(240, row),
+            vec![Action::PlaylistAddTrack(-42, 901)]
+        );
+        assert_eq!(playlist.toast, "Added to Up Next — Blue");
+        assert!(
+            playlist.toast_frames > 0,
+            "language change must not clear the notice"
+        );
+        {
+            let _language = crate::i18n::enter(crate::i18n::Language::SimplifiedChinese);
+            assert_eq!(playlist.toast_for_render(), "已加入 Up Next — Blue");
+        }
+        assert_eq!(playlist.toast_for_render(), "Added to Up Next — Blue");
+
+        let mut queue = unlocked();
+        let row = SongRow {
+            title: "Blue".into(),
+            ..Default::default()
+        };
+        queue.enqueue_at(row, 0, QueueAt::Later);
+        assert_eq!(queue.toast, "Added to Up Next — Blue");
+        {
+            let _language = crate::i18n::enter(crate::i18n::Language::SimplifiedChinese);
+            assert_eq!(queue.toast_for_render(), "已加入待播队列：Blue");
+        }
+        assert_eq!(queue.toast_for_render(), "Added to Up Next — Blue");
     }
 
     #[test]
