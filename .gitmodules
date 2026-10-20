@@ -1,0 +1,3 @@
+[submodule "cinder-aac"]
+	path = cinder-aac
+	url = https://github.com/superwilso/cinder-aac.git
