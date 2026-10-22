@@ -9565,6 +9565,14 @@ mod repeat_tests {
 
 #[cfg(test)]
 mod tests {
+    /// The tests that put a `Render` into the process-global `cell()` take turns: `cargo test` runs
+    /// on several threads, and two of them installing their own fixture at once read each other's
+    /// state (seen on CI as a resume position of 0 where the fixture set 12000).
+    fn global_render() -> std::sync::MutexGuard<'static, ()> {
+        static GLOBAL_RENDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        GLOBAL_RENDER.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Tapping an album, playlist or channel plays it in order: shuffle goes off, and only a
     /// change is saved (`play_in_order`).
     #[test]
@@ -11385,6 +11393,7 @@ mod tests {
 
     #[test]
     fn review_zappin_full_same_uri_waits_for_zero_then_restarts_both_listen_clocks() {
+        let _global = global_render();
         let mut r = active_zappin_uri_fixture();
         let track = r.last_track.as_ref().unwrap();
         let path = track.filename.clone();
@@ -11442,6 +11451,7 @@ mod tests {
 
     #[test]
     fn review_zappin_source_exit_restores_original_track_and_releases_hold() {
+        let _global = global_render();
         let mut r = active_zappin_uri_fixture();
         // A sample of another track has been reported: last_track/play_pos are the SAMPLE's.
         r.last_track = r.db.as_ref().unwrap().track_by_object_id(2).unwrap();
@@ -11514,6 +11524,7 @@ mod tests {
 
     #[test]
     fn review_zappin_samples_do_not_enter_rewind_history() {
+        let _global = global_render();
         let r = active_zappin_uri_fixture();
         *cell().lock().unwrap() = Some(r);
         let sample = std::ffi::CString::new("box.flac").unwrap();
@@ -11582,6 +11593,7 @@ mod tests {
 
     #[test]
     fn review_zappin_end_then_play_restores_queue_position_and_same_uri_listen() {
+        let _global = global_render();
         let mut r = active_zappin_uri_fixture();
         let path =
             std::env::temp_dir().join(format!("zappin-resume-play-{}.txt", std::process::id()));
@@ -11658,6 +11670,7 @@ mod tests {
 
     #[test]
     fn review_zappin_restore_handoff_accepts_next_track_from_prepared_queue() {
+        let _global = global_render();
         let mut r = active_zappin_uri_fixture();
         r.zappin_origin_uris = vec!["atlas.flac".into(), "box.flac".into()];
         r.zappin_origin_start = 0;
@@ -11701,6 +11714,7 @@ mod tests {
 
     #[test]
     fn review_zappin_explicit_new_song_arms_handoff_only_after_pending_queue_exists() {
+        let _global = global_render();
         let mut r = active_zappin_uri_fixture();
         let path = std::env::temp_dir().join(format!("zappin-new-song-{}.txt", std::process::id()));
         r.resume_pos_path = Some(path.to_string_lossy().into_owned());
@@ -11743,6 +11757,7 @@ mod tests {
 
     #[test]
     fn review_zappin_internal_shuffle_and_queue_change_cancel_before_mutation() {
+        let _global = global_render();
         for action in [
             cinder_ui::nav::Action::ShuffleToggle,
             cinder_ui::nav::Action::QueueChanged,
@@ -11847,6 +11862,7 @@ mod tests {
 
     #[test]
     fn review_zappin_stale_candidate_callback_after_advance_is_rejected() {
+        let _global = global_render();
         let mut r = active_zappin_fixture();
         let db = r.db.as_ref().unwrap();
         let library = build_library(db);
