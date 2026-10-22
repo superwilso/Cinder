@@ -324,9 +324,12 @@ bring the table.
 
 **Where to get them.** Any one of these works — the bytes are the same:
 
-* **You already have Wampy installed:** nothing to do. Wampy keeps these exact tables on the player
-  (`ov_1288_zx-300.tbl`, `ov_1280_nw-wm1a.tbl` …) and the installer finds and uses them.
-* **From the NW-WM1A's own firmware**, or from a Walkman One package, which carries the same files.
+* **From Sony, with one command** (Linux or WSL): `tools/sony_tables.sh /mnt/e` downloads Sony's
+  NW-WM1 series firmware 3.02 from Sony's update server, unpacks it, checks each table's SHA-256 and
+  copies the three tables to the drive you name (here `E:`). It needs `7z` and the `upgtool` that
+  `tools/cloud_setup.sh` builds.
+* **By hand from the same firmware:** `NW-WM1_V3_02.dmg` → `NW_WM_FW.UPG` → sector 6 →
+  `usr/share/audio_dac/`.
 * **From the [cinder-sony-analysis releases](https://github.com/superwilso/cinder-sony-analysis/releases)**,
   where they are kept with their checksums and an explanation of why they live there.
 
@@ -335,6 +338,9 @@ bring the table.
 `volume table: installed ov_127x.tbl from /contents/ov_127x.tbl (SHA-256 matches Sony's)`, and after
 the reboot `cinderhome.log` says `volume curve: wm1a applied`. You can delete the file from the
 drive afterwards — the installer keeps its own copy in `/system`.
+
+If Wampy or Walkman One is already on the player, the installer also finds their copies of these
+same tables, so nothing needs copying there.
 
 **What is checked.** A file only counts if its SHA-256 is exactly Sony's (the table above); anything
 else is logged as `WARN: … is not Sony's ov_127x.tbl … — not installed` and the stock curve stays.

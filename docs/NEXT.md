@@ -63,15 +63,32 @@ built, in the order it was planned.
 4. The redesign plan's Part G still describes per-output profiles (2a, 2g); bring it in line with
    presets.
 
-**Cinder — standing alone from Wampy and Walkman One** (owner's direction, 10-22)
+**Cinder — standing alone from Wampy and Walkman One** (owner's direction, 10-22: no feature lost)
 
-No Wampy code is in the tree and nothing is downloaded from either project. What is left: Cinder
-installs into Wampy's folder `/system/vendor/unknown321/`; the `mono` component rides Wampy's
-SoundServiceFw preload (`preload`/`cinder-hagowrap` is the replacement); the `wm1a`/`w1` volume
-tables are read from Wampy's and Walkman One's files; `ldac-run.sh` is started from Wampy's folder
-if present; `phases/phase1.sh` clones their repos. The Walkman One support (package key, tuning
-step, Clear Bass, FM) is detection only. Licences: Wampy is GPLv3 + Commons Clause and Walkman One
-is closed, so rebuild from documented facts, never copy, and keep anything GPL in its own repo.
+No Wampy code is in the tree and nothing is downloaded from either project. Licences: Wampy is
+GPLv3 + Commons Clause and Walkman One is closed, so rebuild from documented facts, never copy, and
+keep anything GPL in its own repo. The design for Walkman One's gains on a stock player is
+[`SPEC_cinder_one.md`](SPEC_cinder_one.md): take what W1 does, from Sony's own files, without the
+model swap that causes W1's losses.
+
+1. ~~**Volume curves from Sony.**~~ **Done 10-22:** `tools/sony_tables.sh` takes the `wm1a`/`w1`
+   tables from Sony's NW-WM1 3.02 firmware (`fw/pc/WM1/J/NW-WM1_V3_02.dmg`); all three match the
+   installer's SHA-256s. Next step: the PC installer does the same itself, so nobody runs a script
+   (it needs DMG, UPG and ext4 reading in Rust — about two days).
+2. **Mono without Wampy by default.** Already built: the `preload` component (hagodaemon wrapper +
+   boot guard). It is off by default because the wrapper stands in front of every Sony service;
+   turning it on by default needs §35 on players other than the owner's. Then the Wampy-chain
+   `mono` component can be retired.
+3. **Cinder One, tiers 0–1, for stock players** (`SPEC_cinder_one.md` §3): the sound signature is
+   built (`cinder-signature.sh`); still to build are the gain mode (`dacdat ovt`), the analyser
+   params and the full DAC reprogramming, all from the player's own Sony files.
+4. **What cannot be remade:** Walkman One's external tunings (the WM1Z/ZX300 NVRAM images). They are
+   W1's paid product, not Sony's, and installing one writes the bootloader partition
+   (`SPEC_cinder_one.md` §7). The tuning step stays as detection for players that already have W1.
+5. **The folder name.** Cinder installs into `/system/vendor/unknown321/`, Wampy's folder. Wampy's
+   uninstaller removes only its own files (checked 10-22), so this is a name, not a dependency.
+   Moving to `/system/vendor/cinder/` touches ~110 lines including the launcher's path: do it on
+   its own, with a migration and a device test, or not at all.
 
 **Installer — finish an install from a Mac** (owner, 10-22; Montree on Head-Fi asked for it)
 
