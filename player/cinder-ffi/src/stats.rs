@@ -269,6 +269,14 @@ impl Listen {
         self.counted = false;
     }
 
+    /// Begin a newly confirmed, complete play even when it is the same URI as the preview.
+    /// Preview callbacks deliberately do not call this method; the explicit handoff does.
+    pub fn restart_track(&mut self, path: &str, length_s: u32) {
+        self.cur = Some((path.to_string(), length_s));
+        self.played_ms = 0;
+        self.counted = false;
+    }
+
     /// Advance by real elapsed time. Returns the path of a track that has JUST become a listen —
     /// once per play, the moment the threshold is crossed, so a sudden power-off still counts it.
     pub fn tick_ms(&mut self, playing: bool, elapsed_ms: u64) -> Option<&str> {

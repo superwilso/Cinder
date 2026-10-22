@@ -10,6 +10,7 @@
 // own state instead of the radio's. A pure-function test cannot see any of that; a 60-second boot
 // trace shows all of it.
 #include "harness.h"
+#include "../src/zappin_policy.h"
 
 #include <cstdio>
 #include <cstring>
@@ -1979,8 +1980,776 @@ static void s_wrapper_proof_none(void) {
           "no wrapper on the player: no proof files are written");
 }
 
+// The real shell starts a one-URI preview, waits for the matching URI, seeks to the plan, counts
+// only playing time, advances exactly once per finite candidate and pauses at the end.
+static void s_zappin_preview(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 52); // CINDER_ACT_ZAPPIN_START from the real input drain
+    cinder_harness_script("cinder_zappin_generation", 7);
+    cinder_harness_script("cinder_zappin_candidate_count", 2);
+    cinder_harness_script("cinder_zappin_current_index", 0);
+    cinder_harness_script("cinder_zappin_confirm_candidate", 1);
+    static const long long source_accepted[] = {1, 1};
+    cinder_harness_script_seq("cinder_zappin_set_source", source_accepted, 2);
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    static const long long advances[] = {1, -1};
+    cinder_harness_script_seq("cinder_zappin_advance", advances, 2);
+    cinder_harness_play_position(62000, 180000);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_set_budget_ms(31000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+             "two candidate URIs were handed to PlayerService");
+    check_eq(cinder_harness_count("cinder_zappin_confirm_candidate"), 2,
+             "each seek waited for its URI and session confirmation");
+    check_eq(cinder_harness_count("cinder_zappin_set_source"), 2,
+             "the menu source label updates only after the candidate is confirmed");
+    check_eq(cinder_harness_count("cinder_toast_key"), 0,
+             "source labels update without repeated toasts over the preview controls");
+    check_eq(cinder_harness_arg("cinder_zappin_set_source", 0), 1,
+             "first candidate reports SABI source");
+    check_eq(cinder_harness_arg("cinder_zappin_set_source", 1), 2,
+             "second candidate reports fixed fallback source");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 2,
+             "one bounded seek per candidate");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 0), 62000,
+             "valid SABI start was used for the first candidate");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 1), 45000,
+             "fixed fallback start was used for the second candidate");
+    check_eq(cinder_harness_count("cinder_zappin_end"), 1,
+             "the finite pass explicitly ends at the last candidate");
+    check_eq(cinder_harness_before("cinder_audio_current_uri", "cinder_audio_seek_ms"), 1,
+             "the shell checks the live URI before seeking");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 1,
+             "the last preview is paused instead of playing the song in full");
+}
+
+// A URI can be confirmed while the seek itself is refused. The candidate must not be reported as
+// active; the shell should consume it once and continue its bounded pass.
+static void s_zappin_seek_failure_skips_candidate(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 52);
+    cinder_harness_script("cinder_zappin_generation", 7);
+    cinder_harness_script("cinder_zappin_candidate_count", 2);
+    cinder_harness_script("cinder_zappin_current_index", 0);
+    cinder_harness_script("cinder_zappin_confirm_candidate", 1);
+    static const long long seek_results[] = {-1, 0};
+    cinder_harness_script_seq("cinder_audio_seek_ms", seek_results, 2);
+    cinder_harness_script("cinder_zappin_set_source", 1);
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    static const long long advances[] = {1, -1};
+    cinder_harness_script_seq("cinder_zappin_advance", advances, 2);
+    cinder_harness_play_position(62000, 180000);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_set_budget_ms(31000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+             "the rejected seek advances to the next candidate exactly once");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 2,
+             "the second candidate receives its own seek attempt");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 0), 62000,
+             "the first candidate's planned seek was injected as rejected");
+    check_eq(cinder_harness_count("cinder_zappin_set_source"), 1,
+             "a failed candidate never updates the visible source");
+    check_eq(cinder_harness_count("cinder_zappin_end"), 1,
+             "the finite pass still ends after the remaining candidate");
+    check(zappin_seek_was_sent(0, 0), "only a successful guard and seek permit preview activation");
+    check(!zappin_seek_was_sent(-1, 0) && !zappin_seek_was_sent(0, -1),
+          "either a recovered guard or controller refusal rejects the seek");
+    check(!zappin_resume_after_confirmation(true),
+          "a delayed URI confirmation cannot override the user's Pause");
+    check(zappin_resume_after_confirmation(false),
+          "confirmation resumes only when the user has not paused");
+    check(!zappin_new_request_position_ready(false, 0)
+          && !zappin_new_request_position_ready(true, 62000)
+          && zappin_new_request_position_ready(true, 0),
+          "a late same-URI snapshot is rejected until the new sequence reports its reset position");
+}
+
+static void zappin_shell_preview_setup(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_zappin_hold_active", 1); // the FFI holds persistence
+    cinder_harness_script("cinder_zappin_generation", 7);
+    cinder_harness_script("cinder_zappin_candidate_count", 2);
+    cinder_harness_script("cinder_zappin_current_index", 0);
+    cinder_harness_script("cinder_zappin_confirm_candidate", 1);
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_play_position(62000, 180000);
+}
+
+static void zappin_restore_checkpoint_case(int saved_ms, const char* first_uri) {
+    const char* next_uri = std::strcmp(first_uri, "/music/first.flac") == 0
+        ? "/music/second.flac" : "/music/third.flac";
+    zappin_shell_preview_setup();
+    cinder_harness_play_position_at(19000, 0, 180000);
+    // The real FFI returns 1 on the first refusal notification. A successful in-place edit must
+    // never call that mutating notification, even though the generic fake defaults to 0.
+    cinder_harness_script("cinder_queue_edit_refused", 1);
+    static const long long taps[] = {52, 53, 1};
+    cinder_harness_script_seq("cinder_tap", taps, 3);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
+    cinder_harness_script("cinder_play_position_ms", saved_ms);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, first_uri);
+    cinder_harness_pending_play_uri_set(1, next_uri);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    char uri[128] = {};
+    check_eq(cinder_harness_audio_queue_count(), 2,
+             "Play after End restores the original multi-track queue");
+    check(cinder_harness_audio_queue_uri(0, uri, sizeof uri) > 0
+          && !std::strcmp(uri, first_uri), "restored queue keeps its first URI");
+    check(cinder_harness_audio_queue_uri(1, uri, sizeof uri) > 0
+          && !std::strcmp(uri, next_uri), "restored queue keeps its next URI");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", cinder_harness_count("cinder_audio_seek_ms") - 1),
+             saved_ms, "Play after End seeks back to the old saved offset");
+    if (std::strcmp(first_uri, "/music/first.flac") == 0) {
+        check_eq(cinder_harness_count("cinder_audio_play"), 1,
+                 "Play after End resumes the in-place restored sequence");
+    } else {
+        check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+                 "a different restored URI is started through its new sequence");
+    }
+    check_eq(cinder_harness_count("cinder_queue_edit_refused"), 0,
+             "a successful edit does not mark the real FFI queue as refused");
+}
+
+static void s_zappin_end_play_restores_queue_and_bookmark(void) {
+    zappin_restore_checkpoint_case(12000, "/music/first.flac");
+}
+static void s_zappin_restore_zero_checkpoint(void) {
+    zappin_restore_checkpoint_case(0, "/music/first.flac");
+}
+static void s_zappin_restore_different_uri_checkpoint(void) {
+    zappin_restore_checkpoint_case(12000, "/music/second.flac");
+}
+
+static void s_zappin_end_next_restores_queue_before_transport(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 53, 2}; // start, End, ordinary Next
+    cinder_harness_script_seq("cinder_tap", taps, 3);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
+    cinder_harness_script("cinder_play_position_ms", 12000);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    char uri[128] = {};
+    check_eq(cinder_harness_audio_queue_count(), 2,
+             "End then Next restores the normal multi-track sequence");
+    check(cinder_harness_audio_queue_uri(0, uri, sizeof uri) > 0
+          && !std::strcmp(uri, "/music/first.flac"), "Next begins from the original queue head");
+    check(cinder_harness_audio_queue_uri(1, uri, sizeof uri) > 0
+          && !std::strcmp(uri, "/music/second.flac"), "Next retains the original following track");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", cinder_harness_count("cinder_audio_seek_ms") - 1),
+             12000, "the old bookmark is restored before the transport step");
+    check_eq(cinder_harness_count("cinder_audio_next_track"), 1,
+             "Next is applied only after the normal queue is restored");
+}
+
+static void s_zappin_end_prev_restores_queue_before_transport(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 53, 3}; // start, End, ordinary Prev
+    cinder_harness_script_seq("cinder_tap", taps, 3);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
+    cinder_harness_script("cinder_play_position_ms", 12000);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    char uri[128] = {};
+    check_eq(cinder_harness_audio_queue_count(), 2,
+             "End then Prev restores the normal multi-track sequence");
+    check(cinder_harness_audio_queue_uri(0, uri, sizeof uri) > 0
+          && !std::strcmp(uri, "/music/first.flac"), "Prev operates on the original queue head");
+    check(cinder_harness_audio_queue_uri(1, uri, sizeof uri) > 0
+          && !std::strcmp(uri, "/music/second.flac"), "Prev retains the original following track");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", cinder_harness_count("cinder_audio_seek_ms") - 1),
+             12000, "the old bookmark is restored before Prev is applied");
+    check_eq(cinder_harness_count("cinder_audio_prev_track"), 1,
+             "Prev is applied only after the normal queue is restored");
+}
+
+static void s_zappin_end_next_restore_failure_keeps_preview_held(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 53, 2};
+    cinder_harness_script_seq("cinder_tap", taps, 3);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 0);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1,
+             "failed queue restoration does not submit a replacement sequence");
+    check_eq(cinder_harness_count("cinder_audio_next_track"), 0,
+             "failed queue restoration never sends Next to the one-URI preview");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 1,
+             "the preview remains paused after restoration fails");
+    check_eq(cinder_harness_count("cinder_toast_key"), 1,
+             "the user receives a localized queue restoration failure message");
+}
+
+static void s_zappin_full_same_uri_waits_for_live_zero(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 54};
+    cinder_harness_script_seq("cinder_tap", taps, 2);
+    cinder_harness_script("cinder_pending_play_count", 1);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_script("cinder_zappin_take_handoff_confirmed", 1);
+    cinder_harness_play_position_at(23000, 0, 180000);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(22000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+             "Full submits the selected URI after its preview");
+    check_eq(cinder_harness_count("cinder_set_now_playing_uri"), 2,
+             "same-URI Full waits without an early duplicate confirmation");
+    check(cinder_harness_last_ms("cinder_set_now_playing_uri") >= 23000,
+          "confirmation waits until PlayerService reports the reset position");
+    check_eq(cinder_harness_arg("cinder_set_now_playing_uri", 1), 0,
+             "the confirmation carries measured zero progress from the service");
+    check_eq(cinder_harness_count("cinder_zappin_take_handoff_confirmed"), 1,
+             "shell consumes the FFI's explicit hold-release confirmation event");
+}
+
+static void s_zappin_explicit_selection_handoff_after_success(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 8};
+    cinder_harness_script_seq("cinder_tap", taps, 2);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_script("cinder_zappin_abandon_for_normal_play", 1);
+    cinder_harness_script("cinder_zappin_take_handoff_confirmed", 1);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_play_position_at(23000, 0, 180000);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(22000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+             "the explicit same-URI selection reaches PlayerService");
+    check_eq(cinder_harness_count("cinder_zappin_abandon_for_normal_play"), 1,
+             "the dedicated fresh-listen handoff runs once");
+    check(cinder_harness_last_ms("cinder_audio_play_tracks")
+          <= cinder_harness_first_ms("cinder_zappin_abandon_for_normal_play"),
+          "the handoff is armed only after the new sequence succeeds");
+    check_eq(cinder_harness_arg("cinder_set_now_playing_uri",
+             cinder_harness_count("cinder_set_now_playing_uri") - 1), 0,
+             "same-URI selection releases hold only after real position resets to zero");
+    check_eq(cinder_harness_count("cinder_zappin_take_handoff_confirmed"), 1,
+             "ordinary same-URI selection consumes explicit hold confirmation");
+}
+
+static void s_zappin_selection_failure_does_not_arm_handoff(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 8};
+    static const long long play_results[] = {0, -1};
+    cinder_harness_script_seq("cinder_tap", taps, 2);
+    cinder_harness_script_seq("cinder_audio_play_tracks", play_results, 2);
+    cinder_harness_script("cinder_pending_play_count", 1);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(22000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_zappin_abandon_for_normal_play"), 0,
+             "a failed sequence never arms the ordinary-play handoff");
+}
+
+static void s_zappin_selection_failure_can_resume_old_queue(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 8, 1};
+    static const long long play_results[] = {0, -1, 0};
+    cinder_harness_script_seq("cinder_tap", taps, 3);
+    cinder_harness_script_seq("cinder_audio_play_tracks", play_results, 2);
+    cinder_harness_script("cinder_zappin_take_handoff_confirmed", 1);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
+    cinder_harness_script("cinder_play_position_ms", 12000);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(22000, 240, 400);
+    cinder_harness_tap_at(24000, 240, 400);
+    cinder_harness_set_budget_ms(27000);
+    cinder_harness_run();
+
+    char uri[128] = {};
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+             "the failed explicit selection does not create a second sample sequence");
+    check(cinder_harness_count("cinder_audio_pause") >= 1,
+          "the failed selection pauses its old preview sample");
+    check_eq(cinder_harness_audio_queue_count(), 2,
+             "the normal retry restores the original multi-track queue");
+    check(cinder_harness_audio_queue_uri(0, uri, sizeof uri) > 0
+          && !std::strcmp(uri, "/music/first.flac"), "recovery restores the original queue head");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms",
+             cinder_harness_count("cinder_audio_seek_ms") - 1), 12000,
+             "recovery restores the pre-preview bookmark");
+    check_eq(cinder_harness_count("cinder_audio_play"), 1,
+             "ordinary Play resumes only after sequence and bookmark restoration");
+    check_eq(cinder_harness_count("cinder_zappin_prepare_normal_queue"), 1,
+             "the retry prepares the saved ordinary queue");
+}
+
+static void s_zappin_aba_stale_uri_waits_for_reset_position(void) {
+    zappin_shell_preview_setup();
+    cinder_harness_script("cinder_zappin_candidate_count", 3);
+    static const long long taps[] = {57, 52, 55, 55};
+    static const long long nexts[] = {1, 2};
+    cinder_harness_script_seq("cinder_tap", taps, 4);
+    cinder_harness_script_seq("cinder_zappin_advance", nexts, 2);
+    cinder_harness_script("cinder_zappin_confirm_candidate", 1);
+    cinder_harness_state_set_at(25500, "shell_audio_uri_override", 1); // old A callback
+    cinder_harness_play_position_at(25500, 62000, 180000);
+    cinder_harness_play_position_at(28000, 0, 180000);
+    cinder_harness_state_set_at(28000, "shell_audio_uri_override", 0); // new request reset
+    cinder_harness_tap_at(19000, 240, 400);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_tap_at(27000, 240, 400);
+    cinder_harness_set_budget_ms(31000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 3,
+             "the shell submits the A/B/A preview sequence");
+    check_eq(cinder_harness_count_between("cinder_zappin_confirm_candidate", 26000, 28000), 0,
+             "the stale A URI and its old nonzero position cannot confirm occurrence three");
+    check_eq(cinder_harness_count_between("cinder_audio_seek_ms", 26000, 28000), 0,
+             "the shell does not seek on the stale A snapshot");
+    check_eq(cinder_harness_count_between("cinder_zappin_set_source", 26000, 28000), 0,
+             "the page does not publish a source before the new request resets");
+    check_eq(cinder_harness_count_between("cinder_zappin_confirm_candidate", 28000, 31000), 1,
+             "the third occurrence confirms after the new reset position arrives");
+}
+
+static void s_zappin_active_length_switch_applies_to_future_candidate(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 57, 55}; // start, choose 15 s, move to next
+    static const long long lengths[] = {4000, 15000};
+    static const long long advances[] = {1, -1};
+    cinder_harness_script_seq("cinder_tap", taps, 3);
+    cinder_harness_script_seq("cinder_zappin_candidate_length", lengths, 2);
+    cinder_harness_script_seq("cinder_zappin_advance", advances, 2);
+    cinder_harness_play_position_at(23000, 0, 180000);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 400, 450);
+    cinder_harness_tap_at(22000, 400, 530);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+             "the current sample stays bounded while the next candidate is submitted");
+    check(cinder_harness_count("cinder_zappin_set_progress_length") >= 2,
+          "both confirmed candidate lengths reach the live preview state");
+    check_eq(cinder_harness_arg("cinder_zappin_set_progress_length", 0), 4000,
+             "changing the selector does not extend the already-running four-second sample");
+    check_eq(cinder_harness_arg("cinder_zappin_set_progress_length",
+             cinder_harness_count("cinder_zappin_set_progress_length") - 1), 15000,
+             "the next candidate uses the newly selected fifteen-second bound");
+}
+
+static void s_zappin_pause_during_uri_wait_stays_paused_after_confirmation(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 1}; // start, pause before the requested URI is reported
+    cinder_harness_script_seq("cinder_tap", taps, 2);
+    cinder_harness_state_set("shell_audio_uri_override", 2); // start with a stale URI
+    cinder_harness_state_set_at(20500, "shell_audio_uri_override", 2); // stale/nonmatching URI
+    cinder_harness_state_set_at(23000, "shell_audio_uri_override", 0); // matching URI arrives
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("cinder_zappin_confirm_candidate", 20000, 23000), 0,
+             "a different live URI cannot confirm the pending preview");
+    check_eq(cinder_harness_count_between("cinder_zappin_confirm_candidate", 23000, 25000), 1,
+             "the matching delayed URI confirms once after the user pauses");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 1,
+             "confirmation seeks the planned start once after the URI matches");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 1,
+             "the user's pause reaches the service while the URI is in flight");
+    check_eq(cinder_harness_count("cinder_audio_play"), 0,
+             "the delayed confirmation never resumes after the user's pause");
+}
+
+static void s_zappin_pause_resume_keeps_the_same_preview_sequence(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 1, 1}; // start, pause, resume
+    cinder_harness_script_seq("cinder_tap", taps, 3);
+    cinder_harness_script("cinder_zappin_candidate_length", 15000);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1,
+             "Pause and resume keep the existing one-URI preview sequence");
+    check_eq(cinder_harness_count("cinder_zappin_confirm_candidate"), 1,
+             "the candidate is confirmed once and remains the current preview");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 1,
+             "Pause reaches PlayerService");
+    check_eq(cinder_harness_count("cinder_audio_play"), 1,
+             "resume continues the same preview through ordinary Play");
+    check_eq(cinder_harness_count("cinder_zappin_end"), 0,
+             "pausing and resuming does not end the finite preview pass");
+}
+
+static void s_zappin_end_play_restore_failure_stays_paused(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 53, 1};
+    cinder_harness_script_seq("cinder_tap", taps, 3);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 0);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1,
+             "failed resume does not replace the paused preview with a partial sequence");
+    check_eq(cinder_harness_count("cinder_audio_play"), 0,
+             "ordinary Play is not sent to the paused preview after restore failure");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 1,
+             "the preview remains paused after resume restoration fails");
+    check_eq(cinder_harness_count("cinder_toast_key"), 1,
+             "a localized restoration failure is shown after End");
+    check_eq(cinder_harness_count("cinder_set_now_playing_uri"), 1,
+             "failed restoration sends no ordinary-play handoff to release the hold");
+}
+
+static void s_queue_edit_is_seamless_without_preview(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    static const long long taps[] = {8, 36}; // ordinary selection, then apply queue edit
+    cinder_harness_script_seq("cinder_tap", taps, 2);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_take_queue_flush", 1);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_script("cinder_play_position_ms", 42000);
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_play_position(42000, 180000);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+    check(cinder_harness_count("cinder_audio_edit_sequence") >= 1,
+          "ordinary queue edit uses the in-place PlayerService path");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 0,
+             "ordinary queue edit never seeks into the current song");
+    check_eq(cinder_harness_count("cinder_audio_play"), 0,
+             "ordinary queue edit preserves the existing transport intent");
+    check_eq(cinder_harness_count("cinder_zappin_abandon_for_normal_play"), 1,
+             "ordinary selection checks for a preview hold exactly once");
+    check_eq(cinder_harness_arg("cinder_set_now_playing_uri", 0), 0,
+             "without a preview a track change is reported at 0, as on main");
+}
+
+static void s_paused_queue_edit_preserves_pause(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    static const long long taps[] = {8, 36};
+    cinder_harness_script_seq("cinder_tap", taps, 2);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_take_queue_flush", 1);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_script("cinder_play_position_ms", 42000);
+    cinder_harness_script("cinder_audio_is_playing", 0);
+    cinder_harness_play_position(42000, 180000);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+    check(cinder_harness_count("cinder_audio_edit_sequence") >= 1,
+          "paused ordinary queue edit updates the in-place sequence");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 0,
+             "paused queue edit does not seek");
+    check_eq(cinder_harness_count("cinder_audio_play"), 0,
+             "paused queue edit preserves the paused transport state");
+}
+
+static void s_bookmark_selection_does_not_arm_preview_handoff(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 8);
+    cinder_harness_script("cinder_pending_play_count", 1);
+    cinder_harness_pending_play_uri_set(0, "/books/chapter.mp3");
+    cinder_harness_script("cinder_take_play_seek_ms", 754000);
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_play_position(754000, 900000);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_set_budget_ms(30000);
+    cinder_harness_run();
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 0), 754000,
+             "ordinary audiobook selection restores its saved bookmark");
+    check_eq(cinder_harness_count("cinder_zappin_abandon_for_normal_play"), 1,
+             "ordinary audiobook selection checks but does not assume a preview hold");
+    check_range(cinder_harness_count_between("cinder_audio_current_uri", 23000, 30000), 0, 1,
+                "ordinary audiobook playback does not force recurring URI reads");
+}
+
+static void s_zappin_full_failure_pauses_sample_and_keeps_retry_state(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 54};
+    static const long long play_rc[] = {0, -1, 0};
+    cinder_harness_script_seq("cinder_tap", taps, 2);
+    cinder_harness_script_seq("cinder_audio_play_tracks", play_rc, 2);
+    cinder_harness_state_set("shell_audio_uri_override", 1);
+    cinder_harness_play_position(0, 180000);
+    cinder_harness_script("cinder_pending_play_count", 1);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(22000, 240, 400);
+    cinder_harness_set_budget_ms(26000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+             "Full transfer failure is injected after the sample starts");
+    check(cinder_harness_count("cinder_audio_pause") >= 1,
+          "failed Full pauses the old sample after cancelling its timer");
+    check_eq(cinder_harness_count("cinder_audio_play"), 0,
+             "failed Full leaves the transport paused");
+}
+
+static void s_zappin_full_failure_can_resume_normal_queue(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 54, 1};
+    static const long long play_rc[] = {0, -1, 0};
+    cinder_harness_script_seq("cinder_tap", taps, 3);
+    cinder_harness_script_seq("cinder_audio_play_tracks", play_rc, 3);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
+    cinder_harness_script("cinder_play_position_ms", 12000);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(22000, 240, 400);
+    cinder_harness_tap_at(24000, 240, 400);
+    cinder_harness_set_budget_ms(27000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_audio_edit_sequence"), 1,
+             "ordinary Play restores the multi-track sequence after Full fails");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 2,
+             "candidate start and ordinary retry each seek once");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 0), 62000,
+             "candidate began at its real SABI preview start");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 1), 12000,
+             "ordinary retry restores the saved offset");
+    check_eq(cinder_harness_count("cinder_audio_play"), 1,
+             "ordinary queue resumes only after restoration succeeds");
+}
+
+static void s_zappin_restore_seek_failure_stays_paused_then_next_recovers(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 53, 1, 2};
+    static const long long seek_rc[] = {0, -1, 0};
+    cinder_harness_script_seq("cinder_tap", taps, 4);
+    cinder_harness_script_seq("cinder_audio_seek_ms", seek_rc, 3);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
+    cinder_harness_script("cinder_play_position_ms", 12000);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21000, 240, 400);
+    cinder_harness_tap_at(22000, 240, 400);
+    cinder_harness_tap_at(24000, 240, 400);
+    cinder_harness_set_budget_ms(27000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 3,
+             "failed restore seek is retried on the later explicit Next action");
+    check_eq(cinder_harness_count("cinder_audio_next_track"), 1,
+             "Next reaches PlayerService only after the original queue and seek recover");
+    check(cinder_harness_count("cinder_audio_pause") >= 1,
+          "failed restore seek pauses the old sample before retry");
+}
+
+static void s_zappin_handoff_timeout_full_releases_without_retry(void) {
+    zappin_shell_preview_setup();
+    // Preview, explicit Full, then PlayerService never reports the reset position. The bounded
+    // poll gives up after 15 s and RELEASES the FFI hold (the fresh track from zero) instead of
+    // leaving persistence held until some later Play; that Play is then an ordinary one.
+    static const long long taps[] = {52, 54};
+    static const long long play_actions[] = {1, 1}; // CINDER_ACT_PLAYPAUSE for AVRCP PAUSE/PLAY
+    cinder_harness_script_seq("cinder_tap", taps, 2);
+    cinder_harness_script_seq("cinder_input", play_actions, 2);
+    cinder_harness_script("cinder_pending_play_count", 1);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_play_position_at(21000, 0, 180000);     // confirm preview URI
+    cinder_harness_play_position_at(21500, 62000, 180000); // stale sample offset, never resets
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(22000, 240, 400);
+    cinder_harness_key_at(41000, 201, 1);
+    cinder_harness_key_at(41200, 201, 0);
+    cinder_harness_key_at(43000, 200, 1);
+    cinder_harness_key_at(43200, 200, 0);
+    cinder_harness_set_budget_ms(47000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("cinder_zappin_confirm_handoff", 22000, 47000), 0,
+             "stale sample progress never confirms Full");
+    check_eq(cinder_harness_count_between("cinder_zappin_abandon", 36000, 39000), 1,
+             "the 15 s timeout releases the hold itself");
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+             "no re-submission: Play after the timeout is an ordinary Play");
+    check(cinder_harness_count_between("cinder_audio_play", 43000, 47000) >= 1,
+          "the later Play reaches PlayerService as a plain Play");
+    check_range(cinder_harness_count_between("cinder_audio_current_uri", 40000, 47000), 0, 2,
+                "no confirmation poll keeps running after the release");
+}
+
+static void s_zappin_handoff_timeout_restore_releases_without_retry(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 53, 1, 1, 1}; // preview, End, Play, then Pause/Play
+    cinder_harness_script_seq("cinder_tap", taps, 5);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_script("cinder_play_position_ms", 12000);
+    cinder_harness_play_position_at(21000, 0, 180000);      // current preview confirms
+    cinder_harness_play_position_at(25000, 62000, 180000); // restore never reaches the bookmark
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_tap_at(23000, 240, 400);
+    cinder_harness_tap_at(41000, 240, 400);
+    cinder_harness_tap_at(43000, 240, 400);
+    cinder_harness_set_budget_ms(47000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_zappin_prepare_normal_queue"), 1,
+             "the restore is handed over once");
+    check_eq(cinder_harness_count_between("cinder_zappin_abandon", 37000, 40000), 1,
+             "the timed-out restore releases the hold (the FFI puts the bookmark back)");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 2,
+             "the preview start and the one restore seek; nothing is re-sought after the timeout");
+    check_eq(cinder_harness_count_between("cinder_audio_play_tracks", 40000, 47000), 0,
+             "Pause/Play after the release does not resubmit the queue");
+}
+
+// B2: starting a preview drops a boot/FM/USB resume still armed, so a Pause→Play after the
+// preview hands back can never replay that older snapshot.
+static void s_zappin_start_cancels_pending_resume(void) {
+    zappin_shell_preview_setup();
+    cinder_harness_script("cinder_tap", 52);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_set_budget_ms(22000);
+    cinder_harness_run();
+    check(cinder_harness_count_between("cinder_resume_cancel", 20000, 22000) >= 1,
+          "an accepted preview start cancels the pending resume");
+    check(cinder_harness_last_ms("cinder_resume_cancel")
+          <= cinder_harness_first_ms("cinder_audio_play_tracks"),
+          "…before the first sample replaces PlayerService's sequence");
+}
+
+// S1: after End, nothing but a restore may resume — not even after a queue action arrives.
+static void s_zappin_end_queue_change_then_play_restores(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 53, 36, 1}; // preview, End, queue action, Play
+    cinder_harness_script_seq("cinder_tap", taps, 4);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
+    cinder_harness_script("cinder_play_position_ms", 12000);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_tap_at(22500, 240, 400);
+    cinder_harness_tap_at(23500, 240, 400);
+    cinder_harness_set_budget_ms(26000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_zappin_abandon_internal_mutation"), 0,
+             "a queue action after End does not cancel a pass that is not running");
+    check_eq(cinder_harness_count("cinder_zappin_prepare_normal_queue"), 1,
+             "Play after End still restores the pre-preview queue");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", cinder_harness_count("cinder_audio_seek_ms") - 1),
+             12000, "…at the pre-preview bookmark");
+}
+
+// S6: without a preview, a failed pick leaves the music alone, exactly as main does.
+static void s_play_index_failure_without_preview_leaves_music(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 8);
+    cinder_harness_script("cinder_audio_play_tracks", -1);
+    cinder_harness_script("cinder_pending_play_count", 1);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_set_budget_ms(23000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1, "the pick was attempted");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 0, "the current music is not paused");
+    check_eq(cinder_harness_count("cinder_toast_key"), 0, "no preview toast without a preview");
+}
+
+// S6: an ordinary boot resume keeps main's semantics: a refused seek is logged and ignored.
+static void s_resume_seek_failure_is_ignored_without_preview(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 1);
+    cinder_harness_script("cinder_resume_take_pending", 1);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_state_set("shell_audio_uri_override", 1); // service still on the same song
+    cinder_harness_script("cinder_audio_edit_sequence", -1); // …but the in-place edit fails
+    cinder_harness_script("cinder_play_position_ms", 30000);
+    cinder_harness_script("cinder_audio_seek_ms", -1);
+    cinder_harness_tap_at(20000, 240, 400); // the transport starts as "playing": this pauses
+    cinder_harness_tap_at(21000, 240, 400); // …and this is the first Play, which resumes
+    cinder_harness_set_budget_ms(23000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1, "the resumed queue is handed over");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 0), 30000, "the saved offset is sought");
+    check_eq(cinder_harness_count_between("cinder_audio_pause", 21000, 23000), 0,
+             "a refused seek does not pause an ordinary resume");
+    check_eq(cinder_harness_count("cinder_notify_seek_ms"), 1,
+             "the bar follows the requested offset, as on main");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
+    {"zappin-restore-zero", s_zappin_restore_zero_checkpoint, "restore an exact zero bookmark after preview"},
+    {"zappin-restore-different-uri", s_zappin_restore_different_uri_checkpoint, "restore a bookmark belonging to another URI"},
     { "book-seek", s_book_seek, "an audiobook starts at the place the listener left it" },
     { "book-no-seek-for-music", s_book_no_seek_for_music, "…and music is never sought to" },
     { "book-no-seek-when-play-failed", s_book_no_seek_when_play_failed, "…nor is a play that did not start" },
@@ -2086,6 +2855,59 @@ static const Scenario kScenarios[] = {
     {"ambient-alone",     s_ambient_alone,           "a soundscape with nothing playing: its level, and an honest route"},
     {"ambient-music",     s_ambient_over_music,      "…over music: the other level, and silent without the hook"},
     {"ambient-off",       s_ambient_off,             "…switched off: the line and the page follow"},
+    {"zappin-preview",    s_zappin_preview,          "bounded SABI/fallback previews end without wrapping"},
+    {"zappin-seek-failure", s_zappin_seek_failure_skips_candidate,
+     "a rejected planned seek skips one candidate without reporting it as active"},
+    {"zappin-end-play-restore", s_zappin_end_play_restores_queue_and_bookmark,
+     "ordinary Play after End restores the full queue and old bookmark"},
+    {"zappin-end-next-restore", s_zappin_end_next_restores_queue_before_transport,
+     "ordinary Next after End restores the old queue and bookmark first"},
+    {"zappin-end-prev-restore", s_zappin_end_prev_restores_queue_before_transport,
+     "ordinary Prev after End restores the old queue and bookmark first"},
+    {"zappin-end-next-restore-failure", s_zappin_end_next_restore_failure_keeps_preview_held,
+     "failed queue restoration keeps the preview held and paused"},
+    {"zappin-full-same-uri", s_zappin_full_same_uri_waits_for_live_zero,
+     "same-URI Full waits for a real zero position before confirming"},
+    {"zappin-normal-selection", s_zappin_explicit_selection_handoff_after_success,
+     "explicit same-URI selection arms its fresh Listen only after success"},
+    {"zappin-selection-failure", s_zappin_selection_failure_does_not_arm_handoff,
+     "a failed explicit sequence does not release the preview hold"},
+    {"zappin-selection-failure-play-retry", s_zappin_selection_failure_can_resume_old_queue,
+     "failed explicit selection can recover the original queue and bookmark"},
+    {"zappin-aba-stale-uri", s_zappin_aba_stale_uri_waits_for_reset_position,
+     "an A/B/A stale URI callback cannot seek before the current request resets"},
+    {"zappin-active-length-switch", s_zappin_active_length_switch_applies_to_future_candidate,
+     "length changes affect the next candidate while the active sample keeps its captured bound"},
+    {"zappin-pause-during-uri-wait", s_zappin_pause_during_uri_wait_stays_paused_after_confirmation,
+     "a delayed matching URI confirms after Pause without resuming playback"},
+    {"zappin-pause-resume", s_zappin_pause_resume_keeps_the_same_preview_sequence,
+     "Pause and resume continue the same bounded preview sequence"},
+    {"zappin-end-play-restore-failure", s_zappin_end_play_restore_failure_stays_paused,
+     "failed Play restoration keeps the preview paused and held"},
+    {"zappin-full-failure", s_zappin_full_failure_pauses_sample_and_keeps_retry_state,
+     "failed Full pauses its sample and preserves the hold for retry"},
+    {"zappin-full-failure-play-retry", s_zappin_full_failure_can_resume_normal_queue,
+     "ordinary Play retries the saved queue after Full fails"},
+    {"zappin-restore-seek-failure", s_zappin_restore_seek_failure_stays_paused_then_next_recovers,
+     "failed bookmark seek pauses playback until a later transport retry succeeds"},
+    {"zappin-timeout-full", s_zappin_handoff_timeout_full_releases_without_retry,
+     "a timed-out Full handoff releases the hold; the next Play is ordinary"},
+    {"zappin-timeout-restore", s_zappin_handoff_timeout_restore_releases_without_retry,
+     "a timed-out restore releases the hold at the bookmark; nothing is resubmitted"},
+    {"zappin-start-cancels-resume", s_zappin_start_cancels_pending_resume,
+     "starting a preview drops a pending boot/FM/USB resume"},
+    {"zappin-end-queue-change-play", s_zappin_end_queue_change_then_play_restores,
+     "Play after End restores even after a queue action"},
+    {"play-index-failure-no-preview", s_play_index_failure_without_preview_leaves_music,
+     "without a preview a failed pick leaves the music alone"},
+    {"resume-seek-failure-ignored", s_resume_seek_failure_is_ignored_without_preview,
+     "an ordinary resume ignores a refused seek, as on main"},
+    {"queue-edit-seamless", s_queue_edit_is_seamless_without_preview,
+     "ordinary queue edits do not seek, resume, or arm preview handoff"},
+    {"queue-edit-paused", s_paused_queue_edit_preserves_pause,
+     "ordinary queue edits preserve a paused transport state"},
+    {"book-no-preview-poll", s_bookmark_selection_does_not_arm_preview_handoff,
+     "ordinary book selection restores its bookmark without preview polling"},
     {nullptr, nullptr, nullptr},
 };
 

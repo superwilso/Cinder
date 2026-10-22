@@ -28,6 +28,8 @@ underneath. Install it from a PC over USB; the same installer puts Sony's app ba
 
 - **Fast.** About 4.6 MB of native code, no UI framework. Sony's app is Qt.
 - **A real queue.** Up Next with play next, drag to reorder, and playlists made on the player.
+- **Short track previews.** A standalone retro page previews the current queue for 4 or 15 seconds
+  per track, using existing Sony chorus markers when available ([controls and behaviour](docs/TRACK_PREVIEWS.md)).
 - **USB-DAC in, LDAC out, at once.** Use the Walkman as a PC sound card and send the audio on to
   Bluetooth headphones. Sony's app blocks this; the hardware doesn't.
 - **All of Sony's sound features:** DSEE HX, VPT, DC Phase Linearizer, Vinyl Processor, the 10-band

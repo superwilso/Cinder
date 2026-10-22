@@ -48,6 +48,7 @@ pub mod presets;
 pub mod profile;
 pub mod quick;
 pub mod receiver;
+pub mod retro_preview;
 pub mod scale;
 pub mod search;
 pub mod sensme;
@@ -70,6 +71,7 @@ pub mod viz;
 pub mod vizcfg;
 pub mod vizset;
 pub mod widgets;
+pub mod zappin;
 
 pub use canvas::{Canvas, H, W};
 pub use model::Library;

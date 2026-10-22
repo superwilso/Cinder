@@ -58,6 +58,7 @@
 #include "bt_switch.h" // radio-vs-switch reconcile (host-tested)
 #include "db_sig.h"   // has the library database moved? (host-tested)
 #include "jack_edge.h"
+#include "zappin_policy.h"
 #include "batt_slew.h" // how far the voltage-derived gauge may move per reading (host-tested)
 #include "soundscape.h" // procedural soundscapes (host-tested by tools/soundscape_selftest.cpp)
 #include "cinder_analyzer.h"
@@ -1381,6 +1382,13 @@ void deferred_up() {
             cinder_set_sensme_enabled(1);
             clog_("deferred_up: sensme channels enabled (/data/cinder/sensme_on)");
         }
+        // TRACK PREVIEWS, the same shape again: the flag only decides whether the Menu offers the
+        // Preview row. No flag = off, the default, while it is new.
+        if (FILE* pf = std::fopen("/data/cinder/preview_on", "r")) {
+            std::fclose(pf);
+            cinder_set_preview_enabled(1);
+            clog_("deferred_up: track previews enabled (/data/cinder/preview_on)");
+        }
         // ESCAPE HATCH, BECAUSE THIS DEVICE CAN HAVE TWO SCROBBLERS. `unknown321/scrobbler`
         // installs as a BOOT SERVICE (`/init.scrobbler.rc`, imported by `/init.rc`) and writes
         // `/data/mnt/internal/.scrobbler.log` — which is the same file as
@@ -1952,6 +1960,41 @@ static bool g_playing = true;
 static long g_transport_at = 0;              // when we last set g_playing ourselves (now_ms)
 static const long TRANSPORT_GRACE_MS = 3000; // > the ~1 s onPlayTimeUpdated period + its 2.5 s
                                              // movement tolerance, so the lag can't fight a press
+// ZAPPIN owns a single URI at a time. The FFI keeps the current queue snapshot and candidate
+// metadata; this shell state only tracks the async hand-over and playback-time budget.
+struct ZappinShellState {
+    bool active = false;
+    bool waiting_uri = false;
+    bool started = false;
+    bool owns_sequence = false;
+    unsigned long long generation = 0;
+    int index = -1;
+    int count = 0;
+    long long object_id = 0;
+    long long start_ms = 0;
+    long long length_ms = 0;
+    long long elapsed_ms = 0;
+    int source = 0;
+    long last_tick_ms = 0;
+    long waiting_since_ms = 0;
+    int seek_rc = -1;
+    char uri[512] = {};
+};
+static ZappinShellState g_zappin;
+static bool g_zappin_transport_restore_succeeded = false;
+// An ordinary-play FFI handoff is valid only after PlayerService accepted a real sequence and
+// its live position/URI agrees with that sequence. This closes the same-URI hole where no URI
+// change event was emitted, without manufacturing a zero-progress notification.
+struct ZappinHandoff {
+    bool pending = false;
+    bool restore = false;
+    int target_ms = 0;
+    long armed_ms = 0;
+    char uri[512] = {};
+};
+static ZappinHandoff g_zappin_handoff;
+static bool g_zappin_internal_mutation_had_state = false;
+static char g_last_play_started_uri[512] = {};
 // Set the transport intent AND start the grace window. Always use this rather than assigning
 // g_playing directly, or the service's lagging view will immediately overwrite the new state.
 // ── CPU clock floor while playing ───────────────────────────────────────────────────────────
@@ -9607,7 +9650,22 @@ static void reclaim_contents() {
 // replacing the sequence does not turn a "play next" gesture into a restart.
 // True when the sequence was handed over and is playing (or, for a queue edit, was applied in
 // place); false when nothing was started — which is when an offset into it must not be applied.
-static bool play_pending_sequence(const char* label, bool restore_position) {
+// StartNew       = main's restore_position=false: start at `start` from 0:00.
+// RestoreIfSame  = main's restore_position=true, unchanged: edit in place when PlayerService is
+//                  on the same song, keep its offset only then, and a refused seek is logged
+//                  and ignored. Ordinary resume (boot/FM/USB) and queue flushes use this.
+// RestoreAfterPreview = a track preview handing the pre-preview queue back: the bookmark is
+//                  applied even to a different URI, and a refused seek pauses and fails, so the
+//                  sample offset can never become the restored song's position.
+enum class PendingSequenceMode {
+    StartNew,
+    RestoreAfterPreview,
+    RestoreIfSame,
+};
+
+static bool play_pending_sequence(const char* label, PendingSequenceMode mode) {
+    bool restore_position = mode == PendingSequenceMode::RestoreAfterPreview
+        || mode == PendingSequenceMode::RestoreIfSame;
     int n = cinder_pending_play_count();
     if (n <= 0) return false;
     ambient_yield_for_music();   // the output is about to be PlayerService's (see set_transport)
@@ -9653,6 +9711,9 @@ static bool play_pending_sequence(const char* label, bool restore_position) {
                           : "Can't play a 32-bit FLAC: this player's decoder stops at 24-bit");
     if (kept == 0) return false;
     if (start < 0 || start >= kept) start = 0;
+    // While a preview holds persistence, cinder_play_position_ms() is the pre-preview bookmark.
+    int resume_ms = restore_position ? cinder_play_position_ms() : 0;
+    bool edited_in_place = false;
     // A queue edit around the PLAYING track goes in place: Sony's service asks our sequence for the
     // next track when it needs one, so nothing has to be reopened and the music does not break.
     // Anything else (a different track at `start`, or the edit refused) takes the full hand-over.
@@ -9661,34 +9722,243 @@ static bool play_pending_sequence(const char* label, bool restore_position) {
         int cn = cinder_audio_current_uri(cur, sizeof cur);
         bool same = cn > 0 && cn < (int)sizeof cur && std::strcmp(cur, ptrs[start]) == 0;
         if (same && cinder_audio_edit_sequence(ptrs, kept, start) == 0) {
-            g_np_poll_now = true;
-            return true;
+            edited_in_place = true;
         }
         // Refused mid-song: never reopen the player under a song that is playing. cinder-ffi
         // holds the edit for the end of the song and sends it round again then.
-        if (same && cinder_queue_edit_refused()) {
+        if (same && !edited_in_place && cinder_queue_edit_refused()) {
             std::fprintf(stderr, "[cinder] %s: in-place edit refused — held to the end of the song\n", label);
             return false;
         }
-        // The position belongs to the song that is playing. Leading with a DIFFERENT one (the
-        // service moved on before the edit landed) starts it from the top, not a second or two in.
-        if (!same) restore_position = false;
+        // A seamless edit's offset belongs to the song that was playing; another leading URI
+        // starts from zero. A preview restore instead carries the saved song's own checkpoint,
+        // which must be applied even when reopening a different URI.
+        if (!same && mode == PendingSequenceMode::RestoreIfSame) restore_position = false;
     }
-    int resume_ms = restore_position ? cinder_play_position_ms() : 0;
-    int rc = cinder_audio_play_tracks(ptrs, kept, start);
-    if (rc != 0) {
-        std::fprintf(stderr, "[cinder] %s: play_tracks(%d tracks, start %d) failed rc=%d\n",
-                     label, kept, start, rc);
-        return false;
+    if (!edited_in_place) {
+        int rc = cinder_audio_play_tracks(ptrs, kept, start);
+        if (rc != 0) {
+            std::fprintf(stderr, "[cinder] %s: play_tracks(%d tracks, start %d) failed rc=%d\n",
+                         label, kept, start, rc);
+            return false;
+        }
+        std::strncpy(g_last_play_started_uri, ptrs[start], sizeof g_last_play_started_uri - 1);
+        g_last_play_started_uri[sizeof g_last_play_started_uri - 1] = 0;
+    } else {
+        if (mode == PendingSequenceMode::RestoreIfSame) {
+            // PlayerService keeps decoding the same track and consults the edited sequence at the
+            // next boundary. Preserve the current position and pause intent; do not seek or Play.
+            g_np_poll_now = true;
+            return true;
+        }
+        std::strncpy(g_last_play_started_uri, ptrs[start], sizeof g_last_play_started_uri - 1);
+        g_last_play_started_uri[sizeof g_last_play_started_uri - 1] = 0;
     }
-    if (restore_position && resume_ms > 0) {
-        cinder_audio_seek_ms(resume_ms);
-        cinder_notify_seek_ms(resume_ms);
+    if (restore_position && (resume_ms > 0 || mode == PendingSequenceMode::RestoreAfterPreview)) {
+        int seek_rc = cinder_audio_seek_ms(resume_ms);
+        // Outside a preview restore this is main's unconditional pair: the bar follows the
+        // requested offset whatever the controller answered.
+        if (seek_rc == 0 || mode != PendingSequenceMode::RestoreAfterPreview)
+            cinder_notify_seek_ms(resume_ms);
+        if (seek_rc != 0) {
+            std::fprintf(stderr, "[cinder] %s: restoring saved position %d ms failed rc=%d\n", label, resume_ms, seek_rc);
+            if (mode == PendingSequenceMode::RestoreAfterPreview) {
+                cinder_audio_pause();
+                set_transport(false);
+                return false;
+            }
+        }
+    }
+    if (edited_in_place && mode == PendingSequenceMode::RestoreAfterPreview) {
+        if (cinder_audio_play() != 0) {
+            cinder_audio_pause();
+            set_transport(false);
+            return false;
+        }
     }
     set_transport(true);
     g_np_poll_now = true;
     g_house_due = true;
     return true;
+}
+
+static void zappin_arm_shell_handoff(const char* uri, bool restore, int target_ms) {
+    if (!uri || !uri[0]) return;
+    g_zappin_handoff.pending = true;
+    g_zappin_handoff.restore = restore;
+    g_zappin_handoff.target_ms = target_ms > 0 ? target_ms : 0;
+    g_zappin_handoff.armed_ms = now_ms();
+    std::strncpy(g_zappin_handoff.uri, uri, sizeof g_zappin_handoff.uri - 1);
+    g_zappin_handoff.uri[sizeof g_zappin_handoff.uri - 1] = 0;
+    g_np_poll_now = true;
+}
+
+static void zappin_arm_last_play_handoff(bool restore, int target_ms) {
+    zappin_arm_shell_handoff(g_last_play_started_uri, restore, target_ms);
+}
+
+// Hand the pre-preview queue and bookmark back to PlayerService: the one way out of a preview
+// sample the service still holds (Play after End, a transport press, a seek-bar drag). True when
+// the restored queue is playing. On failure the shell keeps owning the sample, so the next Play
+// tries again rather than playing the paused sample as if it were the user's music.
+static bool zappin_restore_origin(const char* label) {
+    // The origin supersedes any boot/FM/USB resume still armed: left in place, a later
+    // Pause→Play would take it and replay that older snapshot.
+    cinder_resume_cancel();
+    g_zappin.active = false;
+    g_zappin.waiting_uri = false;
+    g_zappin.started = false;
+    if (!cinder_zappin_prepare_normal_queue()) {
+        cinder_toast_key("No playable music queue");
+        return false;
+    }
+    const int resume_ms = cinder_play_position_ms();
+    // A source change may already have released the hold (and put the bookmark back): then there
+    // is nothing to confirm, and a confirmation poll would only spin until its timeout.
+    const bool held = cinder_zappin_hold_active() != 0;
+    if (!play_pending_sequence(label, PendingSequenceMode::RestoreAfterPreview)) {
+        cinder_toast_key("No playable music queue");
+        return false;
+    }
+    g_zappin.owns_sequence = false;
+    if (held) zappin_arm_last_play_handoff(true, resume_ms);
+    return true;
+}
+
+static bool zappin_start_candidate(int index) {
+    if (!g_zappin.active || index < 0 || index >= g_zappin.count) return false;
+    long long duration_ms = -1;
+    int n = cinder_zappin_candidate(index, g_zappin.uri, sizeof g_zappin.uri,
+                                    &g_zappin.object_id, &g_zappin.start_ms,
+                                    &g_zappin.length_ms, &duration_ms, &g_zappin.source);
+    if (n <= 0 || n >= (int)sizeof g_zappin.uri || !g_zappin.uri[0]) return false;
+    // Unknown duration still receives the selected preview budget, measured by elapsed playing
+    // time. A known remaining tail can shorten the clip; it can never lengthen it.
+    if (g_zappin.length_ms < 0) g_zappin.length_ms = cinder_zappin_preview_ms();
+    g_zappin.index = index;
+    g_zappin.elapsed_ms = 0;
+    g_zappin.started = false;
+    g_zappin.waiting_uri = true;
+    g_zappin.last_tick_ms = now_ms();
+    g_zappin.waiting_since_ms = g_zappin.last_tick_ms;
+    cinder_zappin_waiting();
+    const char* uris[] = {g_zappin.uri};
+    int rc = cinder_audio_play_tracks(uris, 1, 0);
+    if (rc != 0) {
+        std::fprintf(stderr, "[cinder] ZAPPIN: play candidate %d failed rc=%d\n", index, rc);
+        g_zappin.waiting_uri = false;
+        return false;
+    }
+    set_transport(true);
+    g_np_poll_now = true;
+    g_house_due = true;
+    return true;
+}
+
+static void zappin_advance(bool forward, bool automatic = false) {
+    if (!g_zappin.active) return;
+    int next = cinder_zappin_advance(forward ? 1 : 0);
+    if (next < 0) {
+        if (automatic) {
+            cinder_zappin_end();
+            g_zappin.active = false;
+            g_zappin.waiting_uri = false;
+            g_zappin.started = false;
+            set_transport(false);
+            run_guarded("ZAPPIN: pause after the final sample", 8, []() { cinder_audio_pause(); });
+            clog_("ZAPPIN: finite pass ended");
+        }
+        return;
+    }
+    int attempts = 0;
+    while (next >= 0 && attempts < g_zappin.count) {
+        ++attempts;
+        if (zappin_start_candidate(next)) return;
+        // This candidate failed synchronously; consume it once and keep scanning the finite pass.
+        next = cinder_zappin_advance(1);
+    }
+    cinder_zappin_end();
+    g_zappin.active = false;
+    g_zappin.waiting_uri = false;
+    g_zappin.started = false;
+    set_transport(false);
+    run_guarded("ZAPPIN: stop after unplayable candidates", 8, []() { cinder_audio_pause(); });
+    cinder_toast_key("No playable music queue");
+    clog_("ZAPPIN: stopped after unplayable candidates");
+}
+
+static void zappin_start() {
+    // A new preview attempt must not inherit a stale ordinary-play polling request.
+    g_zappin_handoff = ZappinHandoff{};
+    g_zappin = ZappinShellState{};
+    g_zappin.active = true;
+    g_zappin.owns_sequence = true;
+    g_zappin.generation = cinder_zappin_generation();
+    g_zappin.count = cinder_zappin_candidate_count();
+    int first = cinder_zappin_current_index();
+    if (g_zappin.count <= 0 || first < 0) {
+        cinder_zappin_abandon();
+        g_zappin.active = false;
+        g_zappin.owns_sequence = false;
+        cinder_toast_key("No playable music queue");
+        return;
+    }
+    // From here PlayerService holds samples and the way back is zappin_restore_origin(), which
+    // restores the pre-preview queue itself. A boot/FM/USB resume still armed would otherwise be
+    // taken by a later Pause→Play once the preview has handed back, replaying a stale snapshot.
+    cinder_resume_cancel();
+    if (!zappin_start_candidate(first)) zappin_advance(true, true);
+}
+
+static void zappin_cancel_for_action(int act) {
+    switch (act) {
+        case CINDER_ACT_NEXT: case CINDER_ACT_PREV:
+        case CINDER_ACT_NEXT_ALBUM: case CINDER_ACT_PREV_ALBUM:
+        case CINDER_ACT_REPEAT_CHANGED:
+        case CINDER_ACT_ENTER_USB_MSC: case CINDER_ACT_EXIT_USB_MSC:
+        case CINDER_ACT_USBDAC_LDAC: case CINDER_ACT_FM_POWER: case CINDER_ACT_RX_CHANGED:
+        case CINDER_ACT_BOOT_TO_SONY_RX: case CINDER_ACT_BOOT_TO_STOCK:
+        case CINDER_ACT_RESTART: case CINDER_ACT_POWER_OFF:
+            // Releases the FFI hold at once and puts the pre-preview track and bookmark back, so
+            // the resume re-armed on the way out of FM/USB (or flushed at power-off) is the user's.
+            // owns_sequence is KEPT: if PlayerService still holds a sample, the next Play must
+            // restore the queue rather than play the sample (zappin_restore_origin).
+            cinder_zappin_abandon();
+            g_zappin.active = false;
+            g_zappin.waiting_uri = false;
+            g_zappin.started = false;
+            break;
+        case CINDER_ACT_QUEUE_CHANGED:
+            // Emitted by the FFI only for a shuffle/queue mutation that cancelled a RUNNING pass.
+            // After End there is nothing to cancel: the paused sample stays owned and the next
+            // Play restores. owns_sequence is cleared below only once the new queue has started.
+            if (!g_zappin.active) break;
+            g_zappin_internal_mutation_had_state = cinder_zappin_abandon_internal_mutation() != 0;
+            g_zappin.active = false;
+            g_zappin.waiting_uri = false;
+            g_zappin.started = false;
+            break;
+        default: break;
+    }
+}
+
+static void zappin_clear_stale_handoff_for_action(int act) {
+    switch (act) {
+        case CINDER_ACT_NEXT: case CINDER_ACT_PREV:
+        case CINDER_ACT_NEXT_ALBUM: case CINDER_ACT_PREV_ALBUM:
+        case CINDER_ACT_PLAY_INDEX: case CINDER_ACT_QUEUE_CHANGED:
+        case CINDER_ACT_ENTER_USB_MSC: case CINDER_ACT_EXIT_USB_MSC:
+        case CINDER_ACT_USBDAC_LDAC: case CINDER_ACT_FM_POWER: case CINDER_ACT_RX_CHANGED:
+        case CINDER_ACT_BOOT_TO_SONY_RX: case CINDER_ACT_BOOT_TO_STOCK:
+        case CINDER_ACT_RESTART: case CINDER_ACT_POWER_OFF:
+            // These actions establish a different transport/source intent. Never let a later
+            // Play retry an older queue after one of them. The FFI hold remains protective until
+            // a new ordinary-play handoff is explicitly confirmed.
+            if (g_zappin_handoff.pending)
+                g_zappin_handoff = ZappinHandoff{};
+            break;
+        default: break;
+    }
 }
 
 
@@ -10618,6 +10888,31 @@ static void ambient_tick() {
 }
 
 void carry_out(int act) {
+    zappin_clear_stale_handoff_for_action(act);
+    if (g_zappin.owns_sequence && g_zappin.active
+        && (act == CINDER_ACT_NEXT || act == CINDER_ACT_PREV)) {
+        if (act == CINDER_ACT_NEXT)
+            run_guarded("ZAPPIN: next preview candidate", 10, []() { zappin_advance(true); });
+        else
+            run_guarded("ZAPPIN: previous preview candidate", 10, []() { zappin_advance(false); });
+        return;
+    }
+    const bool transport = act == CINDER_ACT_NEXT
+        || act == CINDER_ACT_PREV || act == CINDER_ACT_NEXT_ALBUM || act == CINDER_ACT_PREV_ALBUM
+        || act == CINDER_ACT_REPEAT_CHANGED;
+    if (g_zappin.owns_sequence && transport) {
+        // PlayerService currently holds only the preview URI. Restore the selected candidate's
+        // normal queue before applying an ordinary transport command to that queue.
+        g_zappin_transport_restore_succeeded = false;
+        run_guarded("ZAPPIN: restore normal queue before transport", 12, []() {
+            g_zappin_transport_restore_succeeded =
+                zappin_restore_origin("ZAPPIN transport hand-over");
+        });
+        // Do not send a transport command to PlayerService if it still holds the one-URI preview.
+        if (!g_zappin_transport_restore_succeeded) return;
+    } else {
+        zappin_cancel_for_action(act);
+    }
     // PAINT THE UI'S ANSWER BEFORE DOING THE SLOW PART.
     //
     // The navigator has already updated itself by the time we get here — cinder_tap/cinder_input
@@ -10642,9 +10937,64 @@ void carry_out(int act) {
     // keeps running, instead of tripping the per-frame watchdog into a fatal _exit/reboot. The
     // lambdas are non-capturing (g_playing is global) so they convert to run_guarded's fn pointer.
     switch (act) {
+        case CINDER_ACT_ZAPPIN_START:
+            if (g_fm_on || g_rx_active || cinder_get_usb_dac() != 0 || g_msc_active || gadget_in_dac_mode()) {
+                // The FFI set its hold when it took the action; nothing was played, so release it
+                // (the origin it just captured is the current state) instead of leaving resume
+                // saves, play counts and scrobbles suppressed with no handoff ever coming.
+                cinder_zappin_abandon();
+                const bool owns = g_zappin.owns_sequence;   // an earlier pass's sample, if any
+                g_zappin = ZappinShellState{};
+                g_zappin.owns_sequence = owns;
+                cinder_toast_key("Preview is unavailable in this audio mode");
+                break;
+            }
+            run_guarded("ZAPPIN: start finite preview", 10, zappin_start);
+            break;
+        case CINDER_ACT_ZAPPIN_END:
+            g_zappin.active = false;
+            g_zappin.waiting_uri = false;
+            g_zappin.started = false;
+            set_transport(false);
+            run_guarded("ZAPPIN: stop preview", 8, []() { cinder_audio_pause(); });
+            break;
+        case CINDER_ACT_ZAPPIN_FULL:
+            run_guarded("ZAPPIN: play selected track in full", 12, []() {
+                g_zappin.active = false;
+                g_zappin.waiting_uri = false;
+                g_zappin.started = false;
+                cinder_resume_cancel();
+                if (play_pending_sequence("ZAPPIN full track", PendingSequenceMode::StartNew)) {
+                    g_zappin.owns_sequence = false;
+                    zappin_arm_last_play_handoff(false, 0);
+                } else {
+                    cinder_audio_pause();
+                    set_transport(false);
+                    g_zappin.owns_sequence = true;
+                    cinder_toast_key("No playable music queue");
+                }
+            });
+            break;
+        case CINDER_ACT_ZAPPIN_NEXT:
+            run_guarded("ZAPPIN: next candidate", 10, []() { zappin_advance(true); });
+            break;
+        case CINDER_ACT_ZAPPIN_PREV:
+            run_guarded("ZAPPIN: previous candidate", 10, []() { zappin_advance(false); });
+            break;
+        case CINDER_ACT_ZAPPIN_LENGTH:
+            // FFI updates all not-yet-started candidate plans. The current sample keeps its
+            // original bounded duration; the selected length takes effect at the next candidate.
+            break;
         case CINDER_ACT_PLAYPAUSE:
             set_transport(!g_playing);
             run_guarded("carry_out: play/pause", 12, []() {
+                // End leaves PlayerService on the paused one-URI sample. Play — every Play while
+                // the shell still owns that sample, whatever happened since — restores the saved
+                // multi-track queue and its pre-preview bookmark. A Pause just pauses.
+                if (g_zappin.owns_sequence && !g_zappin.active && g_playing) {
+                    zappin_restore_origin("resume after ZAPPIN End");
+                    return;
+                }
                 // FIRST ▶ AFTER A BOOT, with a context restored from the last session:
                 // PlayerService has never been told about that sequence, so a plain Play() would
                 // start whatever it happens to hold (usually nothing). Hand it over here rather
@@ -10652,8 +11002,8 @@ void carry_out(int act) {
                 // and it is the only point at which the user has actually asked for sound.
                 // restore_position picks up the saved offset, which cinder_resume_load has
                 // already put in cinder_play_position_ms().
-                if (g_playing && cinder_resume_take_pending()) {
-                    play_pending_sequence("resume", true);
+                if (!g_zappin.owns_sequence && g_playing && cinder_resume_take_pending()) {
+                    play_pending_sequence("resume", PendingSequenceMode::RestoreIfSame);
                     return;
                 }
                 if (g_playing) cinder_audio_play(); else cinder_audio_pause();
@@ -10674,7 +11024,7 @@ void carry_out(int act) {
             // queue, so an ordinary skip through an album is one NextTrack and no rebuild.
             run_guarded("carry_out: next", 8, []() {
                 if (cinder_prepare_skip_play()) {
-                    play_pending_sequence("skip into queue", false);
+                    play_pending_sequence("skip into queue", PendingSequenceMode::StartNew);
                     clog_("transport: next -> user queue");
                     return;
                 }
@@ -10700,7 +11050,7 @@ void carry_out(int act) {
                     return;
                 }
                 if (cinder_prepare_previous_play()) {
-                    play_pending_sequence("previous from Cinder history", false);
+                    play_pending_sequence("previous from Cinder history", PendingSequenceMode::StartNew);
                     clog_("transport: prev -> Cinder playback history");
                     return;
                 }
@@ -10745,7 +11095,31 @@ void carry_out(int act) {
                 // Without this a resume armed at boot would still be waiting, and the next ▶ after
                 // a pause would drag playback back to wherever the previous session stopped.
                 cinder_resume_cancel();
-                bool started = play_pending_sequence("play", false);
+                const bool had_preview = g_zappin.owns_sequence || g_zappin.active;
+                bool started = play_pending_sequence("play", PendingSequenceMode::StartNew);
+                if (started) {
+                    // A chosen row is a new ordinary play, even if it names the same URI as the
+                    // preview. Ordinary music/books without a held preview must not start a poll.
+                    const bool held_preview = cinder_zappin_abandon_for_normal_play() != 0;
+                    if (held_preview) zappin_arm_last_play_handoff(false, 0);
+                    g_zappin.active = false;
+                    g_zappin.waiting_uri = false;
+                    g_zappin.started = false;
+                    g_zappin.owns_sequence = false;
+                } else if (had_preview) {
+                    // The service still holds a preview sample: pause it and keep owning it, so
+                    // the next Play restores the pre-preview queue (the hold stays until then).
+                    cinder_audio_pause();
+                    set_transport(false);
+                    g_zappin.active = false;
+                    g_zappin.waiting_uri = false;
+                    g_zappin.started = false;
+                    cinder_toast_key("No playable music queue");
+                } else {
+                    // No preview: main's behaviour, the music is left alone. A handoff still
+                    // pending from an earlier preview is released rather than left held.
+                    cinder_zappin_abandon();
+                }
                 // An audiobook starts where the listener left it: the saved offset in the chapter
                 // the sequence began on (0 for everything else). The same seek the boot resume does.
                 // Always taken, so an offset armed for a play that failed cannot reach the next one.
@@ -10758,7 +11132,20 @@ void carry_out(int act) {
             break;
         case CINDER_ACT_QUEUE_CHANGED:
             run_guarded("queue: apply now", 10, []() {
-                if (cinder_take_queue_flush()) play_pending_sequence("queue", true);
+                if (cinder_take_queue_flush()) {
+                    const auto mode = g_zappin_internal_mutation_had_state
+                        ? PendingSequenceMode::StartNew
+                        : PendingSequenceMode::RestoreIfSame;
+                    const bool started = play_pending_sequence("queue", mode);
+                    if (started && g_zappin_internal_mutation_had_state) {
+                        g_zappin.owns_sequence = false;
+                        zappin_arm_last_play_handoff(false, 0);
+                    } else if (!started && g_zappin_internal_mutation_had_state) {
+                        cinder_audio_pause();
+                        set_transport(false);
+                    }
+                }
+                g_zappin_internal_mutation_had_state = false;
             });
             break;
         case CINDER_ACT_EQ_CHANGED:
@@ -11144,6 +11531,11 @@ static void queue_transport(int* slot, int step) {
 // second — a settings toggle or a modal answer costs one round trip per deliberate gesture, and
 // deferring those would only add a frame of latency to them.
 static void carry_out_input(int act) {
+    if (g_zappin.owns_sequence && (act == CINDER_ACT_NEXT || act == CINDER_ACT_PREV
+        || act == CINDER_ACT_NEXT_ALBUM || act == CINDER_ACT_PREV_ALBUM)) {
+        carry_out(act); // do not bank steps against the one-URI preview sequence
+        return;
+    }
     switch (act) {
         // THE BANKED STEPS BELONG TO THE SEQUENCE THAT WAS PLAYING WHEN THEY WERE PRESSED. Picking
         // a track, or committing a queue edit, replaces that sequence outright — so anything still
@@ -11276,6 +11668,17 @@ static void scrub_tick() {
     if (g_seek_pending_ms >= 0) {
         g_seek_do_ms = g_seek_pending_ms;
         g_seek_pending_ms = -1;
+        if (g_zappin.owns_sequence) {
+            // The drag was measured against the preview SAMPLE's duration, so its target means
+            // nothing in the restored song: hand the pre-preview queue back at its bookmark (with
+            // the confirmation that releases the hold) and drop the seek.
+            g_seek_do_ms = -1;
+            run_guarded("ZAPPIN: restore normal queue instead of a sample seek", 12, []() {
+                zappin_restore_origin("ZAPPIN seek hand-over");
+            });
+            if (g_screen_on) cinder_render_tick();
+            return;
+        }
         // The bar is already on the target (cinder_scrub_end re-anchored it), so painting first
         // puts the finger's own result on the glass before the engine is asked for it. ~16 ms.
         if (g_screen_on) cinder_render_tick();
@@ -12618,12 +13021,20 @@ void poll_now_playing() {
     // the UI just sits there.
     const bool moved = (events != last_events);
     last_events = events;
-    bool force = g_np_poll_now;
+    const long np_now = now_ms();
+    if (g_zappin_handoff.pending && np_now - g_zappin_handoff.armed_ms >= 15000) {
+        // A lost PlayerService callback must not create an unbounded binder poll loop, nor leave
+        // persistence held with nothing left to release it. Release instead of waiting for a later Play: the FFI puts the intended state in place
+        // (the restored bookmark, or the fresh track from zero) and persistence resumes.
+        clog_("ZAPPIN: normal-play handoff not confirmed in 15 s — released to the intended track");
+        cinder_zappin_abandon();
+        g_zappin_handoff = ZappinHandoff{};
+    }
+    bool force = g_np_poll_now || g_zappin.waiting_uri || g_zappin_handoff.pending;
     g_np_poll_now = false;
     // A slow backstop, for the one case the free signals cannot see: two consecutive tracks of
     // EXACTLY the same length, where the reset also lands between two samples. 30 s of staleness in
     // that corner costs 0.03 IPC/s against the 1.0/s it replaces.
-    const long np_now = now_ms();
     const bool stale = np_now - last_uri_ms >= 30000;
 
     if (force || (moved && (boundary || stale))) {
@@ -12632,18 +13043,93 @@ void poll_now_playing() {
         // GetCurrentStatus is a binder round trip, unguarded, reached from housekeeping at every
         // track boundary. Refused after a recovery for the same reason as display_backlight.
         int n = g_ipc_dead ? -1 : cinder_audio_current_uri(uri, sizeof uri);
-        if (n > 0 && std::strcmp(uri, last) != 0) {
+        if (n > 0) {
+            const bool changed = std::strcmp(uri, last) != 0;
             const bool had_track = last[0] != 0;
-            std::strncpy(last, uri, sizeof last - 1);
-            last[sizeof last - 1] = 0;
-            cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, battery_level());
+            if (changed) {
+                std::strncpy(last, uri, sizeof last - 1);
+                last[sizeof last - 1] = 0;
+            }
+            // Without a preview this is main's call exactly: a track change reported at 0 with
+            // the transport intent (g_playing and its grace window), and no extra binder read.
+            const bool preview_poll = g_zappin.active || g_zappin.owns_sequence
+                || g_zappin_handoff.pending;
+            const bool service_playing = preview_poll && cinder_audio_is_playing() != 0;
+            // A fresh play must report near 0:00 before it confirms. An absolute window, as
+            // zappin_new_request_position_ready uses: callbacks arrive about once a second, so a
+            // 1 % rule left no sample inside it on a track shorter than ~100 s.
+            const bool near_start = have_pos && cur >= 0 && tot > 0 && cur <= 2500;
+            const bool expected_handoff_uri = g_zappin_handoff.pending
+                && (g_zappin_handoff.restore
+                    || std::strcmp(uri, g_zappin_handoff.uri) == 0);
+            const bool restore_same_uri = g_zappin_handoff.restore
+                && std::strcmp(uri, g_zappin_handoff.uri) == 0;
+            const long long position_error = have_pos
+                ? std::llabs((long long)cur - g_zappin_handoff.target_ms) : 0x7fffffffLL;
+            const bool handoff_position_ready = restore_same_uri
+                ? position_error <= 1500 : near_start;
+            const bool handoff_confirmable = expected_handoff_uri && have_pos && tot > 0
+                && service_playing && handoff_position_ready;
+            // Pass the service's measured position. In particular, same-URI Full confirmation
+            // waits for a real near-zero PlayerService report; no synthetic progress=0 can release
+            // the FFI persistence hold.
+            float progress = 0.0f;
+            if (have_pos && tot > 0 && cur >= 0)
+                progress = std::max(0.0f, std::min(1.0f, (float)cur / (float)tot));
+            int notify_rc = 0;
+            if (!preview_poll) {
+                if (changed)
+                    cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, battery_level());
+            } else if (changed || handoff_confirmable) {
+                notify_rc = cinder_set_now_playing_uri(uri, progress,
+                                                       service_playing ? 1 : 0,
+                                                       battery_level());
+            }
+            if (g_zappin_handoff.pending && handoff_confirmable && notify_rc == 0) {
+                cinder_zappin_confirm_handoff(uri, progress, service_playing ? 1 : 0);
+                if (cinder_zappin_take_handoff_confirmed() == 1)
+                    g_zappin_handoff = ZappinHandoff{};
+            }
+            // A seek is allowed only after PlayerService reports the expected URI. The identity
+            // and generation check rejects a delayed callback from a prior candidate or session.
+            if (g_zappin.active && g_zappin.waiting_uri && std::strcmp(uri, g_zappin.uri) == 0
+                && zappin_new_request_position_ready(have_pos, cur)
+                && cinder_zappin_confirm_candidate(g_zappin.generation, g_zappin.index,
+                                                   g_zappin.object_id, uri)) {
+                g_zappin.waiting_uri = false;
+                g_zappin.seek_rc = 0;
+                const int seek_guard_rc = g_zappin.start_ms > 0
+                    ? run_guarded("ZAPPIN: seek to planned preview start", 8, []() {
+                        g_zappin.seek_rc = cinder_audio_seek_ms((int)g_zappin.start_ms);
+                        if (g_zappin.seek_rc == 0) cinder_notify_seek_ms((int)g_zappin.start_ms);
+                    })
+                    : 0;
+                if (!zappin_seek_was_sent(seek_guard_rc, g_zappin.seek_rc)) {
+                    clog_("ZAPPIN: planned seek could not be sent — skipping this candidate");
+                    zappin_advance(true, true);
+                    return;
+                }
+                cinder_zappin_set_source(g_zappin.source);
+                g_zappin.started = true;
+                g_zappin.last_tick_ms = np_now;
+                g_zappin.elapsed_ms = 0;
+                cinder_zappin_set_progress(0, (unsigned)std::max(0LL, g_zappin.length_ms),
+                                           (unsigned)(g_zappin.index + 1),
+                                           (unsigned)g_zappin.count);
+                // A Pause pressed while the URI was in flight is still authoritative when the
+                // delayed callback arrives; confirmation must never silently resume playback.
+                if (zappin_resume_after_confirmation(g_user_paused)) set_transport(true);
+                // The preview page shows the source and start position persistently. Candidate
+                // changes must not cover its transport controls with a repeated source toast.
+            }
             // STOP AFTER THIS SONG, the late case. stop_after_tick() pauses just BEFORE the end,
             // from an extrapolated position; if that missed — a callback that stalled, a song
             // shorter than its reported length — the next song has begun, and the best left is to
             // pause it and put it back to 0:00. Not after a transport press (`force`, or inside the
             // grace window): a song the user skipped to or picked is not the song that ended, and
             // the setting then applies to it instead.
-            if (had_track && !force && np_now - g_transport_at > TRANSPORT_GRACE_MS && cinder_get_stop_after()) {
+            if (changed && had_track && !force && np_now - g_transport_at > TRANSPORT_GRACE_MS
+                && !g_zappin.owns_sequence && cinder_get_stop_after()) {
                 clog_("stop-after: the next song began before the pause landed — pausing it at 0:00");
                 set_transport(false);
                 run_guarded("stop-after: pause the next song", 8, []() {
@@ -12653,6 +13139,10 @@ void poll_now_playing() {
                 cinder_stop_after_done();
             }
         }
+    }
+    if (g_zappin.active && g_zappin.waiting_uri && np_now - g_zappin.waiting_since_ms >= 10000) {
+        clog_("ZAPPIN: URI confirmation timed out — skipping this candidate once");
+        zappin_advance(true, true);
     }
     // The service is the authority on position, and eventually on whether it is really playing —
     // which is how a track ending, or PlayerService pausing for its own reasons, reaches the UI.
@@ -12667,6 +13157,23 @@ void poll_now_playing() {
         if (np_now - g_transport_at > TRANSPORT_GRACE_MS)
             g_playing = cinder_audio_is_playing() != 0;
         cinder_set_play_position(cur, tot, g_playing ? 1 : 0);
+    }
+
+    // Count only actual playing time. The housekeeping cadence is low-frequency and continues
+    // while the panel is dark; paused/buffering wall time is excluded and no render tick owns this.
+    if (g_zappin.active && g_zappin.started) {
+        const long dt = std::max(0L, std::min(2000L, np_now - g_zappin.last_tick_ms));
+        g_zappin.last_tick_ms = np_now;
+        const bool service_playing = cinder_audio_is_playing() != 0;
+        if (g_playing && service_playing) g_zappin.elapsed_ms += dt;
+        cinder_zappin_set_progress((unsigned)std::max(0LL, g_zappin.elapsed_ms),
+                                   (unsigned)std::max(0LL, g_zappin.length_ms),
+                                   (unsigned)(g_zappin.index + 1),
+                                   (unsigned)g_zappin.count);
+        const bool natural_end = !g_user_paused && !service_playing && have_pos && tot > 0
+            && cur >= tot - 1000;
+        if (natural_end || g_zappin.length_ms <= 0 || g_zappin.elapsed_ms >= g_zappin.length_ms)
+            zappin_advance(true, true);
     }
 
     // ── REPEAT-ALL ──────────────────────────────────────────────────────────────────────────────
@@ -12684,7 +13191,7 @@ void poll_now_playing() {
     // end, which would re-issue the sequence ~60 times a second. It clears as soon as the position
     // leaves the end, so the next lap re-arms it.
     static bool repeat_all_fired = false;
-    if (have_pos && tot > 0 && cinder_get_repeat_all()) {
+    if (!g_zappin.owns_sequence && have_pos && tot > 0 && cinder_get_repeat_all()) {
         // 1500 ms of slack: the last onPlayTimeUpdated before the end need not land exactly on the
         // duration, and a track can stop a beat short of its own reported length.
         //
@@ -12710,7 +13217,7 @@ void poll_now_playing() {
             // kept for the case where the UI has no context to rebuild from (a sequence started
             // before a library reload), where replaying the tail beats stopping.
             run_guarded("repeat-all: restart sequence", 8, []() {
-                if (cinder_repeat_all_prepare()) play_pending_sequence("repeat-all", false);
+                if (cinder_repeat_all_prepare()) play_pending_sequence("repeat-all", PendingSequenceMode::StartNew);
                 else cinder_audio_restart_sequence();
             });
         } else if (!at_end) {
@@ -12736,6 +13243,9 @@ void poll_now_playing() {
 static const long STOP_AFTER_LEAD_MS = 150;
 
 static void stop_after_tick() {
+    // A ZAPPIN pass temporarily owns track boundaries; the user's one-shot stop-after setting
+    // must remain armed for ordinary playback after the preview hand-off.
+    if (g_zappin.owns_sequence) return;
     static int  last_cur = -1;
     static long cur_at = 0;
     if (!cinder_get_stop_after()) {
@@ -13843,7 +14353,7 @@ void* render_driver(void*) {
             // invisible. Applying it any other time restarts the music (measured on device).
             if (cinder_take_queue_flush()) {
                 run_guarded("queue: flush at track boundary", 10, []() {
-                    play_pending_sequence("queue", true);
+                    play_pending_sequence("queue", PendingSequenceMode::RestoreIfSame);
                 });
             }
             viz_analyzer_tick();              // analyzer runs only while its output is visible

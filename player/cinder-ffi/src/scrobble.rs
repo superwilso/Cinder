@@ -154,6 +154,17 @@ impl Scrobbler {
         });
     }
 
+    /// Start a new ordinary listen after a preview handoff, including when the URI and metadata
+    /// are unchanged. The preview's elapsed time is discarded and cannot qualify this play.
+    pub fn restart_track(&mut self, track: Track, now_unix: u64) {
+        self.cur = Some(Pending {
+            track,
+            start_unix: now_unix,
+            played_ms: 0,
+            logged: false,
+        });
+    }
+
     /// True if the current pending track matches `t` (so the caller can avoid re-setting it).
     pub fn is_current(&self, t: &Track) -> bool {
         self.cur.as_ref().map(|p| p.track == *t).unwrap_or(false)

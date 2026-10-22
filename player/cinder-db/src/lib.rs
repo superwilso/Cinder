@@ -294,6 +294,16 @@ impl Db {
         Ok(Self::wrap(Connection::open_in_memory()?))
     }
 
+    /// In-memory DB initialized before schema metadata is cached. Useful for fixtures that build
+    /// their tables in memory; the ordinary `open_in_memory` form remains convenient for callers
+    /// that create the schema later and do not need schema-derived properties.
+    #[doc(hidden)]
+    pub fn open_in_memory_with(initialize: impl FnOnce(&Connection) -> Result<()>) -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        initialize(&conn)?;
+        Ok(Self::wrap(conn))
+    }
+
     fn wrap(conn: Connection) -> Self {
         // Resolve the akey for the DURATION ext-int property once (None if absent).
         let duration_akey = conn
@@ -1574,6 +1584,33 @@ mod tests {
     #[test]
     fn sensme_skips_a_track_that_was_never_analysed() {
         assert!(!db().sensme().contains_key(&2));
+    }
+
+    #[test]
+    fn sabi_fixture_keeps_valid_time_and_clamps_missing_or_invalid_values() {
+        let schema = "INSERT INTO schema VALUES (1,50,119,'WMCHANNELINFO');
+                      INSERT INTO schema VALUES (1,60,119,'SABI');";
+        let rows = "INSERT INTO object_ext_int VALUES (7,50,1);
+                    INSERT INTO object_ext_int VALUES (7,60,12345);
+                    INSERT INTO object_ext_int VALUES (8,50,1);
+                    INSERT INTO object_ext_int VALUES (9,50,1);
+                    INSERT INTO object_ext_int VALUES (9,60,-50);";
+        let sabi = sensme_db(schema, rows).sensme();
+        assert_eq!(
+            sabi.get(&7).unwrap().sabi_ms,
+            12_345,
+            "valid SABI is read by object id"
+        );
+        assert_eq!(
+            sabi.get(&8).unwrap().sabi_ms,
+            0,
+            "missing SABI is represented as no usable time"
+        );
+        assert_eq!(
+            sabi.get(&9).unwrap().sabi_ms,
+            0,
+            "negative SABI is clamped to no usable time"
+        );
     }
 
     /// **The interop claim, as a test.** Cinder reads what the PLAYER'S scanner computed, not what

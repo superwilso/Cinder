@@ -49,6 +49,8 @@ pub enum Screen {
     Artist,
     Playlist,
     UpNext,
+    /// Independent short-preview screen; entering or leaving it is only navigation.
+    Zappin,
     Eq,
     Sound,
     /// Menu ▸ Soundscapes — procedural rain, a beach, a stream, wind, a fire, a night and three
@@ -399,6 +401,14 @@ impl SoundSetup {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     PlayPause,
+    /// Start/stop a short preview pass. The shell owns transport and timing; milliseconds are
+    /// explicit so the 4s/15s choice cannot be confused with a UI row index.
+    ZappinStart(u32),
+    ZappinEnd,
+    ZappinFull,
+    ZappinLength(u32),
+    ZappinNext,
+    ZappinPrev,
     Next,
     Prev,
     NextAlbum,
@@ -631,7 +641,7 @@ pub enum Action {
 /// elsewhere: until Library grows its Folders page, taking them off the Menu would leave them with
 /// no way in. Equalizer left on 2026-10-04 (owner's call): Sound's Equalizer row (handoff 2a) is
 /// the way in, and it names what is in the path, which the Menu row could not.
-const MENU: [(Screen, &str, &str); 10] = [
+const MENU: [(Screen, &str, &str); 11] = [
     (Screen::Library, "Library", ""), // live: album/track counts
     // Folder browse — the file tree as it is on the volume. Not a fifth Library tab: the strip is
     // four flat peers and this is a stack you descend, where Back has to mean "up one level".
@@ -651,6 +661,9 @@ const MENU: [(Screen, &str, &str); 10] = [
     (Screen::Soundscape, "Soundscapes", ""), // live: the sound, or Off
     (Screen::Bluetooth, "Bluetooth", ""), // live: configured transmit codec
     (Screen::UsbDac, "USB-DAC", ""), // live: On/Off
+    // Special Menu action intercepted by `activate_menu`; the target is only a placeholder so
+    // this stays inside the existing Menu route and does not add a new exhaustive Screen case.
+    (Screen::Zappin, "Preview", ""),
     // NOT "BT Receiver": it stays reachable where it belongs, from Bluetooth ▸ Receiver mode,
     // until it works.
     (Screen::Settings, "Settings", "Display · playback · system"),
@@ -1665,6 +1678,17 @@ pub struct App {
     /// Is the opt-in `sensme` component installed? Set by the shell at startup from
     /// `/data/cinder/sensme_on`; without it the Menu has no SensMe row.
     sensme_enabled: bool,
+    /// The opt-in `preview` component is installed: the Menu offers the Preview row.
+    preview_enabled: bool,
+    zappin_preview_ms: u32,
+    zappin_active: bool,
+    zappin_completed: bool,
+    zappin_source: Option<crate::zappin::StartSource>,
+    zappin_start_ms: Option<u64>,
+    zappin_elapsed_ms: u32,
+    zappin_length_ms: u32,
+    zappin_current: u32,
+    zappin_total: u32,
     /// SensMe ▸ "Follow the time of day": the grid's button plays the channel for the hour.
     sensme_follow: bool,
     /// The hour on the status-bar clock at the last render, for the time-of-day channel. `None`
@@ -2000,6 +2024,16 @@ impl Default for App {
             books_scroll_px: 0,
             sensme_scroll_saved: 0,
             sensme_enabled: false,
+            preview_enabled: false,
+            zappin_preview_ms: 4_000,
+            zappin_active: false,
+            zappin_completed: false,
+            zappin_source: None,
+            zappin_start_ms: None,
+            zappin_elapsed_ms: 0,
+            zappin_length_ms: 4_000,
+            zappin_current: 0,
+            zappin_total: 0,
             sensme_follow: false,
             clock_hour: None,
             track_info: Vec::new(),
@@ -2455,12 +2489,13 @@ impl App {
 
     /// Activate a Menu row: navigate to its destination, or open the Shelf overlay for the Shelf
     /// sentinel. Shared by the Menu tap + Select handlers so they can't drift apart.
-    fn activate_menu(&mut self, row: usize) {
-        let Some(target) = self.menu_visible().get(row).map(|m| m.0) else {
-            return;
+    fn activate_menu(&mut self, row: usize) -> Vec<Action> {
+        let Some((target, _, _)) = self.menu_visible().get(row).map(|entry| **entry) else {
+            return vec![];
         };
         match target {
             Screen::NowPlaying => self.go(Screen::NowPlaying),
+            Screen::Zappin => self.push(Screen::Zappin),
             Screen::Help => {
                 self.help_scroll_px = 0;
                 self.push(Screen::Help);
@@ -2473,6 +2508,7 @@ impl App {
             Screen::SensMe => self.open_sensme(),
             target => self.push(target),
         }
+        vec![]
     }
 
     /// Open the Shelf bottom-sheet over the current place. Entered from the Menu, so pop the Menu
@@ -3373,12 +3409,13 @@ impl App {
     fn menu_visible(&self) -> Vec<&'static (Screen, &'static str, &'static str)> {
         MENU.iter()
             .filter(|m| m.0 != Screen::SensMe || self.sensme_enabled)
+            .filter(|m| m.0 != Screen::Zappin || self.preview_enabled)
             .collect()
     }
 
     /// How many Menu rows are drawn (see [`App::menu_visible`]).
     fn menu_len(&self) -> usize {
-        MENU.len() - usize::from(!self.sensme_enabled)
+        MENU.len() - usize::from(!self.sensme_enabled) - usize::from(!self.preview_enabled)
     }
 
     /// The shell says whether the opt-in `sensme` component is installed.
@@ -3394,6 +3431,65 @@ impl App {
         self.sensme_enabled = on;
         // The cursor is an index into the VISIBLE rows, and this changes how many there are.
         self.menu_idx = self.menu_idx.min(self.menu_len().saturating_sub(1));
+    }
+
+    /// The shell says whether the opt-in `preview` component is installed. Like SensMe, it gates
+    /// the Menu row only: nothing else starts a preview pass.
+    pub fn set_preview_enabled(&mut self, on: bool) {
+        self.preview_enabled = on;
+        self.menu_idx = self.menu_idx.min(self.menu_len().saturating_sub(1));
+    }
+
+    /// Mirror the shell-owned preview session for the Menu control labels/actions.
+    pub fn set_zappin_active(&mut self, active: bool) {
+        self.zappin_active = active;
+    }
+
+    /// Show that the finite preview pass ended naturally or was stopped from its Menu control.
+    pub fn set_zappin_completed(&mut self, completed: bool) {
+        self.zappin_completed = completed;
+    }
+
+    /// Mirror the confirmed candidate's source: SABI is an analyzed start point, not proof of a
+    /// chorus; fixed and unknown-duration fallbacks are named separately.
+    pub fn set_zappin_source(&mut self, source: Option<crate::zappin::StartSource>) {
+        self.zappin_source = source;
+        if source.is_none() {
+            self.zappin_start_ms = None;
+        }
+    }
+
+    pub fn set_zappin_start_ms(&mut self, start_ms: Option<u64>) {
+        self.zappin_start_ms = start_ms;
+    }
+
+    /// Live playback timer from the shell. It advances only while the service is playing.
+    pub fn set_zappin_progress(
+        &mut self,
+        elapsed_ms: u32,
+        length_ms: u32,
+        current: u32,
+        total: u32,
+    ) {
+        self.zappin_elapsed_ms = elapsed_ms.min(length_ms);
+        self.zappin_length_ms = length_ms;
+        self.zappin_current = current;
+        self.zappin_total = total;
+    }
+
+    /// Return to ordinary Now Playing only after the shell has confirmed full playback.
+    pub fn complete_zappin_full_play(&mut self) {
+        self.zappin_active = false;
+        self.zappin_completed = false;
+        self.go(Screen::NowPlaying);
+    }
+
+    fn zappin_menu_subtitle(&self) -> String {
+        if self.zappin_active {
+            String::from(crate::i18n::text("Preview active · tap to return"))
+        } else {
+            String::new()
+        }
     }
 
     /// Open the channel list from the top.
@@ -4230,7 +4326,7 @@ impl App {
                 }
                 if let Some(row) = crate::menu::row_at(y, self.menu_len()) {
                     self.menu_idx = row;
-                    self.activate_menu(row);
+                    return self.activate_menu(row);
                 }
                 vec![]
             }
@@ -4267,6 +4363,7 @@ impl App {
                     Some(Hit::Toolbar(slot)) => {
                         match slot {
                             0 => self.push(Screen::Library),
+                            1 if self.zappin_active => self.push(Screen::Zappin),
                             1 => self.push(Screen::UpNext),
                             2 => self.push(Screen::Bluetooth),
                             _ => self.push(Screen::Settings),
@@ -4283,6 +4380,43 @@ impl App {
                     None => vec![],
                 }
             }
+            Screen::Zappin => match crate::retro_preview::hit(
+                x,
+                y,
+                self.zappin_active,
+                self.context_idx() < self.context().len(),
+            ) {
+                Some(crate::retro_preview::Hit::Short) => {
+                    self.zappin_preview_ms = 4_000;
+                    vec![Action::ZappinLength(4_000)]
+                }
+                Some(crate::retro_preview::Hit::Long) => {
+                    self.zappin_preview_ms = 15_000;
+                    vec![Action::ZappinLength(15_000)]
+                }
+                Some(crate::retro_preview::Hit::Prev) if self.zappin_active => {
+                    vec![Action::ZappinPrev]
+                }
+                Some(crate::retro_preview::Hit::Next) if self.zappin_active => {
+                    vec![Action::ZappinNext]
+                }
+                Some(crate::retro_preview::Hit::PlayPause) if self.zappin_active => {
+                    self.set_playing_optimistic(!self.playing);
+                    vec![Action::PlayPause]
+                }
+                Some(crate::retro_preview::Hit::PlayPause)
+                    if self.context_idx() < self.context().len() =>
+                {
+                    vec![Action::ZappinStart(self.zappin_preview_ms)]
+                }
+                Some(crate::retro_preview::Hit::Full) if self.zappin_active => {
+                    vec![Action::ZappinFull]
+                }
+                Some(crate::retro_preview::Hit::End) if self.zappin_active => {
+                    vec![Action::ZappinEnd]
+                }
+                _ => vec![],
+            },
             Screen::Folders => self.tap_folders(y),
             Screen::Books => self.tap_books(y),
             Screen::SensMe => self.tap_sensme(x, y),
@@ -7671,6 +7805,16 @@ impl App {
         self.context_idx
     }
 
+    /// Select an exact queue occurrence for ZAPPIN's full-play handoff. Object ids may repeat in
+    /// a hand-built queue, so identity is the queue position plus generation, not object id alone.
+    pub fn set_context_index(&mut self, index: usize) -> bool {
+        if index >= self.context.len() {
+            return false;
+        }
+        self.context_idx = index;
+        true
+    }
+
     /// Point the index at a track by id, without recording anything. Returns true if that moved
     /// it. Searches BACKWARDS from the playing row first — its one caller outside the tests is ◁,
     /// and a track in the list twice should land on the copy just behind the playing one — then
@@ -8365,10 +8509,44 @@ impl App {
                     }
                     vec![]
                 }
-                Button::Select | Button::Right => {
-                    self.activate_menu(self.menu_idx);
+                Button::Select | Button::Right => self.activate_menu(self.menu_idx),
+                Button::Option
+                    if self
+                        .menu_visible()
+                        .get(self.menu_idx)
+                        .is_some_and(|m| m.0 == Screen::Zappin) =>
+                {
+                    self.push(Screen::Zappin);
                     vec![]
                 }
+                Button::Back | Button::Left => {
+                    self.pop();
+                    vec![]
+                }
+                _ => vec![],
+            },
+            Screen::Zappin => match b {
+                Button::Select => {
+                    if self.zappin_active {
+                        self.set_playing_optimistic(!self.playing);
+                        vec![Action::PlayPause]
+                    } else if self.context_idx() < self.context().len() {
+                        vec![Action::ZappinStart(self.zappin_preview_ms)]
+                    } else {
+                        vec![]
+                    }
+                }
+                Button::Left if self.zappin_active => vec![Action::ZappinPrev],
+                Button::Right if self.zappin_active => vec![Action::ZappinNext],
+                Button::Option => {
+                    self.zappin_preview_ms = if self.zappin_preview_ms == 4_000 {
+                        15_000
+                    } else {
+                        4_000
+                    };
+                    vec![Action::ZappinLength(self.zappin_preview_ms)]
+                }
+                // Left is Back everywhere else; it only steps between songs while a pass runs.
                 Button::Back | Button::Left => {
                     self.pop();
                     vec![]
@@ -8837,6 +9015,24 @@ impl App {
                 };
                 crate::lock::render(c, &theme, fonts, &lk);
             }
+            Screen::Zappin => crate::retro_preview::render(
+                c,
+                &theme,
+                fonts,
+                np.title,
+                np.artist,
+                self.zappin_preview_ms,
+                self.zappin_active,
+                self.zappin_completed,
+                np.playing,
+                self.zappin_source,
+                self.zappin_start_ms,
+                self.context_idx() < self.context().len(),
+                self.zappin_elapsed_ms,
+                self.zappin_length_ms,
+                self.zappin_current,
+                self.zappin_total,
+            ),
             Screen::NowPlaying => {
                 // inject the selected visualiser type + on/off (UI state) into the now-playing data
                 // The visualiser is shown ONLY when real spectrum data is arriving. Without the
@@ -8855,9 +9051,30 @@ impl App {
                 crate::now_playing::render(c, &theme, fonts, &np2);
                 // sleep-timer countdown badge (nav owns the live remaining minutes)
                 crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min, self.stop_after);
+                // The queue toolbar slot becomes a persistent, touch-sized return to the preview
+                // while it is active. Its existing glyph remains; this short caption is the state
+                // marker and the whole 120px slot is already the hit target.
+                if self.zappin_active {
+                    let marker = crate::widgets::sty(
+                        crate::text::Family::Mono,
+                        crate::text::Weight::Bold,
+                        9.0,
+                        theme.acc,
+                        0.04,
+                    );
+                    crate::widgets::center(
+                        c,
+                        fonts,
+                        180.0,
+                        739.0,
+                        crate::i18n::text("PREVIEW"),
+                        &marker,
+                    );
+                }
             }
             Screen::Menu => {
                 let subs = self.menu_subtitles();
+                let preview_sub = self.zappin_menu_subtitle();
                 // The strip answers "what's on?" without a trip to the player.
                 let strip = if np.title.is_empty() {
                     String::from(crate::i18n::text("NOTHING PLAYING"))
@@ -8889,6 +9106,7 @@ impl App {
                             Screen::Bluetooth => &subs.bluetooth,
                             Screen::UsbDac => &subs.usb_dac,
                             Screen::Soundscape => &subs.soundscape,
+                            Screen::Zappin => &preview_sub,
                             _ => crate::i18n::text(value),
                         },
                         home: home_row == Some(*screen),
@@ -11991,6 +12209,7 @@ fn screen_title(s: Screen) -> &'static str {
         // The two places that are not Menu rows (see `MENU`), named as the Menu used to name them.
         Screen::NowPlaying => crate::i18n::text("Now Playing"),
         Screen::UpNext => crate::i18n::text("Up Next"),
+        Screen::Zappin => crate::i18n::text("Preview"),
         Screen::Display => crate::i18n::text("Display"),
         Screen::Palette => crate::i18n::text("Palette"),
         Screen::Language => crate::i18n::text("Language"),
@@ -12155,6 +12374,7 @@ mod tests {
             Screen::Library,
             Screen::Folders,
             Screen::SensMe, // live: how many channels, and how many tracks were analysed
+            Screen::Zappin, // the standalone preview entry has no menu-body subtitle when ready
             // Screen::Fm left this list on 2026-08-18: the tuner is wired, so the row now carries
             // a real static subtitle ("Needs wired headphones as the aerial") instead of the empty
             // string it used while there was nothing behind it. Nothing fills it at render time.
@@ -16035,6 +16255,7 @@ mod tests {
     #[test]
     fn the_sensme_menu_row_appears_only_when_the_component_is_installed() {
         let mut a = unlocked();
+        a.set_preview_enabled(true); // the other opt-in row, so the counts below are SensMe's alone
         assert!(!a.menu_visible().iter().any(|m| m.0 == Screen::SensMe));
         assert_eq!(a.menu_len(), MENU.len() - 1);
         a.set_sensme_enabled(true);
@@ -22472,5 +22693,128 @@ mod r4_tests {
             library::artist_hit(&p, 0, library::artist_content_top() + vy + 4),
             Some(library::ArtistHit::Track(i))
         );
+    }
+
+    /// Preview is opt-in like SensMe: without the component the Menu has no row for it, and the
+    /// rows below do not shift under the cursor.
+    #[test]
+    fn the_preview_menu_row_appears_only_when_the_component_is_installed() {
+        let mut a = App::unlocked();
+        a.set_sensme_enabled(true);
+        assert!(!a.menu_visible().iter().any(|m| m.0 == Screen::Zappin));
+        assert_eq!(a.menu_len(), MENU.len() - 1);
+        a.set_preview_enabled(true);
+        assert!(a.menu_visible().iter().any(|m| m.0 == Screen::Zappin));
+        assert_eq!(a.menu_len(), MENU.len());
+        // Turning it off with the cursor on the last row keeps the cursor on a drawn row.
+        a.menu_idx = a.menu_len() - 1;
+        a.set_preview_enabled(false);
+        assert!(a.menu_idx < a.menu_len());
+    }
+
+    #[test]
+    fn menu_preview_opens_a_page_without_starting_playback() {
+        let mut a = App::unlocked();
+        a.set_preview_enabled(true);
+        a.set_play_context(vec![SongRow::default()], 0);
+        a.go(Screen::Menu);
+        let row = a
+            .menu_visible()
+            .iter()
+            .position(|m| m.1 == "Preview")
+            .unwrap();
+        a.menu_idx = row;
+        assert!(a.press(Button::Select).is_empty());
+        assert_eq!(a.current(), Screen::Zappin);
+        assert_eq!(a.tap(350, 457), vec![Action::ZappinLength(15_000)]);
+        assert_eq!(a.tap(240, 532), vec![Action::ZappinStart(15_000)]);
+    }
+
+    #[test]
+    fn menu_entry_returns_to_active_page_and_controls_are_tappable() {
+        let mut a = App::unlocked();
+        a.set_preview_enabled(true);
+        a.set_play_context(vec![SongRow::default()], 0);
+        a.go(Screen::Menu);
+        let row = a
+            .menu_visible()
+            .iter()
+            .position(|m| m.1 == "Preview")
+            .unwrap();
+        a.menu_idx = row;
+        a.set_zappin_active(true);
+        assert!(a.press(Button::Select).is_empty());
+        assert_eq!(a.current(), Screen::Zappin);
+        assert_eq!(a.tap(240, 620), vec![Action::ZappinFull]);
+        assert_eq!(a.tap(240, 699), vec![Action::ZappinEnd]);
+    }
+
+    #[test]
+    fn play_pause_keeps_its_normal_transport_action_during_preview() {
+        let mut a = App::unlocked();
+        a.set_play_context(vec![SongRow::default()], 0);
+        a.set_zappin_active(true);
+        assert_eq!(a.press(Button::Play), vec![Action::PlayPause]);
+    }
+
+    #[test]
+    fn preview_progress_uses_shell_state_and_full_completion_routes_to_now_playing() {
+        let mut a = App::unlocked();
+        a.set_play_context(vec![SongRow::default()], 0);
+        a.go(Screen::Zappin);
+        a.set_zappin_active(true);
+        a.set_zappin_progress(2_500, 15_000, 2, 9);
+        assert_eq!(a.zappin_elapsed_ms, 2_500);
+        assert_eq!(a.zappin_length_ms, 15_000);
+        assert_eq!((a.zappin_current, a.zappin_total), (2, 9));
+        // This method is called only after the shell confirms ordinary PlayerService playback.
+        a.complete_zappin_full_play();
+        assert_eq!(a.current(), Screen::NowPlaying);
+        assert!(!a.zappin_active);
+        assert!(!a.zappin_completed);
+    }
+
+    #[test]
+    fn active_preview_menu_subtitle_is_short_and_status_only() {
+        let _english = crate::i18n::enter(crate::i18n::Language::English);
+        let mut a = App::unlocked();
+        a.set_play_context(vec![SongRow::default()], 0);
+        a.set_zappin_active(true);
+        assert_eq!(a.zappin_menu_subtitle(), "Preview active · tap to return");
+        a.set_zappin_active(false);
+        a.set_zappin_completed(true);
+        assert!(a.zappin_menu_subtitle().is_empty());
+    }
+
+    #[test]
+    fn preview_mode_refusal_uses_the_localized_toast_key() {
+        let _chinese = crate::i18n::enter(crate::i18n::Language::SimplifiedChinese);
+        let mut a = App::unlocked();
+        a.notify("Preview is unavailable in this audio mode");
+        assert_eq!(a.toast_for_render(), "当前音频模式无法使用巡听");
+    }
+
+    #[test]
+    fn preview_is_unavailable_without_current_music_context() {
+        let mut a = App::unlocked();
+        a.set_preview_enabled(true);
+        a.go(Screen::Menu);
+        let row = a
+            .menu_visible()
+            .iter()
+            .position(|m| m.1 == "Preview")
+            .unwrap();
+        a.menu_idx = row;
+        assert!(a.press(Button::Select).is_empty());
+    }
+
+    #[test]
+    fn inactive_preview_rejects_disabled_transport_and_completion_controls() {
+        let mut a = App::unlocked();
+        a.set_play_context(vec![SongRow::default()], 0);
+        a.go(Screen::Zappin);
+        for (x, y) in [(80, 530), (400, 530), (240, 620), (240, 699)] {
+            assert!(a.tap(x, y).is_empty(), "disabled preview tap at ({x}, {y})");
+        }
     }
 }

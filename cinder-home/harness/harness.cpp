@@ -759,6 +759,12 @@ int cinder_harness_display_backlight(void) { return (int)g_fake_bl_level; }
 // length to reach the interesting second is a scenario nobody writes.
 static int g_pos_cur_ms = -1;
 static int g_pos_tot_ms = -1;
+static std::string g_fake_audio_uri;
+static std::string g_fake_audio_queue[512];
+static int g_fake_audio_queue_count = 0;
+static int g_fake_audio_queue_start = 0;
+static std::string g_fake_pending_uris[512];
+static int g_fake_pending_count = 0;
 
 void cinder_harness_play_position(int cur_ms, int total_ms) {
     Lock l; ensure();
@@ -766,14 +772,173 @@ void cinder_harness_play_position(int cur_ms, int total_ms) {
     g_pos_tot_ms = total_ms;
 }
 
+void cinder_harness_play_position_at(long long at_ms, int cur_ms, int total_ms) {
+    cinder_harness_state_set_at(at_ms, "shell_audio_cur", cur_ms);
+    cinder_harness_state_set_at(at_ms, "shell_audio_tot", total_ms);
+}
+
 extern "C" int cinder_audio_position(int* cur_ms, int* total_ms) {
     static int slot_ = -1;
     cinder_harness_record_cached(&slot_, "cinder_audio_position", 0);
     int cur, tot;
     { Lock l; ensure(); cur = g_pos_cur_ms; tot = g_pos_tot_ms; }
+    cur = (int)cinder_harness_state_get("shell_audio_cur", cur);
+    tot = (int)cinder_harness_state_get("shell_audio_tot", tot);
     if (cur_ms) *cur_ms = cur;
     if (total_ms) *total_ms = tot;
     return cur >= 0 ? 1 : 0;
+}
+
+int cinder_harness_audio_queue_count(void) { return g_fake_audio_queue_count; }
+int cinder_harness_audio_queue_start(void) { return g_fake_audio_queue_start; }
+int cinder_harness_audio_queue_uri(int index, char* out, int cap) {
+    if (index < 0 || index >= g_fake_audio_queue_count || !out || cap <= 0) return -1;
+    const std::string& uri = g_fake_audio_queue[index];
+    if ((int)uri.size() + 1 > cap) return (int)uri.size();
+    std::memcpy(out, uri.c_str(), uri.size() + 1);
+    return (int)uri.size();
+}
+void cinder_harness_pending_play_uri_set(int index, const char* uri) {
+    if (index < 0 || index >= 512) return;
+    Lock l; ensure();
+    g_fake_pending_uris[index] = uri ? uri : "";
+    if (g_fake_pending_count <= index) g_fake_pending_count = index + 1;
+}
+extern "C" int cinder_pending_play_uri(int index, char* out, int cap) {
+    cinder_harness_record("cinder_pending_play_uri", index);
+    if (index < 0 || !out || cap <= 0) return -1;
+    std::string uri;
+    bool has_explicit_uri = false;
+    {
+        Lock l; ensure();
+        if (index < g_fake_pending_count) {
+            uri = g_fake_pending_uris[index];
+            has_explicit_uri = true;
+        }
+    }
+    if (has_explicit_uri) {
+        if ((int)uri.size() + 1 > cap) return (int)uri.size();
+        std::memcpy(out, uri.c_str(), uri.size() + 1);
+        return (int)uri.size();
+    }
+    // Preserve the legacy scripted mock for non-Zappin callers such as book-play tests.
+    // Explicit queue fixtures above take precedence when present.
+    long long scripted = 0;
+    if (!cinder_harness_scripted("cinder_pending_play_uri", &scripted)) return -1;
+    if (scripted <= 0 || scripted >= cap) return (int)scripted;
+    static const char fallback[] = "track";
+    int n = (int)scripted;
+    if (n > (int)sizeof(fallback) - 1) n = (int)sizeof(fallback) - 1;
+    std::memcpy(out, fallback, (size_t)n);
+    out[n] = '\0';
+    return n;
+}
+
+// ZAPPIN's off-device scenario needs a minimal stateful PlayerService: setting a one-track
+// sequence changes the URI that the real shell poll reads back. It is deliberately synchronous
+// here; the separate FFI generation/URI checks cover stale callbacks.
+extern "C" int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
+    cinder_harness_record("cinder_audio_play_tracks", count);
+    long long scripted = 0;
+    const bool scripted_result = cinder_harness_scripted("cinder_audio_play_tracks", &scripted) != 0;
+    if (scripted_result && scripted != 0) return (int)scripted;
+    if (!uris || count <= 0 || start < 0 || start >= count || !uris[start]) return -1;
+    Lock l; ensure();
+    const bool same_uri = g_fake_audio_uri == uris[start];
+    g_fake_audio_uri = uris[start];
+    g_fake_audio_queue_count = count > 512 ? 512 : count;
+    g_fake_audio_queue_start = start;
+    for (int i = 0; i < g_fake_audio_queue_count; ++i) g_fake_audio_queue[i] = uris[i] ? uris[i] : "";
+    if (!same_uri) g_pos_cur_ms = 0; // same-URI may report the old offset until async reset arrives
+    return scripted_result ? (int)scripted : 0;
+}
+
+extern "C" int cinder_audio_edit_sequence(const char* const* uris, int count, int start) {
+    cinder_harness_record("cinder_audio_edit_sequence", count);
+    long long scripted = 0;
+    if (cinder_harness_scripted("cinder_audio_edit_sequence", &scripted))
+        return (int)scripted;
+    if (!uris || count <= 0 || start < 0 || start >= count || !uris[start]) return -1;
+    Lock l; ensure();
+    g_fake_audio_uri = uris[start];
+    g_fake_audio_queue_count = count > 512 ? 512 : count;
+    g_fake_audio_queue_start = start;
+    for (int i = 0; i < g_fake_audio_queue_count; ++i) g_fake_audio_queue[i] = uris[i] ? uris[i] : "";
+    return 0;
+}
+
+// Seek is a void-like command across the Sony boundary: 0 means sent and nonzero means the
+// controller refused it. Keep it scriptable so preview seek failure and the existing book failure
+// contract can be exercised without changing production code.
+extern "C" int cinder_audio_seek_ms(int ms) {
+    cinder_harness_record("cinder_audio_seek_ms", ms);
+    long long scripted = 0;
+    int rc = cinder_harness_scripted("cinder_audio_seek_ms", &scripted) ? (int)scripted : 0;
+    if (rc == 0) { Lock l; ensure(); g_pos_cur_ms = ms; }
+    return rc;
+}
+
+extern "C" int cinder_set_now_playing_uri(const char* uri, float progress, int playing, int battery) {
+    (void)uri; (void)playing; (void)battery;
+    const long long ppm = progress >= 0.0f && progress <= 1.0f
+        ? (long long)(progress * 1000000.0f + 0.5f) : -1000000;
+    cinder_harness_record("cinder_set_now_playing_uri", ppm);
+    long long scripted = 0;
+    return cinder_harness_scripted("cinder_set_now_playing_uri", &scripted)
+        ? (int)scripted : 0;
+}
+
+extern "C" int cinder_zappin_confirm_handoff(const char* uri, float progress, int playing) {
+    (void)uri; (void)playing;
+    const long long ppm = progress >= 0.0f && progress <= 1.0f
+        ? (long long)(progress * 1000000.0f + 0.5f) : -1000000;
+    cinder_harness_record("cinder_zappin_confirm_handoff", ppm);
+    long long scripted = 0;
+    return cinder_harness_scripted("cinder_zappin_confirm_handoff", &scripted)
+        ? (int)scripted : 0;
+}
+
+extern "C" int cinder_zappin_set_progress(unsigned int elapsed_ms, unsigned int length_ms,
+                                            unsigned int current, unsigned int total) {
+    (void)current; (void)total;
+    cinder_harness_record("cinder_zappin_set_progress", elapsed_ms);
+    cinder_harness_record("cinder_zappin_set_progress_length", length_ms);
+    long long scripted = 0;
+    return cinder_harness_scripted("cinder_zappin_set_progress", &scripted)
+        ? (int)scripted : 1;
+}
+
+extern "C" int cinder_audio_current_uri(char* buf, int cap) {
+    cinder_harness_record("cinder_audio_current_uri", 0);
+    const long long override = cinder_harness_state_get("shell_audio_uri_override", 0);
+    Lock l; ensure();
+    const std::string reported = override == 1 ? "/music/first.flac"
+        : override == 2 ? "/music/second.flac" : g_fake_audio_uri;
+    if (!buf || cap <= 0 || reported.empty()) return -1;
+    const size_t n = reported.size();
+    if (n + 1 > (size_t)cap) return (int)n;
+    std::memcpy(buf, reported.c_str(), n + 1);
+    return (int)n;
+}
+
+extern "C" int cinder_zappin_candidate(int index, char* uri, int cap, long long* object_id,
+                                        long long* start_ms, long long* length_ms,
+                                        long long* duration_ms, int* source) {
+    cinder_harness_record("cinder_zappin_candidate", index);
+    if (index < 0 || index > 2 || !uri || cap <= 0 || !object_id || !start_ms
+        || !length_ms || !duration_ms || !source) return -1;
+    const char* name = index == 1 ? "/music/second.flac" : "/music/first.flac";
+    const size_t n = std::strlen(name);
+    if (n + 1 > (size_t)cap) return -2;
+    std::memcpy(uri, name, n + 1);
+    *object_id = index == 1 ? 101 : 100;
+    *start_ms = index == 1 ? 45000 : 62000;
+    long long scripted_length = 4000;
+    cinder_harness_scripted("cinder_zappin_candidate_length", &scripted_length);
+    *length_ms = scripted_length;
+    *duration_ms = 180000;
+    *source = index == 0 ? 1 : 2;
+    return (int)n;
 }
 
 // ── the soundscape setting, hand-written for the same reason: two of its answers are out-params.
