@@ -5269,6 +5269,24 @@ pub extern "C" fn cinder_reorder_begin_hold(x: libc::c_int, y: libc::c_int) -> l
     took as libc::c_int
 }
 
+/// A long press that lifted nothing: Play next on a song row (`App::hold`). -1 when nothing was
+/// queued, else the first action code for the shell (0 when the UI handled it alone).
+#[no_mangle]
+pub extern "C" fn cinder_hold(x: libc::c_int, y: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return -1 };
+    let Some(actions) = r.app.hold(x as i32, y as i32) else {
+        return -1;
+    };
+    r.dirty = true;
+    for a in &actions {
+        if let Some(code) = carry_action(r, a) {
+            return code;
+        }
+    }
+    0
+}
+
 /// Stream a reorder drag: `dy_px` is TOTAL travel from the gesture's start point.
 #[no_mangle]
 pub extern "C" fn cinder_reorder_track(dy_px: libc::c_int) {

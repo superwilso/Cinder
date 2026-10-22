@@ -296,13 +296,13 @@ exact. Takes effect on the next reboot, because the HAL is loaded at play time.
 
 **In short:** the *Headphone volume curve* option decides how much each step of the volume control
 changes the loudness at the jack. **Sony standard** is the default. **Smooth (NW-WM1A)** makes every
-step count, but you copy one of Sony's files to the player first (below).
+step count; the installer fetches the Sony file it needs from Sony's own update server (below).
 
 | the installer shows | id | what you get |
 |---|---|---|
 | Sony standard (default) | `stock` | Your player's own curve, **without Sony's regional volume limit**. Steps 40–60 and 100–120 change nothing ([measured](analysis/RE_volume_pop.md)) |
-| Smooth (NW-WM1A) | `wm1a` | Every step changes the volume, in smaller steps near the top. Same maximum. You bring the file |
-| Walkman One | `w1` | Walkman One's curve. It measured the same as Sony standard. You bring the file |
+| Smooth (NW-WM1A) | `wm1a` | Every step changes the volume, in smaller steps near the top. Same maximum. The installer fetches Sony's file |
+| Walkman One | `w1` | Walkman One's curve. It measured the same as Sony standard. The installer fetches Sony's file |
 | Sony, with region limit | `region` | Whatever your player used before Cinder, including the quieter regional limit if it has one |
 
 **The regional limit.** Players sold where Sony restricts headphone volume (Wampy measured the EU
@@ -311,8 +311,12 @@ unless you choose **Sony, with region limit**, so on those players **the same vo
 firmware. Turn the volume down before the first boot.** Elsewhere `stock` is the table you already
 had. Settings ▸ Volume limit, Sony's safe-listening cap, is separate and still works.
 
-The Smooth and Walkman One tables **are not part of the NW-A50's firmware**, so for those two you
-bring the table.
+The Smooth and Walkman One tables **are not part of the NW-A50's firmware**. They are in Sony's
+NW-WM1 series firmware, on the same update server, and Cinder may not ship them. So when you choose
+one of those two curves, the installer (the release after v0.3.19) downloads the 36 KB of Sony's
+NW-WM1 3.02 firmware that holds all three tables, checks each one's SHA-256 and copies them to the
+player's drive. That is the only time it goes online for this, and a failed download stops the
+install before anything is written.
 
 > **Needs the release after v0.3.4.** The v0.3.4 installer does not look for your copy; with it,
 > `wm1a` and `w1` still leave the stock curve in place and say so in the log.
@@ -322,7 +326,8 @@ bring the table.
 | `wm1a` | `ov_127x.tbl` (and `ov_dsd_127x.tbl` for DSD) | `b5dd878b0484c43312f3a93c6675d40d546f78ef7494684991eea0aef8651320` (DSD: `b777b7e2786f952797e82830d5d17565d03a4758555436a376bf6daff5e50ac7`) |
 | `w1` | `ov_1280.tbl` | `0902981b0b00b5f98eb04d00713f4ddc96f4bb91af76289d8cce15486c30a9c7` |
 
-**Where to get them.** Any one of these works — the bytes are the same:
+**Where to get them by hand** (an older installer, or no network on the PC). Any one of these
+works — the bytes are the same:
 
 * **From Sony, with one command** (Linux or WSL): `tools/sony_tables.sh /mnt/e` downloads Sony's
   NW-WM1 series firmware 3.02 from Sony's update server, unpacks it, checks each table's SHA-256 and
@@ -333,7 +338,7 @@ bring the table.
 * **From the [cinder-sony-analysis releases](https://github.com/superwilso/cinder-sony-analysis/releases)**,
   where they are kept with their checksums and an explanation of why they live there.
 
-**How.** Copy the file to the **top of the player's drive**, next to the `MUSIC` folder, choose
+**How, by hand.** Copy the file to the **top of the player's drive**, next to the `MUSIC` folder, choose
 **Smooth (NW-WM1A)** (or **Walkman One**), and install or update. The install log then says
 `volume table: installed ov_127x.tbl from /contents/ov_127x.tbl (SHA-256 matches Sony's)`, and after
 the reboot `cinderhome.log` says `volume curve: wm1a applied`. You can delete the file from the

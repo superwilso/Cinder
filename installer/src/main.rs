@@ -26,6 +26,7 @@ mod console;
 mod device;
 mod payload;
 mod release;
+mod sony_tables;
 mod stage;
 
 #[cfg(windows)]

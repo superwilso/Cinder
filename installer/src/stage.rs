@@ -163,6 +163,27 @@ pub fn write_payload(
         return Ok(());
     }
 
+    // Sony's volume tables, when the chosen curve needs them and the drive does not already hold
+    // them (sony_tables.rs). Fetched before anything is written, so a failed download leaves the
+    // drive as it was. A dry run does not go online.
+    use crate::sony_tables as st;
+    let curve = comps
+        .iter()
+        .find(|c| c.id == "voltable")
+        .map_or("", |c| c.value.as_str());
+    let fetch = st::needed(curve) && !st::TABLES.iter().all(|t| st::on_drive(target, t.0));
+    let tables: Vec<(&str, Vec<u8>)> = if fetch && !dry {
+        st::fetch().map_err(|e| {
+            io::Error::other(format!(
+                "could not get Sony's volume tables for the chosen curve from {}: {e}. Check the \
+                 connection, or choose \"Sony standard\" and install again",
+                st::URL.split('/').nth(2).unwrap_or(st::URL)
+            ))
+        })?
+    } else {
+        Vec::new()
+    };
+
     for (name, owner, bytes) in crate::payload::PAYLOAD {
         if !staged(comps, owner, w1) {
             continue;
@@ -170,6 +191,15 @@ pub fn write_payload(
         if !dry {
             write_verified(&target.join(name), bytes)?;
         }
+        progress(name, bytes.len());
+    }
+    if fetch && dry {
+        for (name, _, size, _) in st::TABLES {
+            progress(name, size);
+        }
+    }
+    for (name, bytes) in &tables {
+        write_verified(&target.join(name), bytes)?;
         progress(name, bytes.len());
     }
     let conf = crate::catalogue::conf_text(comps, channel);
@@ -222,8 +252,15 @@ pub fn clean_leftovers(target: &Path, names: &[String]) -> Vec<(String, io::Resu
 /// it is what an update reads back in order to keep those choices. Sweeping it up with the
 /// binaries would silently reset the next update to catalogue defaults — turning "free up some
 /// space" into "quietly change the user's install".
+///
+/// `cinder_advanced.conf.example` is left out too: it is the reference Help points to, not a
+/// staged binary.
 pub fn payload_names() -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = crate::payload::PAYLOAD.iter().map(|(n, _, _)| *n).collect();
+    let mut names: Vec<&'static str> = crate::payload::PAYLOAD
+        .iter()
+        .map(|(n, _, _)| *n)
+        .filter(|n| *n != ADVANCED_EXAMPLE)
+        .collect();
     for r in RETIRED {
         if !names.contains(r) {
             names.push(r);
@@ -234,6 +271,8 @@ pub fn payload_names() -> Vec<&'static str> {
 
 /// Names earlier installers staged and this one does not: still dead weight on the user's drive.
 /// cinder-probe left the stable payload, and cinder-gpunode the project, on 2026-10-05.
+const ADVANCED_EXAMPLE: &str = "cinder_advanced.conf.example";
+
 const RETIRED: &[&str] = &["cinder-probe", "cinder-gpunode"];
 
 // ── the firmware-upgrade trigger, on Windows ───────────────────────────────────────────────
@@ -927,6 +966,15 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
             !payload_names().contains(&CONF_NAME),
             "cinder_components.conf must survive a cleanup — an update reads it back"
         );
+    }
+
+    /// It is staged on every install, and kept: Help points at it.
+    #[test]
+    fn the_advanced_example_is_staged_and_never_a_leftover() {
+        assert!(crate::payload::PAYLOAD
+            .iter()
+            .any(|(n, owner, _)| *n == ADVANCED_EXAMPLE && owner.is_empty()));
+        assert!(!payload_names().contains(&ADVANCED_EXAMPLE));
     }
 
     /// A short write must be caught on the PC, not discovered by the player mid-flash.

@@ -73,15 +73,19 @@ model swap that causes W1's losses.
 
 1. ~~**Volume curves from Sony.**~~ **Done 10-22:** `tools/sony_tables.sh` takes the `wm1a`/`w1`
    tables from Sony's NW-WM1 3.02 firmware (`fw/pc/WM1/J/NW-WM1_V3_02.dmg`); all three match the
-   installer's SHA-256s. Next step: the PC installer does the same itself, so nobody runs a script
-   (it needs DMG, UPG and ext4 reading in Rust — about two days).
+   installer's SHA-256s. **Also done 10-22:** the PC installer fetches them itself when Smooth or
+   Walkman One is chosen (`installer/src/sony_tables.rs`): all three tables sit in 36 KB of Sony's
+   image, so it is one HTTP Range request, AES-128-CBC, 88 zlib chunks and a SHA-256 check, no DMG
+   or ext4 reader. Live test: `cargo test -- --ignored sony`. Needs a Windows run of a real install.
 2. **Mono without Wampy by default.** Already built: the `preload` component (hagodaemon wrapper +
    boot guard). It is off by default because the wrapper stands in front of every Sony service;
    turning it on by default needs §35 on players other than the owner's. Then the Wampy-chain
    `mono` component can be retired.
-3. **Cinder One, tiers 0–1, for stock players** (`SPEC_cinder_one.md` §3): the sound signature is
-   built (`cinder-signature.sh`); still to build are the gain mode (`dacdat ovt`), the analyser
-   params and the full DAC reprogramming, all from the player's own Sony files.
+3. **Cinder One, tiers 0–1, for stock players** (`SPEC_cinder_one.md` §3): nothing audible left.
+   Sound signature (`signature`), gain mode (`voltable=wm1a`, now fetched from Sony), tone table and
+   the 10-band/Tone chain are built. What remains measured the same at the jack (Wampy's REW runs):
+   W1's "full DAC reprogramming" (`dacdat auto BBDMP2_linux`) and its per-mode analyser params,
+   which only re-time Sony's spectrum display. Build either only if someone asks.
 4. **Walkman One's external tunings: nothing audible to remake** (10-22). On an A50 a tuning is an
    NVRAM image whose only job is to match the md5 W1's boot script checks, plus another model's
    bootloader that the stock kernel never reads (`analysis/RE_walkmanone_installers.md`). What it
@@ -133,12 +137,16 @@ About half a day of code plus the Mac session.
 5. **The redesign's remaining phases** ([`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md)
    Part F): R3's Library view bar, Search scopes, the sideways page swipe; R4's saved views (*show
    as*, *pin*); R7 the installer's window.
-6. Ship `cinder_advanced.conf.example` to the player from the installer and name it on Help.
-7. Search results for albums and artists, and audiobooks in Search; Play next on long-press as
-   well as the swipe.
+6. ~~Ship `cinder_advanced.conf.example` to the player from the installer and name it on Help.~~
+   **Done 10-22** (Help ▸ ADVANCED; the example now lists all 17 switches the code reads).
+7. ~~Search results for albums and artists, and audiobooks in Search; Play next on long-press as
+   well as the swipe.~~ **Done 10-22.** Long-press is opt-in (owner): `hold_play_next` in
+   `cinder_advanced.conf`. Device check in `TODO_device.md`.
 8. **G1.7 contract fixtures, the rest:** the palette corpus, a `#TZ/UTC` log, playlist forms, a
    SensMe chunk (`tools/check_contracts.sh`).
-9. **Tests for `cinder-audio`** (`SHORTCOMINGS.md` A2): grow `fake_pst.cpp` a service at a time.
+9. **Tests for `cinder-audio`** (`SHORTCOMINGS.md` A2): effect, volume, power and codec shims have
+   host self-tests (10-22). Left: player, tuner, analyzer, storage (vtable calls; grow
+   `fake_pst.cpp` a service at a time).
 10. **2038 (goal 10):** an i64 audit of Cinder's own timestamps.
 11. A host benchmark with a 10,000-line playlist; discovering an **unpaired** Bluetooth device; a
     Windows installer smoke test per release (Install → Update → Uninstall → Install).

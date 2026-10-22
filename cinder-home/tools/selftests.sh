@@ -12,7 +12,8 @@ trap 'rm -rf "$out"' EXIT
 fail=0
 for src in *_selftest.cpp; do
     t="${src%_selftest.cpp}"
-    if ! cc -O2 -o "$out/$t" "$src" -lstdc++ -lm 2>"$out/$t.log"; then
+    # cinder-audio/include: effectshim_selftest compiles the real shim, which includes its header.
+    if ! cc -O2 -I ../../cinder-audio/include -o "$out/$t" "$src" -lstdc++ -lm 2>"$out/$t.log"; then
         cat "$out/$t.log"; echo "FAIL: $t did not build"; fail=1; continue
     fi
     if "$out/$t" >"$out/$t.log" 2>&1; then echo "ok    $t"; else cat "$out/$t.log"; echo "FAIL: $t"; fail=1; fi

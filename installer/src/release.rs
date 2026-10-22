@@ -120,13 +120,27 @@ pub fn parse_release(body: &str) -> Result<Release, String> {
 
 /// Ask GitHub what the latest release is. Blocking; callers run it off the UI thread.
 pub fn latest() -> Result<Release, String> {
-    parse_release(&fetch(LATEST_URL)?)
+    // GitHub asks for an explicit API version. A release object is a few KB: anything past 1 MB is
+    // not the reply we asked for.
+    let body = get(
+        LATEST_URL,
+        "Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28\r\n",
+        1 << 20,
+    )?;
+    parse_release(&String::from_utf8_lossy(&body))
 }
 
 // ── the transport ──────────────────────────────────────────────────────────────────────────
 
+/// The host part of `url`, for error messages.
+fn host(url: &str) -> &str {
+    url.split('/').nth(2).unwrap_or(url)
+}
+
+/// GET `url` with `headers` (each line ending in CRLF, or empty) and return at most `limit` bytes
+/// of the body. Also used by `sony_tables` for a Range request.
 #[cfg(windows)]
-fn fetch(url: &str) -> Result<String, String> {
+pub fn get(url: &str, headers: &str, limit: usize) -> Result<Vec<u8>, String> {
     use std::os::raw::{c_char, c_void};
 
     type Handle = *mut c_void;
@@ -156,9 +170,8 @@ fn fetch(url: &str) -> Result<String, String> {
         fn InternetCloseHandle(h: Handle) -> i32;
     }
 
-    // GitHub rejects requests with no User-Agent outright, and asks for an explicit API version.
+    // GitHub rejects requests with no User-Agent outright.
     let agent = b"cinder-installer\0";
-    let headers = b"Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28\r\n\0";
     let mut url_z = url.as_bytes().to_vec();
     url_z.push(0);
 
@@ -178,14 +191,21 @@ fn fetch(url: &str) -> Result<String, String> {
         let req = InternetOpenUrlA(
             session,
             url_z.as_ptr().cast(),
-            headers.as_ptr().cast(),
-            (headers.len() - 1) as u32,
+            if headers.is_empty() {
+                std::ptr::null()
+            } else {
+                headers.as_ptr().cast()
+            },
+            headers.len() as u32,
             INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_UI,
             0,
         );
         if req.is_null() {
             InternetCloseHandle(session);
-            return Err("could not reach github.com — check the connection or a proxy".into());
+            return Err(format!(
+                "could not reach {} — check the connection or a proxy",
+                host(url)
+            ));
         }
         let mut out = Vec::new();
         let mut buf = [0u8; 8192];
@@ -200,37 +220,38 @@ fn fetch(url: &str) -> Result<String, String> {
                 break;
             }
             out.extend_from_slice(&buf[..got as usize]);
-            // A release object is a few KB. Anything past this is not the reply we asked for.
-            if out.len() > 1 << 20 {
+            if out.len() >= limit {
+                out.truncate(limit);
                 break;
             }
         }
         InternetCloseHandle(req);
         InternetCloseHandle(session);
-        Ok(String::from_utf8_lossy(&out).into_owned())
+        Ok(out)
     }
 }
 
 #[cfg(not(windows))]
-fn fetch(url: &str) -> Result<String, String> {
+pub fn get(url: &str, headers: &str, limit: usize) -> Result<Vec<u8>, String> {
     use std::process::Command;
 
+    let lines: Vec<&str> = headers.split("\r\n").filter(|l| !l.is_empty()).collect();
+    let mut curl = vec!["-sSfL", "--max-time", "20", "-A", "cinder-installer"];
+    let mut wget = vec!["-qO-", "--timeout=20", "-U", "cinder-installer"];
+    let wget_h: Vec<String> = lines.iter().map(|l| format!("--header={l}")).collect();
+    for l in &lines {
+        curl.extend(["-H", l]);
+    }
+    wget.extend(wget_h.iter().map(String::as_str));
+    curl.push(url);
+    wget.push(url);
     // Order matters only in that curl is the likelier of the two to be present.
-    let attempts: [(&str, Vec<&str>); 2] = [
-        (
-            "curl",
-            vec!["-sSfL", "--max-time", "20", "-A", "cinder-installer", url],
-        ),
-        (
-            "wget",
-            vec!["-qO-", "--timeout=20", "-U", "cinder-installer", url],
-        ),
-    ];
     let mut why = String::new();
-    for (bin, args) in attempts {
+    for (bin, args) in [("curl", curl), ("wget", wget)] {
         match Command::new(bin).args(&args).output() {
-            Ok(o) if o.status.success() => {
-                return Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+            Ok(mut o) if o.status.success() => {
+                o.stdout.truncate(limit);
+                return Ok(o.stdout);
             }
             Ok(o) => {
                 why = format!(
@@ -243,9 +264,12 @@ fn fetch(url: &str) -> Result<String, String> {
         }
     }
     Err(if why.is_empty() {
-        "no curl or wget on PATH, so the version check cannot run here".into()
+        format!(
+            "no curl or wget on PATH, so {} cannot be reached from here",
+            host(url)
+        )
     } else {
-        format!("could not reach github.com ({why})")
+        format!("could not reach {} ({why})", host(url))
     })
 }
 
