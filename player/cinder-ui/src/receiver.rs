@@ -46,7 +46,7 @@ const CODEC_COLS: usize = 2;
 const CODEC_PITCH: i32 = crate::kit::CHIP_H + 8;
 const CODEC_HINT_Y: i32 = CODEC_CHIPS_Y + CODEC_PITCH + crate::kit::CHIP_H + 19;
 const LDAC_HINT_Y: i32 = CODEC_HINT_Y + 21;
-const CODEC_PREFS: [&str; 4] = ["Auto", "LDAC priority", "AAC priority", "SBC priority"];
+const CODEC_PREFS: [&str; 4] = ["Auto", "LDAC or SBC", "AAC or SBC", "SBC only"];
 
 /// "Use Sony's receiver": restart into the stock player with its receiver open. Below the status
 /// lines (at most three, ending by y≈290) and well clear of the notes rule at 580.
@@ -258,7 +258,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
     );
     let hint = crate::widgets::fit(
         f,
-        crate::i18n::text("Preference only; your phone chooses."),
+        crate::i18n::text("Your phone picks from what is allowed."),
         &hint_style,
         AVAIL,
     );

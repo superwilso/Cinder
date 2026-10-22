@@ -4979,7 +4979,7 @@ impl App {
                     if pref != self.rx_codec_pref {
                         self.rx_codec_pref = pref;
                         self.notify(if self.rx_on {
-                            "Reconnect once to apply."
+                            "Reconnect from your phone to apply."
                         } else {
                             "Saved; applies when receiver is on."
                         });
