@@ -4652,7 +4652,25 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
 pub extern "C" fn cinder_tap(x: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
+    // Keep receiver taps observable even when navigation consumes them without a shell action.
+    // A radio-off gate, an overlay, and a failed Sony call otherwise look identical on the device.
+    let receiver_tap = r.app.current() == cinder_ui::nav::Screen::Receiver;
+    let receiver_before = (
+        r.app.bt_on(),
+        r.app.rx_on(),
+        r.app.locked,
+        r.app.modal_open(),
+        r.app.quick_is_open(),
+        r.app.shelf_is_open(),
+    );
     let actions = r.app.tap(x as i32, y as i32);
+    if receiver_tap {
+        eprintln!(
+            "cinder-ffi: receiver tap ({x},{y}) radio={} rx={} locked={} modal={} quick={} shelf={} -> rx={} actions={actions:?}",
+            receiver_before.0, receiver_before.1, receiver_before.2, receiver_before.3,
+            receiver_before.4, receiver_before.5, r.app.rx_on(),
+        );
+    }
     r.dirty = true;
     r.night = r.app.night;
     save_settings(r);

@@ -4967,9 +4967,13 @@ impl App {
                         _ => vec![],
                     };
                 }
-                if crate::receiver::switch_hit(x, y) && (self.bt_on || self.rx_on) {
-                    self.rx_on = !self.rx_on;
-                    return vec![Action::RxChanged];
+                if crate::receiver::switch_hit(x, y) {
+                    if self.bt_on || self.rx_on {
+                        self.rx_on = !self.rx_on;
+                        return vec![Action::RxChanged];
+                    }
+                    self.notify("Bluetooth is off. Turn it on first.");
+                    return vec![];
                 }
                 if let Some(pref) = crate::receiver::codec_pref_hit(x, y) {
                     if pref != self.rx_codec_pref {
@@ -21847,7 +21851,15 @@ mod palette_tests {
             a.tap(240, crate::receiver::SWITCH_Y + 10),
             Vec::<Action>::new()
         );
+        assert_eq!(a.toast, "Bluetooth is off. Turn it on first.");
         assert!(!a.rx_on());
+
+        a.set_bt_on(true);
+        assert_eq!(
+            a.tap(240, crate::receiver::SWITCH_Y + 10),
+            vec![Action::RxChanged]
+        );
+        assert!(a.rx_on());
     }
 
     #[test]
