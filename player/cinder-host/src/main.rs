@@ -1749,6 +1749,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         freq: 0,
                         bitrate: 0,
                         radio: true,
+                        codec_pref: 0,
                     },
                 )
             }),
@@ -1765,6 +1766,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         freq: 0,
                         bitrate: 0,
                         radio: true,
+                        codec_pref: 0,
                     },
                 )
             }),
@@ -1777,10 +1779,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         on: true,
                         phase: 3,
                         peer: "ARTHURS-PC",
-                        codec: 2,
-                        freq: 3,
-                        bitrate: 990,
+                        codec: 4,
+                        freq: 96000,
+                        bitrate: 1,
                         radio: true,
+                        codec_pref: 1,
                     },
                 )
             }),
@@ -1797,6 +1800,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         freq: 0,
                         bitrate: 0,
                         radio: true,
+                        codec_pref: 0,
                     },
                 );
                 pairing::render_prompt(
@@ -2818,6 +2822,19 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let mut c = Canvas::new();
                 app.render(&mut c, &fonts, &np);
                 save(&c, &format!("uiscale_{pct}_{name}"));
+            }
+            // Receiver status at 96 kHz with a deliberately long peer name, under each independent
+            // codec preference. Auto and LDAC also exercise the phone-controlled LDAC info line.
+            for (pref_name, pref) in [("auto", 0), ("ldac", 1), ("aac", 2), ("sbc", 3)] {
+                let mut app = new_app();
+                app.set_bt_on(true);
+                app.go_for_preview(Screen::Receiver);
+                let _ = app.tap(240, receiver::SWITCH_Y + 10);
+                app.set_rx_status(3, "ARTHURS-PIXEL-15-VERY-LONG-DEVICE-NAME", 4, 96000, 1);
+                app.set_rx_codec_pref(pref);
+                let mut c = Canvas::new();
+                app.render(&mut c, &fonts, &np);
+                save(&c, &format!("uiscale_{pct}_receiver_{pref_name}"));
             }
             // Settings scrolled to the end, where the value column is densest.
             let mut app = new_app();

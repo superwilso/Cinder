@@ -8454,6 +8454,7 @@ void apply_usb_dac() {
 enum { RXS_GetAvSnkConnectionStatus = 3, RXS_GetConnectInformation = 5,
        RXS_RequestDisconnection = 9, RXS_RequestStartConnectWait = 11,
        RXS_RequestStopConnectWait = 12, RXS_StartSound = 13, RXS_StopSound = 14,
+       RXS_SetAAC = 20, RXS_SetLDAC = 21,
        RXS_GetPlayStatus = 17, RXS_GetTrackCodec = 24, RXS_GetTrackFreq = 25,
        RXS_GetBitrate = 28 };
 enum { RX_VIDX_SetDiscoverableMode = 6 };   // BtCommonServiceClient
@@ -8462,6 +8463,8 @@ static int g_rx_snk0 = -1, g_rx_last_snk = -1, g_rx_last_play = -2;
 static int g_rx_phase = 0;
 static unsigned g_rx_codec = 0, g_rx_freq = 0, g_rx_rate = 0;
 static std::string g_rx_peer;
+static bool g_rx_reopen_wait = false;
+static bool g_rx_offer_aac = true, g_rx_offer_ldac = true;
 
 // dlopen, not DT_NEEDED: the libNfcService rule — a library the Home app has never exercised must
 // not be able to stop it from starting.
@@ -8533,6 +8536,54 @@ static void rx_open_ipc() {
     clog_(m);
 }
 
+struct RxCodecPolicy { bool aac; bool ldac; };
+
+// Receive preferences are deliberately separate from apply_bt_codec's transmitter enum. SBC is
+// the service's baseline and stays available as negotiation fallback in every mode.
+static RxCodecPolicy rx_codec_policy() {
+    switch (cinder_get_rx_codec_pref()) {
+        case 1: return RxCodecPolicy{false, true};  // prefer LDAC
+        case 2: return RxCodecPolicy{true, false};  // prefer AAC
+        case 3: return RxCodecPolicy{false, false};  // prefer SBC
+        default: return RxCodecPolicy{true, true};  // Auto and invalid values
+    }
+}
+
+// These are the RECEIVER's capability switches, independent of apply_bt_codec's transmitter
+// preference. Their const-bool-reference ABI and vptr slots are in libBtPlayerService.so's
+// exported symbols and vtable relocations (SetAAC 20, SetLDAC 21). Offer both before a phone
+// negotiates; SBC remains the baseline and the live GetTrackCodec, not this request, names what won.
+// Do not copy the transmitter's bitrate indices into SetLDACBufferControl: its enum is different.
+static void rx_enable_codec(int slot, const char* name, bool enabled) {
+    void* c = rx_client();
+    if (!c) {
+        char m[96];
+        std::snprintf(m, sizeof m, "rx: %s unavailable (no receiver service)", name);
+        clog_(m);
+        return;
+    }
+    typedef bool (*fn)(void*, const bool*);
+    const bool accepted = ((fn)bt_slot(c, slot))(c, &enabled);
+    char m[128];
+    std::snprintf(m, sizeof m, "rx: %s(%s) rc=%d; live codec is chosen by the peer",
+                  name, enabled ? "true" : "false", accepted ? 1 : 0);
+    clog_(m);
+}
+
+static void rx_enable_aac()  { rx_enable_codec(RXS_SetAAC, "SetAAC", g_rx_offer_aac); }
+static void rx_enable_ldac() { rx_enable_codec(RXS_SetLDAC, "SetLDAC", g_rx_offer_ldac); }
+
+// Call only OUTSIDE another guard. A normal false return is logged and the next guarded step runs;
+// an IPC fault still trips the shared kill switch, so no later Sony call is forced through.
+static void rx_prepare_wait() {
+    const RxCodecPolicy policy = rx_codec_policy();
+    g_rx_offer_aac = policy.aac;
+    g_rx_offer_ldac = policy.ldac;
+    run_guarded("rx: set AAC reception", 6, rx_enable_aac);
+    run_guarded("rx: set LDAC reception", 6, rx_enable_ldac);
+    run_guarded("rx: connect-wait + discoverable", 10, rx_open_ipc);
+}
+
 static void rx_close_ipc() {
     int ss = rx_call0(RXS_StopSound);
     int dc = rx_call0(RXS_RequestDisconnection);
@@ -8542,6 +8593,23 @@ static void rx_close_ipc() {
     std::snprintf(m, sizeof m, "rx: StopSound rc=%d, RequestDisconnection rc=%d, "
                   "RequestStopConnectWait rc=%d, discoverable off", ss, dc, sw);
     clog_(m);
+}
+
+// A user preference change is a one-shot action, never polled. Stop the old sink session, apply
+// the new AAC/LDAC capabilities under their own guards, then reopen connect-wait so the phone
+// negotiates again. The SBC baseline remains available in all four policies.
+static void rx_reconfigure_codec() {
+    if (!g_rx_active) {
+        clog_("rx: codec preference saved; applies next time receiver mode is on");
+        return;
+    }
+    g_rx_reopen_wait = false;
+    g_rx_phase = 1;
+    g_rx_peer.clear();
+    g_rx_codec = g_rx_freq = g_rx_rate = 0;
+    cinder_set_rx_status(1, "", 0, 0, 0);
+    run_guarded("rx: stop sink for codec renegotiation", 10, rx_close_ipc);
+    rx_prepare_wait();
 }
 
 static void rx_reclaim_player() {
@@ -8587,7 +8655,8 @@ void apply_receiver() {
         run_guarded("rx: release the music player", 10, rx_release_player);
         run_guarded("rx: EnterFuncMode(A2dpSink)", 20, rx_fm_sink);
         rx_usb_restore();
-        run_guarded("rx: connect-wait + discoverable", 10, rx_open_ipc);
+        g_rx_reopen_wait = false;
+        rx_prepare_wait();
         g_rx_phase = 1;
         cinder_set_rx_status(1, "", 0, 0, 0);
     } else {
@@ -8597,6 +8666,7 @@ void apply_receiver() {
         rx_usb_restore();
         run_guarded("rx: reclaim the music player", 10, rx_reclaim_player);
         g_rx_active = false;
+        g_rx_reopen_wait = false;
         g_rx_phase = 0;
         g_rx_peer.clear();
         cinder_set_rx_status(0, "", 0, 0, 0);
@@ -8817,7 +8887,9 @@ static void rx_poll_ipc() {
         else if (now >= heal_at) {
             heal_at = now + 5000;
             clog_("rx: sink is idle, not waiting — re-issuing connect-wait + discoverable");
-            rx_open_ipc();
+            // rx_poll_ipc itself is guarded. Re-open after returning to rx_tick so the codec
+            // setters have independent guards rather than nesting the guard's jump buffer.
+            g_rx_reopen_wait = true;
         }
     } else {
         heal_at = 0;
@@ -8833,6 +8905,10 @@ static void rx_tick() {
     }
     if (!g_rx_active) return;
     run_guarded("rx: read the sink", 6, rx_poll_ipc);
+    if (g_rx_reopen_wait) {
+        g_rx_reopen_wait = false;
+        rx_prepare_wait();
+    }
     cinder_set_rx_status(g_rx_phase, g_rx_peer.c_str(), g_rx_codec, g_rx_freq, g_rx_rate);
 }
 
@@ -10863,6 +10939,10 @@ void carry_out(int act) {
         case CINDER_ACT_RX_CHANGED:
             // Guards its own steps, like apply_usb_dac: the jump buffer does not nest.
             apply_receiver();
+            break;
+        case CINDER_ACT_RX_CODEC_CHANGED:
+            // One UI action performs one stop/set/start renegotiation; rx_tick never polls it.
+            rx_reconfigure_codec();
             break;
         case CINDER_ACT_USBDAC_LDAC:
             // 18 s, not 6: this used to be one setprop via cinder-msc, but it now also builds a

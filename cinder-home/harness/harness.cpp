@@ -39,6 +39,7 @@
 #include <utility>
 #include <vector>
 #include <poll.h>
+#include <signal.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <time.h>
@@ -73,6 +74,12 @@ std::map<std::string, int>* g_name_id = nullptr;             // name -> id
 std::vector<std::pair<std::string, long long> >* g_state = nullptr;   // the faked UI state store
 
 long long   g_now_ms   = 0;
+static bool g_fake_rx_enabled = false;
+static bool g_fake_rx_aac_result = true, g_fake_rx_ldac_result = true;
+static int g_fake_rx_sink_status = 1;
+static int g_fake_rx_wait_status = 2;
+static bool g_fake_rx_ldac_fault = false;
+static int g_fake_rx_handle_cookie = 0;
 
 // Per-thread role. 0 = not seen yet, RUNNING = executing app code, SLEEPING = parked with a wake
 // target registered, PASSIVE = the harness's own main thread, which waits out the run budget and
@@ -385,6 +392,11 @@ void cinder_harness_reset(void) {
     g_passive_target = 0;
     g_last_move_real = 0;
     g_started_real = 0;
+    g_fake_rx_enabled = false;
+    g_fake_rx_aac_result = g_fake_rx_ldac_result = true;
+    g_fake_rx_sink_status = 1;
+    g_fake_rx_wait_status = 2;
+    g_fake_rx_ldac_fault = false;
 }
 
 void cinder_harness_script(const char* name, long long value) {
@@ -457,6 +469,19 @@ int cinder_harness_before(const char* a, const char* b) {
         if (c.name_id == ib) return 0;
     }
     return -1;
+}
+
+int cinder_harness_last_before(const char* a, const char* b) {
+    Lock l; ensure();
+    const int ia = name_id_of(a), ib = name_id_of(b);
+    if (ia < 0 || ib < 0) return -1;
+    long long last_a = -1, last_b = -1;
+    for (size_t i = 0; i < g_trace->size(); ++i) {
+        if ((*g_trace)[i].name_id == ia) last_a = (long long)i;
+        if ((*g_trace)[i].name_id == ib) last_b = (long long)i;
+    }
+    if (last_a < 0 || last_b < 0) return -1;
+    return last_a < last_b ? 1 : 0;
 }
 
 void cinder_harness_dump(int max_lines) {
@@ -609,6 +634,68 @@ int pclose(FILE*) { return -1; }
 // remembered level starts at 2, which is the level the real service was measured reporting.
 static unsigned g_fake_bl_level = 2;
 
+// An opt-in BtPlayerService for receiver scenarios. The default is still the honest missing-.so
+// path, so existing boot scenarios keep exercising degraded startup.
+static void* g_fake_rx_vtbl[32];
+static void* g_fake_rx_obj[2];
+static int fake_rx_zero(void*) { return 0; }
+static int fake_rx_disconnect(void*) {
+    cinder_harness_record("rx:RequestDisconnection", 0);
+    return 0;
+}
+static int fake_rx_stop_wait(void*) {
+    cinder_harness_record("rx:RequestStopConnectWait", 0);
+    return 0;
+}
+static int fake_rx_stop_sound(void*) {
+    cinder_harness_record("rx:StopSound", 0);
+    return 0;
+}
+static int fake_rx_sink(void*) { return g_fake_rx_sink_status; }
+static int fake_rx_codec(void*) {
+    cinder_harness_record("rx:GetTrackCodec", 0);
+    return 0;
+}
+static int fake_rx_wait(void*) {
+    cinder_harness_record("rx:RequestStartConnectWait", 0);
+    g_fake_rx_sink_status = g_fake_rx_wait_status;
+    return 0;
+}
+static bool fake_rx_aac(void*, const bool* enabled) {
+    cinder_harness_record("rx:SetAAC", enabled && *enabled ? 1 : 0);
+    cinder_harness_record("rx:SetAAC:result", g_fake_rx_aac_result ? 1 : 0);
+    return g_fake_rx_aac_result;
+}
+static bool fake_rx_ldac(void*, const bool* enabled) {
+    cinder_harness_record("rx:SetLDAC", enabled && *enabled ? 1 : 0);
+    if (g_fake_rx_ldac_fault) raise(SIGSEGV);
+    cinder_harness_record("rx:SetLDAC:result", g_fake_rx_ldac_result ? 1 : 0);
+    return g_fake_rx_ldac_result;
+}
+static void* fake_rx_create(void) {
+    for (unsigned i = 0; i < sizeof g_fake_rx_vtbl / sizeof *g_fake_rx_vtbl; ++i)
+        g_fake_rx_vtbl[i] = (void*)&fake_rx_zero;
+    g_fake_rx_vtbl[3] = (void*)&fake_rx_sink;
+    g_fake_rx_vtbl[11] = (void*)&fake_rx_wait;
+    g_fake_rx_vtbl[9] = (void*)&fake_rx_disconnect;
+    g_fake_rx_vtbl[12] = (void*)&fake_rx_stop_wait;
+    g_fake_rx_vtbl[14] = (void*)&fake_rx_stop_sound;
+    g_fake_rx_vtbl[20] = (void*)&fake_rx_aac;
+    g_fake_rx_vtbl[21] = (void*)&fake_rx_ldac;
+    g_fake_rx_vtbl[24] = (void*)&fake_rx_codec;
+    g_fake_rx_obj[0] = g_fake_rx_vtbl;
+    g_fake_rx_obj[1] = nullptr;
+    return g_fake_rx_obj;
+}
+
+void cinder_harness_rx_service_enable(int enabled) { g_fake_rx_enabled = enabled != 0; }
+void cinder_harness_rx_setter_results(int aac, int ldac) {
+    g_fake_rx_aac_result = aac != 0;
+    g_fake_rx_ldac_result = ldac != 0;
+}
+void cinder_harness_rx_wait_status(int status) { g_fake_rx_wait_status = status; }
+void cinder_harness_rx_fault_ldac(int enabled) { g_fake_rx_ldac_fault = enabled != 0; }
+
 static void fake_bl_set(void*, const unsigned* level) {
     Lock l; ensure();
     g_fake_bl_level = level ? *level : 0;
@@ -707,6 +794,7 @@ void* dlopen(const char* path, int) {
     // Only this one is faked; every other Sony .so still returns null so the optional-service
     // paths keep being exercised in their degraded form, which is what they are here to prove.
     if (p == "libDisplayService.so") return (void*)&g_display_handle_cookie;
+    if (p == "libBtPlayerService.so" && g_fake_rx_enabled) return (void*)&g_fake_rx_handle_cookie;
     return nullptr;   // no Sony .so on a build machine — the optional-service paths degrade
 }
 
@@ -717,6 +805,10 @@ void* dlsym(void* h, const char* sym) {
     if (h == (void*)&g_display_handle_cookie &&
         s == "_ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv") {
         return (void*)&fake_display_create;
+    }
+    if (h == (void*)&g_fake_rx_handle_cookie &&
+        s == "_ZN3pst8services28BtPlayerServiceClientFactory14CreateInstanceEv") {
+        return (void*)&fake_rx_create;
     }
     return nullptr;
 }

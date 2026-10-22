@@ -693,6 +693,17 @@ unsafe fn cstr(p: *const c_char) -> String {
     }
 }
 
+fn open_render_present(no_thread: bool) -> Result<Sink, String> {
+    if no_thread {
+        println!("cinder-ffi: synchronous present (present thread disabled by flag)");
+        Framebuffer::open().map(Sink::Sync)
+    } else {
+        let thread = present::PresentThread::start(Framebuffer::open)?;
+        println!("cinder-ffi: present thread active (raster overlaps present)");
+        Ok(Sink::Threaded(thread))
+    }
+}
+
 /// Open the framebuffer and initialise the renderer. Returns 0 on success, <0 on error.
 #[no_mangle]
 pub extern "C" fn cinder_render_init() -> libc::c_int {
@@ -706,25 +717,19 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         || std::env::var("CINDER_NOTHREAD")
             .map(|v| v == "1")
             .unwrap_or(false);
-    let present = if no_thread {
-        println!("cinder-ffi: synchronous present (present thread disabled by flag)");
-        match Framebuffer::open() {
-            Ok(p) => Sink::Sync(p),
-            Err(e) => {
-                eprintln!("cinder-ffi: {e}");
-                return -1;
-            }
-        }
+    #[cfg(test)]
+    let present_result = if std::env::var_os("CINDER_RX_CODEC_FFI_CHILD").is_some() {
+        present::PresentThread::start(|| Ok(tests::ReceiverNullPresent)).map(Sink::Threaded)
     } else {
-        match present::PresentThread::start(Framebuffer::open) {
-            Ok(t) => {
-                println!("cinder-ffi: present thread active (raster overlaps present)");
-                Sink::Threaded(t)
-            }
-            Err(e) => {
-                eprintln!("cinder-ffi: {e}");
-                return -1;
-            }
+        open_render_present(no_thread)
+    };
+    #[cfg(not(test))]
+    let present_result = open_render_present(no_thread);
+    let present = match present_result {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("cinder-ffi: {e}");
+            return -1;
         }
     };
     let mut np = Np::default();
@@ -1151,6 +1156,7 @@ fn settings_body(r: &Render) -> String {
         r.app.setup_idx(),
         r.app.clear_bass_step(),
     );
+    body.push_str(&format!("rx_codec={}\n", r.app.rx_codec_pref()));
     body.push_str(&format!("language={}\n", r.app.language().token()));
     body.push_str(&setup_body(&r.app.setup_inactive()));
     // Saved presets (Sound ▸ Presets): the spare's keys, numbered — `preset1_eq=` and so on.
@@ -4512,6 +4518,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::AmbientChanged => 51,
         Action::DacEqChanged => 48,
         Action::RxChanged => 49,
+        Action::RxCodecChanged => 58,
         Action::BootToSonyReceiver => 50, // shell stores stock's resume function, then boots to stock
         Action::BtDebugLog => 47,
         Action::ClockSet => 39,
@@ -5955,6 +5962,17 @@ pub extern "C" fn cinder_get_rx_on() -> libc::c_int {
         .map_or(0, |r| r.app.rx_on() as libc::c_int)
 }
 
+/// Receiver-only codec preference: 0 Auto, 1 LDAC, 2 AAC, 3 SBC. Independent of BT transmit.
+/// The shell reads this on `CINDER_ACT_RX_CODEC_CHANGED` and when it opens receiver mode.
+#[no_mangle]
+pub extern "C" fn cinder_get_rx_codec_pref() -> libc::c_int {
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.rx_codec_pref() as libc::c_int)
+}
+
 /// BT Receiver status, from the shell's once-a-second read of BtPlayerService.
 #[no_mangle]
 pub extern "C" fn cinder_set_rx_status(
@@ -6897,6 +6915,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_bt_ldac_quality(n);
                         }
                     }
+                    // Missing in older files means Auto. Malformed and out-of-range values also
+                    // fall back to Auto rather than wrapping into a different receiver policy.
+                    "rx_codec" => r.app.set_rx_codec_pref(v.parse::<u8>().unwrap_or(0)),
                     "bt_enhanced" => r.app.set_bt_enhanced(v == "1"),
                     "bt_idle_off" => r.app.set_bt_idle_off(v == "1"),
                     // The RADIO's own on/off. Everything else about Bluetooth persisted already —
@@ -8652,6 +8673,12 @@ mod tests {
     use super::*;
     use crate::likes::liked_load;
 
+    pub(super) struct ReceiverNullPresent;
+
+    impl present::PresentTarget for ReceiverNullPresent {
+        fn present(&mut self, _buf: &[u32]) {}
+    }
+
     /// "No filter is active" — what `Action::Shuffle` passes when the Library's filter row is on
     /// ALL. A named function rather than a closure at each call site so the tests below read as
     /// "this scope, unfiltered".
@@ -9041,6 +9068,96 @@ mod tests {
         let missing = dir.join("no_such_dir").join("x.conf");
         assert!(write_atomic(missing.to_str().unwrap(), "x").is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "two, and longer\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Run the global-FFI roundtrip in an isolated test process. The normal test suite has other
+    // cases that use `cell()` concurrently; a subprocess lets this one exercise the actual FFI
+    // load/get/save path without racing other tests that use the global Render.
+    #[test]
+    fn receiver_codec_settings_ffi_roundtrip() {
+        let exe = std::env::current_exe().unwrap();
+        let mut command = if let Some(runner) =
+            std::env::var_os("CINDER_FFI_TEST_RUNNER").filter(|runner| !runner.is_empty())
+        {
+            let mut command = std::process::Command::new(runner);
+            command.arg(exe);
+            command
+        } else {
+            std::process::Command::new(exe)
+        };
+        let output = command
+            .args([
+                "--exact",
+                "tests::receiver_codec_settings_ffi_roundtrip_child",
+                "--nocapture",
+            ])
+            .env("CINDER_RX_CODEC_FFI_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated FFI roundtrip failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn receiver_codec_settings_ffi_roundtrip_child() {
+        if std::env::var_os("CINDER_RX_CODEC_FFI_CHILD").is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("cinder_rx_codec_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cinder_settings.conf");
+        let path_c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+
+        assert_eq!(cinder_render_init(), 0, "headless Render initializer");
+        std::fs::write(&path, "bt_codec=1\nbt_ldac_quality=2\nrx_codec=2\n").unwrap();
+        assert_eq!(cinder_settings_load(path_c.as_ptr()), 1);
+        assert_eq!(cinder_get_rx_codec_pref(), 2);
+        assert_eq!(cinder_get_bt_codec(), 1);
+        assert_eq!(cinder_get_bt_ldac_quality(), 2);
+        {
+            let mut guard = cell().lock().unwrap();
+            let r = guard.as_mut().unwrap();
+            let body = settings_body(r);
+            assert!(body.lines().any(|line| line == "rx_codec=2"));
+            assert!(body.lines().any(|line| line.starts_with("bt_codec=")));
+            assert!(body
+                .lines()
+                .any(|line| line.starts_with("bt_ldac_quality=")));
+            assert_eq!(
+                carry_action(r, &cinder_ui::nav::Action::RxCodecChanged),
+                Some(58)
+            );
+        }
+
+        {
+            let mut guard = cell().lock().unwrap();
+            let r = guard.as_mut().unwrap();
+            r.app.set_rx_codec_pref(3);
+            save_settings(r);
+        }
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.lines().any(|line| line == "rx_codec=3"));
+        assert!(saved.lines().any(|line| line == "bt_codec=1"));
+        assert!(saved.lines().any(|line| line == "bt_ldac_quality=2"));
+
+        // A pre-feature file and malformed/out-of-range entries all resolve to Auto on a fresh App.
+        for contents in [
+            "bt_codec=1\nbt_ldac_quality=2\n",
+            "rx_codec=bogus\n",
+            "rx_codec=255\n",
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            cinder_render_shutdown();
+            assert_eq!(cinder_render_init(), 0, "headless Render reinitialization");
+            assert_eq!(cinder_settings_load(path_c.as_ptr()), 1);
+            assert_eq!(cinder_get_rx_codec_pref(), 0, "config: {contents:?}");
+        }
+        cinder_render_shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

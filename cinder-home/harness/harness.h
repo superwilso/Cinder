@@ -73,6 +73,8 @@ int       cinder_harness_count_between(const char* name, long long from_ms, long
 // Was `a` first called before `b`? -1 if either never happened. Ordering defects (the DSP
 // reconcile running before the settings load) are ordering questions.
 int       cinder_harness_before(const char* a, const char* b);
+// Was the last call to `a` before the last call to `b`, by trace order (same-ms safe)?
+int       cinder_harness_last_before(const char* a, const char* b);
 void      cinder_harness_dump(int max_lines);          // the trace, for eyeballing a new scenario
 
 // The calling thread becomes PASSIVE: it waits for virtual time to arrive and contributes nothing
@@ -157,6 +159,11 @@ void cinder_harness_bt_disconnect_lag(long long ms);
 void cinder_harness_bt_add_paired(const char* name, int addr_last);
 int  cinder_harness_bt_connected(void);
 int  cinder_harness_bt_radio_on(void);
+// The receiver fake is opt-in; ordinary scenarios retain the missing-library path.
+void cinder_harness_rx_service_enable(int enabled);
+void cinder_harness_rx_setter_results(int aac, int ldac);
+void cinder_harness_rx_wait_status(int status);
+void cinder_harness_rx_fault_ldac(int enabled);
 
 #ifdef __cplusplus
 }

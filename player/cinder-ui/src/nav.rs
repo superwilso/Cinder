@@ -534,6 +534,9 @@ pub enum Action {
     /// BT Receiver switched (or left, which switches it off). The shell reads `rx_on()` and runs
     /// the whole enter / leave chain; idempotent, so a repeat is harmless.
     RxChanged,
+    /// Receiver codec preference changed. The shell persists it and performs one guarded
+    /// stop/set/start renegotiation only when the receiver is currently active.
+    RxCodecChanged,
     /// Receiver page ▸ Use Sony's receiver, confirmed: restart into the stock player with its own
     /// Bluetooth receiver open. The shell writes stock's resume key, then boots to stock.
     BootToSonyReceiver,
@@ -1165,6 +1168,8 @@ pub struct App {
     /// BT Receiver: the user's switch, and what the shell last reported (phase 0 off, 1 waiting,
     /// 2 attached, 3 audio arriving; the rest raw from BtPlayerService).
     rx_on: bool,
+    /// Receiver-only codec preference: Auto, LDAC, AAC, SBC. Independent of transmit codec.
+    rx_codec_pref: u8,
     rx_phase: u8,
     rx_peer: String,
     rx_codec: u32,
@@ -1780,6 +1785,7 @@ impl Default for App {
             bt_scanning: false,
             bt_prompt: None,
             rx_on: false,
+            rx_codec_pref: 0,
             rx_phase: 0,
             rx_peer: String::new(),
             rx_codec: 0,
@@ -4964,6 +4970,18 @@ impl App {
                 if crate::receiver::switch_hit(x, y) && (self.bt_on || self.rx_on) {
                     self.rx_on = !self.rx_on;
                     return vec![Action::RxChanged];
+                }
+                if let Some(pref) = crate::receiver::codec_pref_hit(x, y) {
+                    if pref != self.rx_codec_pref {
+                        self.rx_codec_pref = pref;
+                        self.notify(if self.rx_on {
+                            "Reconnect once to apply."
+                        } else {
+                            "Saved; applies when receiver is on."
+                        });
+                        return vec![Action::RxCodecChanged];
+                    }
+                    return vec![];
                 }
                 if crate::receiver::sony_hit(x, y) {
                     self.confirm = Some(crate::confirm::Ask::SonyReceiver);
@@ -9607,6 +9625,7 @@ impl App {
                     freq: self.rx_freq,
                     bitrate: self.rx_bitrate,
                     radio: self.bt_on,
+                    codec_pref: self.rx_codec_pref,
                 };
                 crate::receiver::render(c, &theme, fonts, &rx);
                 if let Some(p) = &self.bt_prompt {
@@ -10780,6 +10799,17 @@ impl App {
     /// reads this and stops the mode when the page has gone.
     pub fn rx_on(&self) -> bool {
         self.rx_on && self.stack.contains(&Screen::Receiver)
+    }
+
+    /// Receiver codec preference (0 Auto, 1 LDAC, 2 AAC, 3 SBC), independent of transmitter.
+    pub fn rx_codec_pref(&self) -> u8 {
+        self.rx_codec_pref
+    }
+
+    /// Restore or select a supported receiver preference. Old files omit it and invalid values
+    /// fall back to Auto, preserving the original all-codecs-enabled behavior.
+    pub fn set_rx_codec_pref(&mut self, pref: u8) {
+        self.rx_codec_pref = if pref <= 3 { pref } else { 0 };
     }
 
     /// What the shell read from BtPlayerService. `phase` 1 waiting, 2 attached, 3 audio arriving.
@@ -21818,6 +21848,50 @@ mod palette_tests {
             Vec::<Action>::new()
         );
         assert!(!a.rx_on());
+    }
+
+    #[test]
+    fn receiver_codec_preferences_are_independent_and_reconnect_once_per_change() {
+        let mut a = App::unlocked();
+        let tx_pref = a.bt_codec();
+        a.push(Screen::Receiver);
+
+        let (x, y) = crate::receiver::codec_pref_chip(1);
+        assert_eq!(a.tap(x, y), vec![Action::RxCodecChanged]);
+        assert_eq!(a.rx_codec_pref(), 1);
+        assert_eq!(
+            a.bt_codec(),
+            tx_pref,
+            "receiver selection does not alter transmit preference"
+        );
+        assert!(a.toast.contains("Saved"));
+        assert!(
+            a.tap(x, y).is_empty(),
+            "the already-selected chip does not reconnect"
+        );
+
+        assert_eq!(
+            a.tap(240, crate::receiver::SWITCH_Y + 10),
+            vec![Action::RxChanged]
+        );
+        let (x, y) = crate::receiver::codec_pref_chip(2);
+        assert_eq!(a.tap(x, y), vec![Action::RxCodecChanged]);
+        assert_eq!(a.rx_codec_pref(), 2);
+        assert!(a.toast.contains("Reconnect"));
+
+        a.pop();
+        a.push(Screen::Receiver);
+        assert_eq!(
+            a.rx_codec_pref(),
+            2,
+            "the preference survives leaving the page"
+        );
+        a.set_rx_codec_pref(255);
+        assert_eq!(
+            a.rx_codec_pref(),
+            0,
+            "an invalid restored value falls back to Auto"
+        );
     }
 
     /// A pairing request that arrives on another screen brings the user to where it can be
