@@ -12376,6 +12376,9 @@ mod tests {
     /// fresh App given that line reopens it.
     #[test]
     fn last_screen_reopens_the_last_place() {
+        // Taps Display's rows, whose positions follow the global text scale: hold the lock
+        // so a concurrent 140% test cannot move a tap onto the Size row (see text::scale_guard).
+        let _scale = lock_scale();
         let mut a = unlocked();
         assert_eq!(
             a.home_last_encode(),
@@ -14952,6 +14955,9 @@ mod tests {
     /// 2026-09 redesign; the page does not scroll.)
     #[test]
     fn tapping_an_accent_swatch_picks_that_colour() {
+        // Taps Display's rows, whose positions follow the global text scale: hold the lock
+        // so a concurrent 140% test cannot move a tap onto the Size row (see text::scale_guard).
+        let _scale = lock_scale();
         use crate::display::{accent_hit, row_top, ROW_ACCENT};
         let mut a = unlocked();
         a.go(Screen::Display);
@@ -14982,6 +14988,9 @@ mod tests {
     /// only way in.
     #[test]
     fn select_on_the_accent_row_cycles() {
+        // Taps Display's rows, whose positions follow the global text scale: hold the lock
+        // so a concurrent 140% test cannot move a tap onto the Size row (see text::scale_guard).
+        let _scale = lock_scale();
         let mut a = unlocked();
         a.go(Screen::Display);
         a.display_sel = crate::display::ROW_ACCENT;
@@ -14997,6 +15006,9 @@ mod tests {
     /// stray tap from rebooting.
     #[test]
     fn visiting_display_disarms_boot_to_stock() {
+        // Taps Display's rows, whose positions follow the global text scale: hold the lock
+        // so a concurrent 140% test cannot move a tap onto the Size row (see text::scale_guard).
+        let _scale = lock_scale();
         let mut a = unlocked();
         a.go(Screen::Settings);
         a.settings_sel = crate::settings::ROW_BOOT_STOCK;
@@ -15045,6 +15057,9 @@ mod tests {
     /// visible, and round-trips through the settings-file word.
     #[test]
     fn the_volume_readout_is_chosen_on_display() {
+        // Taps Display's rows, whose positions follow the global text scale: hold the lock
+        // so a concurrent 140% test cannot move a tap onto the Size row (see text::scale_guard).
+        let _scale = lock_scale();
         let mut a = unlocked();
         a.go(Screen::Display);
         assert_eq!(a.volume_hud(), "full", "Full is the default");
@@ -17391,6 +17406,9 @@ mod tests {
 
     #[test]
     fn visualiser_cycles_and_settings_control_it() {
+        // Taps Display's rows, whose positions follow the global text scale: hold the lock
+        // so a concurrent 140% test cannot move a tap onto the Size row (see text::scale_guard).
+        let _scale = lock_scale();
         let mut a = unlocked();
         // Option on Now Playing cycles the visualiser type
         let k0 = a.viz_kind();
@@ -17780,6 +17798,9 @@ mod tests {
 
     #[test]
     fn settings_select_toggles_theme() {
+        // Taps Display's rows, whose positions follow the global text scale: hold the lock
+        // so a concurrent 140% test cannot move a tap onto the Size row (see text::scale_guard).
+        let _scale = lock_scale();
         // Night lives on Settings ▸ Display now: the first Settings row opens it.
         let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
@@ -18202,6 +18223,9 @@ mod tests {
     /// settings file brings it back — while an unknown word keeps what was there.
     #[test]
     fn the_style_is_picked_on_display_and_survives_a_restart() {
+        // Taps Display's rows, whose positions follow the global text scale: hold the lock
+        // so a concurrent 140% test cannot move a tap onto the Size row (see text::scale_guard).
+        let _scale = lock_scale();
         use crate::style::Style;
         let mut a = unlocked();
         a.stack = vec![Screen::NowPlaying, Screen::Display];
