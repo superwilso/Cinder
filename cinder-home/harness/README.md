@@ -117,9 +117,14 @@ Costs one global load per stub call while no delay is armed, so the long scenari
   everything between a raw evdev code and `cinder_input`/`cinder_tap` is covered — but what the
   navigator *decides* is Rust, and it returns "no action" here. `cinder-ui`'s 404 tests cover that
   half; a scenario that needs an action to actually happen scripts the return value.
-* **No `dlopen`ed services.** NFC, the display service and the USB manager are loaded by name at
-  runtime; here `dlopen` records the request and returns null, so those paths take their
-  degraded branch. Faking them is tier 2.
+* **Only the services a scenario opts into are faked.** The Bluetooth receiver scenario can enable
+  a small `BtPlayerService` fake to observe AAC/LDAC capability calls and the existing wait order;
+  every ordinary scenario leaves it disabled. NFC and the USB manager still take their missing
+  service paths, while the display fake covers the two panel operations exercised off-device.
+
+The `rx-codec-*` scenarios exercise receiver call sequencing with the opt-in fake. Its codec
+response is a fixed fixture value; these scenarios do not claim that a phone negotiated LDAC or
+validate the codec shown by the UI.
 
 ## Adding a scenario
 
