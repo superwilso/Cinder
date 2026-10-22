@@ -115,6 +115,13 @@ int  cinder_harness_display_backlight(void);
 // because the answer is in the OUT-PARAMETERS — see harness.cpp. Parking a scenario at
 // `cur == tot` is how the end of a queue is expressed.
 void cinder_harness_play_position(int cur_ms, int total_ms);
+void cinder_harness_play_position_at(long long at_ms, int cur_ms, int total_ms);
+// Observe the URI sequence accepted by the fake PlayerService; `count/start` describe the most
+// recent play_tracks/edit_sequence request, and `uri_at` returns the saved URI at an index.
+int  cinder_harness_audio_queue_count(void);
+int  cinder_harness_audio_queue_start(void);
+int  cinder_harness_audio_queue_uri(int index, char* out, int cap);
+void cinder_harness_pending_play_uri_set(int index, const char* uri);
 // Change a file PART WAY THROUGH the run, when the virtual clock reaches `at_ms`. The device's
 // world is not static — headphones get unplugged, a charger goes in, the battery falls — and
 // almost every interesting rule in the app is an EDGE rather than a level (bt_edge.h, jack_edge.h

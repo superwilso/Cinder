@@ -20,8 +20,9 @@
 
 use crate::canvas::Canvas;
 use crate::kit::{self, Row, Trail};
-use crate::text::FontSet;
+use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
+use crate::widgets;
 
 pub struct MenuItem<'a> {
     pub label: &'a str,
@@ -91,6 +92,7 @@ pub fn render(
     let y = kit::strip(c, t, f, y0, strip);
     debug_assert_eq!(y, TOP);
     let rh = row_h(items.len());
+    let compact_subtitles = text::scale_pct() > 100;
     for (i, m) in items.iter().enumerate() {
         let trail = if m.home {
             Trail::Tag(crate::i18n::text("HOME"))
@@ -98,17 +100,51 @@ pub fn render(
             Trail::Open("")
         };
         let yt = TOP + i as i32 * rh;
-        kit::row(
-            c,
-            t,
-            f,
-            yt,
-            rh,
-            &Row::new(crate::i18n::text(m.label))
-                .sub(m.sub)
-                .trail(trail)
-                .sel(m.active),
-        );
+        if compact_subtitles && !m.sub.is_empty() {
+            // The Menu has ten fixed destinations plus START ON. At enlarged type, its computed
+            // row pitch is only 55 px; the shared row subtitle baseline then meets the separator.
+            // Keep the Menu's two-line layout but use a smaller, locally positioned caption so the
+            // caption clears both the title and the separator without changing other screens.
+            kit::row(
+                c,
+                t,
+                f,
+                yt,
+                rh,
+                &Row::new(crate::i18n::text(m.label))
+                    .sub(" ")
+                    .trail(trail)
+                    .sel(m.active),
+            );
+            let style = widgets::sty(Family::Sans, Weight::Regular, 12.0, t.dim, 0.0);
+            let reserve = if m.home { 96.0 } else { 0.0 };
+            let caption = widgets::fit(
+                f,
+                crate::i18n::text(m.sub),
+                &style,
+                (kit::RIGHT - kit::LEFT) as f32 - reserve,
+            );
+            text::draw(
+                c,
+                f,
+                kit::LEFT as f32,
+                (yt + rh - 8) as f32,
+                &caption,
+                &style,
+            );
+        } else {
+            kit::row(
+                c,
+                t,
+                f,
+                yt,
+                rh,
+                &Row::new(crate::i18n::text(m.label))
+                    .sub(m.sub)
+                    .trail(trail)
+                    .sel(m.active),
+            );
+        }
     }
     kit::section_label(c, t, f, LABEL_TOP, crate::i18n::text("START ON"), None);
     kit::chips(c, t, f, CHIPS_TOP, &HOMES, Some(home.min(HOMES.len() - 1)));

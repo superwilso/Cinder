@@ -3162,6 +3162,211 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         }
         save(&c, "language_entry_no_sony");
     }
+
+    // Standalone ZAPPIN page: these maintained frames expose real shell-owned UI state to the
+    // same renderer used by the player. They are visual fixtures, not playback/device evidence.
+    {
+        use cinder_ui::nav::Screen;
+        use cinder_ui::zappin::StartSource;
+        let rows = vec![
+            cinder_ui::model::SongRow {
+                title: "Atlas Hands".into(),
+                artist: "Benjamin Francis Leftwich".into(),
+                dur: "4:32".into(),
+                ..Default::default()
+            };
+            9
+        ];
+        let mut render_state = |name: &str,
+                                night: bool,
+                                active: bool,
+                                completed: bool,
+                                source: Option<StartSource>,
+                                start_ms: Option<u64>,
+                                elapsed_ms: u32,
+                                length_ms: u32,
+                                current: u32,
+                                preview_ms: u32,
+                                playing: bool| {
+            let mut app = new_app();
+            if name.contains("_zh_") || name.ends_with("_zh") {
+                app.set_language(cinder_ui::i18n::Language::SimplifiedChinese);
+            }
+            app.night = night;
+            let scene_rows = if name == "zappin_no_queue_en" {
+                Vec::new()
+            } else {
+                rows.clone()
+            };
+            let context_start = if scene_rows.is_empty() { 0 } else { 2 };
+            app.set_play_context(scene_rows.clone(), context_start);
+            app.go_for_preview(Screen::Zappin);
+            app.set_zappin_active(active);
+            app.set_zappin_completed(completed);
+            app.set_zappin_source(source);
+            app.set_zappin_start_ms(start_ms);
+            app.set_zappin_progress(
+                elapsed_ms,
+                length_ms,
+                current,
+                if scene_rows.is_empty() { 0 } else { 9 },
+            );
+            // Preview duration is selected through the touch controls in production. Set the
+            // displayed duration through that same action path for a deterministic host fixture.
+            let x = if preview_ms <= 4_000 { 80 } else { 400 };
+            let _ = app.tap(x, 450);
+            let mut c = Canvas::new();
+            let np_state = if scene_rows.is_empty() {
+                now_playing::NowPlaying {
+                    title: "",
+                    artist: "",
+                    playing,
+                    ..np
+                }
+            } else {
+                now_playing::NowPlaying { playing, ..np }
+            };
+            app.render(&mut c, &fonts, &np_state);
+            save(&c, name);
+        };
+
+        render_state(
+            "zappin_ready_en",
+            false,
+            false,
+            false,
+            None,
+            None,
+            0,
+            0,
+            0,
+            4_000,
+            true,
+        );
+        render_state(
+            "zappin_no_queue_en",
+            false,
+            false,
+            false,
+            None,
+            None,
+            0,
+            0,
+            0,
+            4_000,
+            true,
+        );
+        render_state(
+            "zappin_active_sabi_en",
+            false,
+            true,
+            false,
+            Some(StartSource::Sabi),
+            Some(62_000),
+            2_500,
+            15_000,
+            3,
+            15_000,
+            true,
+        );
+        render_state(
+            "zappin_active_paused_en",
+            false,
+            true,
+            false,
+            Some(StartSource::FixedFallback),
+            Some(45_000),
+            6_000,
+            15_000,
+            5,
+            15_000,
+            false,
+        );
+        render_state(
+            "zappin_waiting_en",
+            false,
+            true,
+            false,
+            None,
+            None,
+            0,
+            4_000,
+            1,
+            4_000,
+            true,
+        );
+        render_state(
+            "zappin_complete_en",
+            false,
+            false,
+            true,
+            None,
+            None,
+            0,
+            0,
+            9,
+            4_000,
+            false,
+        );
+
+        cinder_ui::text::set_scale_pct(140);
+        render_state(
+            "zappin_140_en",
+            false,
+            true,
+            false,
+            Some(StartSource::UnknownDurationFromStart),
+            Some(0),
+            3_750,
+            15_000,
+            8,
+            15_000,
+            true,
+        );
+        render_state(
+            "zappin_140_sabi_en",
+            false,
+            true,
+            false,
+            Some(StartSource::Sabi),
+            Some(62_000),
+            2_500,
+            15_000,
+            3,
+            15_000,
+            true,
+        );
+        render_state(
+            "zappin_140_unknown_zh",
+            false,
+            true,
+            false,
+            Some(StartSource::UnknownDurationFromStart),
+            Some(0),
+            3_750,
+            15_000,
+            8,
+            15_000,
+            true,
+        );
+        cinder_ui::text::set_scale_pct(100);
+        {
+            let _zh = cinder_ui::i18n::enter(cinder_ui::i18n::Language::SimplifiedChinese);
+            render_state(
+                "zappin_active_zh_night",
+                true,
+                true,
+                false,
+                Some(StartSource::Sabi),
+                Some(62_000),
+                2_500,
+                15_000,
+                3,
+                15_000,
+                true,
+            );
+        }
+    }
 }
 
 // ── Golden pixel hashes ────────────────────────────────────────────────────────────────────────

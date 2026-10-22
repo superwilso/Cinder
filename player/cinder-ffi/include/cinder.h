@@ -232,8 +232,41 @@ typedef enum {
      * /tmp/cinder_ambient with the level for the current play state (libcinder_mono.so mixes it
      * over library music from there), and start or stop the shell's own soundscape player, which
      * plays it when nothing else is. Sent per tap and per slider step. */
-    CINDER_ACT_AMBIENT_CHANGED = 51
+    CINDER_ACT_AMBIENT_CHANGED = 51,
+    /* ZAPPIN preview controls; duration payload/readback lives in cinder_zappin_* below. */
+    CINDER_ACT_ZAPPIN_START = 52, CINDER_ACT_ZAPPIN_END = 53,
+    CINDER_ACT_ZAPPIN_FULL = 54, CINDER_ACT_ZAPPIN_NEXT = 55,
+    CINDER_ACT_ZAPPIN_PREV = 56, CINDER_ACT_ZAPPIN_LENGTH = 57
 } cinder_action_t;
+
+/* ZAPPIN is opt-in and never restored on boot. START action -> read generation/count/candidates;
+ * after starting the chosen URI, confirm the callback's generation/index/object_id before timing.
+ * Candidate data uses milliseconds; duration -1 means unknown, source 1=SABI, 2=fixed fallback,
+ * 3=unknown duration. Call cancel before any ordinary transport, source, queue or repeat action. */
+int cinder_zappin_active(void);
+unsigned int cinder_zappin_preview_ms(void);
+unsigned long long cinder_zappin_generation(void);
+int cinder_zappin_candidate_count(void);
+int cinder_zappin_candidate(int index, char *uri, int cap, long long *object_id, long long *start_ms, long long *length_ms, long long *duration_ms, int *source);
+int cinder_zappin_current_index(void);
+int cinder_zappin_confirm_candidate(unsigned long long generation, int index, long long object_id, const char *current_uri);
+/* Publish the confirmed source (1=SABI, 2=fixed fallback, 3=unknown duration) to the Menu. */
+int cinder_zappin_set_source(int source);
+int cinder_zappin_waiting(void);
+int cinder_zappin_set_progress(unsigned int elapsed_ms, unsigned int length_ms, unsigned int current, unsigned int total);
+int cinder_zappin_advance(int forward);
+/* End a completed finite pass after the shell has stopped its final preview. */
+void cinder_zappin_end(void);
+int cinder_zappin_prepare_normal_queue(void);
+int cinder_zappin_prepare_resume_queue(void);
+int cinder_zappin_cancel(void);
+int cinder_zappin_abandon(void);
+int cinder_zappin_abandon_internal_mutation(void);
+int cinder_zappin_abandon_for_normal_play(void);
+/* Confirm only after now-playing metadata is updated and the live service URI/position is valid. */
+int cinder_zappin_confirm_handoff(const char *uri, float progress, int playing);
+/* Consume 1 only after a live PlayerService URI/position callback releases the hold. */
+int cinder_zappin_take_handoff_confirmed(void);
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
  * cinder_action_t for the shell to carry out (0 = nothing). */
@@ -427,6 +460,8 @@ int cinder_device_wants_detail(void);
  * to say something the user must see (a low battery, an imminent shutdown) without inventing a
  * second notification surface. Fades on its own; NULL/empty is a no-op. */
 void cinder_toast(const char *msg);
+/* Same toast, but the message is an English localization key rendered in the current UI language. */
+void cinder_toast_key(const char *key);
 /* Copy the current 10-band EQ gains (dB) into `out` (>= 10 int8). Call after a
  * CINDER_ACT_EQ_CHANGED action, then apply them to the DSP via the effect shim. */
 void cinder_get_eq_bands(signed char *out);
