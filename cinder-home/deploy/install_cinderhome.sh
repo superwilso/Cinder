@@ -109,6 +109,7 @@ WANT_BATTERY="$(comp_bool CINDER_BATTERY 1)"
 WANT_SEARCH="$(comp_bool CINDER_SEARCH 0)"
 WANT_SENSME="$(comp_bool CINDER_SENSME 0)"
 WANT_AUDIOBOOKS="$(comp_bool CINDER_AUDIOBOOKS 0)"
+WANT_PREVIEW="$(comp_bool CINDER_PREVIEW 0)"
 WANT_SCROBBLE="$(comp_bool CINDER_SCROBBLE 1)"
 WANT_MONO="$(comp_bool CINDER_MONO 1)"
 WANT_PRELOAD="$(comp_bool CINDER_PRELOAD 0)"
@@ -1505,6 +1506,14 @@ if [ "$WANT_AUDIOBOOKS" = 1 ]; then
 else
     "$BB" rm -f /data/cinder/audiobooks_on 2>/dev/null
     echo "audiobooks: off"
+fi
+# Track previews: the sensme shape, a Menu row and nothing else. Written or removed on every install.
+if [ "$WANT_PREVIEW" = 1 ]; then
+    echo 1 > /data/cinder/preview_on 2>/dev/null && "$BB" chmod 644 /data/cinder/preview_on 2>/dev/null \
+        && echo "track previews: on"
+else
+    "$BB" rm -f /data/cinder/preview_on 2>/dev/null
+    echo "track previews: off"
 fi
 # Scrobble log: ON by default, so the flag records the OFF choice. Same rules as search_on. Nothing
 # to do for unknown321/scrobbler here: cinder-home stands down by itself while that one runs.

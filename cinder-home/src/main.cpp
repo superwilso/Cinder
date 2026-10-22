@@ -1382,6 +1382,13 @@ void deferred_up() {
             cinder_set_sensme_enabled(1);
             clog_("deferred_up: sensme channels enabled (/data/cinder/sensme_on)");
         }
+        // TRACK PREVIEWS, the same shape again: the flag only decides whether the Menu offers the
+        // Preview row. No flag = off, the default, while it is new.
+        if (FILE* pf = std::fopen("/data/cinder/preview_on", "r")) {
+            std::fclose(pf);
+            cinder_set_preview_enabled(1);
+            clog_("deferred_up: track previews enabled (/data/cinder/preview_on)");
+        }
         // ESCAPE HATCH, BECAUSE THIS DEVICE CAN HAVE TWO SCROBBLERS. `unknown321/scrobbler`
         // installs as a BOOT SERVICE (`/init.scrobbler.rc`, imported by `/init.rc`) and writes
         // `/data/mnt/internal/.scrobbler.log` — which is the same file as

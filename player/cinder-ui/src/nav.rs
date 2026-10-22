@@ -1673,6 +1673,8 @@ pub struct App {
     /// Is the opt-in `sensme` component installed? Set by the shell at startup from
     /// `/data/cinder/sensme_on`; without it the Menu has no SensMe row.
     sensme_enabled: bool,
+    /// The opt-in `preview` component is installed: the Menu offers the Preview row.
+    preview_enabled: bool,
     zappin_preview_ms: u32,
     zappin_active: bool,
     zappin_completed: bool,
@@ -2016,6 +2018,7 @@ impl Default for App {
             books_scroll_px: 0,
             sensme_scroll_saved: 0,
             sensme_enabled: false,
+            preview_enabled: false,
             zappin_preview_ms: 4_000,
             zappin_active: false,
             zappin_completed: false,
@@ -3400,12 +3403,13 @@ impl App {
     fn menu_visible(&self) -> Vec<&'static (Screen, &'static str, &'static str)> {
         MENU.iter()
             .filter(|m| m.0 != Screen::SensMe || self.sensme_enabled)
+            .filter(|m| m.0 != Screen::Zappin || self.preview_enabled)
             .collect()
     }
 
     /// How many Menu rows are drawn (see [`App::menu_visible`]).
     fn menu_len(&self) -> usize {
-        MENU.len() - usize::from(!self.sensme_enabled)
+        MENU.len() - usize::from(!self.sensme_enabled) - usize::from(!self.preview_enabled)
     }
 
     /// The shell says whether the opt-in `sensme` component is installed.
@@ -3420,6 +3424,13 @@ impl App {
     pub fn set_sensme_enabled(&mut self, on: bool) {
         self.sensme_enabled = on;
         // The cursor is an index into the VISIBLE rows, and this changes how many there are.
+        self.menu_idx = self.menu_idx.min(self.menu_len().saturating_sub(1));
+    }
+
+    /// The shell says whether the opt-in `preview` component is installed. Like SensMe, it gates
+    /// the Menu row only: nothing else starts a preview pass.
+    pub fn set_preview_enabled(&mut self, on: bool) {
+        self.preview_enabled = on;
         self.menu_idx = self.menu_idx.min(self.menu_len().saturating_sub(1));
     }
 
@@ -16194,6 +16205,7 @@ mod tests {
     #[test]
     fn the_sensme_menu_row_appears_only_when_the_component_is_installed() {
         let mut a = unlocked();
+        a.set_preview_enabled(true); // the other opt-in row, so the counts below are SensMe's alone
         assert!(!a.menu_visible().iter().any(|m| m.0 == Screen::SensMe));
         assert_eq!(a.menu_len(), MENU.len() - 1);
         a.set_sensme_enabled(true);
@@ -22572,9 +22584,27 @@ mod r4_tests {
         );
     }
 
+    /// Preview is opt-in like SensMe: without the component the Menu has no row for it, and the
+    /// rows below do not shift under the cursor.
+    #[test]
+    fn the_preview_menu_row_appears_only_when_the_component_is_installed() {
+        let mut a = App::unlocked();
+        a.set_sensme_enabled(true);
+        assert!(!a.menu_visible().iter().any(|m| m.0 == Screen::Zappin));
+        assert_eq!(a.menu_len(), MENU.len() - 1);
+        a.set_preview_enabled(true);
+        assert!(a.menu_visible().iter().any(|m| m.0 == Screen::Zappin));
+        assert_eq!(a.menu_len(), MENU.len());
+        // Turning it off with the cursor on the last row keeps the cursor on a drawn row.
+        a.menu_idx = a.menu_len() - 1;
+        a.set_preview_enabled(false);
+        assert!(a.menu_idx < a.menu_len());
+    }
+
     #[test]
     fn menu_preview_opens_a_page_without_starting_playback() {
         let mut a = App::unlocked();
+        a.set_preview_enabled(true);
         a.set_play_context(vec![SongRow::default()], 0);
         a.go(Screen::Menu);
         let row = a
@@ -22592,6 +22622,7 @@ mod r4_tests {
     #[test]
     fn menu_entry_returns_to_active_page_and_controls_are_tappable() {
         let mut a = App::unlocked();
+        a.set_preview_enabled(true);
         a.set_play_context(vec![SongRow::default()], 0);
         a.go(Screen::Menu);
         let row = a
@@ -22655,6 +22686,7 @@ mod r4_tests {
     #[test]
     fn preview_is_unavailable_without_current_music_context() {
         let mut a = App::unlocked();
+        a.set_preview_enabled(true);
         a.go(Screen::Menu);
         let row = a
             .menu_visible()

@@ -6035,6 +6035,16 @@ pub extern "C" fn cinder_set_sensme_enabled(on: libc::c_int) {
     }
 }
 
+/// The installer's opt-in Preview option left `/data/cinder/preview_on`; without it the Menu has no
+/// Preview row, and nothing else starts a preview pass.
+#[no_mangle]
+pub extern "C" fn cinder_set_preview_enabled(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_preview_enabled(on != 0);
+        r.dirty = true;
+    }
+}
+
 /// Force the USB-DAC toggle to match the gadget's real mode. The shell calls this at startup with
 /// the result of reading `sys.sony.config`, so a mode set outside Cinder (a probe, a crash between
 /// the property write and our state, a stock-side change) cannot leave Settings reporting the

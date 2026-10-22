@@ -734,6 +734,8 @@ void cinder_set_search_enabled(int on);
    /data/cinder/sensme_on; without it the Menu has no SensMe row. The channel data itself is read
    at every library open either way. */
 void cinder_set_sensme_enabled(int on);
+/* The opt-in Preview component: show the Menu's Preview row (/data/cinder/preview_on). */
+void cinder_set_preview_enabled(int on);
 int  cinder_get_usb_dac(void);
 /* Force the USB-DAC toggle to match the gadget's real mode (from sys.sony.config). Sets state
    only — raises no action, since the gadget is already there. Call at startup to stop Settings
