@@ -26,22 +26,31 @@ pub struct Rx<'a> {
     /// 4 connected, 5 streaming.
     pub phase: u8,
     pub peer: &'a str,
-    /// Raw values from BtPlayerService (GetTrackCodec / GetTrackFreq / GetBitrate). The codec and
-    /// frequency enumerators are not decoded, so they are shown as numbers.
+    /// Raw values from BtPlayerService (GetTrackCodec / GetTrackFreq / GetBitrate). The receiver
+    /// codec label decodes only the stock-confirmed SBC/AAC/LDAC values; other values stay raw.
     pub codec: u32,
     pub freq: u32,
     pub bitrate: u32,
     /// The Bluetooth radio is on — the mode cannot start without it.
     pub radio: bool,
+    /// Receiver-only capability preference: 0 Auto, 1 prefer LDAC, 2 prefer AAC, 3 prefer SBC.
+    pub codec_pref: u8,
 }
 
 pub const SWITCH_Y: i32 = crate::chrome::HEADER_BOTTOM + 16;
 pub const SWITCH_H: i32 = 76;
 const STATUS_Y: i32 = SWITCH_Y + SWITCH_H + 28;
+pub const CODEC_LABEL_Y: i32 = STATUS_Y + 90;
+pub const CODEC_CHIPS_Y: i32 = CODEC_LABEL_Y + 21;
+const CODEC_COLS: usize = 2;
+const CODEC_PITCH: i32 = crate::kit::CHIP_H + 8;
+const CODEC_HINT_Y: i32 = CODEC_CHIPS_Y + CODEC_PITCH + crate::kit::CHIP_H + 19;
+const LDAC_HINT_Y: i32 = CODEC_HINT_Y + 21;
+const CODEC_PREFS: [&str; 4] = ["Auto", "LDAC or SBC", "AAC or SBC", "SBC only"];
 
 /// "Use Sony's receiver": restart into the stock player with its receiver open. Below the status
 /// lines (at most three, ending by y≈290) and well clear of the notes rule at 580.
-pub const SONY_Y: i32 = 440;
+pub const SONY_Y: i32 = 489;
 pub const SONY_H: i32 = kit::ROW_H;
 
 /// Did this tap land on the "Use Sony's receiver" row?
@@ -54,7 +63,51 @@ pub fn switch_hit(_x: i32, y: i32) -> bool {
     (SWITCH_Y..SWITCH_Y + SWITCH_H).contains(&y)
 }
 
+/// Centre of one receiver codec preference chip, shared by rendering and navigation tests.
+pub fn codec_pref_chip(index: usize) -> (i32, i32) {
+    let index = index.min(CODEC_PREFS.len() - 1);
+    let (x, w) = crate::kit::chip_span(index % CODEC_COLS, CODEC_COLS);
+    let row = (index / CODEC_COLS) as i32;
+    (
+        x + w / 2,
+        CODEC_CHIPS_Y + row * CODEC_PITCH + crate::kit::CHIP_H / 2,
+    )
+}
+
+/// Which receiver codec preference chip was tapped, if any.
+pub fn codec_pref_hit(x: i32, y: i32) -> Option<u8> {
+    for row in 0..2 {
+        let top = CODEC_CHIPS_Y + row * CODEC_PITCH;
+        if let Some(col) = crate::kit::chip_at(CODEC_COLS, top, x, y) {
+            return Some((row as usize * CODEC_COLS + col) as u8);
+        }
+    }
+    None
+}
+
+/// The receiver's BtPlayerService codec enum is distinct from the transmitter's BtSoundCodec.
+/// Stock HgrmMediaPlayerApp maps 1 = SBC, 3 = AAC, 4 = LDAC. Preserve raw 2 (MP3) and any other
+/// values as numbers; only the three supported receiver choices are presented in the UI.
+pub fn codec_label(raw: u32) -> String {
+    match raw {
+        1 => "SBC".into(),
+        3 => "AAC".into(),
+        4 => "LDAC".into(),
+        _ => format!("CODEC 0x{raw:02X}"),
+    }
+}
+
 /// The status lines for a state, most important first. Split out so it is testable.
+/// Receiver service codec values are independent of the transmitter codec selectors.
+pub fn rx_codec_label(raw: u8) -> String {
+    match raw {
+        1 => "SBC".into(),
+        3 => "AAC".into(),
+        4 => "LDAC".into(),
+        _ => format!("CODEC 0x{raw:02X}"),
+    }
+}
+
 pub fn status_lines(rx: &Rx) -> Vec<String> {
     if !rx.radio && !rx.on {
         return vec![crate::i18n::text("Bluetooth is off. Turn it on first.").into()];
@@ -90,17 +143,17 @@ pub fn status_lines(rx: &Rx) -> Vec<String> {
                     crate::ui_format!(" from {}", rx.peer)
                 }
             ),
-            // Sony's codec enum, named where it is known (`bluetooth::link_codec_label`): 0x03 is
-            // AAC, which is what both a Windows PC and an iPhone chose. GetBitrate read 1 throughout
-            // a working stream, so it is not a kbps figure and is left off.
+            // This is BtPlayerService's receiver codec enum, distinct from the transmitter's
+            // BtSoundCodec. GetBitrate read 1 throughout a working stream, so it is not a kbps
+            // figure and is left off.
             if rx.freq >= 8000 {
                 format!(
                     "{} · {:.1} kHz",
-                    crate::bluetooth::link_codec_label(rx.codec as u8),
+                    codec_label(rx.codec),
                     rx.freq as f32 / 1000.0
                 )
             } else {
-                crate::bluetooth::link_codec_label(rx.codec as u8)
+                codec_label(rx.codec)
             },
         ],
     }
@@ -165,6 +218,61 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         y += if i == 0 { 30.0 } else { 22.0 };
     }
 
+    let label_style = sty(
+        Family::Mono,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.faint,
+        0.6,
+    );
+    crate::text::draw(
+        c,
+        f,
+        22.0,
+        CODEC_LABEL_Y as f32,
+        crate::i18n::text("BT RECEIVE CODEC"),
+        &label_style,
+    );
+    for (row, labels) in CODEC_PREFS.chunks(CODEC_COLS).enumerate() {
+        let first = row * CODEC_COLS;
+        let selected = rx.codec_pref.min((CODEC_PREFS.len() - 1) as u8) as usize;
+        let selected = (first..first + labels.len())
+            .contains(&selected)
+            .then(|| selected - first);
+        kit::chips_in(
+            c,
+            t,
+            f,
+            CODEC_CHIPS_Y + row as i32 * CODEC_PITCH,
+            labels,
+            selected,
+            CODEC_COLS,
+        );
+    }
+    let hint_style = sty(
+        Family::Sans,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.faint,
+        0.0,
+    );
+    let hint = crate::widgets::fit(
+        f,
+        crate::i18n::text("Your phone picks from what is allowed."),
+        &hint_style,
+        AVAIL,
+    );
+    crate::text::draw(c, f, 22.0, CODEC_HINT_Y as f32, &hint, &hint_style);
+    if rx.codec_pref <= 1 {
+        let hint = crate::widgets::fit(
+            f,
+            crate::i18n::text("LDAC bitrate and sample rate are set on your phone."),
+            &hint_style,
+            AVAIL,
+        );
+        crate::text::draw(c, f, 22.0, LDAC_HINT_Y as f32, &hint, &hint_style);
+    }
+
     let notes = [
         crate::i18n::text("Sound comes out of the headphone jack."),
         crate::i18n::text("Bluetooth headphones do not reconnect while it is on."),
@@ -202,7 +310,17 @@ mod tests {
             freq: 48000,
             bitrate: 1,
             radio: true,
+            codec_pref: 0,
         }
+    }
+
+    #[test]
+    fn receiver_codec_values_are_independent_from_transmitter_values() {
+        assert_eq!(rx_codec_label(1), "SBC");
+        assert_eq!(rx_codec_label(3), "AAC");
+        assert_eq!(rx_codec_label(4), "LDAC");
+        assert_eq!(rx_codec_label(2), "CODEC 0x02");
+        assert_eq!(rx_codec_label(255), "CODEC 0xFF");
     }
 
     #[test]
@@ -236,5 +354,26 @@ mod tests {
         assert!(switch_hit(240, SWITCH_Y + 1));
         assert!(switch_hit(240, SWITCH_Y + SWITCH_H - 1));
         assert!(!switch_hit(240, SWITCH_Y + SWITCH_H + 5));
+    }
+
+    #[test]
+    fn receiver_codec_values_do_not_reuse_transmitter_enum() {
+        assert_eq!(codec_label(3), "AAC");
+        assert_eq!(codec_label(4), "LDAC");
+        assert_eq!(codec_label(1), "SBC");
+        assert_eq!(codec_label(2), "CODEC 0x02");
+        assert_eq!(codec_label(0x17), "CODEC 0x17");
+    }
+
+    #[test]
+    fn receiver_codec_chips_have_distinct_hits_and_fit_before_sony_entry() {
+        for pref in 0..4 {
+            let (x, y) = codec_pref_chip(pref);
+            assert_eq!(codec_pref_hit(x, y), Some(pref as u8));
+        }
+        assert!(CODEC_LABEL_Y > STATUS_Y);
+        assert!(CODEC_HINT_Y < SONY_Y);
+        assert!(LDAC_HINT_Y < SONY_Y);
+        assert!(SONY_Y + SONY_H < 580, "clear of the notes section");
     }
 }

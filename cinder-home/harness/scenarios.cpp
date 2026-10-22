@@ -83,6 +83,212 @@ static void healthy_device(void) {
 }
 
 // ── the app reaches the end of the easel lifecycle and brings itself up ──────────────────────
+// These exercise the real main.cpp receiver path through an opt-in fake BtPlayerService. The fake
+// returns its own fixed codec value; these scenarios test capability-call sequencing, not a phone's
+// negotiated codec or the UI's displayed codec.
+static void s_rx_offers_codecs_before_wait_and_reoffers_after_idle(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_rx_service_enable(1);
+    cinder_harness_rx_wait_status(1); // keep idle so the five-second receiver self-heal is exercised
+    cinder_harness_state_set("rx_on", 0);
+    cinder_harness_state_set_at(18000, "rx_on", 1);
+    cinder_harness_set_budget_ms(28000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("rx:SetAAC") >= 2, "AAC capability offered on entry and idle self-heal");
+    check(cinder_harness_count("rx:SetLDAC") >= 2, "LDAC capability offered on entry and idle self-heal");
+    check(cinder_harness_count("rx:RequestStartConnectWait") >= 2,
+          "idle self-heal reopens receiver connect-wait");
+    check_eq(cinder_harness_arg("rx:SetAAC", 0), 1, "AAC is enabled for reception");
+    check_eq(cinder_harness_arg("rx:SetLDAC", 0), 1, "LDAC is enabled for reception");
+    check(cinder_harness_before("rx:SetAAC", "rx:RequestStartConnectWait") == 1,
+          "AAC capability is set before opening the receiver wait");
+    check(cinder_harness_before("rx:SetLDAC", "rx:RequestStartConnectWait") == 1,
+          "LDAC capability is set before opening the receiver wait");
+    check(cinder_harness_last_before("rx:SetAAC", "rx:RequestStartConnectWait") == 1,
+          "AAC is offered again before the self-heal wait reopens");
+    check(cinder_harness_last_before("rx:SetLDAC", "rx:RequestStartConnectWait") == 1,
+          "LDAC is offered again before the self-heal wait reopens");
+}
+
+static void s_rx_setter_failure_does_not_skip_wait(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_rx_service_enable(1);
+    cinder_harness_rx_setter_results(0, 0);
+    cinder_harness_state_set("rx_on", 0);
+    cinder_harness_state_set_at(18000, "rx_on", 1);
+    cinder_harness_set_budget_ms(24000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_arg("rx:SetAAC:result", 0), 0, "fake AAC setter rejects the offer");
+    check_eq(cinder_harness_arg("rx:SetLDAC:result", 0), 0, "fake LDAC setter rejects the offer");
+    check(cinder_harness_count("rx:RequestStartConnectWait") >= 1,
+          "receiver wait still opens after both setters reject");
+    check(cinder_harness_before("rx:SetLDAC", "rx:RequestStartConnectWait") == 1,
+          "the existing connection sequence follows the independent setter attempts");
+}
+
+static void s_rx_reentry_reoffers_codecs(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_rx_service_enable(1);
+    cinder_harness_state_set("rx_on", 0);
+    cinder_harness_state_set_at(18000, "rx_on", 1);
+    cinder_harness_state_set_at(26000, "rx_on", 0);
+    cinder_harness_state_set_at(30000, "rx_on", 1);
+    cinder_harness_set_budget_ms(36000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("rx:SetAAC", 18000, 26000), 1,
+             "AAC is offered once on initial entry");
+    check_eq(cinder_harness_count_between("rx:SetLDAC", 18000, 26000), 1,
+             "LDAC is offered once on initial entry");
+    check_eq(cinder_harness_count_between("rx:RequestStartConnectWait", 18000, 26000), 1,
+             "connect-wait opens once on initial entry");
+    check_eq(cinder_harness_count_between("rx:SetAAC", 26000, 30000), 0,
+             "AAC is not reconfigured while receiver mode is off");
+    check_eq(cinder_harness_count_between("rx:SetLDAC", 26000, 30000), 0,
+             "LDAC is not reconfigured while receiver mode is off");
+    check_eq(cinder_harness_count_between("rx:RequestStartConnectWait", 26000, 30000), 0,
+             "connect-wait stays closed while receiver mode is off");
+    check_eq(cinder_harness_count_between("rx:SetAAC", 30000, 36000), 1,
+             "AAC is configured exactly once on re-entry");
+    check_eq(cinder_harness_count_between("rx:SetLDAC", 30000, 36000), 1,
+             "LDAC is configured exactly once on re-entry");
+    check_eq(cinder_harness_count_between("rx:RequestStartConnectWait", 30000, 36000), 1,
+             "receiver wait opens exactly once on re-entry");
+    check(cinder_harness_last_before("rx:SetAAC", "rx:RequestStartConnectWait") == 1,
+          "AAC reconfiguration precedes the re-entry wait");
+    check(cinder_harness_last_before("rx:SetLDAC", "rx:RequestStartConnectWait") == 1,
+          "LDAC reconfiguration precedes the re-entry wait");
+}
+
+static void s_rx_missing_service_degrades(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_state_set("rx_on", 0);
+    cinder_harness_state_set_at(18000, "rx_on", 1);
+    cinder_harness_set_budget_ms(24000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("dlopen:libBtPlayerService.so") >= 1,
+          "receiver service is loaded lazily when the mode is entered");
+    check_eq(cinder_harness_count("rx:SetAAC"), 0, "no AAC virtual call when the optional service is absent");
+    check_eq(cinder_harness_count("rx:SetLDAC"), 0, "no LDAC virtual call when the optional service is absent");
+    check_eq(cinder_harness_count("cinder_render_init"), 1, "missing receiver service does not stop Home");
+}
+
+static void s_rx_ldac_fault_keeps_ipc_kill_switch(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_rx_service_enable(1);
+    cinder_harness_rx_fault_ldac(1);
+    cinder_harness_state_set("rx_on", 0);
+    cinder_harness_state_set_at(18000, "rx_on", 1);
+    cinder_harness_set_budget_ms(24000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("rx:SetAAC"), 1, "AAC call completed before the faulting LDAC call");
+    check_eq(cinder_harness_count("rx:SetLDAC"), 1, "LDAC fake raised SIGSEGV inside its guard");
+    check_eq(cinder_harness_count("rx:RequestStartConnectWait"), 0,
+             "the shared IPC kill switch suppresses wait after a guarded fault");
+    check_eq(cinder_harness_count("cinder_set_ipc_dead"), 1,
+             "the guarded fault reports Sony IPC as dead to the UI");
+    check_eq(cinder_harness_arg("cinder_set_ipc_dead", 0), 1,
+             "the reported Sony IPC kill switch is set, not cleared");
+    check_eq(cinder_harness_count("cinder_render_init"), 1,
+             "a recovered receiver IPC fault leaves Home running");
+}
+
+static void s_rx_codec_policy(int pref, int expect_aac, int expect_ldac) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_rx_service_enable(1);
+    cinder_harness_state_set("rx_on", 0);
+    cinder_harness_state_set("rx_codec_pref", pref);
+    cinder_harness_state_set_at(18000, "rx_on", 1);
+    cinder_harness_set_budget_ms(24000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("rx:SetAAC", 18000, 24000), 1,
+             "the selected AAC capability is applied once on entry");
+    check_eq(cinder_harness_count_between("rx:SetLDAC", 18000, 24000), 1,
+             "the selected LDAC capability is applied once on entry");
+    check_eq(cinder_harness_arg("rx:SetAAC", 0), expect_aac,
+             "main.cpp passes the selected AAC capability to the real service call");
+    check_eq(cinder_harness_arg("rx:SetLDAC", 0), expect_ldac,
+             "main.cpp passes the selected LDAC capability to the real service call");
+    check(cinder_harness_before("rx:SetAAC", "rx:RequestStartConnectWait") == 1,
+          "AAC policy is applied before negotiation begins");
+    check(cinder_harness_before("rx:SetLDAC", "rx:RequestStartConnectWait") == 1,
+          "LDAC policy is applied before negotiation begins");
+}
+
+static void s_rx_pref_ldac_only(void) { s_rx_codec_policy(1, 0, 1); }
+static void s_rx_pref_aac_only(void)  { s_rx_codec_policy(2, 1, 0); }
+static void s_rx_pref_sbc_only(void)  { s_rx_codec_policy(3, 0, 0); }
+
+static void s_rx_active_preference_reconnects_once(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_rx_service_enable(1);
+    cinder_harness_input_enable();
+    cinder_harness_state_set("rx_on", 0);
+    cinder_harness_state_set("rx_codec_pref", 0);
+    cinder_harness_state_set_at(18000, "rx_on", 1);
+    // Mimic the navigator changing its independent preference before it hands the action to C++.
+    cinder_harness_state_set_at(22000, "rx_codec_pref", 1);
+    cinder_harness_script("cinder_tap", 58 /* CINDER_ACT_RX_CODEC_CHANGED */);
+    cinder_harness_tap_at(22000, 360, 396); // LDAC preference chip
+    cinder_harness_set_budget_ms(26000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("rx:RequestStopConnectWait", 22000, 26000), 1,
+             "one changed preference stops the old connect-wait once");
+    check_eq(cinder_harness_count_between("rx:RequestDisconnection", 22000, 26000), 1,
+             "one changed preference disconnects the old sink once");
+    check_eq(cinder_harness_count_between("rx:SetAAC", 22000, 26000), 1,
+             "the new AAC capability is set once");
+    check_eq(cinder_harness_count_between("rx:SetLDAC", 22000, 26000), 1,
+             "the new LDAC capability is set once");
+    check_eq(cinder_harness_count_between("rx:RequestStartConnectWait", 22000, 26000), 1,
+             "the new preference starts exactly one negotiation");
+    check_eq(cinder_harness_arg("rx:SetAAC", 1), 0, "LDAC preference disables AAC offering");
+    check_eq(cinder_harness_arg("rx:SetLDAC", 1), 1, "LDAC preference retains LDAC offering");
+    check(cinder_harness_last_before("rx:RequestStopConnectWait", "rx:SetAAC") == 1,
+          "connect-wait stops before new capabilities are applied");
+    check(cinder_harness_last_before("rx:RequestDisconnection", "rx:SetAAC") == 1,
+          "the old sink disconnects before new capabilities are applied");
+    check(cinder_harness_last_before("rx:SetLDAC", "rx:RequestStartConnectWait") == 1,
+          "the new capabilities are applied before negotiation resumes");
+}
+
+static void s_rx_inactive_preference_preserves_local_playback(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_rx_service_enable(1);
+    cinder_harness_input_enable();
+    cinder_harness_state_set("rx_on", 0);
+    cinder_harness_script("cinder_tap", 58 /* CINDER_ACT_RX_CODEC_CHANGED */);
+    cinder_harness_tap_at(20000, 360, 396);
+    cinder_harness_set_budget_ms(24000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("dlopen:libBtPlayerService.so"), 0,
+             "saving an inactive receiver preference does not open Sony's receiver service");
+    check_eq(cinder_harness_count("rx:SetAAC"), 0, "no receiver setter while the mode is off");
+    check_eq(cinder_harness_count("rx:SetLDAC"), 0, "no receiver setter while the mode is off");
+    check_eq(cinder_harness_count("rx:RequestStartConnectWait"), 0,
+             "no receiver connect-wait while the mode is off");
+    check_eq(cinder_harness_count("rx:RequestDisconnection"), 0,
+             "no receiver disconnect while the mode is off");
+    check_eq(cinder_harness_count("cinder_zappin_abandon"), 0,
+             "a saved preference does not abandon local Zappin state");
+}
+
+
 static void s_boot(void) {
     healthy_device();
     cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
@@ -1778,6 +1984,24 @@ static const Scenario kScenarios[] = {
     { "book-seek", s_book_seek, "an audiobook starts at the place the listener left it" },
     { "book-no-seek-for-music", s_book_no_seek_for_music, "…and music is never sought to" },
     { "book-no-seek-when-play-failed", s_book_no_seek_when_play_failed, "…nor is a play that did not start" },
+    {"rx-codec-offer", s_rx_offers_codecs_before_wait_and_reoffers_after_idle,
+     "receiver advertises AAC and LDAC before waiting, and restores them after idle self-heal"},
+    {"rx-codec-setter-fail", s_rx_setter_failure_does_not_skip_wait,
+     "receiver continues its existing wait sequence when codec setters reject"},
+    {"rx-codec-reentry", s_rx_reentry_reoffers_codecs,
+     "leaving and re-entering receiver mode reapplies codec capabilities"},
+    {"rx-no-player-service", s_rx_missing_service_degrades,
+     "a missing receiver service keeps Home alive"},
+    {"rx-ldac-fault", s_rx_ldac_fault_keeps_ipc_kill_switch,
+     "a guarded LDAC fault keeps the shared Sony IPC kill switch in force"},
+    {"rx-pref-ldac", s_rx_pref_ldac_only, "LDAC receiver preference is mapped to service capability flags"},
+    {"rx-pref-aac", s_rx_pref_aac_only, "AAC receiver preference is mapped to service capability flags"},
+    {"rx-pref-sbc", s_rx_pref_sbc_only, "SBC preference disables AAC and LDAC offers"},
+    {"rx-pref-reconnect", s_rx_active_preference_reconnects_once,
+     "an active receiver preference change renegotiates once in a safe order"},
+    {"rx-pref-off", s_rx_inactive_preference_preserves_local_playback,
+     "an inactive receiver preference is saved without disturbing local playback"},
+
     { "codec-bt-lit", s_codec_bt_lit, "on Bluetooth the codec goes to standby with the screen lit" },
     { "codec-jack-lit", s_codec_jack_lit, "…and on the jack a lit screen still keeps it awake" },
     { "pause-key", s_pause_key_playing, "AVRCP PAUSE and STOP pause a playing track" },
