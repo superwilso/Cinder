@@ -24,6 +24,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../src/filter_chain.h"
+
 #ifdef HAL_LAUNCHER
 /* ── stands in for hagodaemon on a player WITHOUT Wampy: it has no libasound of its own and loads
  * the code that uses it privately (RTLD_LOCAL), the way hagodaemon loads libSoundServiceFw. The
@@ -74,6 +76,21 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     return (long)frames;
 }
 const unsigned char* fake_last(void) { return g_last; }
+/* Sony's FilterChain::Create: records the names it was handed, space-separated. */
+static char g_chain[512];
+void fake_fc_create(void* self, const void* pool, const cxx_vec* names) __asm__(FC_CREATE);
+void fake_fc_create(void* self, const void* pool, const cxx_vec* names)
+{
+    (void)self; (void)pool;
+    g_chain[0] = '\0';
+    for (const cxx_str* s = names->b; s != names->e; s++) {
+        size_t n, k = strlen(g_chain);
+        const char* d = cxx_str_data(s, &n);
+        if (k + n + 2 > sizeof g_chain) break;
+        snprintf(g_chain + k, sizeof g_chain - k, "%s%.*s", k ? " " : "", (int)n, d);
+    }
+}
+const char* fake_chain(void) { return g_chain; }
 #else
 
 int snd_pcm_hw_params_set_format(void* pcm, void* params, int fmt);
@@ -82,6 +99,24 @@ int snd_pcm_close(void* pcm);
 int snd_pcm_hw_params(void* pcm, void* params);
 long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames);
 const unsigned char* fake_last(void);
+void fc_create(void* self, const void* pool, const cxx_vec* names) __asm__(FC_CREATE);
+const char* fake_chain(void);
+
+/* Calls Create the way Sony's library does (through the PLT) with the names in `list`, and returns
+ * what reached the fake. */
+static const char* chain_after(const char* list)
+{
+    static char buf[512];
+    const char* name[FC_MAX];
+    cxx_str v[FC_MAX];
+    size_t n = 0;
+    snprintf(buf, sizeof buf, "%s", list);
+    for (char* t = strtok(buf, " "); t && n < FC_MAX; t = strtok(NULL, " ")) name[n++] = t;
+    for (size_t i = 0; i < n; i++) v[i] = cxx_str_make(name[i]);
+    const cxx_vec vec = { v, v + n, v + n };
+    fc_create(NULL, NULL, &vec);
+    return fake_chain();
+}
 
 static int fails = 0;
 static void check(int ok, const char* what)
@@ -284,6 +319,21 @@ int main(int argc, char** argv)
         ambient(dir, NULL);
     }
     snd_pcm_close(pcmh);
+
+    /* ── the effect chain ── */
+    {
+        static const char stock[] = "i2f dseeai heq dynamicnormalizer attn eq6band vpt clearphase alc dcphaselinear vinylizer f2i";
+        static const char w1[] = "i2f dseehxcustom heq dynamicnormalizer attn eq10band eqtone alc dcphaselinear vinylizer f2i";
+        const char* got = chain_after(stock);
+        if (expect_active)
+            check(strcmp(got, "i2f dseeai heq dynamicnormalizer attn eq6band eq10band eqtone vpt clearphase alc "
+                              "dcphaselinear vinylizer f2i") == 0,
+                  "chain: stock A50's list reaches Sony with eq10band eqtone after eq6band");
+        else
+            check(strcmp(got, stock) == 0, "chain: in any other process the stock list reaches Sony unchanged");
+        check(strcmp(chain_after(w1), w1) == 0, "chain: Walkman One's list reaches Sony unchanged");
+        check(strcmp(chain_after("i2f f2i"), "i2f f2i") == 0, "chain: a list with no eq6band reaches Sony unchanged");
+    }
 
     char alive[512];
     snprintf(alive, sizeof alive, "%s/cinder_mono_shim", dir);

@@ -82,9 +82,20 @@ model swap that causes W1's losses.
 3. **Cinder One, tiers 0–1, for stock players** (`SPEC_cinder_one.md` §3): the sound signature is
    built (`cinder-signature.sh`); still to build are the gain mode (`dacdat ovt`), the analyser
    params and the full DAC reprogramming, all from the player's own Sony files.
-4. **What cannot be remade:** Walkman One's external tunings (the WM1Z/ZX300 NVRAM images). They are
-   W1's paid product, not Sony's, and installing one writes the bootloader partition
-   (`SPEC_cinder_one.md` §7). The tuning step stays as detection for players that already have W1.
+4. **Walkman One's external tunings: nothing audible to remake** (10-22). On an A50 a tuning is an
+   NVRAM image whose only job is to match the md5 W1's boot script checks, plus another model's
+   bootloader that the stock kernel never reads (`analysis/RE_walkmanone_installers.md`). What it
+   unlocks is W1's own settings, and Cinder sets each of those directly: Plus mode (`signature`),
+   gain mode (`voltable=wm1a`, from Sony's file), region (`voltable=stock`), tone table, colour
+   (themes). `DIM=1` only skips the NC set-up, and the limiter files carry no region difference.
+   **The one audible thing W1 had and Cinder lacked** was its WM1-class sound library's chain, with
+   the 10-band EQ and Tone Control. Done 10-22: `libcinder_mono.so` hooks `FilterChain::Create` and
+   adds `eq10band eqtone` after `eq6band` on a stock list (`filter_chain.h`, host + qemu tests in
+   `test_mono_shim.sh`). It rides the `preload` component, so step 2 decides whether it reaches
+   everyone. **Device test:** stock player, `preload` on, Bluetooth headphones, a +10 dB band on
+   the EQ must be audible and `cinder_mono.log` must say "added eq10band and eqtone". Applying the
+   WM1Z tuning on a W1 player by hand: `z2.bin` from W1's package (md5 `ccb29dd2…`) to
+   `mmcblk0p3`, backup first; never `p7`.
 5. **The folder name.** Cinder installs into `/system/vendor/unknown321/`, Wampy's folder. Wampy's
    uninstaller removes only its own files (checked 10-22), so this is a name, not a dependency.
    Moving to `/system/vendor/cinder/` touches ~110 lines including the launcher's path: do it on

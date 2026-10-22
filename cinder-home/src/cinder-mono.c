@@ -13,9 +13,13 @@
  * cinder-home writes that file and decides the level: one when music plays, another when it does not.
  *
  * HOW IT GETS THERE. LD_PRELOAD on the SoundServiceFw service (init.hagoromo.rc), next to Wampy's
- * libsound_service_fw.so when that is installed — `setenv LD_PRELOAD "<wampy> <this>"`. Wampy hooks
- * FilterChain methods, this hooks libc and libasound, so the two do not overlap. Every original is
- * reached with dlsym(RTLD_NEXT), so the order between them does not matter either.
+ * libsound_service_fw.so when that is installed — `setenv LD_PRELOAD "<wampy> <this>"`. This hooks
+ * libc, libasound and FilterChain::Create; Wampy hooks FilterChain too. Every original is reached
+ * with dlsym(RTLD_NEXT), so a Create call passes through this one and then Wampy's.
+ *
+ * THE EFFECT CHAIN. On a stock A50, Sony's chain has no 10-band EQ and no Tone Control; the Create
+ * hook adds both, so Cinder's EQ works over Bluetooth and USB-DAC without Wampy or Walkman One
+ * (filter_chain.h).
  *
  * WHY IT IS SAFE TO LOAD.
  *   * Outside SoundServiceFw it does nothing: the constructor checks the command line, and every
@@ -46,6 +50,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "filter_chain.h"
 #include "mono_sum.h"
 #include "soundscape.h"
 
@@ -252,13 +257,17 @@ static uint8_t* scratch(size_t n)
 #ifndef CINDER_ASOUND_LIB
 #define CINDER_ASOUND_LIB "libasound.so"
 #endif
-static void* alsa_sym(const char* name)
+static void* lib_sym(const char* lib_name, void** lib, const char* name)
 {
     void* p = dlsym(RTLD_NEXT, name);
     if (p) return p;
+    if (!*lib) *lib = dlopen(lib_name, RTLD_NOW | RTLD_NOLOAD);
+    return *lib ? dlsym(*lib, name) : NULL;
+}
+static void* alsa_sym(const char* name)
+{
     static void* lib;
-    if (!lib) lib = dlopen(CINDER_ASOUND_LIB, RTLD_NOW | RTLD_NOLOAD);
-    return lib ? dlsym(lib, name) : NULL;
+    return lib_sym(CINDER_ASOUND_LIB, &lib, name);
 }
 #define RESOLVE_ALSA(var, name) do { if (!(var)) (var) = alsa_sym(name); } while (0)
 
@@ -335,6 +344,31 @@ static void load_proved_good(void)
     g_boots_cleared = 1;
     (void)syscall(SYS_unlink, kBoots);
     mlog("audio flowed — load count cleared");
+}
+
+/* ── the effect chain: Sony's FilterChain::Create ─────────────────────────────────────────────
+ * On a stock A50 list this adds the 10-band EQ and Tone Control after the six-band; every other list
+ * goes through as it came (filter_chain.h has why and the layout). Create copies each name and keeps
+ * nothing of the vector, so the new list lives on this stack. Its callers are inside Sony's library
+ * and reach it through the PLT, so this definition is the one they get; the original is found the
+ * way the ALSA ones are, Wampy's Create first when Wampy is loaded. Off in safe mode and with
+ * mono_shim_off, like every other hook. */
+#ifndef CINDER_SSFW_LIB
+#define CINDER_SSFW_LIB "libSoundServiceFw.so"
+#endif
+void cinder_fc_create(void* self, const void* pool, const cxx_vec* names) __asm__(FC_CREATE);
+void cinder_fc_create(void* self, const void* pool, const cxx_vec* names)
+{
+    static void (*real)(void*, const void*, const cxx_vec*);
+    static void* lib;
+    if (!real) real = (void (*)(void*, const void*, const cxx_vec*))lib_sym(CINDER_SSFW_LIB, &lib, FC_CREATE);
+    if (!real) { mlog("effect chain: Sony's FilterChain::Create not found"); return; }
+    cxx_str list[FC_MAX];
+    size_t n = g_active ? fc_add_eq(names, list) : 0;
+    if (!n) { real(self, pool, names); return; }
+    const cxx_vec v = { list, list + n, list + n };
+    mlog("effect chain: added eq10band and eqtone after eq6band (%u filters)", (unsigned)n);
+    real(self, pool, &v);
 }
 
 /* ── the jack: libasound ─────────────────────────────────────────────────────────────────────── */

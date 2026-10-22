@@ -16,6 +16,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **The 10-band EQ and Tone Control on Sony's own firmware, without Wampy or Walkman One.** Sony's
+  stock A50 sound chain has neither filter, so over Bluetooth and USB-DAC Cinder's EQ and Tone
+  Control changed nothing unless Wampy or Walkman One had added them. Cinder's sound-service library
+  (the `preload` component) now adds both, after the six-band EQ. Walkman One's chain is left as it
+  is. *Host- and qemu-tested; device-unverified.*
+
 ## [0.3.19] — 2026-10-20
 
 ### Changed

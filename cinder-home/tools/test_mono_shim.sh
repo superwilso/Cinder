@@ -50,7 +50,7 @@ run_all() {  # run_all <label> <runner...>
 
 # ── host ──
 DEFS=(-DCINDER_MONO_DIR="\"$S\"" -DCINDER_MONO_DATA="\"$S\"" -DCINDER_WAMPY_LIB="\"$S/libsound_service_fw\""
-      -DCINDER_ASOUND_LIB='"libfakeasound.so"')
+      -DCINDER_ASOUND_LIB='"libfakeasound.so"' -DCINDER_SSFW_LIB='"libfakeasound.so"')
 cc -O2 -Wall -Wextra -shared -fPIC "${DEFS[@]}" -I"$HERE/src" \
    -o "$W/libcinder_mono.so" "$HERE/src/cinder-mono.c" -ldl -lpthread
 cc -O2 -Wall -shared -fPIC -DFAKE_WAMPY -o "$W/fakewampy.so" "$HERE/tools/mono_shim_test.c"
