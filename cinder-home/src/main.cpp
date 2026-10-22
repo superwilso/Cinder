@@ -3218,13 +3218,23 @@ void boot_to_sony_receiver();   // with the BT receiver, below
 //
 // Nothing is lost on the way back: a new process has an empty fx_dirty cache, so the next Cinder
 // boot re-sends its own selector and Source Direct with the rest of the chain.
-// *The hand-back is host-tested; not yet heard on a device (DEVICE_CHECKLIST 27.1).*
+//
+// THE WRITE HAS TO BE FLUSHED, OR THE RESTART THROWS IT AWAY (issue #35). The sound service stores
+// the selector as SS_EQ_USE through ConfigurationService, which keeps it in a RAM cache in front
+// of NVP. Only ConfigurationService::Flush, OnSuspend, OnEarlySuspend and OnShutdown write that
+// cache out (each one calls NvpCache::Flush; libConfigurationService.so, the veneer at 0x24250).
+// Our restart is reboot(2), which runs none of them, so stock came up with the last value that did
+// reach NVP: Cinder's ten-band, flushed by a screen-off suspend or a Bluetooth service. The same
+// reason sony_rx_write flushes. If the flush fails, the marker stays, and the launcher's helper
+// sets the selector again on the way into stock, where no restart follows it.
+static bool sony_cfg_flush();
 static void stock_handback_fn() {
     cinder_effects_set_tone_system(CINDER_TONE_SYS_EQ6);
     cinder_effects_set_source_direct(0);
-    clog_("boot-to-stock: handed the EQ selector back to the six-band, Source Direct off");
-    // Done here, so the launcher need not do it again on the way to stock (see stock_eq_main).
-    ::unlink("/data/cinder/eq_owned");
+    const bool kept = sony_cfg_flush();
+    clog_(kept ? "boot-to-stock: handed the EQ selector back to the six-band, Source Direct off, flushed"
+               : "boot-to-stock: handed the EQ selector back, but the flush FAILED; the launcher will redo it");
+    if (kept) ::unlink("/data/cinder/eq_owned");
 }
 
 void boot_to_stock() {
@@ -8813,6 +8823,11 @@ static void sony_rx_write() {
                   SONY_FUNC_BT_RECEIVER, set ? "ok" : "FAILED", fl ? "ok" : "FAILED", back);
     clog_(m);
     g_sony_rx_ok = back == SONY_FUNC_BT_RECEIVER;
+}
+
+// Writes Sony's cached settings out to NVP. See stock_handback_fn for why a restart needs it.
+static bool sony_cfg_flush() {
+    return sony_cfg_open() && g_cfg_flush(g_cfg) == 0;
 }
 
 void boot_to_stock();

@@ -24,6 +24,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   (the `preload` component) now adds both, after the six-band EQ. Walkman One's chain is left as it
   is. *Host- and qemu-tested; device-unverified.*
 
+### Fixed
+
+- **Sony's EQ after Boot to stock** ([#35](https://github.com/superwilso/Cinder/issues/35)). The
+  hand-back set Sony's EQ selector, but Sony keeps settings in a cache that only reaches storage on
+  a flush, a suspend or a shutdown, and Cinder's restart skips all three. Stock came up with
+  Cinder's ten-band still selected, so its equalizer did nothing. The hand-back now flushes, and if
+  that fails, the launcher sets the selector again on the way into stock. *Device-unverified.*
+
 ## [0.3.19] — 2026-10-20
 
 ### Changed
