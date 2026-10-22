@@ -1535,14 +1535,32 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("search", &|c: &mut Canvas| {
                 let q = "st";
-                let songs: Vec<&cinder_ui::model::SongRow> = lib
-                    .songs
+                // Artists first, as `App::search_rebuild` orders them, then the songs.
+                let artists = lib
+                    .artists
                     .iter()
-                    .filter(|s| {
-                        s.title.to_lowercase().contains(q) || s.artist.to_lowercase().contains(q)
+                    .filter(|a| a.name.to_lowercase().contains(q));
+                let rows: Vec<cinder_ui::search::HitRow> = artists
+                    .map(|a| cinder_ui::search::HitRow {
+                        title: a.name.clone(),
+                        sub: "Artist".into(),
+                        opens: true,
                     })
+                    .chain(
+                        lib.songs
+                            .iter()
+                            .filter(|s| {
+                                s.title.to_lowercase().contains(q)
+                                    || s.artist.to_lowercase().contains(q)
+                            })
+                            .map(|s| cinder_ui::search::HitRow {
+                                title: s.title.clone(),
+                                sub: s.artist.clone(),
+                                opens: false,
+                            }),
+                    )
                     .collect();
-                cinder_ui::search::render(c, &theme, &fonts, &songs, q, lib.songs.len(), 0, false)
+                cinder_ui::search::render(c, &theme, &fonts, &rows, q, lib.songs.len(), 0, false)
             }),
             ("library_search_button", &|c: &mut Canvas| {
                 library::render(

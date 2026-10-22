@@ -105,6 +105,14 @@ const FILES: &[(&str, &str, &str, bool)] = &[
         "bt-aac",
         false,
     ),
+    // Every advanced switch, commented out: the user renames it to cinder_advanced.conf to use one.
+    // Read from deploy/, not dist/: it is text that changes with the source, not a build output.
+    (
+        "deploy/cinder_advanced.conf.example",
+        "cinder_advanced.conf.example",
+        "",
+        true,
+    ),
     // The .UPG the Sony updater actually runs. It MUST land on the player as NW_WM_FW.UPG —
     // that filename is what the device's own "update firmware" flow looks for. One per key: the
     // updater drops a package sealed for another model's key without a word, and Walkman One

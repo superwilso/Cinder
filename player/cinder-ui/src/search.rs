@@ -1,22 +1,41 @@
-//! Library search — find a song by any part of its title, artist or album name, and play it.
+//! Library search — find a song by any part of its title, artist or album name, and play it; or
+//! an artist, album or audiobook by its name, and open it.
+//!
+//! Results come in that order: artists, albums, audiobooks, then songs. A row that opens a page
+//! wears a chevron; a song row wears the play mark and swipes to the queue like every other song.
 //!
 //! An opt-in component (`search` in `components.conf`): the Library header draws the button only
 //! when the shell says it is installed. The layout is the "Add tracks" picker's — a fixed search band
 //! over a plain list — because that screen already taught the idiom, and its geometry and hit tests
 //! are shared rather than copied, so the two cannot drift.
 
-use crate::model::SongRow;
 use crate::playlist_pick::{content_h, BOTTOM, LIST_TOP, ROW_H, SEARCH_H, TOP};
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
 use crate::widgets::{fill_rect, fit, hline, sty};
 use crate::Canvas;
 
+/// One result: an index into `lib.artists`, `lib.albums_flat()`, `lib.books` or `lib.songs`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hit {
+    Artist(usize),
+    Album(usize),
+    Book(usize),
+    Song(usize),
+}
+
+/// What a result row shows. `opens` = it leads to a page (chevron) rather than playing (play mark).
+pub struct HitRow {
+    pub title: String,
+    pub sub: String,
+    pub opens: bool,
+}
+
 pub fn render(
     c: &mut Canvas,
     t: &Theme,
     f: &FontSet,
-    songs: &[&SongRow],
+    songs: &[HitRow],
     query: &str,
     total: usize,
     scroll_px: i32,
@@ -95,11 +114,17 @@ pub fn render(
             c,
             f,
             26.0,
-            (cy + 17) as f32,
-            &fit(f, &song.artist, &artist_style, 380.0),
+            // 19, not the picker's 17: a CJK second line ("歌手") is taller than a Latin artist
+            // name and touched the title at the largest text size (tests/ui_overflow.rs).
+            (cy + 19) as f32,
+            &fit(f, &song.sub, &artist_style, 380.0),
             &artist_style,
         );
-        crate::icons::play(c, 440.0, cy as f32, 14.0, t.faint);
+        if song.opens {
+            crate::icons::chevron(c, 440.0, cy as f32, 14.0, t.faint);
+        } else {
+            crate::icons::play(c, 440.0, cy as f32, 14.0, t.faint);
+        }
         hline(c, y + ROW_H, t.line);
         y += ROW_H;
     }

@@ -1902,6 +1902,8 @@ static const long REORDER_HOLD_MS   = 350;   // long enough not to fire on a tap
 static const int  REORDER_HOLD_SLOP = 10;    // px of wander still counted as "held still"
 static long  g_touch_down_ms = 0;
 static bool  g_reorder_hold_tested = false;
+// A long press queued the song under it (`hold_play_next`): the lift that ends it is not a tap.
+static bool  g_hold_queued = false;
 // Scrollbar drag: the bar at the right edge owns the contact, like the reorder handle does.
 static bool  g_sbar_active = false;
 long now_ms() {
@@ -3886,7 +3888,7 @@ static void screen_auto_off() {
     g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
     g_quickpull_active = false; g_quickpull_tested = false;
-                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false; g_hold_queued = false;
     panel_dark();
     apply_pump_interval();   // nothing on screen needs 50 Hz IPC latency
     clog_("screen: idle timeout -> panel off (touch or Power wakes it)");
@@ -11724,6 +11726,9 @@ static void touch_release() {
         // to the classifier below would re-read the gesture as a tap (a short drag) or a swipe and
         // start playing the track the user was only trying to move.
         cinder_reorder_release();
+    } else if (g_touch_down && g_hold_queued) {
+        // A long press already queued the song. Falling through would read the lift as a tap and
+        // start playing the song the user only asked to hear next.
     } else if (g_touch_down && g_drag_active) {
         // Live drag ends: hand the measured velocity to the fling (unless the finger held
         // still before lifting — stale velocity must not fling).
@@ -11759,7 +11764,7 @@ static void touch_release() {
     g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
     g_quickpull_active = false; g_quickpull_tested = false;
-                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false; g_hold_queued = false;
 }
 
 // Called on every touch position update while the contact is down: promote a mostly-vertical
@@ -12074,6 +12079,16 @@ static void reorder_hold_tick() {
         // next event would leave the screen unchanged until the finger moved — which is precisely
         // the moment the user is deciding whether the gesture worked.
         if (g_screen_on) cinder_render_tick();
+        return;
+    }
+    // Opt-in: a hold on a song row is Play next. The UI has already queued it and shown the toast;
+    // it returns an action code (or NONE) for the shell, and -1 when there was no song to queue.
+    const int act = adv_on("hold_play_next") ? cinder_hold(hx, hy) : -1;
+    if (act >= 0) {
+        g_hold_queued = true;
+        clog_("touch: long press -> play next");
+        if (act != CINDER_ACT_NONE) carry_out_input(act);
+        if (g_screen_on) cinder_render_tick();
     } else {
         char m[96];
         std::snprintf(m, sizeof m, "hold: UI declined a lift at %d,%d (not a reorderable row?)", hx, hy);
@@ -12202,7 +12217,7 @@ void input_pump() {
                         g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
     g_quickpull_active = false; g_quickpull_tested = false;
-                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false; g_hold_queued = false;
                         // AND SWALLOW THE REST OF THIS CONTACT. Clearing the state above is not
                         // enough: the finger is still on the glass and the panel keeps streaming
                         // positions, but `screen_auto_wake` has already set g_screen_on — so the
@@ -12246,7 +12261,7 @@ void input_pump() {
                             g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
     g_quickpull_active = false; g_quickpull_tested = false;
-                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false; g_hold_queued = false;
                             cinder_touch_down();   // finger down stops an in-flight fling
                         } else if (g_touch_start_x < 0) g_touch_start_x = val;
                         // Also drive the classifier from HERE, not only from ABS_Y: a panel that
@@ -12271,7 +12286,7 @@ void input_pump() {
                                 g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
     g_quickpull_active = false; g_quickpull_tested = false;
-                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false; g_hold_queued = false;
                                 cinder_touch_down();
                             }
                         } else {

@@ -105,6 +105,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "ADD" => Some("添加"),
         "ADD SONGS TO UP NEXT" => Some("需要音乐播放队列"),
         "ADDED" => Some("添加时间"),
+        "ADVANCED" => Some("高级"),
         "AERIAL: CABLE IN THE JACK  ·  AUDIO OVER BLUETOOTH" => Some("天线：耳机线 · 声音经蓝牙输出"),
         "AGAIN" => Some("再次查看"),
         "ALBUM" => Some("专辑"),
@@ -141,6 +142,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Album" => Some("专辑"),
         "Album added to Up Next — {}" => Some("专辑已加入待播队列：{}"),
         "Album artist" => Some("专辑歌手"),
+        "Album · {}" => Some("专辑 · {}"),
         "Albums" => Some("专辑"),
         "All four are in use: delete one first" => Some("四个预设均已占用，请先删除一个"),
         "Already in this playlist" => Some("此曲目已在列表中"),
@@ -154,6 +156,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Artist" => Some("歌手"),
         "Artists" => Some("歌手"),
         "Audio device" => Some("音频设备"),
+        "Audiobook" => Some("有声书"),
+        "Audiobook · {}" => Some("有声书 · {}"),
         "Audiobooks" => Some("有声书"),
         "August" => Some("八月"),
         "Auto" => Some("自动"),
@@ -489,6 +493,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Month" => Some("月"),
         "More effects" => Some("更多音效"),
         "More settings" => Some("更多设置"),
+        "More switches, in a text file" => Some("更多开关，在文本文件中"),
         "Morning" => Some("清晨"),
         "Move a song" => Some("移动歌曲"),
         "Move it anywhere" => Some("移动到任意位置"),
@@ -994,6 +999,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "UP NEXT" => Some("待播队列"),
         "UP NEXT IS EMPTY" => Some("需要音乐播放队列"),
         "UP NEXT IS SAFE" => Some("巡听中 · 保留原队列"),
+        "USB DRIVE" => Some("USB 存储"),
         "USB Storage" => Some("USB 存储"),
         "USB mode" => Some("USB 模式"),
         "USB-DAC active" => Some("USB-DAC 已开启"),
@@ -1190,6 +1196,18 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("专辑已加入待播队列：{}" $(, $($args)*)?),
             _ => format!("Album added to Up Next — {}" $(, $($args)*)?),
+        }
+    };
+    ("Album · {}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("专辑 · {}" $(, $($args)*)?),
+            _ => format!("Album · {}" $(, $($args)*)?),
+        }
+    };
+    ("Audiobook · {}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("有声书 · {}" $(, $($args)*)?),
+            _ => format!("Audiobook · {}" $(, $($args)*)?),
         }
     };
     ("BY {}" $(, $($args:tt)*)?) => {

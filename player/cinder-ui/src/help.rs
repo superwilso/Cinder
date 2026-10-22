@@ -8,6 +8,8 @@
 //!   GETTING AROUND
 //!   Now Playing                        TAP THE CLOCK
 //!   ...
+//!   ADVANCED
+//!   More switches, in a text file      USB DRIVE
 //!   AGAIN
 //!   Replay the introduction                         ›
 //! ```
@@ -128,6 +130,14 @@ const BUTTONS: [Line; 6] = [
     },
 ];
 
+/// The installer puts the example on the drive at every install; the file explains itself.
+const ADVANCED: [Line; 1] = [Line {
+    lead: "",
+    title: "More switches, in a text file",
+    sub: "cinder_advanced.conf.example",
+    how: "USB DRIVE",
+}];
+
 /// A single-line row is shorter than the kit's two-line row: this is a reference list, and 28
 /// rows at 64 px would be three screens of scrolling for one line each.
 const LINE_H: i32 = 52;
@@ -160,7 +170,7 @@ fn parts(pull_down: bool) -> Vec<(Part, i32, i32)> {
         .copied()
         .chain(pull_down.then_some(PULL_DOWN))
         .collect();
-    let sections: [(&'static str, &[Line]); 7] = [
+    let sections: [(&'static str, &[Line]); 8] = [
         (crate::i18n::text("THE WAY BACK TO SONY"), &WAY_BACK),
         (crate::i18n::text("GETTING AROUND"), &GETTING_AROUND),
         (crate::i18n::text("ON ANY SONG"), &ANY_SONG),
@@ -168,6 +178,7 @@ fn parts(pull_down: bool) -> Vec<(Part, i32, i32)> {
         (crate::i18n::text("NOW PLAYING"), &NOW_PLAYING),
         (crate::i18n::text("ANYWHERE"), &anywhere),
         (crate::i18n::text("BUTTONS"), &BUTTONS),
+        (crate::i18n::text("ADVANCED"), &ADVANCED),
     ];
     for (label, lines) in sections {
         push(Part::Label(label), kit::SECTION_H);

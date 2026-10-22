@@ -11,6 +11,8 @@
 # ── Power ────────────────────────────────────────────────────────────────────────────────────
 # Sleep fully (suspend to RAM) when paused, screen off, off the cable, for a minute.
 #ram_suspend
+# The same deep sleep is on by default in dev builds; this turns it off there.
+#no_ram_suspend
 # Never enter the light sleep Cinder uses behind a dark screen.
 #no_suspend
 # Keep the light sleep, but not while music plays on the headphone jack / over Bluetooth.
@@ -26,12 +28,18 @@
 # ── Other ────────────────────────────────────────────────────────────────────────────────────
 # Do not write /contents/.scrobbler.log (for players that run another scrobbler).
 #no_scrobble
+# Hold a song (instead of swiping it left) to play it next.
+#hold_play_next
 
 # ── Diagnostics (for bug reports; leave off) ─────────────────────────────────────────────────
 #no_fbsync
 #async_library
 #automsc_on
+# Record Sony noise-cancelling diagnostics at start and on every headphone change (issue #27).
+#nc_probe
 # Where Sony's library lives and which folders it scans (defaults shown).
 #mediastore_db=/db/MTPDB.dat
 #mediastore_root=/data/mnt/
 #mediastore_dirs=MUSIC,LEARNING
+# One more folder to scan, beside the root (default none).
+#mediastore_extra=

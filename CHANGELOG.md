@@ -18,6 +18,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Search finds artists, albums and audiobooks**, listed in that order above the songs. An artist
+  or album row opens its page; an audiobook plays from where you stopped.
+- **Hold a song to play it next** (opt-in): `hold_play_next` in `cinder_advanced.conf`. A hold on
+  Up Next still picks the row up. *Device-unverified.*
+
+- **`cinder_advanced.conf.example` lands on the player's drive with every install**, and Help ▸
+  Advanced names it. It now lists every switch Cinder reads, including `nc_probe`,
+  `no_ram_suspend` and `mediastore_extra`, which were missing.
+
+- **The Smooth (NW-WM1A) and Walkman One volume curves need no file copying.** Choosing either one
+  lets the installer download the 36 KB of Sony's NW-WM1 3.02 firmware that holds the tables, from
+  Sony's update server, check their SHA-256 and put them on the player's drive. Nothing is needed
+  from Wampy or Walkman One. *Tested against Sony's server; not yet run in a full install.*
+
 - **The 10-band EQ and Tone Control on Sony's own firmware, without Wampy or Walkman One.** Sony's
   stock A50 sound chain has neither filter, so over Bluetooth and USB-DAC Cinder's EQ and Tone
   Control changed nothing unless Wampy or Walkman One had added them. Cinder's sound-service library

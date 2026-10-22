@@ -1724,7 +1724,7 @@ pub struct App {
     search_enabled: bool,
     search_query: String,
     /// Matching songs as ABSOLUTE indices into `lib.songs`, like `track_pick_order`.
-    search_order: Vec<usize>,
+    search_order: Vec<crate::search::Hit>,
     search_scroll_px: i32,
     /// Memoised A-Z rail map, keyed on (tab, songs sort, albums order). See `az_present_memo`.
     az_memo: Option<((u8, usize, usize), [bool; 27])>,
@@ -3220,20 +3220,78 @@ impl App {
     /// Re-run the query. An empty one finds nothing rather than everything: this list is answers,
     /// and 3,400 unasked-for rows would read as a search that matched every song.
     fn search_rebuild(&mut self) {
-        let order = if self.search_query.trim().is_empty() {
-            Vec::new()
-        } else {
-            self.songs_matching(&self.search_query)
-        };
+        use crate::search::Hit;
+        let q = self.search_query.trim().to_lowercase();
+        let mut order = Vec::new();
+        if !q.is_empty() {
+            let has = |s: &str| s.to_lowercase().contains(&q);
+            order.extend(
+                (0..self.lib.artists.len())
+                    .filter(|&i| has(&self.lib.artists[i].name))
+                    .map(Hit::Artist),
+            );
+            order.extend(
+                self.lib
+                    .albums_flat()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| has(&a.name))
+                    .map(|(i, _)| Hit::Album(i)),
+            );
+            order.extend(
+                (0..self.lib.books.len())
+                    .filter(|&i| has(&self.lib.books[i].title) || has(&self.lib.books[i].author))
+                    .map(Hit::Book),
+            );
+            order.extend(self.songs_matching(&q).into_iter().map(Hit::Song));
+        }
         self.search_order = order;
         self.search_scroll_px = 0;
     }
 
-    fn search_songs(&self) -> Vec<&crate::model::SongRow> {
+    /// The rows the Search screen draws, in result order.
+    fn search_rows(&self) -> Vec<crate::search::HitRow> {
+        use crate::search::{Hit, HitRow};
+        let flat = self.lib.albums_flat();
         self.search_order
             .iter()
-            .filter_map(|i| self.lib.songs.get(*i))
+            .filter_map(|h| match *h {
+                Hit::Artist(i) => self.lib.artists.get(i).map(|a| HitRow {
+                    title: a.name.clone(),
+                    sub: crate::i18n::text("Artist").to_string(),
+                    opens: true,
+                }),
+                Hit::Album(i) => flat.get(i).map(|a| HitRow {
+                    title: a.name.clone(),
+                    sub: crate::ui_format!("Album · {}", a.artist),
+                    opens: true,
+                }),
+                Hit::Book(i) => self.lib.books.get(i).map(|b| HitRow {
+                    title: b.title.clone(),
+                    sub: if b.author.is_empty() {
+                        crate::i18n::text("Audiobook").to_string()
+                    } else {
+                        crate::ui_format!("Audiobook · {}", b.author)
+                    },
+                    opens: false,
+                }),
+                Hit::Song(i) => self.lib.songs.get(i).map(|s| HitRow {
+                    title: s.title.clone(),
+                    sub: s.artist.clone(),
+                    opens: false,
+                }),
+            })
             .collect()
+    }
+
+    /// The search result at `y`, if any.
+    fn search_hit_at(&self, y: i32) -> Option<crate::search::Hit> {
+        if crate::playlist_pick::hit_search(y) {
+            return None;
+        }
+        let r =
+            crate::playlist_pick::hit_track_row(self.search_order.len(), self.search_scroll_px, y)?;
+        self.search_order.get(r).copied()
     }
 
     /// The track row under `y` on the three plain track lists that have no page of their own —
@@ -3241,17 +3299,11 @@ impl App {
     /// row, the search band, or empty space.
     fn list_song_at(&self, y: i32) -> Option<SongRow> {
         match self.current() {
-            Screen::Search => {
-                if crate::playlist_pick::hit_search(y) {
-                    return None;
-                }
-                let r = crate::playlist_pick::hit_track_row(
-                    self.search_order.len(),
-                    self.search_scroll_px,
-                    y,
-                )?;
-                self.search_songs().get(r).map(|s| (*s).clone())
-            }
+            // Only song rows: an artist, album or book row has nothing to queue on its own.
+            Screen::Search => match self.search_hit_at(y)? {
+                crate::search::Hit::Song(i) => self.lib.songs.get(i).cloned(),
+                _ => None,
+            },
             Screen::Folders => {
                 match crate::folders::row_at(&self.lib, self.folder_cur(), y, self.folder_scroll_px)
                 {
@@ -3285,18 +3337,34 @@ impl App {
         crate::playlist_pick::tracks_max_scroll(self.search_order.len())
     }
 
-    /// Search: the band edits the query, a row plays that song.
+    /// Search: the band edits the query; an artist or album row opens its page, a book plays from
+    /// its place (as on the Audiobooks screen), a song row plays that song.
     fn tap_search(&mut self, y: i32) -> Vec<Action> {
+        use crate::search::Hit;
         if crate::playlist_pick::hit_search(y) {
             self.open_keyboard(KbPurpose::LibrarySearch);
             return vec![];
         }
-        let row =
-            crate::playlist_pick::hit_track_row(self.search_order.len(), self.search_scroll_px, y);
-        let Some(id) = row.and_then(|r| self.search_songs().get(r).map(|s| s.object_id)) else {
-            return vec![];
-        };
-        self.start_play(id)
+        match self.search_hit_at(y) {
+            Some(Hit::Artist(i)) => {
+                self.open_artist(i);
+                vec![]
+            }
+            Some(Hit::Album(i)) => {
+                self.album_view = i;
+                self.album_track_idx = 0;
+                self.album_scroll_px = 0;
+                self.fling_v = 0.0;
+                self.push(Screen::Album);
+                vec![]
+            }
+            Some(Hit::Book(i)) => self.start_play_action(Action::PlayBook(i)),
+            Some(Hit::Song(i)) => match self.lib.songs.get(i).map(|s| s.object_id) {
+                Some(id) => self.start_play(id),
+                None => vec![],
+            },
+            None => vec![],
+        }
     }
 
     /// True when the Now Playing screen is showing (so the shell only animates the visualiser
@@ -6950,10 +7018,37 @@ impl App {
         if self.locked || self.overlay_open() || self.confirm.is_some() {
             return false;
         }
+        if !self.row_swipes(y) {
+            return false;
+        }
+        self.swipe_live = true;
+        self.swipe_row = Some(crate::library::SwipeRow {
+            y,
+            dx: library::swipe_offset(dx),
+        });
+        true
+    }
+
+    /// A LONG PRESS that lifted nothing (the shell offers `reorder_begin_hold` first): on a song
+    /// row it is Play next, the same as a leftward swipe, for anyone who finds a hold easier than
+    /// a swipe. None where nothing would be queued, so the shell can let the contact go on as it
+    /// was; Up Next is left out because a hold there moves the row and a swipe removes it.
+    pub fn hold(&mut self, x: i32, y: i32) -> Option<Vec<Action>> {
+        if self.locked || self.overlay_open() || self.confirm.is_some() {
+            return None;
+        }
+        if self.current() == Screen::UpNext || !self.row_swipes(y) {
+            return None;
+        }
+        Some(self.swipe(-1, x, y))
+    }
+
+    /// Is there a row under `y` that a horizontal swipe acts on?
+    fn row_swipes(&self, y: i32) -> bool {
         // Only where a track sits under the finger: the same rows `swipe` can queue. Artist and
         // playlist rows have nothing to queue, so they must not move — a row that slides and then
         // does nothing is worse feedback than a row that never moved.
-        let has_track = match self.current() {
+        match self.current() {
             Screen::Library => match self.lib_tab {
                 Tab::Songs => library::hit_row_at(
                     self.lib_tab,
@@ -6987,16 +7082,7 @@ impl App {
                 Some(crate::up_next::Slot::Upcoming(_))
             ),
             _ => false,
-        };
-        if !has_track {
-            return false;
         }
-        self.swipe_live = true;
-        self.swipe_row = Some(crate::library::SwipeRow {
-            y,
-            dx: library::swipe_offset(dx),
-        });
-        true
     }
 
     /// The finger came off a live row swipe. The row animates home from wherever it was; whether
@@ -10002,12 +10088,12 @@ impl App {
                 )
             }
             Screen::Search => {
-                let songs = self.search_songs();
+                let rows = self.search_rows();
                 crate::search::render(
                     c,
                     &theme,
                     fonts,
-                    &songs,
+                    &rows,
                     &self.search_query,
                     self.lib.songs.len(),
                     self.search_scroll_px,
@@ -17220,22 +17306,86 @@ mod tests {
         let want = a.lib.songs[0].clone();
         a.kb_text = want.title.clone();
         a.kb_after_key();
-        assert!(
-            a.search_songs()
-                .iter()
-                .any(|s| s.object_id == want.object_id),
-            "found while typing"
-        );
+        let song_row = |a: &App| {
+            a.search_order.iter().position(|h| {
+                matches!(*h, crate::search::Hit::Song(i) if a.lib.songs[i].object_id == want.object_id)
+            })
+        };
+        assert!(song_row(&a).is_some(), "found while typing");
         a.pop();
         assert_eq!(a.current(), Screen::Search);
 
-        let row = a
-            .search_songs()
-            .iter()
-            .position(|s| s.object_id == want.object_id)
-            .unwrap();
+        let row = song_row(&a).unwrap();
         let y = crate::playlist_pick::LIST_TOP + row as i32 * crate::playlist_pick::ROW_H + 10;
         assert_eq!(a.tap(240, y), vec![Action::PlayIndex(want.object_id)]);
+    }
+
+    /// Search finds artists and albums by name, ahead of the songs, and their rows open the page.
+    #[test]
+    fn search_finds_artists_and_albums_and_opens_them() {
+        use crate::search::Hit;
+        let row_y =
+            |r: usize| crate::playlist_pick::LIST_TOP + r as i32 * crate::playlist_pick::ROW_H + 10;
+        let mut a = App::unlocked();
+        a.set_search_enabled(true);
+        a.push_for_test(Screen::Library);
+
+        let artist = a.lib.artists[0].name.clone();
+        a.search_query = artist.clone();
+        a.search_rebuild();
+        a.push_for_test(Screen::Search);
+        let r = a
+            .search_order
+            .iter()
+            .position(|h| *h == Hit::Artist(0))
+            .expect("artist found");
+        assert!(
+            a.search_order[..r]
+                .iter()
+                .all(|h| matches!(h, Hit::Artist(_))),
+            "artists come first"
+        );
+        assert_eq!(a.tap(240, row_y(r)), Vec::<Action>::new());
+        assert_eq!(a.current(), Screen::Artist);
+        assert_eq!(a.artist_view, 0);
+
+        let album = a.lib.albums_flat()[0].name.clone();
+        a.pop();
+        a.search_query = album;
+        a.search_rebuild();
+        let r = a
+            .search_order
+            .iter()
+            .position(|h| *h == Hit::Album(0))
+            .expect("album found");
+        if let Some(first_song) = a
+            .search_order
+            .iter()
+            .position(|h| matches!(h, Hit::Song(_)))
+        {
+            assert!(r < first_song, "albums come before songs");
+        }
+        assert_eq!(a.tap(240, row_y(r)), Vec::<Action>::new());
+        assert_eq!(a.current(), Screen::Album);
+        assert_eq!(a.album_view, 0);
+        // An album row has nothing to queue on its own: it neither slides nor plays next.
+        a.pop();
+        assert!(!a.swipe_track(-80, row_y(r)));
+
+        // A book is found by its title or its author, and plays from its place.
+        a.lib.books.push(crate::model::BookRow {
+            title: "Zqx Chronicles".into(),
+            author: "Wren Abbot".into(),
+            chapters: vec![a.lib.songs[0].clone()],
+            ..Default::default()
+        });
+        let b = a.lib.books.len() - 1;
+        for q in ["zqx", "wren abbot"] {
+            a.search_query = q.into();
+            a.search_rebuild();
+            assert_eq!(a.search_order.first(), Some(&Hit::Book(b)), "{q}");
+        }
+        assert_eq!(a.tap(240, row_y(0)), vec![Action::PlayBook(b)]);
     }
 
     /// The "Add to playlist" picker is REACHABLE. It was built complete — renderer, hit tests,
@@ -18592,6 +18742,27 @@ mod tests {
         // A rightward swipe on chrome (above the rows) queues nothing.
         assert!(a.swipe(1, 240, 100).is_empty());
         assert_eq!(upq(&a).len(), 2);
+    }
+
+    /// A long press that lifted nothing is Play next on a song row, nothing anywhere else, and
+    /// nothing on Up Next, where a hold moves the row instead.
+    #[test]
+    fn a_hold_on_a_song_row_plays_it_next() {
+        let mut a = with_playing(unlocked(), 1);
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        let row_y = library::list_top(Tab::Songs) + library::row_h(Tab::Songs) / 2;
+        assert_eq!(a.hold(240, row_y), Some(vec![Action::QueueChanged]));
+        assert_eq!(upq(&a).len(), 1);
+        assert!(
+            a.toast.starts_with("Playing next"),
+            "toast was {:?}",
+            a.toast
+        );
+        assert_eq!(a.hold(240, 100), None, "chrome above the rows");
+        assert_eq!(upq(&a).len(), 1);
+        a.stack = vec![Screen::UpNext];
+        assert_eq!(a.hold(240, row_y), None);
     }
 
     /// Swipe-to-queue also works on an expanded album's inline track rows. Those rows are

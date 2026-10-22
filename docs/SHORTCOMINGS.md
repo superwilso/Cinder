@@ -88,6 +88,16 @@ already been bitten by, and it is the one part of the tree with no automated che
 > not *purely* IPC — there is validation logic in there, it is the last line before a closed
 > service, and it was absent. The rest of `player_shim.cpp` and `tuner_shim.cpp` deserve the same
 > read. **A2 stays open**, one rung less high.
+>
+> **2026-10-22 — four of nine shims under test.** `effect_shim`, `volume_shim`, `power_shim` and
+> `codec_shim` call plain exported members or ioctls, so a host self-test can include the shipping
+> file and define the Sony side as a recording fake (`cinder-home/tools/*shim_selftest.cpp`, run by
+> `selftests.sh` in CI). Pinned: every `cinder_effects_*` entry reaches its own method with clamped
+> arguments; a 0 or >120 AVLS threshold is "no cap", not a cap; nothing reaches Sony's `Reboot` /
+> `SetStatus`; the amp switch never writes the BTL item and every ALSA control goes by name. Each
+> test was checked by breaking the shim and watching it fail. Left: `player_shim`, `tuner_shim`,
+> `analyzer_shim`, `storage_shim`, which call through recovered vtables and need fake objects in
+> the `harness/fake_pst.cpp` style; `sound_settings_shim` is probe-only.
 
 ### A3. Shell is load-bearing, and 5,288 lines of it are unlinted
 
