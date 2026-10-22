@@ -261,6 +261,7 @@ int cinder_zappin_prepare_normal_queue(void);
 int cinder_zappin_prepare_resume_queue(void);
 int cinder_zappin_cancel(void);
 int cinder_zappin_abandon(void);
+int cinder_zappin_hold_active(void);
 int cinder_zappin_abandon_internal_mutation(void);
 int cinder_zappin_abandon_for_normal_play(void);
 /* Confirm only after now-playing metadata is updated and the live service URI/position is valid. */

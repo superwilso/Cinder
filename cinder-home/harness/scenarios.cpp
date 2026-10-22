@@ -1867,6 +1867,7 @@ static void s_zappin_seek_failure_skips_candidate(void) {
 static void zappin_shell_preview_setup(void) {
     healthy_device();
     cinder_harness_input_enable();
+    cinder_harness_script("cinder_zappin_hold_active", 1); // the FFI holds persistence
     cinder_harness_script("cinder_zappin_generation", 7);
     cinder_harness_script("cinder_zappin_candidate_count", 2);
     cinder_harness_script("cinder_zappin_current_index", 0);
@@ -2267,6 +2268,8 @@ static void s_queue_edit_is_seamless_without_preview(void) {
              "ordinary queue edit preserves the existing transport intent");
     check_eq(cinder_harness_count("cinder_zappin_abandon_for_normal_play"), 1,
              "ordinary selection checks for a preview hold exactly once");
+    check_eq(cinder_harness_arg("cinder_set_now_playing_uri", 0), 0,
+             "without a preview a track change is reported at 0, as on main");
 }
 
 static void s_paused_queue_edit_preserves_pause(void) {
@@ -2390,24 +2393,20 @@ static void s_zappin_restore_seek_failure_stays_paused_then_next_recovers(void) 
           "failed restore seek pauses the old sample before retry");
 }
 
-static void s_zappin_handoff_timeout_play_retries_full_intent(void) {
+static void s_zappin_handoff_timeout_full_releases_without_retry(void) {
     zappin_shell_preview_setup();
-    // Preview, explicit Full, timeout, user Pause, then explicit Play. The first post-Full
-    // service report is still at the sample offset; only the retried sequence reports real zero.
+    // Preview, explicit Full, then PlayerService never reports the reset position. The bounded
+    // poll gives up after 15 s and RELEASES the FFI hold (the fresh track from zero) instead of
+    // leaving persistence held until some later Play; that Play is then an ordinary one.
     static const long long taps[] = {52, 54};
-    static const long long play_rc[] = {0, 0, 0};
     static const long long play_actions[] = {1, 1}; // CINDER_ACT_PLAYPAUSE for AVRCP PAUSE/PLAY
     cinder_harness_script_seq("cinder_tap", taps, 2);
     cinder_harness_script_seq("cinder_input", play_actions, 2);
-    cinder_harness_script_seq("cinder_audio_play_tracks", play_rc, 3);
     cinder_harness_script("cinder_pending_play_count", 1);
     cinder_harness_script("cinder_pending_play_start", 0);
     cinder_harness_pending_play_uri_set(0, "/music/first.flac");
-    cinder_harness_play_position_at(21000, 0, 180000);       // confirm preview URI
-    cinder_harness_play_position_at(21500, 62000, 180000); // stale sample offset before Full handoff
-    cinder_harness_play_position_at(45000, 0, 180000);     // retry reached real start
-    cinder_harness_script("cinder_zappin_confirm_handoff", 1);
-    cinder_harness_script("cinder_zappin_take_handoff_confirmed", 1);
+    cinder_harness_play_position_at(21000, 0, 180000);     // confirm preview URI
+    cinder_harness_play_position_at(21500, 62000, 180000); // stale sample offset, never resets
     cinder_harness_tap_at(20000, 240, 400);
     cinder_harness_tap_at(22000, 240, 400);
     cinder_harness_key_at(41000, 201, 1);
@@ -2417,38 +2416,30 @@ static void s_zappin_handoff_timeout_play_retries_full_intent(void) {
     cinder_harness_set_budget_ms(47000);
     cinder_harness_run();
 
-    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 3,
-             "Play after the bounded timeout resubmits the saved Full sequence");
-    check_eq(cinder_harness_count("cinder_input"), 2,
-             "both explicit transport key events reach the action path");
-    check_eq(cinder_harness_arg("cinder_audio_play_tracks", 2), 1,
-             "the retry still starts the selected one-track sequence");
-    check_eq(cinder_harness_count_between("cinder_zappin_confirm_handoff", 22000, 39000), 0,
-             "stale sample progress never attempts to confirm Full before timeout");
-    check_eq(cinder_harness_count_between("cinder_zappin_confirm_handoff", 43000, 47000), 1,
-             "Play rearms confirmation and submits the later measured zero position");
-    check_eq(cinder_harness_arg("cinder_zappin_confirm_handoff", 1), 0,
-             "the retried Full confirmation carries real zero progress");
-    check_eq(cinder_harness_count("cinder_zappin_take_handoff_confirmed"), 1,
-             "the shell consumes the single real post-retry FFI confirmation");
+    check_eq(cinder_harness_count_between("cinder_zappin_confirm_handoff", 22000, 47000), 0,
+             "stale sample progress never confirms Full");
+    check_eq(cinder_harness_count_between("cinder_zappin_abandon", 36000, 39000), 1,
+             "the 15 s timeout releases the hold itself");
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 2,
+             "no re-submission: Play after the timeout is an ordinary Play");
+    check(cinder_harness_count_between("cinder_audio_play", 43000, 47000) >= 1,
+          "the later Play reaches PlayerService as a plain Play");
+    check_range(cinder_harness_count_between("cinder_audio_current_uri", 40000, 47000), 0, 2,
+                "no confirmation poll keeps running after the release");
 }
 
-static void s_zappin_handoff_timeout_play_retries_saved_bookmark(void) {
+static void s_zappin_handoff_timeout_restore_releases_without_retry(void) {
     zappin_shell_preview_setup();
-    static const long long taps[] = {52, 53, 1, 1}; // preview, End, Play, timeout Pause/Play
-    cinder_harness_script_seq("cinder_tap", taps, 4);
+    static const long long taps[] = {52, 53, 1, 1, 1}; // preview, End, Play, then Pause/Play
+    cinder_harness_script_seq("cinder_tap", taps, 5);
     cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
     cinder_harness_script("cinder_pending_play_count", 2);
     cinder_harness_script("cinder_pending_play_start", 0);
     cinder_harness_pending_play_uri_set(0, "/music/first.flac");
     cinder_harness_pending_play_uri_set(1, "/music/second.flac");
-    static const long long live_positions[] = {12000, 62000, 62000, 12000};
-    cinder_harness_script_seq("cinder_play_position_ms", live_positions, 4);
-    cinder_harness_script("cinder_zappin_confirm_handoff", 1);
-    cinder_harness_script("cinder_zappin_take_handoff_confirmed", 1);
+    cinder_harness_script("cinder_play_position_ms", 12000);
     cinder_harness_play_position_at(21000, 0, 180000);      // current preview confirms
-    cinder_harness_play_position_at(25000, 62000, 180000); // restore attempt is still stale
-    cinder_harness_play_position_at(45000, 12000, 180000); // retry reaches captured bookmark
+    cinder_harness_play_position_at(25000, 62000, 180000); // restore never reaches the bookmark
     cinder_harness_tap_at(20000, 240, 400);
     cinder_harness_tap_at(21500, 240, 400);
     cinder_harness_tap_at(23000, 240, 400);
@@ -2457,16 +2448,96 @@ static void s_zappin_handoff_timeout_play_retries_saved_bookmark(void) {
     cinder_harness_set_budget_ms(47000);
     cinder_harness_run();
 
-    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 3,
-             "restore seek is reissued after timeout using the saved target");
-    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 2), 12000,
-             "retry does not seek to the stale 62000 ms preview position");
-    check_eq(cinder_harness_count("cinder_zappin_confirm_handoff"), 1,
-             "the restored checkpoint eventually confirms after retry");
-    check_eq(cinder_harness_arg("cinder_zappin_confirm_handoff", 0), 66667,
-             "the restore confirmation carries measured 12000/180000 progress");
-    check_eq(cinder_harness_count("cinder_zappin_take_handoff_confirmed"), 1,
-             "the restored hold releases only after explicit FFI confirmation");
+    check_eq(cinder_harness_count("cinder_zappin_prepare_normal_queue"), 1,
+             "the restore is handed over once");
+    check_eq(cinder_harness_count_between("cinder_zappin_abandon", 37000, 40000), 1,
+             "the timed-out restore releases the hold (the FFI puts the bookmark back)");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 2,
+             "the preview start and the one restore seek; nothing is re-sought after the timeout");
+    check_eq(cinder_harness_count_between("cinder_audio_play_tracks", 40000, 47000), 0,
+             "Pause/Play after the release does not resubmit the queue");
+}
+
+// B2: starting a preview drops a boot/FM/USB resume still armed, so a Pause→Play after the
+// preview hands back can never replay that older snapshot.
+static void s_zappin_start_cancels_pending_resume(void) {
+    zappin_shell_preview_setup();
+    cinder_harness_script("cinder_tap", 52);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_set_budget_ms(22000);
+    cinder_harness_run();
+    check(cinder_harness_count_between("cinder_resume_cancel", 20000, 22000) >= 1,
+          "an accepted preview start cancels the pending resume");
+    check(cinder_harness_last_ms("cinder_resume_cancel")
+          <= cinder_harness_first_ms("cinder_audio_play_tracks"),
+          "…before the first sample replaces PlayerService's sequence");
+}
+
+// S1: after End, nothing but a restore may resume — not even after a queue action arrives.
+static void s_zappin_end_queue_change_then_play_restores(void) {
+    zappin_shell_preview_setup();
+    static const long long taps[] = {52, 53, 36, 1}; // preview, End, queue action, Play
+    cinder_harness_script_seq("cinder_tap", taps, 4);
+    cinder_harness_script("cinder_zappin_prepare_normal_queue", 1);
+    cinder_harness_script("cinder_play_position_ms", 12000);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_tap_at(21500, 240, 400);
+    cinder_harness_tap_at(22500, 240, 400);
+    cinder_harness_tap_at(23500, 240, 400);
+    cinder_harness_set_budget_ms(26000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_zappin_abandon_internal_mutation"), 0,
+             "a queue action after End does not cancel a pass that is not running");
+    check_eq(cinder_harness_count("cinder_zappin_prepare_normal_queue"), 1,
+             "Play after End still restores the pre-preview queue");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", cinder_harness_count("cinder_audio_seek_ms") - 1),
+             12000, "…at the pre-preview bookmark");
+}
+
+// S6: without a preview, a failed pick leaves the music alone, exactly as main does.
+static void s_play_index_failure_without_preview_leaves_music(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 8);
+    cinder_harness_script("cinder_audio_play_tracks", -1);
+    cinder_harness_script("cinder_pending_play_count", 1);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_set_budget_ms(23000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1, "the pick was attempted");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 0, "the current music is not paused");
+    check_eq(cinder_harness_count("cinder_toast_key"), 0, "no preview toast without a preview");
+}
+
+// S6: an ordinary boot resume keeps main's semantics: a refused seek is logged and ignored.
+static void s_resume_seek_failure_is_ignored_without_preview(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 1);
+    cinder_harness_script("cinder_resume_take_pending", 1);
+    cinder_harness_script("cinder_pending_play_count", 2);
+    cinder_harness_script("cinder_pending_play_start", 0);
+    cinder_harness_pending_play_uri_set(0, "/music/first.flac");
+    cinder_harness_pending_play_uri_set(1, "/music/second.flac");
+    cinder_harness_state_set("shell_audio_uri_override", 1); // service still on the same song
+    cinder_harness_script("cinder_audio_edit_sequence", -1); // …but the in-place edit fails
+    cinder_harness_script("cinder_play_position_ms", 30000);
+    cinder_harness_script("cinder_audio_seek_ms", -1);
+    cinder_harness_tap_at(20000, 240, 400); // the transport starts as "playing": this pauses
+    cinder_harness_tap_at(21000, 240, 400); // …and this is the first Play, which resumes
+    cinder_harness_set_budget_ms(23000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 1, "the resumed queue is handed over");
+    check_eq(cinder_harness_arg("cinder_audio_seek_ms", 0), 30000, "the saved offset is sought");
+    check_eq(cinder_harness_count_between("cinder_audio_pause", 21000, 23000), 0,
+             "a refused seek does not pause an ordinary resume");
+    check_eq(cinder_harness_count("cinder_notify_seek_ms"), 1,
+             "the bar follows the requested offset, as on main");
 }
 
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
@@ -2595,10 +2666,18 @@ static const Scenario kScenarios[] = {
      "ordinary Play retries the saved queue after Full fails"},
     {"zappin-restore-seek-failure", s_zappin_restore_seek_failure_stays_paused_then_next_recovers,
      "failed bookmark seek pauses playback until a later transport retry succeeds"},
-    {"zappin-timeout-play-full", s_zappin_handoff_timeout_play_retries_full_intent,
-     "Play after a timed-out Full handoff resubmits and confirms the selected track"},
-    {"zappin-timeout-play-restore", s_zappin_handoff_timeout_play_retries_saved_bookmark,
-     "Play after a timed-out restore retries the captured bookmark, not sample progress"},
+    {"zappin-timeout-full", s_zappin_handoff_timeout_full_releases_without_retry,
+     "a timed-out Full handoff releases the hold; the next Play is ordinary"},
+    {"zappin-timeout-restore", s_zappin_handoff_timeout_restore_releases_without_retry,
+     "a timed-out restore releases the hold at the bookmark; nothing is resubmitted"},
+    {"zappin-start-cancels-resume", s_zappin_start_cancels_pending_resume,
+     "starting a preview drops a pending boot/FM/USB resume"},
+    {"zappin-end-queue-change-play", s_zappin_end_queue_change_then_play_restores,
+     "Play after End restores even after a queue action"},
+    {"play-index-failure-no-preview", s_play_index_failure_without_preview_leaves_music,
+     "without a preview a failed pick leaves the music alone"},
+    {"resume-seek-failure-ignored", s_resume_seek_failure_is_ignored_without_preview,
+     "an ordinary resume ignores a refused seek, as on main"},
     {"queue-edit-seamless", s_queue_edit_is_seamless_without_preview,
      "ordinary queue edits do not seek, resume, or arm preview handoff"},
     {"queue-edit-paused", s_paused_queue_edit_preserves_pause,

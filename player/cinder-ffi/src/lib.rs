@@ -655,6 +655,9 @@ struct Render {
     zappin_origin_uris: Vec<String>,
     zappin_origin_start: usize,
     zappin_origin_pos_ms: i64,
+    /// The track the origin bookmark belongs to. Any abandon puts it back into `last_track`, so a
+    /// resume rebuilt after the preview (FM/USB exit, power off) never names a sampled track.
+    zappin_origin_track: Option<cinder_db::Track>,
     // Decoded album cover for the CURRENT track, pre-scaled to the two draw sizes (480 full-bleed,
     // 92 thumb). art_key = the object_id we last decoded for (skip re-decode on same-track polls);
     // None images = no art found → the UI draws its gradient fallback.
@@ -859,6 +862,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         zappin_origin_uris: Vec::new(),
         zappin_origin_start: 0,
         zappin_origin_pos_ms: 0,
+        zappin_origin_track: None,
         art_full: None,
         art_thumb: None,
         art_cache_keys: std::collections::HashMap::new(),
@@ -3927,7 +3931,14 @@ fn mark_queue_pending(r: &mut Render) {
     }
 }
 
+/// How close to 0:00 a fresh ordinary play must report before its handoff is confirmed.
+const ZAPPIN_HANDOFF_START_WINDOW_MS: f64 = 2_500.0;
+
 fn zappin_start(r: &mut Render, preview_ms: u32) {
+    // A hold still on from an earlier pass (End not yet followed by Play, or a handoff not yet
+    // confirmed) means last_track/play_pos_ms describe the last SAMPLE. Put the real track and
+    // bookmark back first, so the origin captured below is the user's, never a sample's.
+    zappin_release_hold(r);
     r.zappin_active = false;
     r.zappin_session = None;
     r.zappin_candidates.clear();
@@ -3950,9 +3961,31 @@ fn zappin_start(r: &mut Render, preview_ms: u32) {
                 .map(|offset| idx + offset)
         })
         .unwrap_or(idx);
-    r.zappin_origin_uris = context_uris(r, 0);
-    r.zappin_origin_start = start.min(r.zappin_origin_uris.len().saturating_sub(1));
+    // `start` is a ROW of the context; the origin is the PLAYABLE list (unresolved rows dropped,
+    // adjacent duplicates collapsed, capped). Map the row the same way zappin_prepare_queue does.
+    let uri_map = uri_index(r);
+    let prefix = play_order(
+        None,
+        context[..(start + 1).min(context.len())]
+            .iter()
+            .map(|row| uri_map.get(&row.object_id).cloned()),
+    )
+    .len();
+    if prefix > MAX_PLAY_SEQUENCE {
+        // Past the cap the current row is not in a list built from row 0: lead with it instead.
+        r.zappin_origin_uris = context_uris(r, start);
+        r.zappin_origin_start = 0;
+    } else {
+        r.zappin_origin_uris = context_uris(r, 0);
+        r.zappin_origin_start = prefix
+            .saturating_sub(1)
+            .min(r.zappin_origin_uris.len().saturating_sub(1));
+    }
     r.zappin_origin_pos_ms = r.play_pos_ms.max(0);
+    r.zappin_origin_track = r.last_track.clone().or_else(|| {
+        let uri = r.zappin_origin_uris.get(r.zappin_origin_start)?;
+        r.db.as_ref()?.track_by_filename(uri).ok().flatten()
+    });
     let ids: Vec<(usize, i64)> = context[start..]
         .iter()
         .enumerate()
@@ -4040,6 +4073,77 @@ fn zappin_abandon_session(r: &mut Render) {
     r.zappin_handoff_confirmed = false;
 }
 
+/// Put the pre-preview track and bookmark back into the ordinary now-playing state.
+fn zappin_restore_origin_state(r: &mut Render) {
+    let Some(t) = r.zappin_origin_track.clone() else {
+        r.play_pos_ms = r.zappin_origin_pos_ms.max(0);
+        return;
+    };
+    apply_track(&mut r.np, &t);
+    r.np.liked = r.liked.contains(&t.object_id);
+    if r.art_key != Some(t.object_id) {
+        r.art_full = None;
+        r.art_thumb = None;
+        bake_gradient_art(r);
+        r.art_key = Some(t.object_id);
+        request_cover(r, t.object_id);
+    }
+    r.cur_duration_ms = t.duration_raw.unwrap_or(0).max(0);
+    r.play_pos_ms = if r.cur_duration_ms > 0 {
+        r.zappin_origin_pos_ms.clamp(0, r.cur_duration_ms)
+    } else {
+        r.zappin_origin_pos_ms.max(0)
+    };
+    r.real_pos_ms = -1;
+    set_progress(&mut r.np, r.play_pos_ms, r.cur_duration_ms);
+    r.last_track = Some(t);
+}
+
+/// Drop the persistence hold WITHOUT waiting for a PlayerService confirmation, leaving the FFI in
+/// the state the user's intent describes: a fresh play (Full, a picked row, an internal queue
+/// mutation) owns the new track from zero; anything else (no handoff, or a restore) is the
+/// pre-preview track at its bookmark. Every abandon, cancel and timeout ends here, so no path can
+/// leave resume saves, play counts and scrobbles silently suppressed.
+fn zappin_release_hold(r: &mut Render) {
+    if !r.zappin_resume_hold {
+        return;
+    }
+    let fresh = !r.zappin_handoff_restore && !r.zappin_handoff_uris.is_empty();
+    if fresh {
+        let track = r
+            .last_track
+            .clone()
+            .filter(|t| r.zappin_handoff_uris.iter().any(|u| *u == t.filename));
+        if let Some(t) = track {
+            let length_s = (t.duration_raw.unwrap_or(0).max(0) / 1000) as u32;
+            r.listen.restart_track(&t.filename, length_s);
+            if let Some(scrob) = r.scrob.as_mut() {
+                scrob.restart_track(
+                    scrobble::Track {
+                        artist: t.artist.clone(),
+                        album: t.album.clone(),
+                        title: r.np.title.clone(),
+                        track_no: t.track_no.max(0) as u32,
+                        length_s,
+                    },
+                    now_unix(),
+                );
+            }
+            r.play_pos_ms = 0;
+            set_progress(&mut r.np, 0, r.cur_duration_ms);
+        }
+    } else {
+        zappin_restore_origin_state(r);
+    }
+    r.zappin_resume_hold = false;
+    r.zappin_handoff_uris.clear();
+    r.zappin_handoff_restore = false;
+    r.zappin_handoff_restore_uri = None;
+    r.zappin_internal_handoff_ready = false;
+    r.zappin_handoff_confirmed = false;
+    r.dirty = true;
+}
+
 fn zappin_arm_handoff(r: &mut Render, restore: bool) {
     r.zappin_handoff_uris.clear();
     r.zappin_handoff_restore = restore;
@@ -4092,7 +4196,9 @@ fn zappin_confirm_handoff(r: &mut Render, uri: &str, progress: f32, playing: boo
     } else {
         // New Full and a different URI reached by Next/Prev in a restored sequence must start at
         // the beginning. Never let the previous sample offset become that track's checkpoint.
-        progress <= 0.01
+        // An absolute window, the same 2.5 s the shell uses: position callbacks come about once a
+        // second, so a percentage would leave no sample inside it on a short track.
+        position_ms <= ZAPPIN_HANDOFF_START_WINDOW_MS
     };
     if !position_ready {
         return false;
@@ -4117,6 +4223,16 @@ fn zappin_confirm_handoff(r: &mut Render, uri: &str, progress: f32, playing: boo
         r.listen.restart_track(uri, length_s);
         if let Some(scrob) = r.scrob.as_mut() {
             scrob.restart_track(meta, now_unix());
+        }
+        // The samples never entered the ◁ history (see cinder_set_now_playing_uri); the track the
+        // user was listening to before the preview is what ◁ should return to.
+        if let Some(origin) = r.zappin_origin_track.clone() {
+            if origin.object_id != track.object_id {
+                r.play_history.push(origin);
+                if r.play_history.len() > 256 {
+                    r.play_history.remove(0);
+                }
+            }
         }
         r.app.complete_zappin_full_play();
     }
@@ -5459,14 +5575,32 @@ pub extern "C" fn cinder_zappin_prepare_resume_queue() -> libc::c_int {
 }
 
 /// Abandon preview bookkeeping without touching a pending sequence that another FFI action has
-/// just constructed (PlayIndex, queue edits, SensMe, books, etc.).
+/// just constructed (PlayIndex, queue edits, SensMe, books, etc.). Releases the persistence hold
+/// at once (see `zappin_release_hold`): the pre-preview track and bookmark are put back, so a
+/// resume re-armed after FM/USB, or flushed at power-off, names the real track and position.
+/// A no-op (returns 0) when no preview state exists, so non-preview paths are untouched.
 #[no_mangle]
 pub extern "C" fn cinder_zappin_abandon() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
     let had_state = r.zappin_resume_hold || r.zappin_active;
+    if !had_state {
+        return 0;
+    }
+    zappin_release_hold(r);
     zappin_abandon_session(r);
-    had_state as libc::c_int
+    1
+}
+
+/// 1 while preview persistence is held (resume saves, play counts and scrobbles suppressed). The
+/// shell arms its bounded confirmation poll only when there is a hold left to release.
+#[no_mangle]
+pub extern "C" fn cinder_zappin_hold_active() -> libc::c_int {
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|r| r.zappin_resume_hold) as libc::c_int
 }
 
 /// The shell received the cancellation action emitted by an FFI-internal queue mutation. Preserve
@@ -5494,6 +5628,9 @@ pub extern "C" fn cinder_zappin_abandon_for_normal_play() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
     let had_state = r.zappin_resume_hold || r.zappin_active;
+    if !had_state {
+        return 0; // no preview: an ordinary selection is left exactly as it was
+    }
     zappin_abandon_session(r);
     if r.zappin_resume_hold {
         // An explicit selection starts a fresh listen even when the chosen URI is the same as
@@ -7286,7 +7423,8 @@ pub extern "C" fn cinder_clock_tick() {
         } else {
             true
         };
-        if r.queue_pending && r.np.playing && r.play_pos_ms > 0 && now {
+        // Not while a preview holds the service: the playing URI is a sample, not the queue.
+        if r.queue_pending && !r.zappin_resume_hold && r.np.playing && r.play_pos_ms > 0 && now {
             if let Some(current) = r.last_track.as_ref().map(|t| t.filename.clone()) {
                 r.queue_pending = false;
                 r.pending_play = play_order_uris(r, Some(&current));
@@ -7309,6 +7447,7 @@ pub extern "C" fn cinder_clock_tick() {
         // Also on Bluetooth, unlike the queue rebuild: there the trade is a brief A2DP disruption
         // against the album not repeating at all, and the setting's whole promise is the second.
         if r.np.repeat == REPEAT_ALBUM
+            && !r.zappin_resume_hold
             && !r.album_lap_staged
             && r.np.playing
             && r.cur_duration_ms > 0
@@ -9148,7 +9287,9 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 .map_or(true, |p| p.object_id != t.object_id);
             apply_track(&mut r.np, &t);
             if changed {
-                if let Some(previous) = r.last_track.as_ref() {
+                // A preview's samples are not listening history: while the hold is on, ◁ must
+                // not learn them (the confirmed Full play pushes the pre-preview track instead).
+                if let Some(previous) = r.last_track.as_ref().filter(|_| !r.zappin_resume_hold) {
                     if r.rewind_from == Some(previous.object_id) {
                         r.rewind_from = None;
                     } else {
@@ -9231,7 +9372,10 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 // Re-deriving it here costs nothing when it was already right — the `already_live`
                 // test below drops a re-issue that changes nothing — and when it was stale this is
                 // the only place that can still catch it.
-                if !preempt && (r.queue_pending || r.queue_flush) {
+                // Never while a preview holds the service: a sample is not a queue boundary, and
+                // re-deriving here would replace the one-URI preview (or the full queue a preview
+                // cancel has just staged) with `[sample] + tail`.
+                if !preempt && !r.zappin_resume_hold && (r.queue_pending || r.queue_flush) {
                     r.queue_pending = false;
                     let uris = play_order_uris(r, Some(&t.filename));
                     // A RE-ISSUE THAT CHANGES NOTHING IS STILL A PAUSE/SEEK/PLAY. The early rebuild
@@ -11057,6 +11201,7 @@ mod tests {
             zappin_origin_uris: Vec::new(),
             zappin_origin_start: 0,
             zappin_origin_pos_ms: 0,
+            zappin_origin_track: None,
             art_full: None,
             art_thumb: None,
             art_cache_keys: std::collections::HashMap::new(),
@@ -11094,6 +11239,9 @@ mod tests {
              UPDATE object_body SET filename='harvest.flac' WHERE object_id=3;",
             )
             .unwrap();
+        // Leave the first pass before re-reading the track, or the restart below would restore
+        // the pre-rename origin (B1: a held pass always hands its origin back first).
+        zappin_release_hold(&mut r);
         r.last_track = r.db.as_ref().unwrap().track_by_object_id(1).unwrap();
         assert_eq!(r.last_track.as_ref().unwrap().duration_raw, Some(272_000));
         zappin_start(&mut r, 4_000);
@@ -11158,22 +11306,143 @@ mod tests {
     }
 
     #[test]
-    fn review_zappin_source_exit_and_end_keep_original_resume_checkpoint_held() {
+    fn review_zappin_source_exit_restores_original_track_and_releases_hold() {
         let mut r = active_zappin_uri_fixture();
+        // A sample of another track has been reported: last_track/play_pos are the SAMPLE's.
+        r.last_track = r.db.as_ref().unwrap().track_by_object_id(2).unwrap();
+        r.play_pos_ms = 45_000;
         let path = std::env::temp_dir().join(format!("zappin-resume-{}.txt", std::process::id()));
         let original = "track=1\npos=12000\n";
-        std::fs::write(&path, original).unwrap();
+        std::fs::write(&path, "stale").unwrap();
         r.resume_pos_path = Some(path.to_string_lossy().into_owned());
         *cell().lock().unwrap() = Some(r);
+        // FM/USB/power abandon: no confirmation will ever come, so the hold is released now and
+        // the ordinary state is the pre-preview track at its bookmark.
         assert_eq!(cinder_zappin_abandon(), 1);
+        assert_eq!(cinder_zappin_hold_active(), 0);
         assert_eq!(cinder_play_position_ms(), 12_000);
         cinder_resume_flush();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-        cinder_zappin_end();
-        assert_eq!(cinder_play_position_ms(), 12_000);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        // The FM/USB exit re-arms the resume from last_track: it must name the original track.
+        cinder_resume_rearm();
+        {
+            let guard = cell().lock().unwrap();
+            let r = guard.as_ref().unwrap();
+            assert_eq!(r.last_track.as_ref().unwrap().object_id, 1);
+            let (uris, start, pos) = r.resume_pending.clone().unwrap();
+            assert!(uris[start].ends_with("atlas.flac"));
+            assert_eq!(pos, 12_000);
+        }
+        assert_eq!(cinder_zappin_abandon(), 0, "a second abandon is a no-op");
         cell().lock().unwrap().take();
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn review_zappin_restart_while_held_keeps_the_original_origin() {
+        let mut r = active_zappin_uri_fixture();
+        let origin = r.zappin_origin_uris.clone();
+        // Sample of track 2, then End: the hold stays on, last_track/pos describe the sample.
+        r.last_track = r.db.as_ref().unwrap().track_by_object_id(2).unwrap();
+        r.play_pos_ms = 45_000;
+        zappin_stop(&mut r, true);
+        assert!(r.zappin_resume_hold);
+        zappin_start(&mut r, 4_000);
+        assert!(r.zappin_resume_hold);
+        assert_eq!(r.zappin_origin_pos_ms, 12_000, "never the sample's offset");
+        assert_eq!(r.zappin_origin_track.as_ref().unwrap().object_id, 1);
+        assert_eq!(r.zappin_origin_uris, origin);
+        assert_eq!(r.last_track.as_ref().unwrap().object_id, 1);
+    }
+
+    #[test]
+    fn review_zappin_origin_start_maps_rows_to_playable_uris() {
+        let mut r = active_zappin_uri_fixture();
+        let library = build_library(r.db.as_ref().unwrap());
+        let row = |id| {
+            library
+                .songs
+                .iter()
+                .find(|s| s.object_id == id)
+                .unwrap()
+                .clone()
+        };
+        let mut missing = row(2);
+        missing.object_id = 999; // no file behind it: dropped from the playable list
+        r.app.set_play_context(vec![missing, row(1), row(2)], 1);
+        zappin_start(&mut r, 4_000);
+        assert_eq!(r.zappin_origin_uris.len(), 2);
+        assert_eq!(r.zappin_origin_start, 0, "row 1 is the first PLAYABLE uri");
+        assert!(zappin_prepare_origin_queue(&mut r));
+        assert!(r.pending_play[r.pending_play_start].ends_with("atlas.flac"));
+    }
+
+    #[test]
+    fn review_zappin_samples_do_not_enter_rewind_history() {
+        let r = active_zappin_uri_fixture();
+        *cell().lock().unwrap() = Some(r);
+        let sample = std::ffi::CString::new("box.flac").unwrap();
+        assert_eq!(cinder_set_now_playing_uri(sample.as_ptr(), 0.1, 1, 80), 0);
+        let sample = std::ffi::CString::new("harvest.flac").unwrap();
+        assert_eq!(cinder_set_now_playing_uri(sample.as_ptr(), 0.1, 1, 80), 0);
+        let r = cell().lock().unwrap().take().unwrap();
+        assert!(
+            r.play_history.is_empty(),
+            "◁ after a preview must not reach a sample"
+        );
+    }
+
+    #[test]
+    fn review_zappin_fresh_handoff_accepts_short_track_inside_absolute_window() {
+        let mut r = active_zappin_uri_fixture();
+        r.pending_play = vec!["box.flac".into()];
+        r.pending_play_start = 0;
+        zappin_abandon_session(&mut r);
+        zappin_arm_handoff(&mut r, false);
+        let mut short =
+            r.db.as_ref()
+                .unwrap()
+                .track_by_object_id(2)
+                .unwrap()
+                .unwrap();
+        short.duration_raw = Some(60_000);
+        r.last_track = Some(short);
+        // 2 s into a 60 s track is 3.3 %: outside a 1 % rule, inside the 2.5 s window.
+        assert!(!zappin_confirm_handoff(
+            &mut r,
+            "box.flac",
+            3_000.0 / 60_000.0,
+            true
+        ));
+        assert!(zappin_confirm_handoff(
+            &mut r,
+            "box.flac",
+            2_000.0 / 60_000.0,
+            true
+        ));
+        assert!(!r.zappin_resume_hold);
+        assert_eq!(
+            r.play_history.last().map(|t| t.object_id),
+            Some(1),
+            "◁ from the new play returns to the pre-preview track"
+        );
+    }
+
+    #[test]
+    fn review_zappin_release_of_fresh_handoff_starts_the_new_track() {
+        let mut r = active_zappin_uri_fixture();
+        r.pending_play = vec!["box.flac".into()];
+        r.pending_play_start = 0;
+        zappin_abandon_session(&mut r);
+        zappin_arm_handoff(&mut r, false);
+        r.last_track = r.db.as_ref().unwrap().track_by_object_id(2).unwrap();
+        r.play_pos_ms = 45_000; // stale sample offset
+                                // A timeout / source change: released without a confirmation, as a fresh play.
+        zappin_release_hold(&mut r);
+        assert!(!r.zappin_resume_hold);
+        assert!(r.zappin_handoff_uris.is_empty());
+        assert_eq!(r.last_track.as_ref().unwrap().object_id, 2);
+        assert_eq!(r.play_pos_ms, 0);
     }
 
     #[test]
