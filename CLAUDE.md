@@ -2,26 +2,19 @@
 
 > ## Where the project is — read this first
 >
-> This file is loaded into every session, so a stale line here is believed first. **If you change
-> a gate's count, change it here.** Parts A–F and H below are the environment and RE reference and
-> are still accurate.
+> This file is the environment and RE reference (Parts A–H), and it is loaded into every session.
+> **It deliberately holds no project state** — no release numbers, test counts, open PRs or plans,
+> because a copy here goes stale and is believed first. Read the documents below for those, and
+> put new state there, not here.
 >
-> **Where the project actually is, 2026-10-18 (v0.3.16 is the Latest release, v0.3.17-rc2 the pre-release; the live list is [`docs/NEXT.md`](docs/NEXT.md)):**
->
-> | | |
-> |---|---|
-> | Releases shipped | **v0.3.0 → v0.3.16**; v0.3.16 (10-11) is the Latest stable, **v0.3.17-rc2** (10-18) the pre-release: audiobooks, presets with A/B as a compare, the DAC EQ as the jack's equalizer, the NC probe, the in-place queue edit. The owner reports 0.3.13 → 0.3.16 working in daily use on Walkman One (as a whole, not row by row) |
-> | Offline gates | **836 Rust tests** (player, 2026-10-19) + 56 (installer), **81 harness scenarios**, 22 C/C++ files syntax-clean, **13 C++ self-tests** (the soundscape one is 69 checks), the mono shim through `LD_PRELOAD`, **370 golden pixel hashes** plus the text audit (`cinder-host --audit`), launcher matrix 110, the hagodaemon wrapper 18 (2026-10-20), its installer 42 and the boot guard 32, the sound signature 16, the effect chain 19, the Walkman One tuning step 17, cable pass 18, install mounts 18, shellcheck over 174 scripts (counted 2026-10-11) — all green, re-run 2026-10-05 after [`docs/AUDIT_2026-10-05_ponytail.md`](docs/AUDIT_2026-10-05_ponytail.md) Part H's deletions; `cargo audit` clean as of 2026-10-04 (2 known unmaintained warnings). The 10-01 baseline is [`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) Part A |
-> | The headline feature | **USB-DAC → LDAC works end to end** — device-verified 2026-08-11, a full 192 s session logged 2026-09-15 (`docs/DEVICE_CHECKLIST.md` 11.10). Still unlogged: the 3.5 mm leg with no Bluetooth link |
-> | Landed 2026-10-01 → 10-18 (in 0.3.15 → 0.3.17) | **R4** — ratings, play counts, smart playlists, the playlist editor, shuffle by album/artist (§25); **R5** — the grouped Sound screen (§26; the per-output profiles were replaced by Presets on 10-18); Sony's EQ handed back on Boot to stock (§27); **Soundscapes** ([`docs/SPEC_soundscapes.md`](docs/SPEC_soundscapes.md)); **five visualisers from the decoded audio** (§29); Clear Bass on Walkman One; audiobooks (§37) |
-> | Landed 2026-09-23 → 10-01 | The redesign's first pass (Display settings, the kit, Help, the pull-down panel), Up Next as one list, save Up Next, repeat album, stop after this song, DAC EQ, linear amp, Bluetooth receiver (Windows and iPhone), Sony's receiver hand-off, Library grid/compact views, Now Playing styles, the PCM-tap visualiser, FM on Walkman One, screen-off power savings |
-> | Confirmed by the owner, 2026-10-01 | **Walkman One runs Cinder** (the owner's current player), **the BT receiver works**, and **all of the installers work** — which closes 11.9, re-opened 09-12 |
-> | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **14.1–14.6** (SensMe), **21.10** (Sony's receiver), §22–§24 row by row (in use, not itemised), **§25** R4, **§26** R5, **§27** Sony's EQ, **§28 soundscapes**, **§29 the new visualisers**, **§33** suspend to RAM, **§34** radio and USB-DAC with the screen off, **§35** the `preload` component beyond the owner's player, **§36** the Bluetooth disturbance and headphone pause |
-> | Flint (the PC companion) | v0.2.1 stable, **v0.2.3-rc1** pre-release (10-18). F1: a sync goes into `MUSIC` since 10-09; sweeping only what Flint wrote is still an owner decision. See its `docs/AUDIT_2026-10-01.md` Part F |
+> **Licence rule:** Cinder is PolyForm Noncommercial. Wampy is GPLv3 + Commons Clause and Walkman
+> One is closed: take facts from them (paths, numbers, layouts), never code or their tuning data,
+> and keep anything GPL Cinder needs in a repo of its own.
 >
 > **The live documents, in order of what you probably want:**
 > - **The redesign (2026-09-27 handoff):** [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) — every screen and every promised feature with a state and a phase; spec in [`docs/SPEC_redesign_2026-09.md`](docs/SPEC_redesign_2026-09.md); new screens draw with `player/cinder-ui/src/kit.rs`.
 > - **What to do next:** [`docs/NEXT.md`](docs/NEXT.md) — the one list: the owner's decisions, releases, offline work in order, the open device rows by session, battery, and Walkman One on stock.
+> - **What shipped, release by release:** [`CHANGELOG.md`](CHANGELOG.md).
 > - **Feature state (works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
 > - **Device run sheet:** [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — safety rules first.
 > - **Structural weaknesses:** [`docs/SHORTCOMINGS.md`](docs/SHORTCOMINGS.md) — cited by section ID (note: §A1's coverage table is superseded by `PLAN_2026-09-14.md` §A1).
@@ -30,8 +23,8 @@
 
 **Purpose:** A single onboarding document that takes you from a stock Windows PC to a
 working analysis environment, runs the existing host-side pipeline, and then adds the
-device-side procedure. *(v1.5: the device-side procedure has now been executed — see the state
-banner above; the steps below remain the canonical how-to for reproducing it.)*
+device-side procedure. *(v1.5: the device-side procedure has now been executed — see
+[`docs/NEXT.md`](docs/NEXT.md); the steps below remain the canonical how-to for reproducing it.)*
 
 **Relationship to existing repo:** The repo already has a 7-phase host-side pipeline
 (`Makefile`, `phases/phase1`–`phase7`, `CLAUDE.md`, `docs/`). This document does **not**

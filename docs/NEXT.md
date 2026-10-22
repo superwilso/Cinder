@@ -11,10 +11,10 @@ file (battery research in full, Walkman One parity, the 0.3.17 release plan) are
 
 | | |
 |---|---|
-| Cinder | **v0.3.19** is the Latest release (10-20): the PolyForm Noncommercial licence, the installer writing the package Walkman One expects, Bluetooth AAC and SBC XQ as installer options, Simplified Chinese and installer language choice. 0.3.17 (audiobooks, presets, NC with Sony's NC earphones) and 0.3.18 (SD-card playlists) shipped before it. Merged since: #30, the receiver's AAC/LDAC negotiation and codec choice |
+| Cinder | **v0.3.19** is the Latest release (10-20): the PolyForm Noncommercial licence, the installer writing the package Walkman One expects, Bluetooth AAC and SBC XQ as installer options, Simplified Chinese and installer language choice. 0.3.17 (audiobooks, presets, NC with Sony's NC earphones) and 0.3.18 (SD-card playlists) shipped before it. **On `main`, not yet released:** #30, the receiver's AAC/LDAC negotiation and codec choice (labels from #32); #31, track previews (#29 by @yin8ruo) as the opt-in `preview` installer option with the playback hand-off fixed. Neither has run on a device in its final form |
 | Flint | **v0.2.1** is the Latest release (09-28). **v0.2.3-rc1** is the pre-release (10-18) |
-| Open issues | None |
-| Open PRs | **#29** track previews (@yin8ruo) and **#31**, the same with the preview made an opt-in install option and its playback hand-off fixed. Waiting on the author's answer on #29, then a device run (End → Play, leaving FM mid-preview, a second preview) |
+| Open issues | None on GitHub. **Reported on Head-Fi, not on GitHub (10-12):** after two weeks unused, one user's library came back empty on internal and SD (0.3.9 and 0.3.16) and they went back to stock — worth an issue and a boot log |
+| Open PRs | **#29**, left open for the author's answer: its code is on `main` through #31. Device run for #31: End → Play, leaving FM mid-preview, a second preview |
 | Gates | The player and installer tests, the harness, the golden previews and text audit, `cargo fmt --check` (also in pre-push), all run by CI on every PR |
 
 ## Reviewing a contributed PR
@@ -62,6 +62,16 @@ built, in the order it was planned.
 3. **A Battery preset**: one tap to Direct, or Custom with only the DAC EQ.
 4. The redesign plan's Part G still describes per-output profiles (2a, 2g); bring it in line with
    presets.
+
+**Cinder — standing alone from Wampy and Walkman One** (owner's direction, 10-22)
+
+No Wampy code is in the tree and nothing is downloaded from either project. What is left: Cinder
+installs into Wampy's folder `/system/vendor/unknown321/`; the `mono` component rides Wampy's
+SoundServiceFw preload (`preload`/`cinder-hagowrap` is the replacement); the `wm1a`/`w1` volume
+tables are read from Wampy's and Walkman One's files; `ldac-run.sh` is started from Wampy's folder
+if present; `phases/phase1.sh` clones their repos. The Walkman One support (package key, tuning
+step, Clear Bass, FM) is detection only. Licences: Wampy is GPLv3 + Commons Clause and Walkman One
+is closed, so rebuild from documented facts, never copy, and keep anything GPL in its own repo.
 
 **Cinder — everything else**
 
