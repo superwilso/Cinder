@@ -3226,8 +3226,10 @@ void boot_to_sony_receiver();   // with the BT receiver, below
 // of NVP. Only ConfigurationService::Flush, OnSuspend, OnEarlySuspend and OnShutdown write that
 // cache out (each one calls NvpCache::Flush; libConfigurationService.so, the veneer at 0x24250).
 // Our restart is reboot(2), which runs none of them, so stock came up with the last value that did
-// reach NVP: Cinder's ten-band, flushed by a screen-off suspend or a Bluetooth service. The same
-// reason sony_rx_write flushes. If the flush fails, the marker stays, and the launcher's helper
+// reach NVP: Cinder's ten-band, written out by some earlier flush (the Bluetooth services flush;
+// Cinder's screen-off does not). Measured on device 2026-10-22: the hand-back left all 93 NVP nodes
+// byte-identical, through a screen-off too, until Flush() moved node 052 byte 224 from 2 to 1. The
+// same reason sony_rx_write flushes. If the flush fails, the marker stays, and the launcher's helper
 // sets the selector again on the way into stock, where no restart follows it.
 static bool sony_cfg_flush();
 static void stock_handback_fn() {
