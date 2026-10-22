@@ -156,12 +156,12 @@ Install these on the Windows side so they're ready when the device arrives:
 
 ## Part C — Repos to clone and what to read in each
 
-Phase 1 (`make phase1`) already clones the first five into `artifacts/repos/`. This table is
+Phase 1 (`make phase1`) clones the four marked phase1 into `artifacts/repos/`. This table is
 the reading guide — which file in each repo answers which project question.
 
 | Repo | Cloned by | Read this first | Answers |
 |---|---|---|---|
-| `unknown321/wampy` | phase1 | `MAKING_OF.md`, then the other `MAKING_OF_*.md`, `ALSA.md`, `kernel.md`, `installer/run.sh`, `src/Controller.cpp` | The entire userspace map: init hooks, LD_PRELOAD points, view-model surface, filter chain, ALSA topology, boot-image gotcha, `.UPG` installer pattern |
+| `unknown321/wampy` | by hand, for reading only | `MAKING_OF.md`, then the other `MAKING_OF_*.md`, `ALSA.md`, `kernel.md`, `installer/run.sh`, `src/Controller.cpp` | The entire userspace map: init hooks, LD_PRELOAD points, view-model surface, filter chain, ALSA topology, boot-image gotcha, `.UPG` installer pattern |
 | `unknown321/scrobbler` | phase1 | `README.md`, `INSTALL.md`, `playerevents`/`audioscrobbler`/`daemon` source | `.scrobbler.log` format and path (root of internal storage), the track-state IPC, the "beeps off" gotcha, adb-vs-scsitool install |
 | `unknown321/wbrt` | phase1 | `README.md` | **MT8590 confirmation**, MediaTek VID/PID, backup/restore procedure |
 | `Rockbox/rockbox` (sparse: `utils/nwztools`) | phase1 | `upgtools/` (build `upgtool`), `database/nvp/` (KAS + NVP slot map), `scsitool/` | `.UPG` pack/unpack, per-model KAS (64 bytes), NVP slot definitions, SCSI backchannel |
@@ -241,10 +241,9 @@ before irreversible).
 
 ### E1. Establish the baseline firmware (native Windows)
 
-1. Install **Walkman One** via its installer. This is the project's known-good baseline
-   (everything downstream is measured against it, and Wampy/scrobbler are best-tested on it).
-2. Install **Wampy** on top. This gives you a known-working modded environment to probe from,
-   and a working `.UPG` install path you can imitate.
+Sony's stock firmware is the baseline. Cinder stands alone: its own installer adds every option
+(`cinder-home/deploy/components.conf`), and nothing needs Walkman One or Wampy installed. A
+player that already runs either still installs; Cinder detects them and adapts.
 
 ### E2. Get a shell
 

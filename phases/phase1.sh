@@ -24,7 +24,6 @@ clone_or_update() {
     fi
 }
 
-clone_or_update https://github.com/unknown321/wampy        "$REPOS/wampy"
 clone_or_update https://github.com/unknown321/scrobbler    "$REPOS/scrobbler"
 clone_or_update https://github.com/unknown321/wbrt         "$REPOS/wbrt"
 clone_or_update https://github.com/roobscoob/SonyWalkmanFirmwarePatcher \
