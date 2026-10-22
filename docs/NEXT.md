@@ -73,6 +73,33 @@ if present; `phases/phase1.sh` clones their repos. The Walkman One support (pack
 step, Clear Bass, FM) is detection only. Licences: Wampy is GPLv3 + Commons Clause and Walkman One
 is closed, so rebuild from documented facts, never copy, and keep anything GPL in its own repo.
 
+**Installer — finish an install from a Mac** (owner, 10-22; Montree on Head-Fi asked for it)
+
+Today the macOS build stages every file and stops: the last step, the vendor command
+`fc 00 04 'dbmn'` that reboots the player into its updater (`stage::FW_UPGRADE_CDB`), needs raw SCSI,
+which macOS gives only to a kernel extension. Sony's own Mac updater ships one
+(`SONYWalkmanType00.kext`, x86-64 only, matching `IOSCSIPeripheralDeviceNub` type 0), so it does
+not load on Apple Silicon. No release ships a macOS installer at all.
+
+1. **Send the command as raw USB mass storage.** In `stage.rs`, the macOS `trigger_fw_upgrade`
+   (and `read_kas`): `diskutil unmountDisk` the player (keep it attached); open it with `rusb`
+   (vendored libusb ≥ 1.0.25, Mac target only); find the interface class 8 / subclass 6 /
+   protocol 0x50; `detach_kernel_driver` (needs root); write a 31-byte CBW (`USBC`, a tag, the
+   transfer length, flags 0x80, LUN 0, CDB length 12, the CDB) to the bulk-OUT endpoint; read the
+   data phase and the 13-byte CSW from bulk-IN. The player reboots, so no re-attach is needed.
+   Keep `print_trigger_failed`'s macOS text for the "not root" and "capture refused" cases.
+2. **Test the framing without a Mac:** a unit test that builds the CBW for `FW_UPGRADE_CDB` and
+   `KAS_CDB` and checks it byte by byte, and one that parses a CSW (status 0, 1, 2).
+3. **Release it:** a `macos-latest` job in `release.yml` (arm64 + x86-64, `lipo` into one
+   binary), unsigned; `install.md` says to run it from Terminal with `sudo` after
+   `xattr -d com.apple.quarantine`.
+4. **Device proof, on a real Mac:** install and uninstall, stock and Walkman One. Until this
+   passes, the release notes call the Mac build experimental. Risk to check first: whether
+   current macOS still lets root detach the mass-storage driver (libusb's macOS "capture"); if it
+   does not, the fallback is a Linux VM (UTM + USB passthrough) running the Linux installer.
+
+About half a day of code plus the Mac session.
+
 **Cinder — everything else**
 
 5. **The redesign's remaining phases** ([`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md)
