@@ -63,7 +63,9 @@ checks below. This is a moderate maintenance cost, rather than a display-only fe
 2. Normal bookmarks and listening clocks stay protected during previews. A metadata/URI update alone
    does not complete a normal-play handoff; playback status, URI and actual position must agree.
 3. Full playback starts at zero. Queue restoration uses its saved bookmark, including an exact zero
-   or a bookmark for another URI. A failed handoff leaves the sample paused and remains retryable.
+   or a bookmark for another URI. Every way out of a preview (End, Full, a refused start, a source change,
+   a seek, a handoff not confirmed within 15 s) releases the hold and puts the original track and
+   position back, so no path depends on a later confirmation to resume normal statistics.
 4. Queue edits, shuffle/repeat changes, explicit selection and source changes cancel or hand over
    ownership intentionally. Normal queue actions outside preview mode keep their existing behaviour.
 5. Labels describe state; translated text must never decide transport or source behaviour.
@@ -78,7 +80,7 @@ in the full harness run:
 python3 tools/generate_locales.py --check
 (cd player && cargo test --release)
 cinder-home/harness/run.sh zappin-preview zappin-full-same-uri zappin-aba-stale-uri
-cinder-home/harness/run.sh zappin-timeout-play-full zappin-timeout-play-restore
+cinder-home/harness/run.sh zappin-timeout-full zappin-timeout-restore
 ```
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full checks and the ARM/device build requirements.
@@ -163,7 +165,7 @@ or additional runtime library is bundled. I have not separately benchmarked RAM 
 
 1. 每轮和每个候选有明确身份；旧回调不能对新候选定位、继续播放或完成确认。
 2. 巡听期间保护原断点和正常播放时钟。仅更新标题或 URI，不能解除普通播放交接保护；状态、URI 和实际位置要符合预期。
-3. 完整播放从零开始；恢复原队列使用保存断点，包括精确零点和不同 URI。交接失败时暂停旧片段，保留重试意图。
+3. 完整播放从零开始；恢复原队列使用保存断点，包括精确零点和不同 URI。结束、完整播放、拒绝启动、切换来源、拖动进度或 15 秒内未确认的交接，都会释放保护并恢复原曲目与位置。
 4. 修改队列、随机／重复状态、明确选曲或切源时，要有明确的取消／交接；普通播放状态下的队列操作不能被误当作巡听。
 5. 显示文字只描述状态，不能根据中英文标签判断开关或播放行为。
 
@@ -187,7 +189,7 @@ or additional runtime library is bundled. I have not separately benchmarked RAM 
 python3 tools/generate_locales.py --check
 (cd player && cargo test --release)
 cinder-home/harness/run.sh zappin-preview zappin-full-same-uri zappin-aba-stale-uri
-cinder-home/harness/run.sh zappin-timeout-play-full zappin-timeout-play-restore
+cinder-home/harness/run.sh zappin-timeout-full zappin-timeout-restore
 ```
 
 完整环境要求见 [贡献说明](../CONTRIBUTING.md)。真机回归应覆盖两种时长、暂停／继续、切换候选、完整播放、退出后正常播放、结束一轮和灭屏唤醒，并区分 SABI 与固定回退来源。
