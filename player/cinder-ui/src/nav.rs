@@ -8524,7 +8524,8 @@ impl App {
                     };
                     vec![Action::ZappinLength(self.zappin_preview_ms)]
                 }
-                Button::Back => {
+                // Left is Back everywhere else; it only steps between songs while a pass runs.
+                Button::Back | Button::Left => {
                     self.pop();
                     vec![]
                 }

@@ -182,11 +182,26 @@ pub fn render(
 
     // Silver MiniDisc cartridge: squared metal shell, inset rim, shutter groove and a static disc
     // window. The silhouette stays recognizable at every UI scale; only its lettering scales.
-    let silver = t.scale_color(Rgb888::new(178, 184, 188));
-    let bright = t.scale_color(Rgb888::new(222, 226, 228));
-    let shadow = t.scale_color(Rgb888::new(92, 101, 107));
-    let cartridge_ink = t.scale_color(Rgb888::new(36, 42, 45));
-    let cartridge_dim = t.scale_color(Rgb888::new(66, 73, 76));
+    // At night the metal is dimmed well below the page's own night palette, or the cartridge is
+    // the brightest thing on a dark screen; its lettering then takes the theme's light inks.
+    let metal = |r: u8, g: u8, b: u8| {
+        let k: u16 = if t.night { 40 } else { 100 };
+        let m = |v: u8| (u16::from(v) * k / 100) as u8;
+        t.scale_color(Rgb888::new(m(r), m(g), m(b)))
+    };
+    let silver = metal(178, 184, 188);
+    let bright = metal(222, 226, 228);
+    let shadow = metal(92, 101, 107);
+    let cartridge_ink = if t.night {
+        t.ink
+    } else {
+        t.scale_color(Rgb888::new(36, 42, 45))
+    };
+    let cartridge_dim = if t.night {
+        t.dim
+    } else {
+        t.scale_color(Rgb888::new(66, 73, 76))
+    };
     fill_rect(c, 20, 138, 440, 276, silver);
     stroke_rect(c, 20, 138, 440, 276, shadow, 2);
     stroke_rect(c, 27, 145, 426, 262, bright, 1);
@@ -194,7 +209,7 @@ pub fn render(
     fill_rect(c, 440, 151, 7, 250, bright);
     fill_rect(c, 30, 151, 112, 5, bright);
     fill_rect(c, 30, 396, 112, 5, shadow);
-    let disc = t.scale_color(Rgb888::new(116, 125, 93));
+    let disc = metal(116, 125, 93);
     Circle::with_center(Point::new(105, 244), 132)
         .into_styled(PrimitiveStyle::with_fill(disc))
         .draw(c)
@@ -216,7 +231,7 @@ pub fn render(
     } else if completed {
         crate::i18n::text("ROUND COMPLETE")
     } else if !has_queue {
-        crate::i18n::text("QUEUE REQUIRED")
+        crate::i18n::text("UP NEXT IS EMPTY")
     } else {
         crate::i18n::text("READY TO PREVIEW")
     };
@@ -229,7 +244,7 @@ pub fn render(
         186.0,
         208.0,
         if title.is_empty() {
-            crate::i18n::text("Select tracks to begin")
+            crate::i18n::text("Start an album or playlist first")
         } else {
             title
         },
@@ -244,7 +259,7 @@ pub fn render(
         Some(crate::zappin::StartSource::UnknownDurationFromStart) => {
             crate::i18n::text("Unknown duration")
         }
-        None if active => crate::i18n::text("Waiting for candidate"),
+        None if active => crate::i18n::text("Loading the next song"),
         None => crate::i18n::text("Choose a preview length"),
     };
     let source_style = widgets::sty(Family::Mono, Weight::Regular, 13.0, cartridge_ink, 0.0);
@@ -273,33 +288,33 @@ pub fn render(
     } else if !has_queue {
         crate::i18n::text("No playable music queue").to_string()
     } else {
-        crate::i18n::text("QUEUE UNCHANGED").to_string()
+        crate::i18n::text("Up Next stays as it is").to_string()
     };
     if has_queue {
         widgets::draw_fit(c, f, 186.0, 306.0, &detail, &source_style, 438.0);
     }
-    let lcd = t.scale_color(Rgb888::new(194, 201, 158));
+    let lcd = metal(194, 201, 158);
     fill_rect(c, 186, 322, 252, 30, lcd);
     stroke_rect(c, 186, 322, 252, 30, t.line, 1);
     let lcd_style = widgets::sty(
         Family::Mono,
         Weight::Bold,
         14.0,
-        t.scale_color(Rgb888::new(42, 50, 36)),
+        if t.night {
+            t.ink
+        } else {
+            t.scale_color(Rgb888::new(42, 50, 36))
+        },
         0.0,
     );
     let lcd_text = if active {
-        crate::i18n::text(if crate::text::scale_pct() > 100 {
-            "QUEUE HELD"
-        } else {
-            "LISTENING · QUEUE HELD"
-        })
+        crate::i18n::text("UP NEXT IS SAFE")
     } else if completed {
         crate::i18n::text("PASS FINISHED")
     } else if has_queue {
-        crate::i18n::text("SELECT START TO BEGIN")
+        crate::i18n::text("PRESS START")
     } else {
-        crate::i18n::text("MUSIC QUEUE REQUIRED")
+        crate::i18n::text("ADD SONGS TO UP NEXT")
     };
     widgets::center(c, f, 312.0, 341.0, lcd_text, &lcd_style);
     fill_rect(c, 186, 360, 252, 4, t.line);
@@ -367,7 +382,7 @@ pub fn render(
         f,
         FULL_RECT,
         crate::i18n::text("PLAY THIS SONG IN FULL"),
-        enabled && active,
+        false,
         enabled && active,
     );
     button(
@@ -376,7 +391,7 @@ pub fn render(
         f,
         END_RECT,
         crate::i18n::text("END PREVIEW"),
-        active,
+        false,
         active,
     );
 }
