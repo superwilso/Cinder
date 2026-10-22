@@ -224,6 +224,8 @@ typedef enum {
     /* BT Receiver switched. Read cinder_get_rx_on() and enter or leave receiver mode; idempotent.
      * Leaving the page sends nothing — the shell's receiver tick sees cinder_get_rx_on() go 0. */
     CINDER_ACT_RX_CHANGED = 49,
+    /* Receiver codec preference changed; read the independent receive preference. */
+    CINDER_ACT_RX_CODEC_CHANGED = 58,
     /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
      * resume function (Configuration 5008/5039), then boot to stock exactly as
      * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */
@@ -530,6 +532,8 @@ int  cinder_get_tone_bands(signed char *out);
 int  cinder_get_dac_eq(signed char *out);
 /* BT Receiver: 1 while the switch is on AND its page is still open. */
 int  cinder_get_rx_on(void);
+/* Receiver-only preference: 0 Auto, 1 prefer LDAC, 2 prefer AAC, 3 prefer SBC. */
+int  cinder_get_rx_codec_pref(void);
 /* BT Receiver status for the page: phase 1 waiting, 2 a device attached, 3 audio arriving; the rest
  * raw from BtPlayerService. `peer` may be NULL. */
 void cinder_set_rx_status(int phase, const char *peer, unsigned codec, unsigned freq, unsigned bitrate);
