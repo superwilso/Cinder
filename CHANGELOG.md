@@ -46,6 +46,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Cinder's ten-band still selected, so its equalizer did nothing. The hand-back now flushes, and if
   that fails, the launcher sets the selector again on the way into stock. *Device-unverified.*
 
+### Removed
+
+- **The `w1tuning` installer option.** It wrote one of Walkman One's own NVRAM images to the
+  player, and nothing it unlocked changes the sound (`analysis/RE_walkmanone_installers.md`). A
+  tuning applied earlier stays applied; `cinder_nvram_backup.img` on the drive still holds the
+  player's own data.
+- **Looking for volume tables in Wampy's folder.** The PC installer fetches Sony's own files.
+
+
 ## [0.3.19] — 2026-10-20
 
 ### Changed
