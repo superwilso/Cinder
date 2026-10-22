@@ -63,47 +63,60 @@ built, in the order it was planned.
 4. The redesign plan's Part G still describes per-output profiles (2a, 2g); bring it in line with
    presets.
 
-**Cinder — standing alone from Wampy and Walkman One** (owner's direction, 10-22: no feature lost)
+**Cinder — standalone: everything Wampy and Walkman One do, as installer options**
 
-No Wampy code is in the tree and nothing is downloaded from either project. Licences: Wampy is
-GPLv3 + Commons Clause and Walkman One is closed, so rebuild from documented facts, never copy, and
-keep anything GPL in its own repo. The design for Walkman One's gains on a stock player is
-[`SPEC_cinder_one.md`](SPEC_cinder_one.md): take what W1 does, from Sony's own files, without the
-model swap that causes W1's losses.
+The goal: a stock player gets every feature of Wampy and Walkman One from Cinder's installer, one
+option at a time, with no Wampy or Walkman One code, files, downloads or installs. People add what
+they want as they go. Licences: Wampy is GPLv3 + Commons Clause and Walkman One is closed, so
+rebuild from documented facts, never copy, and keep anything GPL in a repo of its own. The README
+and release notes describe Cinder's options, not "a replacement for" either project.
 
-1. ~~**Volume curves from Sony.**~~ **Done 10-22:** `tools/sony_tables.sh` takes the `wm1a`/`w1`
-   tables from Sony's NW-WM1 3.02 firmware (`fw/pc/WM1/J/NW-WM1_V3_02.dmg`); all three match the
-   installer's SHA-256s. **Also done 10-22:** the PC installer fetches them itself when Smooth or
-   Walkman One is chosen (`installer/src/sony_tables.rs`): all three tables sit in 36 KB of Sony's
-   image, so it is one HTTP Range request, AES-128-CBC, 88 zlib chunks and a SHA-256 check, no DMG
-   or ext4 reader. Live test: `cargo test -- --ignored sony`. Needs a Windows run of a real install.
-2. **Mono without Wampy by default.** Already built: the `preload` component (hagodaemon wrapper +
-   boot guard). It is off by default because the wrapper stands in front of every Sony service;
-   turning it on by default needs §35 on players other than the owner's. Then the Wampy-chain
-   `mono` component can be retired.
-3. **Cinder One, tiers 0–1, for stock players** (`SPEC_cinder_one.md` §3): nothing audible left.
-   Sound signature (`signature`), gain mode (`voltable=wm1a`, now fetched from Sony), tone table and
-   the 10-band/Tone chain are built. What remains measured the same at the jack (Wampy's REW runs):
-   W1's "full DAC reprogramming" (`dacdat auto BBDMP2_linux`) and its per-mode analyser params,
-   which only re-time Sony's spectrum display. Build either only if someone asks.
-4. **Walkman One's external tunings: nothing audible to remake** (10-22). On an A50 a tuning is an
-   NVRAM image whose only job is to match the md5 W1's boot script checks, plus another model's
-   bootloader that the stock kernel never reads (`analysis/RE_walkmanone_installers.md`). What it
-   unlocks is W1's own settings, and Cinder sets each of those directly: Plus mode (`signature`),
-   gain mode (`voltable=wm1a`, from Sony's file), region (`voltable=stock`), tone table, colour
-   (themes). `DIM=1` only skips the NC set-up, and the limiter files carry no region difference.
-   **The one audible thing W1 had and Cinder lacked** was its WM1-class sound library's chain, with
-   the 10-band EQ and Tone Control. Done 10-22: `libcinder_mono.so` hooks `FilterChain::Create` and
-   adds `eq10band eqtone` after `eq6band` on a stock list (`filter_chain.h`, host + qemu tests in
-   `test_mono_shim.sh`). It rides the `preload` component, so step 2 decides whether it reaches
-   everyone. **Device test:** stock player, `preload` on, Bluetooth headphones, a +10 dB band on
-   the EQ must be audible and `cinder_mono.log` must say "added eq10band and eqtone". Applying the
-   WM1Z tuning on a W1 player by hand: `z2.bin` from W1's package (md5 `ccb29dd2…`) to
-   `mmcblk0p3`, backup first; never `p7`.
-5. **The folder name.** Cinder installs into `/system/vendor/unknown321/`, Wampy's folder. Wampy's
-   uninstaller removes only its own files (checked 10-22), so this is a name, not a dependency.
-   Moving to `/system/vendor/cinder/` touches ~110 lines including the launcher's path: do it on
-   its own, with a migration and a device test, or not at all.
+Already done: volume curves fetched from Sony (`voltable`), sound signature (`signature`), tone
+table, region cap, FM on any firmware, and the 10-band EQ and Tone Control on stock (`preload`,
+device-unverified). Walkman One's external tunings hold nothing audible
+(`analysis/RE_walkmanone_installers.md`), and the owner's player has none applied (`p3` is its own
+factory image, `bc41b677…`, checked 10-22).
+
+**A. Owe them nothing.** First, because the other stages build on it.
+
+1. **`preload` on by default.** Gate: DEVICE_CHECKLIST §35 on a player other than the owner's,
+   stock 1.02 with no Wampy. Then the Bluetooth codec options stop needing a second tick.
+2. **Retire `mono`** (it rides Wampy's sound library). The installer removes it on Update and ticks
+   `preload` in its place.
+3. **Retire `w1tuning`.** It writes Walkman One's own NVRAM images, and nothing it unlocks is
+   audible. Keep reading Walkman One's settings only to detect it.
+4. **Move out of Wampy's folder:** `/system/vendor/unknown321/` to `/system/vendor/cinder/`, about
+   110 references including the launcher's path. Migration on Update, a device test, and the
+   uninstaller handles both paths.
+5. **Drop the Wampy-era hooks and tooling:** the `ldac-run.sh` hook, the `WAMPY_SS`/`.mod` volume
+   lookups, `phases/phase1.sh` cloning Wampy's repos, and CLAUDE.md Part E's "install Walkman One
+   and Wampy as the baseline". Detection of either stays, so a player that has them still installs.
+
+**B. A guided installer.** Every option keeps its page; the order changes.
+
+1. Pages: the player and its firmware, then a starting point (Cinder; Cinder with the sound
+   options; everything), then one page per group, then a review that says what each choice touches,
+   then install. Update opens on the review with what is installed now.
+2. `components.conf` gains a group (Sound, Bluetooth, Library, Radio, Look) and a risk line (what
+   it changes on the player, and how to undo it); `installer/src/catalogue.rs` reads both.
+
+**C. Wampy's features, smallest first.**
+
+| Feature | How | Size |
+|---|---|---|
+| ATRAC on any region | Sony locks ATRAC to Japan through `DmpFeature::IsFeaturedAtrac`; answer true from Cinder's per-service preload | half a day + device |
+| FM recording | Record the radio's capture to `/contents` from the FM screen (watch `reference_audioin_holds_pcm`) | about a day |
+| CUE sheets | Cinder's library reads a `.cue` next to an APE or FLAC as tracks | 1–2 days |
+| Per-song sound | Remember a preset per song or album and apply it on track change | 1–2 days |
+| Volume curve editor | Edit and save a curve, installed as `voltable=custom` | about 2 days |
+| Low-latency USB-DAC | llusbdac is GPL (zhangboyang's, not Wampy's): its own repo, built from upstream source, fetched by the installer like Sony's tables | 2–3 days + device |
+| Winamp and cassette skins, digital clock | Now Playing styles; Winamp's read `.wsz` files | 1–2 weeks |
+
+**D. Walkman One's last two.**
+
+1. **The RMT-NWS20 remote (`REM`):** a Bluetooth setting; the remote is an ordinary peer.
+2. **Changing the player's region,** which Walkman One does in NVP. Optional, and it writes NVP:
+   back up first, and only if someone asks, since `voltable` already lifts the volume cap.
 
 **Installer — finish an install from a Mac** (owner, 10-22; Montree on Head-Fi asked for it)
 
