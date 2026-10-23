@@ -48,12 +48,18 @@ files and then sends the upgrade command itself: the same 12-byte vendor SCSI co
 Sony's tool ends with. Root is needed because that is a raw SCSI passthrough. Without
 it, the files are still staged correctly and the installer says what did not happen.
 
-### macOS
+### macOS (experimental)
 
-The installer stages the files but cannot finish. The upgrade command is a vendor SCSI
-passthrough, and macOS only exposes those through an IOKit `SCSITaskUserClient`, which
-the kernel refuses for an already-mounted disk. Finish from Linux or Windows; see
-[install.md](../blob/main/install.md).
+`cinder-installer-macos` runs on Apple Silicon and Intel Macs, and must be **run with `sudo`**.
+It stages the files, ejects the player's volume, and sends the upgrade command as raw USB,
+because macOS gives no SCSI passthrough for a mounted disk. It has not yet been run on a real
+Mac. If it fails, finish from Linux or Windows; see [install.md](../blob/main/install.md).
+
+The Mac binary contains [libusb](https://libusb.info) 1.0.27, linked statically. libusb is
+licensed under the GNU LGPL 2.1; its licence is attached as `LICENSE-libusb.txt`. Its source
+is at <https://github.com/libusb/libusb/tree/v1.0.27>. To relink the installer against a
+different libusb, build it from this release's tagged source (`installer/`, `cargo build
+--release`) with your own libusb.
 
 > **The player has no update option in its own menus.** This generation never had one —
 > the upgrade is always triggered by the host over USB.

@@ -376,8 +376,8 @@ c224339ad58fdbeb advanced
 ff0248f5f53880ea dac_eq
 cca52766f39653a6 dac_eq_source_direct
 14e367b53f604767 advanced_end
-aa3bc5b6e0801b27 presets_empty
-dea2c73fd021ae83 presets_two
+b8e3d1e99c3a1186 presets_empty
+56130b17f8601cf6 presets_two
 624998e498f8f648 sound_end_presets
 fa6cfb2a26eea77b viz_signal_scope
 f6a75e832cc96b1a viz_signal_scope_night

@@ -21,6 +21,7 @@ mod pcm_tap;
 mod playlists;
 mod present;
 mod scrobble;
+mod shared;
 mod spectrum;
 mod stats;
 mod tape_load;
@@ -955,11 +956,18 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 /// Serialise the setup that is NOT live, so both halves of the A/B pair survive a reboot. The LIVE
 /// one keeps using the existing `eq=` / `sound=` / `balance100=` keys, which means an older build
 /// reading this file still finds exactly what it expects and simply ignores the spare.
-/// Every saved preset, as the spare's keys under `preset<N>_` (`bank_` never occurs in a value).
-fn presets_body(p: &[cinder_ui::nav::SoundSetup]) -> String {
+/// Every saved preset, as the spare's keys under `preset<N>_` (`bank_` never occurs in a value),
+/// and `preset<N>_name=` when it has a name (one line: `presets::clean_name` drops control chars).
+fn presets_body(p: &[cinder_ui::nav::SoundSetup], names: &[String]) -> String {
     p.iter()
         .enumerate()
-        .map(|(i, s)| setup_body(s).replace("bank_", &format!("preset{}_", i + 1)))
+        .map(|(i, s)| {
+            let mut b = setup_body(s).replace("bank_", &format!("preset{}_", i + 1));
+            if let Some(n) = names.get(i).filter(|n| !n.is_empty()) {
+                b.push_str(&format!("preset{}_name={n}\n", i + 1));
+            }
+            b
+        })
         .collect()
 }
 
@@ -1007,6 +1015,8 @@ struct ProfileLoad {
     live_idx: usize,
     /// Saved presets, each read through the same keys as the spare (`preset<N>_` for `bank_`).
     presets: Vec<ProfileLoad>,
+    /// `preset<N>_name=`: a saved preset's name; empty for "Preset N".
+    name: String,
     /// `jack_eq=`: Some(true) for the DAC, Some(false) for the 10-band, None when absent.
     jack_eq: Option<bool>,
     /// `album_sound=<preset>\t<album key>`, one line per album (Track info ▸ ALBUM SOUND).
@@ -1023,6 +1033,7 @@ impl Default for ProfileLoad {
             bank_adv_seen: false,
             live_idx: 0,
             presets: Vec::new(),
+            name: String::new(),
             jack_eq: None,
             album_sounds: Vec::new(),
             album_prev: None,
@@ -1152,7 +1163,11 @@ impl ProfileLoad {
                 while self.presets.len() < n {
                     self.presets.push(ProfileLoad::default());
                 }
-                self.presets[n - 1].line(&format!("bank_{rest}"), v);
+                if rest == "name" {
+                    self.presets[n - 1].name = v.to_string();
+                } else {
+                    self.presets[n - 1].line(&format!("bank_{rest}"), v);
+                }
             }
             _ => return false,
         }
@@ -1179,13 +1194,13 @@ impl ProfileLoad {
             }
             app.restore_setups(live, self.bank, self.live_idx);
         }
-        app.restore_presets(
-            self.presets
-                .into_iter()
-                .filter(|p| p.bank_seen)
-                .map(|p| p.bank)
-                .collect(),
-        );
+        let (presets, names): (Vec<_>, Vec<_>) = self
+            .presets
+            .into_iter()
+            .filter(|p| p.bank_seen)
+            .map(|p| (p.bank, p.name))
+            .unzip();
+        app.restore_presets(presets, names);
         app.restore_album_sounds(self.album_sounds);
         app.restore_album_sound_prev(self.album_prev.filter(|p| p.bank_seen).map(|p| p.bank));
         // A file from before 2026-10-18 has no `jack_eq`: the DAC unless the owner has a 10-band
@@ -1256,7 +1271,7 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("language={}\n", r.app.language().token()));
     body.push_str(&setup_body(&r.app.setup_inactive()));
     // Saved presets (Sound ▸ Presets): the spare's keys, numbered — `preset1_eq=` and so on.
-    body.push_str(&presets_body(r.app.presets()));
+    body.push_str(&presets_body(r.app.presets(), r.app.preset_names()));
     // The sound an album's preset replaced, so a restart mid-album still puts it back after.
     if let Some(prev) = r.app.album_sound_prev() {
         body.push_str(&setup_body(prev).replace("bank_", "album_prev_"));
@@ -1767,6 +1782,29 @@ fn build_library_with(
     let (book_tracks, tracks): (Vec<cinder_db::Track>, Vec<cinder_db::Track>) = all_tracks
         .into_iter()
         .partition(|t| audiobooks && books::is_audiobook(&t.filename));
+    // SONGS FLINT STORED ONCE for two albums (`shared.rs`): each second entry joins the library
+    // right after the file it plays, under its own album. Not in Folders: there is one file.
+    let shared_extra = shared::tracks(&shared::read_all(), &tracks);
+    let (tracks, is_shared): (Vec<cinder_db::Track>, Vec<bool>) = if shared_extra.is_empty() {
+        let n = tracks.len();
+        (tracks, vec![false; n])
+    } else {
+        eprintln!(
+            "cinder-ffi: {} song(s) stored once, listed under a second album",
+            shared_extra.len()
+        );
+        let mut by_kept: BTreeMap<i64, Vec<cinder_db::Track>> = BTreeMap::new();
+        for t in shared_extra.iter().cloned() {
+            by_kept.entry(t.object_id).or_default().push(t);
+        }
+        let mut out = Vec::with_capacity(tracks.len() + shared_extra.len());
+        for t in tracks {
+            let extra = by_kept.remove(&t.object_id).unwrap_or_default();
+            out.push((t, false));
+            out.extend(extra.into_iter().map(|e| (e, true)));
+        }
+        out.into_iter().unzip()
+    };
     let books = books::rows(&book_tracks, song_row_of);
     if !books.is_empty() {
         eprintln!(
@@ -1855,6 +1893,14 @@ fn build_library_with(
     // shows under the header. Alongside, derive each album's "recently added" key (newest track
     // addedtime) and its release-year label (first track that resolves one) for the ORDER chip.
     let mut album_tracks: BTreeMap<i64, Vec<SongRow>> = BTreeMap::new();
+    // The second entries go to their albums too, in their place by disc and track.
+    let mut shared_albums: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for t in &shared_extra {
+        if let Some(aid) = t.album_id {
+            album_tracks.entry(aid).or_default().push(song_row(t));
+            shared_albums.insert(aid);
+        }
+    }
     let mut long_files: BTreeMap<i64, (String, i64)> = BTreeMap::new();
     let mut album_added: BTreeMap<i64, i64> = BTreeMap::new();
     let mut album_year: BTreeMap<i64, String> = BTreeMap::new();
@@ -1895,6 +1941,12 @@ fn build_library_with(
         }
     }
 
+    for aid in &shared_albums {
+        if let Some(list) = album_tracks.get_mut(aid) {
+            list.sort_by_key(|s| (s.disc, s.track));
+        }
+    }
+
     // Album list (ordered, with track counts) → rows, grouped by artist.
     let ms_album_group = t_phase.elapsed().as_millis();
     let t_phase = std::time::Instant::now();
@@ -1927,7 +1979,8 @@ fn build_library_with(
                 cue: Vec::new(),
                 artist,
                 year: album_year.get(&a.id).cloned().unwrap_or_default(),
-                tracks: a.track_count.max(0) as u32,
+                // The DB's count, plus any second entries Flint listed here (`shared.rs`).
+                tracks: (a.track_count.max(0) as u32).max(trs.len() as u32),
                 art: a.name.clone(),
                 added: album_added.get(&a.id).copied().unwrap_or(0),
                 track_list: trs,
@@ -2084,7 +2137,20 @@ fn build_library_with(
 
     let hires_tracks = songs.iter().filter(|s| s.is_hires).count() as u32;
     eprintln!("cinder-ffi: hi-res tracks: {hires_tracks}");
-    let (folders, folder_roots) = build_folders(&tracks, &songs);
+    let (folders, folder_roots) = if is_shared.iter().any(|&x| x) {
+        let keep = |i: &usize| !is_shared[*i];
+        let real_tracks: Vec<cinder_db::Track> = (0..tracks.len())
+            .filter(keep)
+            .map(|i| tracks[i].clone())
+            .collect();
+        let real_songs: Vec<SongRow> = (0..songs.len())
+            .filter(keep)
+            .map(|i| songs[i].clone())
+            .collect();
+        build_folders(&real_tracks, &real_songs)
+    } else {
+        build_folders(&tracks, &songs)
+    };
 
     // The breakdown of the boot dead time. `sql` is the four DB calls; `model` is everything this
     // function does with their results. If `sql` dominates on device the way it does on the host,
@@ -10336,7 +10402,7 @@ mod tests {
         let body = format!(
             "setup=0\n{}{}jack_eq=10band\nprofile_bt=b\n",
             setup_body(&spare),
-            presets_body(&[spare, SoundSetup::default()])
+            presets_body(&[spare, SoundSetup::default()], &["Late night".into()])
         );
 
         let mut pl = ProfileLoad::default();
@@ -10353,6 +10419,10 @@ mod tests {
         assert_eq!(app.setup_inactive(), spare);
         assert_eq!(app.setup_idx(), 0);
         assert_eq!(app.presets(), &[spare, SoundSetup::default()]);
+        assert_eq!(
+            app.preset_names(),
+            &["Late night".to_string(), String::new()]
+        );
         assert!(!app.jack_eq_dac());
     }
 
@@ -10407,7 +10477,7 @@ mod tests {
         };
         let body = format!(
             "{}{}album_sound=1\tKind of Blue\u{1f}Miles Davis\n",
-            presets_body(&[SoundSetup::default()]),
+            presets_body(&[SoundSetup::default()], &[]),
             setup_body(&prev).replace("bank_", "album_prev_"),
         );
         let mut pl = ProfileLoad::default();

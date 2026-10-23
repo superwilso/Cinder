@@ -114,8 +114,11 @@ for src in "$HERE/src/main.cpp:$HERE/main.o" \
            "$AUDIO/src/codec_shim.cpp:$HERE/codec_shim.o" \
            "$AUDIO/src/volume_shim.cpp:$HERE/volume_shim.o" \
            "$HERE/src/discover.cpp:$HERE/discover.o"; do
+    # main.cpp keeps its clock in `long long` (now_ms): `long` is 32 bits here and wraps after
+    # 24.8 days awake. Storing a time in a `long` again fails the build rather than the player.
+    NARROW=(); [ "${src%%:*}" = "$HERE/src/main.cpp" ] && NARROW=(-Werror=shorten-64-to-32)
     $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
-         -fPIC -O2 -Wall -std=c++14 -fno-rtti "${CHANNEL_DEF[@]}" "${INCLUDES[@]}" \
+         -fPIC -O2 -Wall -std=c++14 -fno-rtti "${CHANNEL_DEF[@]}" "${INCLUDES[@]}" "${NARROW[@]}" \
          -c "${src%%:*}" -o "${src##*:}"
 done
 

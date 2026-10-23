@@ -141,10 +141,19 @@ jobs:
             target/aarch64-apple-darwin/release/cinder-installer \
             target/x86_64-apple-darwin/release/cinder-installer
           lipo -info cinder-installer-macos
+      # The Mac binary links libusb statically (LGPL-2.1, through rusb's vendored build), so its
+      # licence ships beside it; the release notes say where its source is and how to relink.
+      - name: Attach libusb's licence
+        working-directory: installer
+        run: |
+          cp "$(find ~/.cargo/registry/src -path '*/libusb1-sys-*/libusb/COPYING' | head -1)" \
+            LICENSE-libusb.txt
       - uses: actions/upload-artifact@v7
         with:
           name: cinder-installer-macos
-          path: installer/cinder-installer-macos
+          path: |
+            installer/cinder-installer-macos
+            installer/LICENSE-libusb.txt
           if-no-files-found: error
 
   release:

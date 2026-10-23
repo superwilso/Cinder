@@ -371,7 +371,7 @@ void install_diagnostics() {
 // alternative this replaces, which was a SIGSEGV, `_exit(42)`, the bad-boot counter latching to
 // MAXBAD, and the user's next boot landing on stock with the escape ladder spent.
 static bool g_ipc_dead = false;
-long now_ms();                       // defined with the touch state, far below
+long long now_ms();                  // defined with the touch state, far below
 volatile int g_ipc_poisoned = 0;     // transport_tick drops its backlog on this
 
 // ── THREE GUARDS, BECAUSE THERE ARE THREE KINDS OF CALL ──────────────────────────────────────
@@ -451,8 +451,8 @@ static int run_guarded_ex(const char* what, unsigned timeout, void (*fn)(), Guar
     if (kind == GUARD_IPC && g_ipc_dead) {
         // Throttled at the PRINT, not the caller: this is reached from the frame loop, so an
         // unthrottled line here is a flash write per frame for the rest of the boot.
-        static long last_said = 0;
-        const long n = now_ms();
+        static long long last_said = 0;
+        const long long n = now_ms();
         if (n - last_said > 10000) {
             last_said = n;
             char m[176];
@@ -579,8 +579,8 @@ static const unsigned DISPLAY_BL_NIGHT = 1u;
 /// what was there rather than to impose a number.
 static const unsigned DISPLAY_BL_DAY = 2u;
 extern bool g_screen_on;      // panel lit? (defined with the screen state, below)
-extern long g_last_input_ms;  // idle-screen-off clock; seeded by render_up, defined with the input state
-long now_ms();                // CLOCK_MONOTONIC ms (defined with the touch state, below)
+extern long long g_last_input_ms;  // idle-screen-off clock; seeded by render_up, defined with the input state
+long long now_ms();           // CLOCK_MONOTONIC ms (defined with the touch state, below)
 bool g_render_ready = false;   // framebuffer/renderer open? (pump must not tick before this)
 easel::CuiAppModule* g_cui = nullptr;   // the UI module — used to drive the pump (OnPumpTrigger)
 easel::ApplicationBase* g_app = nullptr; // the app — for StopBootAnimation() (stop the boot-anim overlay)
@@ -600,20 +600,20 @@ bool g_db_ready = false;       // library DB opened successfully this boot
 bool g_audio_ready = false;    // PlayerService connection succeeded this boot
 bool g_audio_pump_started = false;
 bool g_resume_ready = false;   // resume/scrobble state restored after the DB became available
-long g_deferred_retry_ms = 0;  // pace retries after a transient service/storage failure
+long long g_deferred_retry_ms = 0;  // pace retries after a transient service/storage failure
 int g_deferred_rc = -1;        // result slot for non-capturing guarded init callbacks
 // OPT-IN async library build (see the note in deferred_up). `g_lib_pending` is the LAST thing the
 // worker writes, after g_deferred_rc, so a reader that sees it clear sees a valid rc.
 volatile bool g_lib_pending = false;
 bool g_lib_thread_started = false;
-long g_healthy_since = 0;      // when deferred init completed, CLOCK_MONOTONIC ms (see now_ms)
+long long g_healthy_since = 0;      // when deferred init completed, CLOCK_MONOTONIC ms (see now_ms)
 bool g_counter_reset = false;  // have we cleared the launcher bad-boot counter this boot?
 // When the FIRST frame hit the panel (the bad-boot health signal), in CLOCK_MONOTONIC ms.
 // MONOTONIC, NOT time(): the health check is "still alive 8 s later", and a wall-clock difference
 // is not a duration. The clock can step backwards under us — cinder-clock setting the date, or the
 // 32-bit time_t wrap in January 2038 sending it to 1901 — and then `now - first_paint` never
 // reaches 8, the bad-boot counter is never cleared, and two such boots latch the device into stock.
-long g_first_paint_at = 0;
+long long g_first_paint_at = 0;
 int g_screenshot_sync = 0;     // countdown: sync /contents a few ticks after a screenshot is taken
 
 // ── watchdog summary ────────────────────────────────────────────────────────────────────
@@ -657,7 +657,7 @@ static bool bt_radio_up(int st);
 static void apply_pump_interval();  // defined with poll_now_playing — audio-pump rate for the current state
 void refresh_bt_route();     // ditto — points the volume rocker at whichever output is live
 static void bt_reconnect_rearm();  // ditto — "the user wants a link"; clears the auto-reconnect latch
-extern long g_bt_toggle_at;  // defined with refresh_bt_route — when the user last worked the switch
+extern long long g_bt_toggle_at;  // defined with refresh_bt_route — when the user last worked the switch
 // The radio's own reconnect machinery — arm the service-side retry thread, and make the player
 // connectable so a headphone's power-on page is accepted. Defined next to bt_reconnect_tick.
 static void bt_service_retry(bool on, bool force);
@@ -692,7 +692,7 @@ static bool g_bt_peer_read_now = false;
 // …and after the user hangs up, keep asking every half second until the peer is gone (or 10 s pass):
 // RequestDisconnection returns before the link is down, so the read it triggers still names the
 // device, and a disconnect notice is not guaranteed to follow.
-static long g_bt_peer_fast_until = 0;
+static long long g_bt_peer_fast_until = 0;
 #define BT_PEER_FAST_EVERY_MS 500
 #define BT_PEER_FAST_FOR_MS   10000
 void refresh_bt_paired();    // ditto — reads the radio's pairing table for the Devices screen
@@ -963,10 +963,10 @@ void volume_limit_tick() {
 
 void bt_trim_tick() {
     static int  s_last = 0;
-    static long s_at   = 0;
+    static long long s_at   = 0;
     const int trim = cinder_get_bt_trim_half_db();
     if (trim == s_last) return;
-    const long now = now_ms();
+    const long long now = now_ms();
     if (now < s_at) return;             // one write per BT_TRIM_APPLY_MS, however fast the presses
     s_last = trim;
     s_at   = now + 120;
@@ -1003,10 +1003,10 @@ void stop_analyzer() {
 // The rule: say it immediately, then after a minute, then roughly tripling to hourly. Prompt enough
 // to diagnose from the log, bounded enough that a device stuck for a day costs a couple of dozen
 // lines. Each call site owns a RetryLog; a successful stage simply stops calling.
-struct RetryLog { long next_ms; long gap_ms; };
+struct RetryLog { long long next_ms; long gap_ms; };
 
 void retry_log(RetryLog& st, const char* msg) {
-    const long now = now_ms();
+    const long long now = now_ms();
     if (st.next_ms != 0 && now < st.next_ms) return;
     clog_(msg);
     st.gap_ms = (st.gap_ms == 0) ? 60000
@@ -1165,11 +1165,11 @@ void* lib_open_thread(void*) {
     sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
     pthread_sigmask(SIG_BLOCK, &sa, nullptr);
     setpriority(PRIO_PROCESS, 0, 10);
-    const long t0 = now_ms();
+    const long long t0 = now_ms();
     const int rc = db_open_guarded(DB_LIVE);
     if (rc == 0) {
         char m[112];
-        std::snprintf(m, sizeof m, "deferred_up: library build finished in %ld ms", now_ms() - t0);
+        std::snprintf(m, sizeof m, "deferred_up: library build finished in %lld ms", now_ms() - t0);
         clog_(m);
     }
     g_deferred_rc = rc;
@@ -1242,7 +1242,7 @@ void deferred_up() {
     // means a boot whose DB or PlayerService never comes up still answers the fb handshake.
     static bool fbsync_started = false;
     if (!fbsync_started) { fbsync_started = true; fbsync::start(); }
-    const long retry_now = now_ms();
+    const long long retry_now = now_ms();
     if (retry_now - g_deferred_retry_ms < 1000) return;
     g_deferred_retry_ms = retry_now;
     // A transient mount or PlayerService race must not permanently leave the app without a
@@ -1263,7 +1263,7 @@ void deferred_up() {
         // Widening it cannot make a real sync take longer to appear: a USB-MSC round trip reopens
         // the library through exit_usb_msc, and the library-change watcher reloads it — neither
         // goes through this path.
-        static long db_next_ms = 0;
+        static long long db_next_ms = 0;
         static long db_every_ms = 1000;
         if (retry_now < db_next_ms) return;
 
@@ -1863,7 +1863,7 @@ static int  g_touch_cur_x   = -1, g_touch_cur_y   = -1;
 static bool  g_drag_active = false;
 static int   g_drag_last_uy = 0;
 static float g_drag_vel = 0.0f;
-static long  g_drag_last_ms = 0;
+static long long  g_drag_last_ms = 0;
 // Drag-to-seek on the Now Playing progress rail. Decided at finger-DOWN (cinder_scrub_hit) and,
 // once set, this contact belongs entirely to the scrub: no tap, no list drag, no swipe. That
 // exclusivity matters — the rail band overlaps the horizontal-swipe area that skips tracks, so a
@@ -1901,16 +1901,18 @@ static bool  g_reorder_active = false;
 // no further events, and there is nothing to hang an event-driven test on.
 static const long REORDER_HOLD_MS   = 350;   // long enough not to fire on a tap, short enough to feel deliberate
 static const int  REORDER_HOLD_SLOP = 10;    // px of wander still counted as "held still"
-static long  g_touch_down_ms = 0;
+static long long  g_touch_down_ms = 0;
 static bool  g_reorder_hold_tested = false;
 // A long press queued the song under it (`hold_play_next`): the lift that ends it is not a tap.
 static bool  g_hold_queued = false;
 // Scrollbar drag: the bar at the right edge owns the contact, like the reorder handle does.
 static bool  g_sbar_active = false;
-long now_ms() {
+// 64-bit: `long` is 32 bits here, and milliseconds since boot pass 2^31 after 24.8 days awake —
+// every "retry at" / "until" compared against it would then stick (goal 10's audit, 10-23).
+long long now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 // The actual touchscreen fd. Other input nodes report ABS_X/ABS_Y too (e.g. `m_batch_input`, a
 // sensor-batch device — ABS=13f), so we MUST only treat ABS/BTN_TOUCH from THIS fd as touch, or
@@ -1960,7 +1962,7 @@ static int touch_ui_y(int ry) {
 // keeps the glyph correct immediately after a press, and the service's view is how a track ending
 // or PlayerService pausing itself reaches the UI.
 static bool g_playing = true;
-static long g_transport_at = 0;              // when we last set g_playing ourselves (now_ms)
+static long long g_transport_at = 0;              // when we last set g_playing ourselves (now_ms)
 static const long TRANSPORT_GRACE_MS = 3000; // > the ~1 s onPlayTimeUpdated period + its 2.5 s
                                              // movement tolerance, so the lag can't fight a press
 // ZAPPIN owns a single URI at a time. The FFI keeps the current queue snapshot and candidate
@@ -1978,8 +1980,8 @@ struct ZappinShellState {
     long long length_ms = 0;
     long long elapsed_ms = 0;
     int source = 0;
-    long last_tick_ms = 0;
-    long waiting_since_ms = 0;
+    long long last_tick_ms = 0;
+    long long waiting_since_ms = 0;
     int seek_rc = -1;
     char uri[512] = {};
 };
@@ -1992,7 +1994,7 @@ struct ZappinHandoff {
     bool pending = false;
     bool restore = false;
     int target_ms = 0;
-    long armed_ms = 0;
+    long long armed_ms = 0;
     char uri[512] = {};
 };
 static ZappinHandoff g_zappin_handoff;
@@ -2872,7 +2874,7 @@ int  g_vol_written = -1;      // last level actually written (dedupe)
 // is the one caller that has just disproved that claim by reading the mixer back, so it drops the
 // cache rather than arguing with it. Same shape as fx_cache_drop() for the effect chain.
 void volume_forget_last_write() { g_vol_written = -1; }
-long g_vol_write_ms = 0;
+long long g_vol_write_ms = 0;
 
 // Do the write. Split out so both the rate-limited path and the trailing flush share it.
 void volume_write_now(int level) {
@@ -3171,7 +3173,7 @@ void recompute_day_level() {
 // When the backlight was last taken to 0 by the brightness row. The restore is debounced against
 // this: the very gesture that SELECTS level 0 also generates a touch release, and restoring on
 // that would make the setting impossible to reach.
-long g_bl_zero_at = 0;
+long long g_bl_zero_at = 0;
 
 // Next input after a level-0 blank: come back. Cheap and unconditional — cinder_brightness_wake
 // returns 0 immediately unless the UI is actually in the transient state.
@@ -3828,7 +3830,7 @@ static void sync_hold_from_hw() {
         std::snprintf(m, sizeof m, "input: Hold switch reads released — unlocking");
     clog_(m);
 }
-long g_last_input_ms = 0;                // when we last saw ANY input event (see the fwd decl above)
+long long g_last_input_ms = 0;                // when we last saw ANY input event (see the fwd decl above)
 
 // ── Actually darken the panel ───────────────────────────────────────────────────────────────────
 //
@@ -4031,7 +4033,7 @@ const char kWakeNode[]  = "/sys/power/wait_for_fb_wake";
 // late-resume stamp straight from the kernel — strictly better than noticing a resume_count change
 // on the next 1 Hz tick, which is how socsusp currently finds out.
 volatile int  g_fb_awake      = 1;
-volatile long g_fb_last_wake_ms = 0;
+volatile long long g_fb_last_wake_ms = 0;
 
 // One open+read per call: these are sysfs show() handlers, so the blocking wait happens inside the
 // read and a fresh open is needed each time round.
@@ -4056,7 +4058,7 @@ void* thread(void*) {
     int  cycles = 0;
     int  fast   = 0;
     for (;;) {
-        const long t0 = now_ms();
+        const long long t0 = now_ms();
         if (read_blocking(kSleepNode, buf, sizeof buf) < 0) {
             clog_("fbsync: wait_for_fb_sleep unreadable — handshake off for this boot");
             return nullptr;
@@ -4339,10 +4341,10 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
     // the number that matters: the guarantee is a window in which the device is reachable no
     // matter what this code does, and a long-running device that has just had cinder-home
     // restarted needs that window as much as a cold boot does.
-    static long first_tick_ms = 0;
-    const long nowms = now_ms();
+    static long long first_tick_ms = 0;
+    const long long nowms = now_ms();
     if (!first_tick_ms) first_tick_ms = nowms;
-    const long uptime_s = (nowms - first_tick_ms) / 1000;
+    const long uptime_s = (long)((nowms - first_tick_ms) / 1000);
 
     const int thr = threshold_s();
     if (!thr) return;                       // disabled — the default
@@ -4415,7 +4417,7 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
         // log at the attempt, so a unit where this can never work costs a handful of lines an hour
         // rather than one a second (the harness's autooff-idle scenario caught exactly that once
         // this became the default).
-        static long fail_next_ms = 0;
+        static long long fail_next_ms = 0;
         static long fail_gap_ms  = 0;
         if (fail_next_ms && nowms < fail_next_ms) return;
         // Stage 1. Wakelock FIRST — the order matters, because writing `mem` with no lock held
@@ -4948,8 +4950,8 @@ static void apply_bt_volume(bool up) {
 #define BT_VOL_WALK_CLOSE     2      // within half a measured step: as close as stepping can get
 
 static int  g_bt_vol_walk_target = -1;   // UI level to reach, -1 = not walking
-static long g_bt_vol_walk_at     = 0;    // when the next step may go out
-static long g_bt_vol_walk_until  = 0;    // give up waiting for a starting point after this
+static long long g_bt_vol_walk_at     = 0;    // when the next step may go out
+static long long g_bt_vol_walk_until  = 0;    // give up waiting for a starting point after this
 static int  g_bt_vol_walk_steps  = 0;    // steps spent, bounded by BT_VOL_WALK_MAX_STEPS
 static int  g_bt_vol_walk_last   = -1;   // the level the previous step produced
 
@@ -4970,7 +4972,7 @@ static void bt_vol_walk_tick(void) {
     if (g_bt_vol_walk_target < 0) return;
     // The link went away mid-walk. Nothing to step.
     if (!cinder_get_bt_route()) { bt_vol_walk_stop(); return; }
-    const long now = now_ms();
+    const long long now = now_ms();
     // No starting point yet. The sink volunteers one within a second of connecting on every link
     // seen so far, but a sink that never reports cannot be walked at all — there is no way to know
     // which direction is "toward".
@@ -5173,7 +5175,7 @@ static std::vector<unsigned char> g_bt_connected_addr;
 // Disconnect path below runs before the reconnect logic further down. See bt_reconnect_tick.
 static bool g_bt_user_disconnected = false;
 // When to try next, and how long to wait after that. 0 = nothing scheduled.
-static long g_bt_reconnect_at = 0;
+static long long g_bt_reconnect_at = 0;
 static int  g_bt_reconnect_wait_s = 0;
 // Attempts made since this drop. Capped, so a sink that never answers stops costing paging.
 static int  g_bt_reconnect_tries = 0;
@@ -5575,7 +5577,7 @@ static void bt_reconnect_tick() {
     // The radio itself has to be up. If it is not, apply_bt_toggle owns that, not us.
     if (!g_bt_radio_seen_up) return;
 
-    const long now = now_ms();
+    const long long now = now_ms();
     if (g_bt_reconnect_at == 0) {             // first notice of the drop
         // The service's own retry mode is NOT armed here. It jams us — see bt_service_retry.
         // Disarm it instead, so the connects below can actually reach the air, and take the one
@@ -5618,7 +5620,7 @@ static void bt_reconnect_tick() {
     // any non-1 as decisive and jumps to naming a device, on evidence that says nothing about which
     // device is right. Standing aside costs one scalar IPC and keeps the two refusals apart.
     {
-        static long avsrc_busy_since = 0;
+        static long long avsrc_busy_since = 0;
         const int avsrc = bt_avsrc_status();
         if (avsrc == BT_AVSRC_CONNECTING) {
             if (avsrc_busy_since == 0) avsrc_busy_since = now;
@@ -5846,7 +5848,7 @@ struct BtPrompt {
 static pthread_mutex_t g_bt_prompt_mx = PTHREAD_MUTEX_INITIALIZER;
 static BtPrompt g_bt_prompt;                        // guarded by g_bt_prompt_mx
 static volatile sig_atomic_t g_bt_prompt_dirty = 0;
-static long g_bt_paired_recheck_at   = 0;
+static long long g_bt_paired_recheck_at   = 0;
 static int  g_bt_paired_recheck_left = 0;
 
 struct CinderBtListener {
@@ -6032,7 +6034,7 @@ static bool bt_listener_register() {
 // duration is the second argument to SetSearchMode; the radio stops on its own when it expires, so
 // the UI switch has to be put back or it lies for the rest of the session.
 #define BT_SCAN_DURATION_S 30
-static long g_bt_scan_started_at = 0;
+static long long g_bt_scan_started_at = 0;
 
 // Start/stop discovery. Run ONLY via run_guarded.
 void apply_bt_scan() {
@@ -6217,8 +6219,8 @@ static void bt_poll_sound_status() {
     // still far more often than it can move, and the two events that CAN move it (a link coming up,
     // a codec preference being written) set g_bt_sound_poll_now and skip the wait entirely — so the
     // throttle costs nothing in responsiveness.
-    static long last_ms = 0;
-    const long now = now_ms();
+    static long long last_ms = 0;
+    const long long now = now_ms();
     // Interval from src/bt_poll.h. The comment above is right that this changes about once a
     // session — so once the link is steady and the listener is watching it, 60 s is still far more
     // often than it can move, and the two events that CAN move it still skip the wait entirely.
@@ -6356,9 +6358,9 @@ static bool nfc_start() {
         ((fnadd)vt[VIDX_NfcAddListener])(g_nfc_client, (void*)&g_nfc_listener, &key);
         ((fn0)vt[VIDX_NfcOpen])(g_nfc_client);
         unsigned mode = 1;                      // the tag-reading mode; see the note above
-        const long nfc_t0 = now_ms();
+        const long long nfc_t0 = now_ms();
         int rc = ((fnu)vt[VIDX_NfcStart])(g_nfc_client, &mode);
-        g_nfc_start_ms = now_ms() - nfc_t0;
+        g_nfc_start_ms = (long)(now_ms() - nfc_t0);
         int md = ((fn0)vt[VIDX_NfcGetCurrentMode])(g_nfc_client);
         char m[128];
         std::snprintf(m, sizeof m, "nfc: Start(1) rc=%d mode=%d%s", rc, md,
@@ -6415,10 +6417,10 @@ static void nfc_resume() {
     void** vt = *(void***)g_nfc_client;
     typedef int (*fnu)(void*, const unsigned*);
     int rc = -1;
-    const long t0 = now_ms();
+    const long long t0 = now_ms();
     try { unsigned mode = 1; rc = ((fnu)vt[VIDX_NfcStart])(g_nfc_client, &mode); } catch (...) {}
     char m[112];
-    std::snprintf(m, sizeof m, "nfc: polling again, Start(1) rc=%d in %ld ms", rc, now_ms() - t0);
+    std::snprintf(m, sizeof m, "nfc: polling again, Start(1) rc=%d in %lld ms", rc, now_ms() - t0);
     clog_(m);
     g_nfc_paused = false;
     if (rc != 0 && rc != 3) {
@@ -6675,7 +6677,7 @@ bool g_bt_radio_seen_up = true;
 // radio that is still powering up would otherwise be read as "off" and slam the switch back under
 // the finger that just moved it — the exact "the switch doesn't work" failure apply_bt_toggle's own
 // comment describes.
-long g_bt_toggle_at = 0;
+long long g_bt_toggle_at = 0;
 #define BT_TOGGLE_SETTLE_MS 6000
 
 void refresh_bt_route() {
@@ -6790,8 +6792,8 @@ void refresh_bt_route() {
     if (switched_off) {
         bt_link_gone_by_switch();
     } else if (bt_radio_up(st)) {
-        static long bt_link_last = 0;
-        const long now = now_ms();
+        static long long bt_link_last = 0;
+        const long long now = now_ms();
         // While a peer is named AND the listener is up, re-asking WHICH peer every 2 s learns
         // nothing — the name changes only with the link, and the link is pushed. While the name is
         // MISSING, ask every time: the address becomes readable a couple of stages into connection
@@ -7330,9 +7332,9 @@ static void uac_poll_status() {
     //     seconds ("every 5 s for the first two minutes") but incremented once per frame, so at
     //     60 Hz it printed its 24 lines inside the first two SECONDS and then went silent for good —
     //     destroying the one diagnostic it exists to provide. At 1 Hz the comment becomes true.
-    static long last_ms = 0;
+    static long long last_ms = 0;
     const long every = bridging ? 200 : 1000;
-    const long now = now_ms();
+    const long long now = now_ms();
     if (now - last_ms < every) return;
     last_ms = now;
     if (!uac_client()) return;
@@ -8984,8 +8986,8 @@ static void rx_poll_ipc() {
     // SELF-HEAL a connect-wait that never took. Idle (1) with idle as the baseline means nothing is
     // waiting: the broken entry above (rc=0, sink 1), or one that lost to a late page. Re-issue
     // every 5 s; rx_open_ipc re-reads the baseline, so a wait that takes becomes the new "waiting".
-    static long heal_at = 0;
-    const long now = now_ms();
+    static long long heal_at = 0;
+    const long long now = now_ms();
     if (snk == 1 && g_rx_snk0 == 1) {
         if (heal_at == 0) heal_at = now + 5000;
         else if (now >= heal_at) {
@@ -9041,7 +9043,7 @@ static const long RESCAN_ROUND_MS   = 10000;
 static const int  RESCAN_CONFIRM_SCANS = 2;
 static int  g_rescan_rounds_left = 0;   // follow-up scans still in budget
 static int  g_rescan_checks_left = 0;   // checks still in budget (a busy store must not pin it open)
-static long g_rescan_next_ms     = 0;   // earliest time for the next round
+static long long g_rescan_next_ms     = 0;   // earliest time for the next round
 static unsigned long long g_rescan_sig  = 0;  // CONTENT signature when the last round was issued
 static unsigned long long g_rescan_stat = 0;  // file signature at the last check
 static int  g_rescan_quiet       = 0;   // consecutive checks that saw no change
@@ -9431,7 +9433,7 @@ static void ensure_msc_lun() {
     const char* s = cur;
     while (*s == ' ' || *s == '\t') ++s;
     static int  lun_fails = 0;
-    static long lun_next_ms = 0;
+    static long long lun_next_ms = 0;
     if (*s != 0) { lun_fails = 0; lun_next_ms = 0; return; }  // already backed — nothing to do
     // THE RETRY LADDER BELOW MUST NOT RUN EVERY TICK. This function is called from the ~1 Hz
     // housekeeping for the whole MSC session, and the ladder costs about two seconds of sleeps. So
@@ -10759,8 +10761,8 @@ static Audible audible_now() {
     a.ambient  = g_amb_alive || g_amb_bt_alive;
     return a;
 }
-static long g_amb_hold_until = 0;               // a yield keeps the player off this long
-static long g_amb_bt_retry_at = 0;              // a failed Bluetooth start waits before the next
+static long long g_amb_hold_until = 0;               // a yield keeps the player off this long
+static long long g_amb_bt_retry_at = 0;              // a failed Bluetooth start waits before the next
 static int g_amb_written_sound = -1, g_amb_written_milli = -1, g_amb_route_sent = -1;
 
 static uint32_t amb_seed() {
@@ -12186,8 +12188,8 @@ static void touch_drag_motion() {
     int delta = uy - g_drag_last_uy;
     if (delta == 0) return;
     cinder_touch_drag(-delta);   // finger up (delta<0) = show later rows (positive scroll)
-    long now = now_ms();
-    long dt = now - g_drag_last_ms;
+    long long now = now_ms();
+    long dt = (long)(now - g_drag_last_ms);
     if (dt > 0) {
         float inst = (float)(-delta) * 1000.0f / (float)dt;
         g_drag_vel = 0.75f * g_drag_vel + 0.25f * inst;   // EMA smooths sensor jitter
@@ -12209,8 +12211,8 @@ static void touch_drag_motion() {
 // drops `val == 0`), so if a release event is ever lost the ramp would otherwise run forever with
 // no finger on the device.
 int g_vol_btn = -1;      // CINDER_BTN_VOLUP / _VOLDOWN while held, else -1
-long g_vol_down_ms = 0;  // when the press landed
-long g_vol_last_ms = 0;  // last volume action emitted (kernel repeat OR synthetic)
+long long g_vol_down_ms = 0;  // when the press landed
+long long g_vol_last_ms = 0;  // last volume action emitted (kernel repeat OR synthetic)
 
 const long VOL_REPEAT_DELAY_MS = CINDER_VOL_REPEAT_DELAY_MS;  // hold this long before the ramp starts…
 const long VOL_REPEAT_EVERY_MS = CINDER_VOL_REPEAT_EVERY_MS;  // …then a step this often (~8/s)
@@ -12231,13 +12233,13 @@ const long VOL_REPEAT_MAX_MS = 15000;    // dead-man: give up if a release was m
 
 void vol_repeat_tick() {
     if (g_vol_btn < 0) return;
-    long now = now_ms();
+    long long now = now_ms();
     if (now - g_vol_down_ms > VOL_REPEAT_MAX_MS) { g_vol_btn = -1; return; }
     if (now - g_vol_down_ms < VOL_REPEAT_DELAY_MS) return;
     if (now - g_vol_last_ms < VOL_REPEAT_EVERY_MS) return;
     g_vol_last_ms = now;
 
-    int steps = cinder_vol_repeat_steps(now - g_vol_down_ms);
+    int steps = cinder_vol_repeat_steps((long)(now - g_vol_down_ms));
     // MULTI-STEP IS ONLY SAFE WHERE THE APPLIED VALUE IS ABSOLUTE. The jack path writes a level and
     // is already coalesced; BT with SetCurrentVolume likewise sends the level, so advancing the UI
     // by N and applying once lands exactly right and costs ONE call instead of N. The BT STEP
@@ -12277,7 +12279,7 @@ void vol_repeat_tick() {
 // release flips this permanently, on the very first press of a boot, and the dev log records both
 // edges so the answer is in cinderhome.log rather than in anyone's assumption.
 static bool g_power_hold_ok = false;  // have we ever seen a KEY_POWER release on this unit?
-static long g_power_down_ms = 0;      // when Power went down (0 = not down)
+static long long g_power_down_ms = 0;      // when Power went down (0 = not down)
 static bool g_power_consumed = false; // has this press already produced the menu?
 static const long POWER_HOLD_MS = 1000;
 
@@ -12331,7 +12333,7 @@ static void reorder_hold_tick() {
     if ((dx < 0 ? -dx : dx) > REORDER_HOLD_SLOP || (dy < 0 ? -dy : dy) > REORDER_HOLD_SLOP) {
         g_reorder_hold_tested = true;   // it moved: this contact is a scroll, not a hold
         char m[96];
-        std::snprintf(m, sizeof m, "hold: moved %d,%d px before %ld ms — treated as a scroll",
+        std::snprintf(m, sizeof m, "hold: moved %d,%d px before %lld ms — treated as a scroll",
                       dx, dy, now_ms() - g_touch_down_ms);
         clog_(m);
         return;
@@ -12408,10 +12410,10 @@ void input_pump() {
     // starts producing events, so it repeated for ever: measured off-device (cinder-home/harness),
     // 499 lines an hour, each one an fflush to /contents. The condition it reports does not change,
     // so after the first few the only useful thing it can do is stop.
-    static long hb_next_ms = 0;
+    static long long hb_next_ms = 0;
     static long hb_gap_ms  = 15000;
     if (g_ev_total == 0) {
-        const long hb_now = now_ms();
+        const long long hb_now = now_ms();
         if (hb_next_ms == 0) hb_next_ms = hb_now + hb_gap_ms;
         else if (hb_now >= hb_next_ms) {
             clog_("input: still ZERO events from every node (foreign grab? see node diagnostics above)");
@@ -12610,8 +12612,8 @@ void input_pump() {
 #ifdef CINDER_DEV
                     {
                         char m[80];
-                        std::snprintf(m, sizeof m, "input: POWER release after %ld ms (spent=%d)",
-                                      was_down ? now_ms() - g_power_down_ms : -1L, (int)spent);
+                        std::snprintf(m, sizeof m, "input: POWER release after %lld ms (spent=%d)",
+                                      was_down ? now_ms() - g_power_down_ms : -1LL, (int)spent);
                         clog_(m);
                     }
 #endif
@@ -13108,7 +13110,7 @@ static void battery_guard(int pct) {
     // Same self-guard as the idle auto-off: power_action returns only when the helper failed, and
     // a critical battery does not un-critical itself, so without the backoff this forks the helper
     // and repaints a toast on every battery poll until the cell is flat.
-    static long next_try_ms = 0;
+    static long long next_try_ms = 0;
     if (now_ms() < next_try_ms) return;
     next_try_ms = now_ms() + POWER_RETRY_MS;
     char m[128];
@@ -13173,13 +13175,13 @@ void report_storage() {
 // witness: each change of state is one line, with the filesystem type, and a card that is in the
 // slot but still unmounted a minute on says so once. Silent while a mass-storage session holds the
 // card, because unmounted is then the correct state and the exit path reports on its own.
-static void sd_watch_tick(long now) {
-    static long next_ms = 0;
+static void sd_watch_tick(long long now) {
+    static long long next_ms = 0;
     if (now < next_ms || g_msc_active) return;
     next_ms = now + 5000;
 
     static int  last = -1;              // -1 not yet seen, 0 no card, 1 in the slot but unmounted, 2 mounted
-    static long unmounted_since = 0;
+    static long long unmounted_since = 0;
     static bool said_late = false;
     char type[32] = {0};
     const int state = !sd_card_present() ? 0 : (sd_card_mounted(type, sizeof type) ? 2 : 1);
@@ -13262,7 +13264,7 @@ void poll_now_playing() {
     static char last[1024];
     static unsigned last_events = 0;
     static int  last_cur = -1, last_tot = -1;
-    static long last_uri_ms = 0;
+    static long long last_uri_ms = 0;
 
     // ── EVERYTHING FREE, FIRST ──────────────────────────────────────────────────────────────
     // `cinder_audio_position` / `_is_playing` / `_listener_events` are atomic loads of values the
@@ -13303,7 +13305,7 @@ void poll_now_playing() {
     // the UI just sits there.
     const bool moved = (events != last_events);
     last_events = events;
-    const long np_now = now_ms();
+    const long long np_now = now_ms();
     if (g_zappin_handoff.pending && np_now - g_zappin_handoff.armed_ms >= 15000) {
         // A lost PlayerService callback must not create an unbounded binder poll loop, nor leave
         // persistence held with nothing left to release it. Release instead of waiting for a later Play: the FFI puts the intended state in place
@@ -13444,7 +13446,7 @@ void poll_now_playing() {
     // Count only actual playing time. The housekeeping cadence is low-frequency and continues
     // while the panel is dark; paused/buffering wall time is excluded and no render tick owns this.
     if (g_zappin.active && g_zappin.started) {
-        const long dt = std::max(0L, std::min(2000L, np_now - g_zappin.last_tick_ms));
+        const long dt = (long)std::max(0LL, std::min(2000LL, np_now - g_zappin.last_tick_ms));
         g_zappin.last_tick_ms = np_now;
         const bool service_playing = cinder_audio_is_playing() != 0;
         if (g_playing && service_playing) g_zappin.elapsed_ms += dt;
@@ -13529,14 +13531,14 @@ static void stop_after_tick() {
     // must remain armed for ordinary playback after the preview hand-off.
     if (g_zappin.owns_sequence) return;
     static int  last_cur = -1;
-    static long cur_at = 0;
+    static long long cur_at = 0;
     if (!cinder_get_stop_after()) {
         last_cur = -1;
         return;
     }
     int cur = -1, tot = -1;
     if (cinder_audio_position(&cur, &tot) == 0 || tot <= 0 || cur < 0) return;
-    const long now = now_ms();
+    const long long now = now_ms();
     if (cur != last_cur) {
         last_cur = cur;
         cur_at = now;
@@ -13546,7 +13548,7 @@ static void stop_after_tick() {
         cur_at = now;
         return;
     }
-    const long ahead = now - cur_at < 1500 ? now - cur_at : 1500;
+    const long ahead = (long)(now - cur_at < 1500 ? now - cur_at : 1500);
     if ((long)cur + ahead < (long)tot - STOP_AFTER_LEAD_MS) return;
     clog_("stop-after: end of the song — pausing");
     set_transport(false);
@@ -13616,7 +13618,7 @@ void* render_driver(void*) {
         // still present on the device 2026-09-04 — a leftover from an 2026-08-18 ghost-UI test
         // whose actual cause (mtkfb handing back the previous session's pixels) was root-caused and
         // fixed on 2026-08-26 with a clear of the mapping at init. Removed; the blit is ~1.5 MB.
-        static long last_forced_ms = 0;
+        static long long last_forced_ms = 0;
         if (n < 600) {
             cinder_force_dirty();
             last_forced_ms = now_ms();
@@ -13625,7 +13627,7 @@ void* render_driver(void*) {
             last_forced_ms = now_ms();
         }
 
-        long frame_start = now_ms();
+        long long frame_start = now_ms();
 
         // ── INPUT IS READ BEFORE THE PAINT ────────────────────────────────────────────────────
         // It used to run *after* cinder_render_tick(), and that cost a whole frame on every single
@@ -13682,7 +13684,7 @@ void* render_driver(void*) {
             // route on the very next frame instead of up to 3 s (or 15 s from a radio that last
             // read down) later. That latency is the whole of why stock felt faster to connect —
             // the link itself is the MTK stack's either way.
-            static long last_route_ms = 0;
+            static long long last_route_ms = 0;
             // Interval from src/bt_poll.h, host-tested. A CONNECTED link with the listener up
             // relaxes from 3 s to 30 s, because the listener — registered at boot only since
             // 2026-08-23 — is what actually reports a change; the timer is the backstop its own
@@ -13759,7 +13761,7 @@ void* render_driver(void*) {
             // correctly, but every pass re-ran the "is anything paired / is the radio up" tests
             // and, on the first pass after a drop, two IPC calls — on the render thread. Once a
             // second is as fast as a reconnect ladder measured in seconds can use.
-            static long last_bt_reconnect_ms = 0;
+            static long long last_bt_reconnect_ms = 0;
             if (now_ms() - last_bt_reconnect_ms >= 1000) {
                 last_bt_reconnect_ms = now_ms();
                 run_guarded("loop: BT reconnect", 8, bt_reconnect_tick);
@@ -13807,7 +13809,7 @@ void* render_driver(void*) {
             // Both calls are cheap no-ops once they have taken effect.
             {
                 const bool want_nfc = cinder_get_bt_on() != 0;
-                static long last_nfc_arm_ms = 0;
+                static long long last_nfc_arm_ms = 0;
                 if (want_nfc != g_nfc_running) {
                     if (!want_nfc) {
                         run_guarded("loop: NFC disarm", 8, nfc_stop);
@@ -13847,7 +13849,7 @@ void* render_driver(void*) {
                 if (!want_nfc) { g_nfc_arm_tries = 0; last_nfc_arm_ms = 0; }
                 // The screen only pauses the poll (see nfc_pause). Thirty dark seconds first, so a
                 // glance at the clock costs nothing; back on within a frame of the screen.
-                static long nfc_dark_since_ms = 0;
+                static long long nfc_dark_since_ms = 0;
                 if (g_screen_on) nfc_dark_since_ms = 0;
                 else if (nfc_dark_since_ms == 0) nfc_dark_since_ms = now_ms();
                 const bool nfc_dark = nfc_dark_since_ms != 0 && now_ms() - nfc_dark_since_ms >= 30000;
@@ -14060,11 +14062,11 @@ void* render_driver(void*) {
         // client (`change_state` returns -1 with no g_ctrl) and the library screens read an empty
         // DB, which is the state cinder-ui's host tests cover most heavily. DEVICE-UNVERIFIED —
         // this arm is reasoned from the call sites, not observed on hardware.
-        static long deferred_stalled_since = 0;
-        static long last_anim_kill_ms = 0;
+        static long long deferred_stalled_since = 0;
+        static long long last_anim_kill_ms = 0;
         if (!g_deferred_done) {
             if (n < 30) { ++n; usleep(16000); continue; }   // warm-up paints first
-            const long bring_now = now_ms();
+            const long long bring_now = now_ms();
             if (deferred_stalled_since == 0) deferred_stalled_since = bring_now;
             deferred_up();
             // Re-kill the boot animation: dense while a respawn is actually plausible, then rare,
@@ -14153,8 +14155,8 @@ void* render_driver(void*) {
         // be `n % 60`, which silently assumed the loop always runs at 60 Hz — no longer true now
         // that a dark panel drops it to 10 Hz, where `n % 60` would mean once every SIX seconds and
         // would have delayed the sleep timer and the USB-host debounce by that much.
-        static long last_house_ms = 0;
-        long house_now = now_ms();
+        static long long last_house_ms = 0;
+        long long house_now = now_ms();
         if (g_house_due || house_now - last_house_ms >= 1000) {
             g_house_due = false;
             last_house_ms = house_now;
@@ -14501,7 +14503,7 @@ void* render_driver(void*) {
                 // stop waking the panel, and only Power brings it back. One IPC, once per blank.
                 // The escape is the same as the Power blank's — a key event, which depends on less
                 // than the touch panel it rescues, and touch_set_sleep(0) runs on every wake.
-                static long auto_off_at = 0;
+                static long long auto_off_at = 0;
                 if (!g_screen_auto_off) {
                     auto_off_at = 0;
                 } else if (!auto_off_at) {
@@ -14535,7 +14537,7 @@ void* render_driver(void*) {
                 // failed, and this block runs at ~1 Hz — so a device whose setuid bit is gone used
                 // to fork the helper and write three log lines every second, for ever. Once the
                 // idle threshold is met it stays met, so nothing else here would ever stop it.
-                static long next_try_ms = 0;
+                static long long next_try_ms = 0;
                 static int  attempts = 0;
                 if (off_min > 0 && !audible && !g_msc_active && !cinder_modal_open() &&
                     !battery_charging() && now_ms() >= next_try_ms &&
@@ -14783,11 +14785,11 @@ void* render_driver(void*) {
         // Battery gauge: every ~10 s, wall-clock paced for the same reason as the housekeeping block
         // above (an iteration count means something different at 60 Hz and at 10 Hz). Reading it is
         // two small sysfs reads, so 10 s is already conservative.
-        static long last_batt_ms = 0;
+        static long long last_batt_ms = 0;
         if (house_now - last_batt_ms >= BATT_POLL_MS) {
             // The gap, not the interval: after a screen-off suspend this is minutes or hours, and
             // it is what lets the level catch up with a charge that happened while nothing polled.
-            const long batt_gap_ms = last_batt_ms > 0 ? house_now - last_batt_ms : BATT_POLL_MS;
+            const long batt_gap_ms = (long)(last_batt_ms > 0 ? house_now - last_batt_ms : BATT_POLL_MS);
             last_batt_ms = house_now;
             const int pct = battery_sample(batt_gap_ms);
             // A wide gap between the raw reading and the reported level is the load sag above. Log
@@ -14830,7 +14832,7 @@ void* render_driver(void*) {
         // same reason the spectrum analyzer is — this forks a helper, and doing that every few
         // seconds for a screen nobody has open is runtime spent on nothing. Off-screen this branch
         // costs one function call that returns 0.
-        static long last_battdetail_ms = 0;
+        static long long last_battdetail_ms = 0;
         if (cinder_device_wants_detail() && house_now - last_battdetail_ms >= 2000) {
             last_battdetail_ms = house_now;
             // The REPORTED level, not a fresh raw read: the Device screen and the status bar must
@@ -14873,7 +14875,7 @@ void* render_driver(void*) {
         // → media_rescan), plus the campaign below that keeps asking until the store settles,
         // because one Scan() only ever gets part of the way. New music copied over USB-MSC is still
         // unknown until somebody asks; nothing here triggers a scan on its own.
-        static long last_db_check_ms = 0;
+        static long long last_db_check_ms = 0;
         if (house_now - last_db_check_ms >= 10000 && !g_msc_active) {
             last_db_check_ms = house_now;
             const unsigned long long sig = db_signature();
@@ -14986,12 +14988,12 @@ void* render_driver(void*) {
         // awake budget stays 16 ms — a drag has to follow the finger, and there poll() only helps.
         long left;
         if (g_screen_on) {
-            left = 16 - (now_ms() - frame_start);
+            left = (long)(16 - (now_ms() - frame_start));
         } else {
             // Sleep to the NEXT housekeeping deadline, not a flat second — a flat 1000 ms would
             // drift past the 1 Hz check and silently halve the housekeeping rate (the sleep timer
             // and the scrobbler both ride on it).
-            left = last_house_ms + 1000 - now_ms();
+            left = (long)(last_house_ms + 1000 - now_ms());
             if (left > 1000) left = 1000;
             // …BUT NEVER SLEEP PAST OUTSTANDING VOLUME WORK. Reported as "3.5 mm volume is not
             // responsive with the screen off", and it is this line rather than anything in the

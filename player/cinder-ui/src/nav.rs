@@ -186,6 +186,8 @@ pub enum KbPurpose {
     /// Name the saved view being edited. Screen state only, like the searches: the text goes into
     /// the editor's draft, and nothing is written until the editor's SAVE.
     ViewName,
+    /// Sound ▸ Presets: name the sound being saved (None), or rename preset `i`.
+    PresetName(Option<usize>),
 }
 
 /// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
@@ -1500,6 +1502,10 @@ pub struct App {
     setup_idx: usize,
     /// Saved sounds (Sound ▸ Presets), at most `presets::MAX`. Persisted as `preset<N>_*` keys.
     presets: Vec<SoundSetup>,
+    /// Their names, by index; empty for "Preset N". Persisted as `preset<N>_name`.
+    preset_names: Vec<String>,
+    /// How far Sound ▸ Presets is scrolled.
+    presets_scroll_px: i32,
     /// The preset whose Delete was tapped once; a second tap deletes it.
     preset_armed: Option<usize>,
     /// Track info ▸ ALBUM SOUND: `(album key, preset 1-based)`. Persisted as `album_sound=`.
@@ -2002,6 +2008,8 @@ impl Default for App {
             setup_other: SoundSetup::default(),
             setup_idx: 0,
             presets: Vec::new(),
+            preset_names: Vec::new(),
+            presets_scroll_px: 0,
             preset_armed: None,
             album_sounds: Vec::new(),
             album_sound_key: None,
@@ -2317,6 +2325,13 @@ impl App {
                 &mut self.kb_page,
             );
         }
+        self.kb_after_key();
+    }
+
+    /// Replace what the keyboard holds, as if typed over its seed.
+    #[doc(hidden)]
+    pub fn kb_text_for_test(&mut self, s: &str) {
+        self.kb_text = s.to_string();
         self.kb_after_key();
     }
 
@@ -4151,6 +4166,7 @@ impl App {
             }
             // Routes too, for the same reason: which profile each output uses, and the EQ editor.
             crate::sound::ROW_PROFILE => {
+                self.presets_scroll_px = 0;
                 self.push(Screen::Presets);
                 return vec![];
             }
@@ -5145,7 +5161,9 @@ impl App {
                 vec![]
             }
             Screen::Presets => {
-                if let Some(h) = crate::presets::hit(x, y, self.presets.len()) {
+                if let Some(h) =
+                    crate::presets::hit(x, y, self.presets.len(), self.presets_scroll_px)
+                {
                     return self.presets_tap(h);
                 }
                 vec![]
@@ -6106,6 +6124,9 @@ impl App {
                 .as_ref()
                 .map(|(_, d)| d.name.clone())
                 .unwrap_or_default(),
+            // A name to accept or edit: "Preset N" for a new one, the current name for a rename.
+            KbPurpose::PresetName(None) => crate::presets::name(&[], self.presets.len()),
+            KbPurpose::PresetName(Some(i)) => crate::presets::name(&self.preset_names, i),
             // Renaming starts from the current name: the common edit is a word, not a retype.
             KbPurpose::Rename(id) => self
                 .lib
@@ -6467,6 +6488,7 @@ impl App {
                 }
                 vec![]
             }
+            KbPurpose::PresetName(at) => self.preset_named(at),
         }
     }
 
@@ -6888,6 +6910,10 @@ impl App {
             Screen::Advanced => {
                 let max = crate::advanced::max_scroll(self.clear_bass_available);
                 self.adv_scroll_px = (self.adv_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::Presets => {
+                let max = crate::presets::max_scroll(self.presets.len());
+                self.presets_scroll_px = (self.presets_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Sound => {
                 let max = self.sound_max_scroll();
@@ -10072,6 +10098,8 @@ impl App {
                 let saved: Vec<String> = self.presets.iter().map(describe_setup).collect();
                 let p = crate::presets::Presets {
                     saved: &saved,
+                    names: &self.preset_names,
+                    scroll: self.presets_scroll_px,
                     armed: self.preset_armed,
                     live: crate::profile::letter(self.setup_idx),
                     follow: self.profile_follow,
@@ -10486,6 +10514,14 @@ impl App {
                         crate::i18n::text("Name it").to_string(),
                         crate::i18n::text("Smart playlist name"),
                     ),
+                    KbPurpose::PresetName(None) => (
+                        crate::i18n::text("Save current sound").to_string(),
+                        crate::i18n::text("Preset name"),
+                    ),
+                    KbPurpose::PresetName(Some(_)) => (
+                        crate::i18n::text("Rename preset").to_string(),
+                        crate::i18n::text("Preset name"),
+                    ),
                     _ => (
                         crate::i18n::text("New playlist").to_string(),
                         crate::i18n::text("Playlist name"),
@@ -10797,6 +10833,7 @@ impl App {
                 Screen::Settings => a.settings_scroll_px,
                 Screen::Sound => a.sound_scroll_px,
                 Screen::Advanced => a.adv_scroll_px,
+                Screen::Presets => a.presets_scroll_px,
                 Screen::Device => a.device_scroll_px,
                 Screen::UpNext => a.queue_scroll_px,
                 Screen::Lyrics => a.lyrics_scroll_px,
@@ -11347,16 +11384,22 @@ impl App {
             self.preset_armed = None;
         }
         match h {
+            // The keyboard names it first; DONE saves (`preset_named`), Back saves nothing.
             Hit::Save => {
                 if self.presets.len() >= crate::presets::MAX {
-                    self.notify(crate::i18n::text("All four are in use: delete one first"));
+                    self.notify_format(
+                        "All {} are in use: delete one first",
+                        vec![("0", crate::presets::MAX.to_string())],
+                    );
                     return vec![];
                 }
-                self.presets.push(self.setup());
-                self.notify_format(
-                    "Saved as Preset {}",
-                    vec![("0", self.presets.len().to_string())],
-                );
+                self.open_keyboard(KbPurpose::PresetName(None));
+                vec![]
+            }
+            Hit::Rename(i) => {
+                if i < self.presets.len() {
+                    self.open_keyboard(KbPurpose::PresetName(Some(i)));
+                }
                 vec![]
             }
             Hit::Load(i) => {
@@ -11366,9 +11409,9 @@ impl App {
                 p.share_unfollowed(&self.setup(), self.profile_follow);
                 self.set_setup(p);
                 self.notify_format(
-                    "Preset {} on {}",
+                    "{} on {}",
                     vec![
-                        ("0", (i + 1).to_string()),
+                        ("0", crate::presets::name(&self.preset_names, i)),
                         ("1", crate::profile::letter(self.setup_idx).to_string()),
                     ],
                 );
@@ -11376,7 +11419,11 @@ impl App {
             }
             Hit::Delete(i) => {
                 if self.preset_armed == Some(i) && i < self.presets.len() {
+                    let name = crate::presets::name(&self.preset_names, i);
                     self.presets.remove(i);
+                    if i < self.preset_names.len() {
+                        self.preset_names.remove(i);
+                    }
                     let gone = (i + 1) as u8;
                     self.album_sounds.retain(|(_, n)| *n != gone);
                     for (_, n) in &mut self.album_sounds {
@@ -11385,7 +11432,10 @@ impl App {
                         }
                     }
                     self.preset_armed = None;
-                    self.notify_format("Preset {} deleted", vec![("0", (i + 1).to_string())]);
+                    self.presets_scroll_px = self
+                        .presets_scroll_px
+                        .min(crate::presets::max_scroll(self.presets.len()));
+                    self.notify_format("{} deleted", vec![("0", name)]);
                 } else {
                     self.preset_armed = Some(i);
                 }
@@ -11575,10 +11625,50 @@ impl App {
     pub fn presets(&self) -> &[SoundSetup] {
         &self.presets
     }
-    /// Restore the saved presets at boot (at most `presets::MAX`).
-    pub fn restore_presets(&mut self, mut p: Vec<SoundSetup>) {
+    /// Their names, by index; empty (or missing) for "Preset N".
+    pub fn preset_names(&self) -> &[String] {
+        &self.preset_names
+    }
+    /// Restore the saved presets and their names at boot (at most `presets::MAX`).
+    pub fn restore_presets(&mut self, mut p: Vec<SoundSetup>, names: Vec<String>) {
         p.truncate(crate::presets::MAX);
+        self.preset_names = names
+            .iter()
+            .take(p.len())
+            .map(|n| crate::presets::clean_name(n))
+            .collect();
         self.presets = p;
+    }
+
+    /// The keyboard's DONE on a preset name: save the live sound under it (`at` None), or rename.
+    /// A name left as "Preset N" is stored empty, so it follows the number when one above goes.
+    fn preset_named(&mut self, at: Option<usize>) -> Vec<Action> {
+        let i = at.unwrap_or(self.presets.len());
+        let mut name = crate::presets::clean_name(&self.kb_text);
+        if name == crate::presets::name(&[], i) {
+            name.clear();
+        }
+        match at {
+            None => {
+                if self.presets.len() >= crate::presets::MAX {
+                    return vec![];
+                }
+                self.presets.push(self.setup());
+                self.preset_names
+                    .resize(self.presets.len() - 1, String::new());
+                self.preset_names.push(name);
+                self.notify_format(
+                    "Saved as {}",
+                    vec![("0", crate::presets::name(&self.preset_names, i))],
+                );
+            }
+            Some(i) if i < self.presets.len() => {
+                self.preset_names.resize(self.presets.len(), String::new());
+                self.preset_names[i] = name;
+            }
+            Some(_) => {}
+        }
+        vec![]
     }
 
     /// The shell's report of what is in the jack. True when it changed.
@@ -21397,8 +21487,21 @@ mod tests {
         let mut a = unlocked();
         a.go(Screen::Presets);
         a.snd_dsee = true;
+        // Save names it first: the keyboard opens on "Preset 1", Back saves nothing, DONE saves.
         assert!(a.tap(100, centre(Hit::Save, 0)).is_empty());
+        assert_eq!(a.current(), Screen::Keyboard);
+        assert_eq!(a.kb_text, "Preset 1");
+        a.pop();
+        assert!(
+            a.presets().is_empty(),
+            "Back from the keyboard saves nothing"
+        );
+        a.tap(100, centre(Hit::Save, 0));
+        a.kb_text = "Late night".into();
+        assert!(kb_key(&mut a, crate::keyboard::Key::Done).is_empty());
+        assert_eq!(a.current(), Screen::Presets);
         assert_eq!(a.presets().len(), 1);
+        assert_eq!(a.preset_names(), &["Late night".to_string()]);
         assert!(describe_setup(&a.presets()[0]).ends_with("DSEE HX"));
         a.snd_dsee = false;
         assert_eq!(
@@ -21406,10 +21509,28 @@ mod tests {
             vec![Action::SoundChanged]
         );
         assert!(a.snd_dsee, "the preset came back");
+        // RENAME, beside DELETE: the keyboard opens on the name; "Preset N" is kept as no name.
+        let rename_x = crate::canvas::W as i32 - 150;
+        a.tap(rename_x, centre(Hit::Load(0), 1));
+        assert_eq!(
+            (a.current(), a.kb_text.as_str()),
+            (Screen::Keyboard, "Late night")
+        );
+        a.kb_text = "Preset 1".into();
+        kb_key(&mut a, crate::keyboard::Key::Done);
+        assert_eq!(a.preset_names(), &[String::new()]);
         for _ in 1..MAX + 2 {
             a.tap(100, centre(Hit::Save, a.presets().len()));
+            if a.current() == Screen::Keyboard {
+                kb_key(&mut a, crate::keyboard::Key::Done);
+            }
         }
-        assert_eq!(a.presets().len(), MAX, "never more than the screen holds");
+        assert_eq!(a.presets().len(), MAX, "never more than MAX");
+        assert_eq!(
+            a.current(),
+            Screen::Presets,
+            "a full list does not open the keyboard"
+        );
         let x = crate::canvas::W as i32 - 10;
         a.tap(x, centre(Hit::Load(0), MAX));
         assert_eq!(a.presets().len(), MAX, "the first tap only arms");

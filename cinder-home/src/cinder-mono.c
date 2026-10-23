@@ -144,13 +144,13 @@ static void mlog(const char* fmt, ...)
 }
 
 /* ── the switch ──────────────────────────────────────────────────────────────────────────────── */
-static long g_flag_checked_ms = -1000000;
+static long long g_flag_checked_ms = -1000000;
 static int g_flag_on = 0;
 static int mono_on(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    const long now = (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+    const long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; /* 64-bit: 24.8 days */
     if (now - g_flag_checked_ms >= 250) {
         g_flag_checked_ms = now;
         const int on = access(kFlag, F_OK) == 0;
@@ -168,7 +168,7 @@ static int mono_on(void)
 typedef struct { ss_state st; pthread_mutex_t lock; int said; } amb_route;
 static amb_route g_amb_jack = { .lock = PTHREAD_MUTEX_INITIALIZER };
 static amb_route g_amb_bt = { .lock = PTHREAD_MUTEX_INITIALIZER };
-static long g_amb_checked_ms = -1000000;
+static long long g_amb_checked_ms = -1000000;
 static int g_amb_sound = 0, g_amb_milli = 0, g_amb_dirty = 0;
 
 static void amb_seed(void)
@@ -186,7 +186,7 @@ static int amb_poll(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    const long now = (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+    const long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; /* 64-bit: 24.8 days */
     if (now - g_amb_checked_ms >= 250) {
         g_amb_checked_ms = now;
         int sound = 0, milli = 0;

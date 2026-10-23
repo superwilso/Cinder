@@ -24,13 +24,13 @@ static void check(int cond, const char* what) {
     std::printf("  %-4s %s\n", cond ? "ok" : "FAIL", what);
     if (!cond) fails = 1;
 }
-static void check_eq(long got, long want, const char* what) {
-    std::printf("  %-4s %s (got %ld, want %ld)\n", got == want ? "ok" : "FAIL", what, got, want);
+static void check_eq(long long got, long long want, const char* what) {
+    std::printf("  %-4s %s (got %lld, want %lld)\n", got == want ? "ok" : "FAIL", what, got, want);
     if (got != want) fails = 1;
 }
 
 // Convenience: deadline with the shipping intervals.
-static long dl(int btn, long down, long last, int pending, long wrote) {
+static long long dl(int btn, long long down, long long last, int pending, long long wrote) {
     return cinder_vol_deadline(btn, down, last, pending, wrote, DELAY, EVERY, WRITE);
 }
 
@@ -73,6 +73,15 @@ int main() {
     // poll() with a 0 timeout returns instantly and the loop becomes a busy-wait on a single core.
     check_eq(cinder_clamp_budget(HOUSE, 9000, 12000), 1, "an overdue deadline clamps to 1ms");
     check_eq(cinder_clamp_budget(HOUSE, 12000, 12000), 1, "…and so does one due exactly now");
+
+    std::printf("test 8: past 24.8 days awake the times still order (goal 10)\n");
+    // Milliseconds since boot pass 2^31 after 24.8 days without a suspend. In a 32-bit `long` the
+    // deadline wrapped negative and read as long overdue, or never due.
+    const long long T = 2147483647LL + 5000;
+    check_eq(dl(9, T, T, -1, 0), T + 400, "the ramp deadline lands past 2^31 ms");
+    check_eq(cinder_clamp_budget(HOUSE, dl(9, T, T, -1, 0), T), 400, "…and is 400ms away, as at boot");
+    check_eq(cinder_clamp_budget(HOUSE, dl(-1, 0, 0, 77, T - 100), T - 60), 110,
+             "a flush owed across the 2^31 mark is still 110ms away");
 
     std::printf("test 7: the deadline never LENGTHENS a sleep\n");
     // Awake the budget is 16ms; a 150ms flush deadline must not stretch it and cost touch latency.

@@ -38,6 +38,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   that album or song starts, a song's preset wins over its album's, and the sound from before
   comes back when something else plays. Deleting a preset takes it off its albums and songs.
   *Device-unverified.*
+- **Presets have names, and there can be twelve.** Save current sound opens the keyboard on
+  "Preset N": type a name or press DONE to keep the number (Back saves nothing). Each preset row
+  has RENAME beside DELETE, and the list scrolls past four. Loading, saving and deleting say the
+  name. A name is kept in the settings file as `preset<N>_name`; an older build ignores it.
+  The new words show in English in Chinese until they are translated. *Device-unverified.*
+- **A song Flint stored once shows on both its albums.** When Flint copies one file for a
+  recording that is on two albums (an album and a best-of), it writes the other album's entry to
+  `flint-shared.tsv` in the folder it syncs into. Cinder reads it with the library and lists the
+  song under that album too, with that album's title, artist and track number; an album with no
+  other track on the player appears as its own. Both rows play the one file, so plays, likes and
+  ratings count once, to it. Sony's player ignores the list. *Device-unverified.*
 - **Your own volume curve** (Sound ▸ Advanced ▸ Volume curve, needs the volume-curve option).
   Seven points choose which of Sony's volume steps volume 0, 20, 40 … 120 plays, with a straight
   line between them. "Use every step" spreads 0–120 over Sony's steps 0–100, so the dead steps
@@ -124,6 +135,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Timers no longer stop after 24.8 days awake** (goal 10's audit). The Home app counted
+  milliseconds since boot in a 32-bit number, which overflows after 24.8 days without a suspend.
+  About sixty timers compare against it: Bluetooth reconnect and volume walks, the bad-boot health
+  check, the volume ramp, rescans, battery polls. Past the overflow they could stop firing, or fire
+  continually. The clock and every time stored from it are now 64-bit, and so is the mono and
+  soundscape shim's in Sony's sound service. The device build now fails if a time is stored in
+  32 bits again. Cinder's saved data (play counts, last played, scrobbles, bookmarks) was already
+  64-bit. The player's own clock still ends in 2038 (32-bit kernel and glibc), as before.
+  *Device-unverified.*
 - **FM over Bluetooth (BT OUT) read the radio as 32-bit audio.** The radio's capture is 16-bit,
   and the bridge it shares with USB-DAC → LDAC converted every block as 32-bit, which would have
   sent half the samples at the wrong rate. It now converts each source as what it is. FM over

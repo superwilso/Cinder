@@ -46,7 +46,7 @@
 #define CINDER_FRAME_BUDGET_H
 
 /* Returned when nothing is owed: the caller keeps its housekeeping budget untouched. */
-#define CINDER_NO_DEADLINE (-1L)
+#define CINDER_NO_DEADLINE (-1LL)
 
 /* `vol_btn`      >= 0 while the rocker is held, else < 0.
  * `vol_down_ms`  when that press landed.
@@ -54,23 +54,24 @@
  * `vol_pending`  >= 0 when a coalesced level is waiting to be written, else < 0.
  * `vol_write_ms` when the last actual write happened.
  * Returns the absolute time of the earliest deadline, or CINDER_NO_DEADLINE.
+ * Times are `long long`: milliseconds since boot pass a 32-bit `long` after 24.8 days awake.
  */
-static inline long cinder_vol_deadline(int vol_btn, long vol_down_ms, long vol_last_ms,
-                                       int vol_pending, long vol_write_ms,
-                                       long repeat_delay_ms, long repeat_every_ms,
-                                       long write_every_ms) {
-    long deadline = CINDER_NO_DEADLINE;
+static inline long long cinder_vol_deadline(int vol_btn, long long vol_down_ms, long long vol_last_ms,
+                                            int vol_pending, long long vol_write_ms,
+                                            long repeat_delay_ms, long repeat_every_ms,
+                                            long write_every_ms) {
+    long long deadline = CINDER_NO_DEADLINE;
     if (vol_btn >= 0) {
         /* Still inside the pre-ramp delay: the deadline is when the ramp is allowed to START.
          * Using the step interval here instead would wake the loop repeatedly through the delay
          * for a tap that is never going to become a ramp. */
-        long ramp_at = (vol_last_ms < vol_down_ms + repeat_delay_ms)
+        long long ramp_at = (vol_last_ms < vol_down_ms + repeat_delay_ms)
                      ? vol_down_ms + repeat_delay_ms
                      : vol_last_ms + repeat_every_ms;
         deadline = ramp_at;
     }
     if (vol_pending >= 0) {
-        long flush_at = vol_write_ms + write_every_ms;
+        long long flush_at = vol_write_ms + write_every_ms;
         if (deadline == CINDER_NO_DEADLINE || flush_at < deadline) deadline = flush_at;
     }
     return deadline;
@@ -79,11 +80,11 @@ static inline long cinder_vol_deadline(int vol_btn, long vol_down_ms, long vol_l
 /* Fold a deadline into a sleep budget. `budget_ms` is what the caller would otherwise sleep;
  * `now_ms` is the current time. Never returns less than 1 — a deadline already in the past means
  * "go round again now", not "spin on a zero timeout". */
-static inline long cinder_clamp_budget(long budget_ms, long deadline, long now_ms) {
+static inline long cinder_clamp_budget(long budget_ms, long long deadline, long long now_ms) {
     if (deadline == CINDER_NO_DEADLINE) return budget_ms;
-    long left = deadline - now_ms;
+    long long left = deadline - now_ms;
     if (left < 1) left = 1;
-    return left < budget_ms ? left : budget_ms;
+    return left < budget_ms ? (long)left : budget_ms;
 }
 
 #endif /* CINDER_FRAME_BUDGET_H */

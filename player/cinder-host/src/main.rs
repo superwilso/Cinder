@@ -3033,8 +3033,15 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         ] {
             let mut app = new_app();
             app.go_for_preview(Screen::Presets);
+            // Save opens the keyboard on "Preset N"; the first is named, the second keeps its
+            // number. DONE is the keyboard's bottom-right key.
+            let (dx, dy, dw, dh) = cinder_ui::keyboard::key_rect(0, 3, 2).expect("DONE");
             for n in 0..saved {
                 app.tap(100, centre(Hit::Save, n));
+                if n == 0 {
+                    app.kb_text_for_test("Late night");
+                }
+                app.tap(dx + dw / 2, dy + dh / 2);
             }
             if saved > 0 {
                 app.tap(470, centre(Hit::Load(0), saved));

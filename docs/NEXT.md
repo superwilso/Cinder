@@ -40,7 +40,7 @@ container, if a PR needs an ARM build to check.
 
 | # | Decision | Why it waits on you | Where |
 |---|---|---|---|
-| 1 | **Flint F1, the rest:** sweep only what Flint wrote | The `MUSIC` half was fixed 10-09; a sync still removes files it did not put there. The one open item that can lose a user's files | Flint `docs/AUDIT_2026-10-01.md` Part F |
+| 1 | ~~**Flint F1, the rest**~~ | **Decided and built 10-23** (owner: ask in the plan): Flint sweeps only what it wrote; the rest is listed unticked (uncommitted in Flint) | Flint `docs/AUDIT_2026-10-01.md` Part F |
 | 2 | **Promote Flint 0.2.3 to stable**, or leave 0.2.1 as the Latest | Its rc has been out since 10-18 | Flint's tag |
 | 3 | **The history rewrite.** Sony's extracted files are out of the tree but in public history | Rehearsed (122.7 → 35.2 MB, every release payload unchanged). A force-push that rewrites every clone; easier the fewer forks there are | [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md) |
 | 4 | **The cable escape** (11.4): keep, narrow to a PC data connection, or remove | Needs 11.3 (five quiet boots) first | `DEVICE_CHECKLIST.md` 11.3–11.4 |
@@ -58,10 +58,9 @@ built, in the order it was planned.
 
 1. **Say what costs battery.** Each software effect's row says when it keeps Sony's chain running;
    the mode line says whether the chain runs or is skipped. UI only, about an hour.
-2. **Presets, round two:** names (needs the keyboard Search uses) and more than four.
-3. **A Battery preset**: one tap to Direct, or Custom with only the DAC EQ.
-4. The redesign plan's Part G still describes per-output profiles (2a, 2g); bring it in line with
-   presets.
+2. ~~**Presets, round two:** names and more than four.~~ **Done 10-23**: named on Save and by RENAME, up to 12, the list scrolls (zh-CN strings untranslated).
+3. ~~**A Battery preset**~~ Not wanted (owner, 10-23).
+4. ~~The redesign plan's Part G still describes per-output profiles~~ **Done 10-23**: Parts B, G and the settings keys now describe the A/B compare and Presets.
 
 **Cinder — standalone: everything Wampy and Walkman One do, as installer options**
 
@@ -177,10 +176,9 @@ losses (FM, NC, VPT, ClearAudio+, Line-out) never apply, because Cinder does not
 `release.yml` makes one universal binary; `install.md` has the steps). Type-checked here against
 rusb's real API (a Cargo `links` override skips libusb's C build, which needs Apple's SDK); the
 first real compile is CI's macOS job. The key is not read on a Mac (taking the interface ejects
-the volume), so Walkman One is told from the files on the drive there (`device::w1_from_files`). **Owner
-decision before releasing it:** the vendored libusb is LGPL-2.1, linked statically into the Mac
-binary. Cinder's full source is public, which arguably meets LGPL 2.1 §6a (the user can relink),
-but say so in the release notes or drop the macOS job. Left: step 4, a real Mac.
+the volume), so Walkman One is told from the files on the drive there (`device::w1_from_files`). The vendored
+libusb is LGPL-2.1, linked statically: **ship with a notice** (owner, 10-23). `release.yml` attaches
+libusb's `COPYING` as `LICENSE-libusb.txt` and the release notes name its source and how to relink. Left: step 4, a real Mac.
 
 Today the macOS build stages every file and stops: the last step, the vendor command
 `fc 00 04 'dbmn'` that reboots the player into its updater (`stage::FW_UPGRADE_CDB`), needs raw SCSI,
@@ -222,7 +220,7 @@ About half a day of code plus the Mac session.
 9. **Tests for `cinder-audio`** (`SHORTCOMINGS.md` A2): effect, volume, power and codec shims have
    host self-tests (10-22). Left: player, tuner, analyzer, storage (vtable calls; grow
    `fake_pst.cpp` a service at a time).
-10. **2038 (goal 10):** an i64 audit of Cinder's own timestamps.
+10. ~~**2038 (goal 10):** an i64 audit of Cinder's own timestamps.~~ **Done 10-23**: saved data was already i64; the Home app's clock (`now_ms`, 32-bit, wrapped after 24.8 days awake) and the mono shim's are now 64-bit, and `build.sh` fails on a new 64→32 narrowing in `main.cpp`.
 11. A host benchmark with a 10,000-line playlist; discovering an **unpaired** Bluetooth device; a
     Windows installer smoke test per release (Install → Update → Uninstall → Install).
 12. **Bluetooth still drops and loses its volume** (owner, 10-23). Connections still have problems
@@ -231,22 +229,25 @@ About half a day of code plus the Mac session.
     then pull the snoop and `logcat`. Read it against the known traps: the retry mode that refuses
     connects (`BT connect jam`), the route flag trusting `GetBtStatus == 3`, and the BT volume being
     AVRCP steps that are separate from the jack's level.
-13. **One file, two albums** (owner idea, 10-23; Flint item 5): Cinder lists a song that Flint
-    stored once under every album it belongs to. Needs a small file from Flint naming the extra
-    album entries for each stored file (like the `.m3u8` playlists, read at the same time), and
-    library rows that point at the one file, as CUE rows do. Each album shows its own copy; plays,
-    likes and scrobbles go to whichever one was played.
+13. ~~**One file, two albums**~~ (**built 10-23**, uncommitted, device-unverified; Flint item 5):
+    `cinder-ffi/src/shared.rs` reads `flint-shared.tsv` with the library and lists each entry under
+    its own album as a copy of the kept file's row. Unlike the plan above, both rows share the kept
+    file's object id, so plays, likes and ratings count to the one file, and Now Playing shows the
+    kept album's tags.
 
 **Flint**
 
 1. After decision 1: adopt music already on the player by content key (G3.2).
-2. E7 the album unit is the top-level folder; ~~E9 refused scrobbles to `.scrobbler.refused.log`~~ (**done 10-23**, uncommitted in Flint);
+2. ~~E7 the album unit~~ (**done 10-23**: the folder holding the audio, discs kept with it); ~~E9 refused scrobbles to `.scrobbler.refused.log`~~ (**done 10-23**); both uncommitted in Flint;
    E10 the 25 s lossless test; E11 one WinHTTP session for the palette shop.
 3. Features in the 10-01 order: G1.1 backup of the player's state, G1.2 health card, G3.1 library
    lint, G1.3 device-aware transfer, G2.1 per-headphone profiles, G1.4 LRCLIB lyrics, G2.2 resume.
 4. R6 / Flint 0.3: Setup, convert-on-transfer, Copying, the palette preview, SensMe reasons, the
    SensMe MP3 path.
-5. **The same song on two albums, stored once** (owner idea, 10-23). A track that appears on two
+5. ~~**The same song on two albums, stored once**~~ (**built 10-23**, uncommitted: Flint suggests
+   pairs by audio, the owner ticks them, `flint shared`; first path kept. Left: a swap option for
+   which copy Sony's player shows; removing an album leaves its entry out at the next sync.)
+   *Original note:* (owner idea, 10-23). A track that appears on two
    albums (the album and a best-of, a single and its album) is often the same recording. You
    select the two, or Flint suggests pairs by matching decoded audio. Flint then copies one file
    and writes the other album's entry into a small list on the player. Cinder (item 13 above)
@@ -254,6 +255,10 @@ About half a day of code plus the Mac session.
    is spent once. Open questions: which tags the second entry keeps (track number, album artist,
    cover); what happens when one album is removed from the sync; and Sony's own player, which
    will show only the stored copy.
+
+6. ~~**Likes sync options**~~ (**built 10-23**, uncommitted): per-run direction (both / to the
+   player / to Last.fm), an add-only switch, and each removal ticked so one can be left alone.
+   Conflicts still keep the like.
 
 **cinder-themes:** nothing open. **cinder-sony-analysis:** decision 8.
 
