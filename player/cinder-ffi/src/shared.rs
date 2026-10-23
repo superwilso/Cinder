@@ -240,6 +240,43 @@ mod tests {
         );
     }
 
+    /// The list as Flint writes it (`contracts/flint-shared.tsv`; Flint's `shared::list_body` is
+    /// held to the same file): the header skipped, `11/18` read as track 11, an empty album artist.
+    #[test]
+    fn flints_list_reads_as_written() {
+        let e = parse(include_str!("../../../contracts/flint-shared.tsv"));
+        let row =
+            |keep: &str, title: &str, artist: &str, album: &str, album_artist: &str, track| Entry {
+                keep: keep.into(),
+                title: title.into(),
+                artist: artist.into(),
+                album: album.into(),
+                album_artist: album_artist.into(),
+                track,
+            };
+        assert_eq!(
+            e,
+            [
+                row(
+                    "Isles/01 Atlas.flac",
+                    "Atlas",
+                    "Bicep",
+                    "Best Of",
+                    "Various Artists",
+                    11
+                ),
+                row(
+                    "Takk.../04 Hoppipolla.flac",
+                    "Hoppípolla",
+                    "Sigur Rós",
+                    "Takk (Live)",
+                    "",
+                    4
+                ),
+            ]
+        );
+    }
+
     #[test]
     fn an_entry_joins_its_album_when_the_album_is_there() {
         let lib = [

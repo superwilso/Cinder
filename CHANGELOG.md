@@ -42,7 +42,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   "Preset N": type a name or press DONE to keep the number (Back saves nothing). Each preset row
   has RENAME beside DELETE, and the list scrolls past four. Loading, saving and deleting say the
   name. A name is kept in the settings file as `preset<N>_name`; an older build ignores it.
-  The new words show in English in Chinese until they are translated. *Device-unverified.*
+  *Device-unverified.*
+- **Chinese for this release's new screens.** Presets, the volume curve, the Winamp, tape and
+  clock styles and FM recording are translated (1113 of 1121 strings). The eight left are the
+  Winamp and cassette panel labels (FF, REW, SHUF, SIDE A…), which stay as printed on the deck.
+  The words were chosen from characters the bundled font already has. A native speaker should
+  read them over.
+- **The Sound screens say what costs battery.** An effect that is on and in the path reads
+  "On · costs battery" (DSEE HX, the normalizer, VPT, DC Phase, Vinyl, Clear Phase), and the
+  10-band EQ says it runs in software. The mode line says whether Sony's effect chain runs: Direct
+  skips it, and Custom runs it, measured at about 11 % more drain. In Custom the chosen EQ always
+  processes, even flat, so the chain runs whatever else is off. *Host-rendered.*
 - **A song Flint stored once shows on both its albums.** When Flint copies one file for a
   recording that is on two albums (an album and a best-of), it writes the other album's entry to
   `flint-shared.tsv` in the folder it syncs into. Cinder reads it with the library and lists the

@@ -34,8 +34,9 @@ The owner's report that toggling VPT did nothing is the first row, not ClearAudi
 
 In order of value against effort. None is built yet.
 
-1. **Say what costs battery.** Each software effect's row says so when it is on ("runs the
-   effects chain"), and the mode line says whether the chain is running or skipped. Small, UI only.
+1. **Say what costs battery.** *Built 10-23.* Each software effect's row says so when it is on
+   ("On · costs battery"), and the mode line says whether the chain is running or skipped. In
+   Custom it always runs: the chosen tone system processes even when flat.
 2. **EQ on the DAC by default on the jack.** The DAC EQ is free; the 10-band is about 5 % of a
    core. Offer "Equalizer: DAC (no battery cost) / 10-band (software)", DAC for new players, and a
    "fit my 10-band curve to the DAC's five bands" action so a saved curve carries over.

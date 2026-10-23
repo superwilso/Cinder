@@ -866,6 +866,10 @@ pub fn bypass_reasons(s: &Sound) -> (Option<&'static str>, Option<&'static str>)
     }
 }
 
+/// The subtitle of an effect that is on and in the path: it runs in software on every packet
+/// (AUDIT_2026-10-18_sound_power.md §3 item 1). Off, a row describes what it would do.
+pub(crate) const COSTS: &str = "On \u{b7} costs battery";
+
 /// Title, subtitle and trailing control of row `r` (every row but the balance slider), as owned
 /// strings the caller turns into a `kit::Row`. `None` in the trail's value means a switch.
 struct RowText {
@@ -896,6 +900,9 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         dim: over.is_some(),
     };
     let pill = |v: &str| RowTrail::Value(crate::i18n::text(v).to_uppercase());
+    // An effect that is on runs in software on every packet, so its row says so while it is on
+    // (AUDIT_2026-10-18_sound_power.md §3 item 1). Off, the row describes what it would do.
+    let fx = |on: bool, sub: &'static str| if on { COSTS } else { sub };
     match r {
         ROW_PROFILE => RowText {
             title: crate::i18n::text("Presets").into(),
@@ -927,13 +934,13 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         ),
         ROW_EQ => t(
             crate::i18n::text("Equalizer"),
-            "10-band \u{b7} tap to edit the curve",
+            "10-band in software \u{b7} costs battery",
             fx_over,
             RowTrail::Open(s.eq_preset.to_uppercase()),
         ),
         ROW_DSEE => t(
             "DSEE HX",
-            crate::i18n::text("Upscale compressed audio to near hi-res"),
+            fx(s.dsee, "Upscale compressed audio to near hi-res"),
             fx_over,
             RowTrail::Switch(s.dsee),
         ),
@@ -945,7 +952,10 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         },
         ROW_VPT => t(
             crate::i18n::text("VPT Surround"),
-            "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix",
+            fx(
+                s.vpt_on,
+                "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix",
+            ),
             fx_over,
             pill(s.vpt),
         ),
@@ -957,19 +967,19 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         },
         ROW_DC => t(
             crate::i18n::text("DC Phase Linearizer"),
-            crate::i18n::text("Analog-amp low-frequency phase"),
+            fx(s.dcphase_on, "Analog-amp low-frequency phase"),
             fx_over,
             pill(s.dcphase),
         ),
         ROW_VINYL => t(
             crate::i18n::text("Vinyl Processor"),
-            crate::i18n::text("Tonearm resonance, surface noise"),
+            fx(s.vinyl, "Tonearm resonance, surface noise"),
             fx_over,
             RowTrail::Switch(s.vinyl),
         ),
         ROW_NORM => t(
             crate::i18n::text("Dynamic Normalizer"),
-            crate::i18n::text("Even out volume between tracks"),
+            fx(s.normalizer, "Even out volume between tracks"),
             all_over,
             RowTrail::Switch(s.normalizer),
         ),
@@ -1012,13 +1022,15 @@ fn mode_part(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, scroll: i32, y: 
         );
     }
     let what = match mode {
-        // The processor cost is measured (2026-10-11, docs/NEXT.md item 11): the sound service
-        // took 0.6 % of a core in Direct and 10.3 % with the 10-band EQ and the normalizer on.
-        // Each line is under 48 characters: more than that is cut short at the largest text size.
-        // Hours of battery are not measured, so the line says "processor", not "battery".
-        MODE_DIRECT => crate::i18n::text("No effects. The least processor work."),
+        // Direct is the only mode that skips Sony's effect chain: in Custom the chosen tone system
+        // always processes, flat or not (`isproc is 1`, main.cpp's SetSelectUsingEq note), and the
+        // chain runs while any filter does (analysis/RE_sound_service.md §3). The drain is
+        // measured: 6.23 %/h in Custom against 5.54 %/h in Direct, one day's use each
+        // (AUDIT_2026-10-18_sound_power.md §1). Each line is under 48 characters: more than that
+        // is cut short at the largest text size.
+        MODE_DIRECT => crate::i18n::text("Effects chain skipped. The least battery."),
         MODE_CLEARAUDIO => crate::i18n::text("Sony's automatic tuning replaces the EQ."),
-        _ => crate::i18n::text("Your EQ and effects. More processor work."),
+        _ => crate::i18n::text("Effects chain running. About 11% more drain."),
     };
     let ds = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
     let (_, sy, _, sh) = mode_rect(0, scroll, n);

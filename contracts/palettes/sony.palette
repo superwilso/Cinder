@@ -1,0 +1,50 @@
+# Sony — the stock NW-A50 look, as a palette.
+#
+# The colours are the ones the stock firmware actually draws with, taken from the carved QML
+# (cinder-sony-analysis: analysis/ui_assets/UI_DESIGN_SPEC.md §4), not matched by eye:
+#
+#   background #000000 · primary text #ffffff · secondary #cccccc / #999999
+#   disabled #686868 / #646464 · dividers #333333 · raised surfaces #202020 / #282828
+#
+# Sony's UI is near-monochrome on pure black: colour carries state (on, selected, disabled) and
+# almost nothing else. This palette is that, in Cinder's six neutrals. It changes colour only —
+# stock's LAYOUT (88px rows, the 152px hairline) is a skin, not a palette, and is not in here.
+#
+# Walkman One is the same design tightened, with no colour change at all outside its logo art and
+# the Home-icon tint, so this reproduces the Walkman One look too.
+#
+# NIGHT: stock has no night mode, so these are ours — the same monochrome ramp taken down to where
+# it belongs in a dark room. Written BEFORE the night dim, like every palette; the player scales
+# them by 55% on the way to the panel.
+#
+# ACCENT: the muted gold #c0a565 is the one accent the stock UI uses at all, and it is what makes
+# this read as Sony rather than as Cinder-in-grey — the near-monochrome is the point, so a
+# saturated accent undoes most of the resemblance. It is therefore set here rather than left to
+# the picker. Delete the six accent lines at the bottom to hand Settings > Accent back control and
+# get the stock neutrals with a Cinder accent on top.
+#
+# Preview it:  cd player && cargo run -p cinder-host -- --palette cinder-ui/palettes/sony.palette
+
+name = Sony
+
+day.bg    = #000000
+day.panel = #202020
+day.line  = #333333
+day.ink   = #ffffff
+day.dim   = #999999
+day.faint = #686868
+
+night.bg    = #000000
+night.panel = #121212
+night.line  = #1e1e1e
+night.ink   = #8a8a8a
+night.dim   = #5a5a5a
+night.faint = #3c3c3c
+
+# Sony's muted gold. All six or none — a partial accent block is refused.
+day.accent       = #c0a565
+day.accent_ink   = #000000
+day.row_select   = #1a1710
+night.accent     = #6a5b38
+night.accent_ink = #000000
+night.row_select = #0e0c09

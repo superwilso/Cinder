@@ -1,0 +1,20 @@
+# The shared palette corpus: each file in this folder and the verdict the player gives it, one
+# line per problem, in order. Cinder (player/cinder-ui/src/palette.rs) and Flint
+# (crates/flint-core/src/palette.rs) both hold their copy to this file word for word.
+Two Words.palette	`two words` cannot be a palette name: use lowercase letters, digits, - and _ (at most 32)
+cinder.palette	`cinder` is the built-in palette — rename the file
+half-accent.palette	an accent of its own needs all six accent keys — missing day.accent_ink, day.row_select, night.accent, night.row_select
+lines.palette	line 3: expected `key = value`
+lines.palette	line 4: `day.bg` wants a colour like #1a2b3c, got `#12345`
+lines.palette	line 5: unknown key `colour`
+lines.palette	line 6: `name` is set twice
+lines.palette	line 7: `day.bg` is set twice
+murk.palette	day.ink on day.bg: contrast 1.05, needs at least 4.50
+murk.palette	day.dim on day.bg: contrast 1.05, needs at least 3.00
+murk.palette	day.ink on day.panel: contrast 1.01, needs at least 4.50
+murk.palette	day.dim stands out as much as day.ink (1.05 vs 1.05) — dim is for secondary text
+murk.palette	day.faint stands out as much as day.dim (2.86 vs 1.05)
+paper.palette	ok
+plain.palette	ok
+slate.palette	ok
+sony.palette	ok

@@ -56,9 +56,9 @@ built, in the order it was planned.
 
 **Cinder — sound and battery** ([`AUDIT_2026-10-18_sound_power.md`](AUDIT_2026-10-18_sound_power.md) §3)
 
-1. **Say what costs battery.** Each software effect's row says when it keeps Sony's chain running;
-   the mode line says whether the chain runs or is skipped. UI only, about an hour.
-2. ~~**Presets, round two:** names and more than four.~~ **Done 10-23**: named on Save and by RENAME, up to 12, the list scrolls (zh-CN strings untranslated).
+1. ~~**Say what costs battery.**~~ **Done 10-23**: effect rows that are on read "On · costs battery";
+   the mode line says the chain is skipped (Direct) or running (Custom, about 11 % more drain).
+2. ~~**Presets, round two:** names and more than four.~~ **Done 10-23**: named on Save and by RENAME, up to 12, the list scrolls. zh-CN translated 10-23 from glyphs the font has; a native read wanted.
 3. ~~**A Battery preset**~~ Not wanted (owner, 10-23).
 4. ~~The redesign plan's Part G still describes per-output profiles~~ **Done 10-23**: Parts B, G and the settings keys now describe the A/B compare and Presets.
 
@@ -107,7 +107,7 @@ real install and update through the new window pages.
 |---|---|---|
 | ~~ATRAC on any region~~ | **Done 10-22** (`atrac`, `src/cinder-atrac.c`): verified on the owner's player by hand-install; the `.UPG` install path is not yet run. Test files: genuine `.aa3`/`.oma` from samples.ffmpeg.org `A-codecs/ATRAC3+/` (ffmpeg-muxed OMA is refused by Sony's parser, `omg_oma_init() error = 0x7`) | — |
 | ~~FM recording~~ | **Code done 10-23** (`fmrec`, `src/cinder-fmrec.c`, `src/fmrec.h`): the REC button and BT OUT recording are in; the jack path was verified by hand-install 10-22 (7.9 s WAV). Left: DEVICE_CHECKLIST §39.2–39.3 through the installer | — |
-| ~~CUE sheets~~ | **Code done 10-23** (`cinder-ffi/src/cue.rs`, `cinder_cue_skip`, `AlbumRow::cue`): Now Playing names the CUE track, ◁/▷ seek between them, the album page lists them and plays from one (`PlayIndexAt`, the audiobook seek). Scrobbled per CUE track. Left: the Songs tab still lists the file once | — |
+| ~~CUE sheets~~ | **Code done 10-23** (`cinder-ffi/src/cue.rs`, `cinder_cue_skip`, `AlbumRow::cue`): Now Playing names the CUE track, ◁/▷ seek between them, the album page lists them and plays from one (`PlayIndexAt`, the audiobook seek). Scrobbled per CUE track. Left: the Songs tab still lists the file once. Listing its CUE tracks there needs the queue to carry a start position per entry, or playing the Songs list plays the file once per CUE track, each from the top | — |
 | ~~Per-song sound~~ | **Code done 10-23**, by album (Track information ▸ ALBUM SOUND; `album_sound=` in the settings file). Host-tested; device-unverified | — |
 | ~~Volume curve editor~~ | **Code done 10-23** (Sound ▸ Advanced ▸ Volume curve; `cinder-voltable curve`, `src/vol_curve.h`, `tools/test_volcurve.sh`). A remap of Sony's own rows; the conf reads `curve,stock,P0,…`. Host-tested; device-unverified | — |
 | Low-latency USB-DAC | llusbdac is GPL (zhangboyang's, not Wampy's): its own repo, built from upstream source, fetched by the installer like Sony's tables | 2–3 days + device |
@@ -215,8 +215,11 @@ About half a day of code plus the Mac session.
 7. ~~Search results for albums and artists, and audiobooks in Search; Play next on long-press as
    well as the swipe.~~ **Done 10-22.** Long-press is opt-in (owner): `hold_play_next` in
    `cinder_advanced.conf`. Device check in `TODO_device.md`.
-8. **G1.7 contract fixtures, the rest:** the palette corpus, a `#TZ/UTC` log, playlist forms, a
-   SensMe chunk (`tools/check_contracts.sh`).
+8. **G1.7 contract fixtures, the rest:** ~~the palette corpus~~ (**done 10-23**:
+   `contracts/palettes/` + `verdicts.tsv`, Flint's checker agrees word for word) and
+   `flint-shared.tsv` (**done 10-23**, Flint's writer and Cinder's reader). Left: playlist forms
+   and a SensMe chunk. A `#TZ/UTC` log is Flint-only (Cinder writes `#TZ/UNKNOWN`), so it is a Flint
+   test, not a contract.
 9. **Tests for `cinder-audio`** (`SHORTCOMINGS.md` A2): effect, volume, power and codec shims have
    host self-tests (10-22). Left: player, tuner, analyzer, storage (vtable calls; grow
    `fake_pst.cpp` a service at a time).
@@ -239,7 +242,7 @@ About half a day of code plus the Mac session.
 
 1. After decision 1: adopt music already on the player by content key (G3.2).
 2. ~~E7 the album unit~~ (**done 10-23**: the folder holding the audio, discs kept with it); ~~E9 refused scrobbles to `.scrobbler.refused.log`~~ (**done 10-23**); both uncommitted in Flint;
-   E10 the 25 s lossless test; E11 one WinHTTP session for the palette shop.
+   ~~E10~~ (fixed 10-05); ~~E11 one WinHTTP session for the palette shop~~ (**done 10-23**, run on Windows).
 3. Features in the 10-01 order: G1.1 backup of the player's state, G1.2 health card, G3.1 library
    lint, G1.3 device-aware transfer, G2.1 per-headphone profiles, G1.4 LRCLIB lyrics, G2.2 resume.
 4. R6 / Flint 0.3: Setup, convert-on-transfer, Copying, the palette preview, SensMe reasons, the

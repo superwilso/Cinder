@@ -464,6 +464,38 @@ mod tests {
         Palette::parse(id, body).expect_err("should have been refused")
     }
 
+    /// The shared corpus (`contracts/palettes/`): each file's verdict as the player gives it, one
+    /// line per problem. Flint's checker is held to the same `verdicts.tsv` word for word, and
+    /// `tools/check_contracts.sh` keeps the two repositories' copies identical.
+    #[test]
+    fn the_shared_corpus_gets_the_verdicts_flint_promises() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/palettes");
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|f| palette_stem(f).is_some())
+            .collect();
+        files.sort();
+        let mut got = String::new();
+        for f in &files {
+            let body = std::fs::read_to_string(dir.join(f)).unwrap();
+            let id = palette_stem(f).unwrap().to_ascii_lowercase();
+            match Palette::parse(&id, &body) {
+                Ok(_) => got.push_str(&format!("{f}\tok\n")),
+                Err(errs) => errs
+                    .iter()
+                    .for_each(|e| got.push_str(&format!("{f}\t{e}\n"))),
+            }
+        }
+        let want: String = std::fs::read_to_string(dir.join("verdicts.tsv"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(got, want, "the player's verdicts:\n{got}");
+    }
+
     /// The template IS Cinder. If it drifts, every palette started from it starts wrong.
     #[test]
     fn the_reference_file_reproduces_cinder_exactly() {

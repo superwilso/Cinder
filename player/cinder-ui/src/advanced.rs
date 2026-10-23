@@ -260,13 +260,24 @@ enum End {
 /// One row's title, subtitle and trail.
 fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
     let s = |x: &str| x.to_string();
+    // On and in the path: say what it costs (`sound::COSTS`). Dimmed, it costs nothing.
+    let fx = |on: bool, off: &'static str| {
+        if on && !dimmed(a, r) {
+            crate::sound::COSTS
+        } else {
+            off
+        }
+    };
     match r {
         ROW_VPT => (
             "VPT Surround",
             s(if not_here(a, r) {
                 NOT_HERE
             } else {
-                "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix"
+                fx(
+                    a.vpt_on,
+                    "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix",
+                )
             }),
             End::Pill(
                 if not_here(a, r) { "Off" } else { a.vpt },
@@ -278,7 +289,7 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             s(if not_here(a, r) {
                 "Not on this player \u{b7} Clear Bass has its place"
             } else {
-                "Analog-amp low-frequency phase"
+                fx(a.dcphase_on, "Analog-amp low-frequency phase")
             }),
             End::Pill(
                 if not_here(a, r) { "Off" } else { a.dcphase },
@@ -287,7 +298,7 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
         ),
         ROW_VINYL => (
             "Vinyl Processor",
-            s("Tonearm resonance, surface noise"),
+            s(fx(a.vinyl_on, "Tonearm resonance, surface noise")),
             End::Switch(a.vinyl_on),
         ),
         ROW_CLEAR_PHASE => (
@@ -295,7 +306,7 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             s(if a.w1_chain {
                 NOT_HERE
             } else {
-                "Correct headphone phase response"
+                fx(a.clear_phase, "Correct headphone phase response")
             }),
             End::Switch(a.clear_phase),
         ),

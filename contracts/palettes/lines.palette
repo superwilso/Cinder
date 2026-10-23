@@ -1,0 +1,7 @@
+# Every kind of line the parser refuses, one each.
+name = Lines
+no equals sign here
+day.bg = #12345
+colour = #000000
+name = Again
+day.bg = #101010

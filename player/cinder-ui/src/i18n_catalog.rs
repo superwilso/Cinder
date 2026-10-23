@@ -83,7 +83,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "1 saved" => Some("已保存 1 个"),
         "1 song" => Some("1 首歌曲"),
         "10-band EQ + DSEE/VPT/Vinyl/ClearAudio+, A/B compare." => Some("十段均衡与 DSEE 等音效，支持 A/B 对比。"),
-        "10-band · tap to edit the curve" => Some("十段均衡，点按编辑曲线"),
+        "10-band in software · costs battery" => Some("十段均衡 · 耗电"),
         "125 MS" => Some("125 毫秒"),
         "15 SEC SAMPLE" => Some("试听 15 秒"),
         "15 SECONDS" => Some("15 秒"),
@@ -97,8 +97,11 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "576 kbps · 24-bit" => Some("576 kbps · 24 位"),
         "60 MS" => Some("60 毫秒"),
         "> PLAY" => Some("> 播放"),
+        "A Winamp skin (.wsz); tap again for the next" => Some("Winamp 主题（.wsz）；再点一次换下一个"),
+        "A large clock in place of the cover" => Some("用大时钟代替封面"),
         "A profile is the EQ, every effect and the balance." => Some("每个配置包含均衡器、全部音效和声道平衡。"),
         "A replacement player for the Walkman." => Some("为 Walkman 打造的新播放器。"),
+        "A tape: reels wind as it plays" => Some("卡带：播放时带盘会动"),
         "A/B COMPARE" => Some("A/B 对比"),
         "AAC or SBC" => Some("AAC 或 SBC"),
         "ABOUT" => Some("关于"),
@@ -145,6 +148,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Album · {}" => Some("专辑 · {}"),
         "Albums" => Some("专辑"),
         "All four are in use: delete one first" => Some("四个预设均已占用，请先删除一个"),
+        "All {} are in use · delete one to save another" => Some("{} 个预设已全部用完 · 删除一个后可再保存"),
+        "All {} are in use: delete one first" => Some("{} 个预设已全部用完：请先删除一个"),
         "Already in this playlist" => Some("此曲目已在列表中"),
         "Analog block" => Some("模拟电路"),
         "Analog-amp low-frequency phase" => Some("模拟放大器的低频相位"),
@@ -324,6 +329,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE" => Some("实验功能 · 已在 WINDOWS 和 IPHONE 上测试"),
         "Each profile has its own mono switch" => Some("每个声音配置各自保存单声道开关"),
         "Edit playlist" => Some("编辑播放列表"),
+        "Effects chain running. About 11% more drain." => Some("音效处理运行中，耗电约多 11%。"),
+        "Effects chain skipped. The least battery." => Some("跳过音效处理，耗电最小。"),
         "Emotional" => Some("抒情"),
         "Empty" => Some("空"),
         "Empty slot — tap to pin here" => Some("空位：点按以保存书签"),
@@ -396,6 +403,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "HOLD switch" => Some("HOLD 开关"),
         "HOME" => Some("主页"),
         "Headphone jack" => Some("耳机插孔"),
+        "Headphone jack only. Never louder than Sony's maximum." => Some("仅限耳机插孔。音量不高于 Sony 的最大值。"),
         "Headphones" => Some("耳机"),
         "Headset" => Some("通话耳机"),
         "Health" => Some("健康状态"),
@@ -425,6 +433,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "June" => Some("六月"),
         "Keep it as a playlist" => Some("保存为播放列表"),
         "Keeps what {} sounds like now, as Preset {}" => Some("将 {} 的当前声音保存为预设 {}"),
+        "Keeps what {} sounds like now, under a name" => Some("将 {} 的当前声音以名称保存"),
         "Kernel" => Some("内核"),
         "LAST PLAYED" => Some("上次播放"),
         "LDAC bitrate and sample rate are set on your phone." => Some("LDAC 码率和频率由手机设置。"),
@@ -438,6 +447,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "LIVE" => Some("实时"),
         "LIVE: {} · PROFILE {live_letter}" => Some("当前：{} · 声音配置 {live_letter}"),
         "LYRICS" => Some("歌词"),
+        "Language" => Some("语言"),
         "Language / 语言" => Some("Language / 语言"),
         "Last screen" => Some("上次界面"),
         "Leaving this page turns it off and gives the music back." => Some("离开此页将关闭接收模式并恢复本机播放。"),
@@ -516,6 +526,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "NO OUTPUT RIGHT NOW" => Some("当前无输出"),
         "NO SIGNAL" => Some("无信号"),
         "NO SIGNAL — DEMO MOTION" => Some("无信号 · 演示动画"),
+        "NO SKIN: COPY A .WSZ TO THE TOP OF THE DRIVE" => Some("无主题：请将 .wsz 复制到存储根目录"),
+        "NO TAPE" => Some("无卡带"),
         "NORMAL" => Some("标准"),
         "NOT CHARGING" => Some("未充电"),
         "NOTHING CONNECTED · THESE APPLY TO THE NEXT LINK" => Some("未连接设备，设置将用于下次连接"),
@@ -528,6 +540,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Name it" => Some("命名"),
         "Needs library playback" => Some("需要曲库播放"),
         "Needs the battery helper" => Some("需要电池组件"),
+        "Needs the installer's volume curve option" => Some("需要安装器的音量曲线选项"),
         "Needs wired headphones as the aerial" => Some("需插入有线耳机作为天线"),
         "Never" => Some("从未播放"),
         "New playlist" => Some("新建播放列表"),
@@ -537,7 +550,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "No audio signal" => Some("无音频信号"),
         "No audiobooks yet." => Some("暂无有声书。"),
         "No device connected" => Some("未连接设备"),
-        "No effects. The least processor work." => Some("不添加音效，处理器负担最小。"),
         "No effects. The shortest path to the output." => Some("不使用音效，以最短路径输出。"),
         "No folders — the library has not been read yet." => Some("暂无文件夹，尚未读取曲库。"),
         "No lyrics for this song." => Some("此歌曲暂无歌词。"),
@@ -596,9 +608,11 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Off: Source Direct is on" => Some("已停用：直通模式已开启"),
         "Off: Tone Control is on" => Some("已停用：音调控制已开启"),
         "Off: the 10-band runs on the jack too, on the processor" => Some("关闭：耳机口也由处理器应用十段均衡器"),
+        "Off: the curve chosen in the installer" => Some("关闭：使用安装器中选择的曲线"),
         "On" => Some("开启"),
         "On its own" => Some("独立播放"),
         "On the cover" => Some("显示在封面上"),
+        "On · costs battery" => Some("已开启 · 耗电"),
         "On · your music is paused" => Some("已开启 · 本机音乐已暂停"),
         "On — the EQ and Tone Control are out of the path" => Some("开启时不经过均衡器和音调控制"),
         "Once or twice, no PC needed" => Some("按一至两次，无需电脑"),
@@ -636,6 +650,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "PREFERENCES" => Some("偏好设置"),
         "PRESETS — RUN A SCAN" => Some("预设电台：请先扫描"),
         "PRESS START" => Some("选择开始"),
+        "PREVIEW" => Some("预览"),
         "PREVIEWING" => Some("正在巡听"),
         "PREVIOUS" => Some("上一首"),
         "PREVIOUSLY PLAYED" => Some("此前播放"),
@@ -690,6 +705,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Power off or restart" => Some("关机或重新启动"),
         "Power off · restart" => Some("关闭电源 · 重新启动"),
         "Power off?" => Some("关闭电源？"),
+        "Preset name" => Some("预设名称"),
         "Preset {}" => Some("预设 {}"),
         "Preset {} deleted" => Some("已删除预设 {}"),
         "Preset {} on {}" => Some("预设 {} 已应用到 {}"),
@@ -722,6 +738,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "READY" => Some("就绪"),
         "READY TO PREVIEW" => Some("等待开始巡听"),
         "RECEIVER MODE ›" => Some("蓝牙接收 ›"),
+        "RECORD" => Some("录音"),
         "REMOVE" => Some("移除"),
         "REMOVE?" => Some("确认移除？"),
         "RENAME" => Some("重命名"),
@@ -744,6 +761,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Removed" => Some("已移除"),
         "Removed — {}" => Some("已移除：{}"),
         "Rename playlist" => Some("重命名列表"),
+        "Rename preset" => Some("重命名预设"),
         "Repeat all · album · one" => Some("全部循环 · 专辑循环 · 单曲循环"),
         "Replay the introduction" => Some("重新查看入门指南"),
         "Rescanning…" => Some("正在重新扫描…"),
@@ -816,10 +834,12 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Sample length" => Some("片段时长"),
         "Saturday" => Some("星期六"),
         "Save Up Next" => Some("保存待播队列"),
+        "Save a preset first (Sound ▸ Presets)" => Some("请先保存预设（声音设置 ▸ 声音预设）"),
         "Save current sound" => Some("保存当前声音"),
         "Save the sound on {} to come back to it" => Some("保存 {} 的声音设置，供以后恢复"),
         "Save your place, jump back" => Some("保存位置，随时返回"),
         "Saved as Preset {}" => Some("已保存为预设 {}"),
+        "Saved as {}" => Some("已保存为 {}"),
         "Saved automatically" => Some("自动保存"),
         "Saved to Playlists · 1 song" => Some("已保存到播放列表 · 1 首曲目"),
         "Saved to Playlists · {n} songs" => Some("已保存到播放列表 · {n} 首曲目"),
@@ -912,6 +932,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Sunday" => Some("星期日"),
         "Surface Noise" => Some("表面噪声"),
         "Surround · DC phase · vinyl · advanced" => Some("环绕声 · 直流相位 · 黑胶 · 高级设置"),
+        "Surround, DC Phase, Vinyl, Tone Control, DAC EQ" => Some("环绕声、直流相位、黑胶、音调控制、DAC 均衡器"),
         "Swipe" => Some("滑动"),
         "Swipe down from the top of the screen" => Some("从屏幕顶部向下滑动"),
         "Swipe ←" => Some("向左滑动"),
@@ -1026,7 +1047,9 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Use NEW PLAYLIST above, or drop .m3u8 files in /contents." => Some("点按上方新建列表，或将 .m3u8 文件放入 /contents。"),
         "Use Sony's receiver" => Some("使用 Sony 蓝牙接收"),
         "Use Sony's receiver?" => Some("使用 Sony 蓝牙接收？"),
+        "Use every step" => Some("使用每一级"),
         "Use on the headphone jack" => Some("用于有线耳机输出"),
+        "Use this curve" => Some("使用此曲线"),
         "Used everywhere, USB-DAC to LDAC included." => Some("适用于各输出，包括 USB-DAC 至 LDAC。"),
         "Used while connected" => Some("连接时使用"),
         "VEIL" => Some("遮罩"),
@@ -1043,7 +1066,9 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Visualiser" => Some("可视化"),
         "Voltage" => Some("电压"),
         "Volume" => Some("音量"),
+        "Volume curve" => Some("音量曲线"),
         "Volume limit" => Some("音量限制"),
+        "Volume number below · Sony's step above" => Some("下方为音量值 · 上方为 Sony 的级数"),
         "Volume, play and skip still work" => Some("音量、播放和切歌键仍可使用"),
         "WAITING" => Some("等待中"),
         "WAITING FOR THE OUTPUT" => Some("等待输出"),
@@ -1054,6 +1079,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Wednesday" => Some("星期三"),
         "What the shuffle button deals" => Some("随机播放按钮的分组方式"),
         "What's inside" => Some("功能一览"),
+        "Which of Sony's steps each volume number plays" => Some("每个音量值对应的 Sony 级数"),
         "While headphones are connected" => Some("连接耳机时"),
         "White noise" => Some("白噪声"),
         "Wind" => Some("风声"),
@@ -1066,7 +1092,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Year" => Some("年"),
         "You're all set" => Some("设置完成"),
         "Your 10-band curve, fitted to the DAC's five bands" => Some("将十段均衡曲线拟合到 DAC 的五个频段"),
-        "Your EQ and effects. More processor work." => Some("使用自定均衡器和音效，处理器负担较高。"),
         "Your equalizer and effects." => Some("使用自定义均衡器与音效。"),
         "Your music, clean and quiet." => Some("让音乐清晰、纯粹。"),
         "Your phone picks from what is allowed." => Some("实际编码由手机选择。"),
@@ -1130,7 +1155,9 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "{} TRACKS · IN ORDER" => Some("{} 首曲目 · 顺序播放"),
         "{} TRACKS · RANDOM ORDER" => Some("{} 首曲目 · 随机顺序"),
         "{} albums · {} tracks" => Some("{} 张专辑 · {} 首曲目"),
+        "{} deleted" => Some("已删除 {}"),
         "{} matching" => Some("{} 首匹配"),
+        "{} on {}" => Some("{} 已应用到 {}"),
         "{} tracks" => Some("{} 首曲目"),
         "{} tracks · {}" => Some("{} 首曲目 · {}"),
         "{} uses {}" => Some("{} 使用 {}"),
@@ -1141,6 +1168,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "{}+ stars" => Some("{} 星及以上"),
         "|| PAUSE" => Some("|| 暂停"),
         "◁ REWIND" => Some("◁ 上一曲"),
+        "● REC {}:{:02}" => Some("● 录音 {}:{:02}"),
         "简体中文" => Some("简体中文"),
         _ => None,
     }
@@ -1202,6 +1230,18 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("专辑 · {}" $(, $($args)*)?),
             _ => format!("Album · {}" $(, $($args)*)?),
+        }
+    };
+    ("All {} are in use · delete one to save another" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("{} 个预设已全部用完 · 删除一个后可再保存" $(, $($args)*)?),
+            _ => format!("All {} are in use · delete one to save another" $(, $($args)*)?),
+        }
+    };
+    ("All {} are in use: delete one first" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("{} 个预设已全部用完：请先删除一个" $(, $($args)*)?),
+            _ => format!("All {} are in use: delete one first" $(, $($args)*)?),
         }
     };
     ("Audiobook · {}" $(, $($args:tt)*)?) => {
@@ -1286,6 +1326,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("将 {} 的当前声音保存为预设 {}" $(, $($args)*)?),
             _ => format!("Keeps what {} sounds like now, as Preset {}" $(, $($args)*)?),
+        }
+    };
+    ("Keeps what {} sounds like now, under a name" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("将 {} 的当前声音以名称保存" $(, $($args)*)?),
+            _ => format!("Keeps what {} sounds like now, under a name" $(, $($args)*)?),
         }
     };
     ("LIVE: {} · PROFILE {live_letter}" $(, $($args:tt)*)?) => {
@@ -1496,6 +1542,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("已保存为预设 {}" $(, $($args)*)?),
             _ => format!("Saved as Preset {}" $(, $($args)*)?),
+        }
+    };
+    ("Saved as {}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("已保存为 {}" $(, $($args)*)?),
+            _ => format!("Saved as {}" $(, $($args)*)?),
         }
     };
     ("Saved to Playlists · {n} songs" $(, $($args:tt)*)?) => {
@@ -1780,10 +1832,22 @@ macro_rules! ui_format {
             _ => format!("{} albums · {} tracks" $(, $($args)*)?),
         }
     };
+    ("{} deleted" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("已删除 {}" $(, $($args)*)?),
+            _ => format!("{} deleted" $(, $($args)*)?),
+        }
+    };
     ("{} matching" $(, $($args:tt)*)?) => {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("{} 首匹配" $(, $($args)*)?),
             _ => format!("{} matching" $(, $($args)*)?),
+        }
+    };
+    ("{} on {}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("{} 已应用到 {}" $(, $($args)*)?),
+            _ => format!("{} on {}" $(, $($args)*)?),
         }
     };
     ("{} tracks" $(, $($args:tt)*)?) => {
@@ -1832,6 +1896,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("{} 星及以上" $(, $($args)*)?),
             _ => format!("{}+ stars" $(, $($args)*)?),
+        }
+    };
+    ("● REC {}:{:02}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("● 录音 {}:{:02}" $(, $($args)*)?),
+            _ => format!("● REC {}:{:02}" $(, $($args)*)?),
         }
     };
     ($fmt:literal $(, $($args:tt)*)?) => { format!($fmt $(, $($args)*)?) };

@@ -1,0 +1,19 @@
+# Slate — Cinder's layout in cool blue-greys instead of warm browns.
+#
+# A dark palette, so it keeps Settings ▸ Accent: all six of Cinder's accents read on it.
+
+name = Slate
+
+day.bg    = #0e1116
+day.panel = #141820
+day.line  = #232a35
+day.ink   = #e6ebf2
+day.dim   = #8d97a5
+day.faint = #58616e
+
+night.bg    = #000000
+night.panel = #0a0c10
+night.line  = #151a21
+night.ink   = #8a93a0
+night.dim   = #57606c
+night.faint = #373d46
