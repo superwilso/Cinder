@@ -47,6 +47,9 @@
  * a fixed range, from which the helper computes a codec EQ table itself (src/codec_eq.h). Still no
  * path and no bytes from the caller; the base is a Sony tone table found and checked as above.
  *
+ * `curve BASE P0..P120` is the other: seven whole numbers naming which of the base table's own
+ * steps each of volume 0, 20 … 120 plays (src/vol_curve.h). Again no path and no bytes.
+ *
  * Exit: 0 ok, 2 bad/absent argument, 3 not setuid root, 4 source unreadable/wrong, 5 write failed.
  */
 #include <fcntl.h>
@@ -59,6 +62,7 @@
 #include <unistd.h>
 
 #include "codec_eq.h"
+#include "vol_curve.h"
 
 /* Exact sizes, measured on the device — the PCM and DSD tables are different shapes and both are
  * fixed. Checking the size is what stops this writing something that is not a volume table into a
@@ -238,6 +242,56 @@ static int apply_eq(char **arg)
     return 0;
 }
 
+/* `curve BASE P0 P20 P40 P60 P80 P100 P120`: the owner's own volume curve (src/vol_curve.h). BASE
+ * is `stock` or `wm1a`, the table it is built from, found and checked like any other key here; the
+ * seven points are whole numbers 0..120, never decreasing. Every step plays one of the base table's
+ * own rows, so nothing is written that Sony's curve does not already contain. DSD keeps the base's
+ * own curve (its layout is not decoded). */
+static int apply_curve(char **arg)
+{
+    static unsigned char base[PCM_BYTES], out[PCM_BYTES];
+    unsigned char map[VOL_STEPS];
+    int pts[VOL_CURVE_POINTS], i;
+    const struct src *pcm, *dsd;
+
+    if (strcmp(arg[0], "stock") == 0) {
+        pcm = &A50_PCM; dsd = &A50_DSD;
+    } else if (strcmp(arg[0], "wm1a") == 0) {
+        pcm = &WM1A_PCM; dsd = &WM1A_DSD;
+    } else {
+        fprintf(stderr, "cinder-voltable: curve base '%s' is not stock or wm1a\n", arg[0]);
+        return 2;
+    }
+    for (i = 0; i < VOL_CURVE_POINTS; i++) {
+        char *end;
+        long v = strtol(arg[1 + i], &end, 10);
+        if (end == arg[1 + i] || *end != '\0' || v < 0 || v > VOL_STEPS - 1) {
+            fprintf(stderr, "cinder-voltable: curve point '%s' is not a whole number in 0..120\n",
+                    arg[1 + i]);
+            return 2;
+        }
+        pts[i] = (int)v;
+    }
+    if (vol_curve_map(pts, map) != 0) {
+        fprintf(stderr, "cinder-voltable: curve goes down — refused\n");
+        return 2;
+    }
+    if (find_one(pcm, PCM_BYTES, base) != 0) {
+        fprintf(stderr, "cinder-voltable: curve failed (4): no %s table found\n", arg[0]);
+        return 4;
+    }
+    vol_curve_table(base, map, out);
+    if (write_node(DST, out, PCM_BYTES) != 0) {
+        fprintf(stderr, "cinder-voltable: curve failed (5)\n");
+        return 5;
+    }
+    if (install_one(dsd, DST_DSD, DSD_BYTES) != 0)
+        fprintf(stderr, "cinder-voltable: curve DSD table failed (PCM applied)\n");
+    fprintf(stderr, "cinder-voltable: curve %s %d %d %d %d %d %d %d applied\n", arg[0],
+            pts[0], pts[1], pts[2], pts[3], pts[4], pts[5], pts[6]);
+    return 0;
+}
+
 /* `nc-load`: give the codec Sony's noise-cancelling engine where the firmware left it out.
  *
  * Stock's load_sony_driver insmods cxd3778gf_dnc_core.ko and feeds it its coefficients and gain
@@ -357,9 +411,12 @@ int main(int argc, char **argv)
         return apply_eq(argv + 2);
     if (argc == 2 && strcmp(argv[1], "nc-load") == 0)
         return nc_load();
+    if (argc == 3 + VOL_CURVE_POINTS && strcmp(argv[1], "curve") == 0)
+        return apply_curve(argv + 2);
     if (argc != 2) {
         fprintf(stderr, "usage: cinder-voltable stock|w1|wm1a|eu"
-                        " | tone-stock|tone-w1|tone-wm1a | eq G1 G2 G3 G4 G5 | nc-load\n");
+                        " | tone-stock|tone-w1|tone-wm1a | eq G1 G2 G3 G4 G5 | nc-load"
+                        " | curve stock|wm1a P0 P20 P40 P60 P80 P100 P120\n");
         return 2;
     }
     for (i = 0; i < sizeof TONE_TABLES / sizeof TONE_TABLES[0]; i++) {

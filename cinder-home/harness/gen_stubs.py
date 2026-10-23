@@ -35,6 +35,10 @@ DECL = re.compile(r'^\s*((?:const\s+)?'
 
 ZERO = {'void': None, 'float': '0.0f', 'double': '0.0'}
 
+# Calls whose "nothing to do" answer is not 0. `cinder_cue_skip` returns the ms to seek to, so a 0
+# from a stub read as "seek to the start" and turned every scripted Next and Prev into a rewind.
+DEFAULT_RETURN = {'cinder_cue_skip': '-1'}
+
 # Hand-written in harness.cpp instead of generated. A generated stub returns a scripted int and
 # does nothing else, which is exactly wrong for a call whose ANSWER is in its out-parameters:
 # `cinder_audio_position(&cur, &tot)` left both at the caller's -1, so `tot > 0` was false and the
@@ -141,7 +145,7 @@ def main():
                 if pm:
                     first_int = pm.group(1)
                     break
-        rv = default_return(rt)
+        rv = DEFAULT_RETURN.get(name, default_return(rt))
         key = (name[len('cinder_set_'):] if name.startswith('cinder_set_')
                else name[len('cinder_get_'):] if name.startswith('cinder_get_') else None)
         is_setter = name.startswith('cinder_set_') and key in stateful

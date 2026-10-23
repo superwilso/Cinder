@@ -47,7 +47,7 @@ done
 # The grammar is in the catalogue's own header. Description lines are kept as written (the file
 # is wrapped for a terminal already); the first paragraph goes in DESC, the rest in MORE, so the
 # choices can be shown between them. `= value | label | help` lines go in LABEL/HELP.
-IDS=(); declare -A VAR TYPE DEF TITLE DESC MORE LABEL HELP
+IDS=(); declare -A VAR TYPE DEF TITLE DESC MORE LABEL HELP RISK
 trim() { sed 's/^[[:space:]]*//;s/[[:space:]]*$//' <<<"$1"; }
 cur=""; para=0
 while IFS= read -r line; do
@@ -64,8 +64,13 @@ while IFS= read -r line; do
         [[ "$f_id"  =~ ^[a-z][a-z0-9-]*$   ]] || { echo "ERR: bad id '$f_id' in catalogue" >&2; exit 1; }
         [[ "$f_var" =~ ^[A-Z][A-Z0-9_]*$   ]] || { echo "ERR: bad varname '$f_var' in catalogue" >&2; exit 1; }
         IDS+=("$f_id"); VAR[$f_id]="$f_var"; TYPE[$f_id]="$f_type"
-        DEF[$f_id]="$f_def"; TITLE[$f_id]="$f_title"; DESC[$f_id]=""; MORE[$f_id]=""
+        DEF[$f_id]="$f_def"; TITLE[$f_id]="$f_title"; DESC[$f_id]=""; MORE[$f_id]=""; RISK[$f_id]=""
         cur="$f_id"; para=0
+    elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+\+[[:space:]] ]]; then
+        :   # a starting point: the PC installer's, not this picker's
+    elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+![[:space:]] ]]; then
+        text="${line#*! }"
+        RISK[$cur]+="${RISK[$cur]:+ }$text"
     elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+=[[:space:]] ]]; then
         IFS='|' read -r c_val c_label c_help <<<"${line#*=}"
         c_val="$(trim "$c_val")"
@@ -150,6 +155,7 @@ describe() {  # describe <id> — the first paragraph, the choices with the curr
         done
     fi
     if [ -n "${MORE[$id]}" ]; then echo; printf '%s' "${MORE[$id]}" | sed 's/^./    &/'; fi
+    if [ -n "${RISK[$id]}" ]; then echo; echo "    What it changes: ${RISK[$id]}"; fi
 }
 
 cycle() {  # advance an id to its next allowed value

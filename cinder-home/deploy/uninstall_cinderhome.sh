@@ -140,6 +140,10 @@ if [ "$restored" = 1 ]; then
     #     encoder and their switches. Nothing loads them once the wrapper is gone; removed anyway.
     "$BB" rm -f /system/vendor/unknown321/lib/preload/BtCommonService.so \
         /system/vendor/unknown321/lib/libfdk-aac-enc.so /data/cinder/bt_aac /data/cinder/bt_sbc_xq /data/cinder/bt_aptxhd 2>/dev/null
+    # 1e. The `atrac` component (install_cinderhome.sh 1g5).
+    "$BB" rm -f /system/vendor/unknown321/lib/preload/MediaStoreService.so 2>/dev/null
+    # 1f. The `fmrec` component (install_cinderhome.sh 1g6).
+    "$BB" rm -f /system/vendor/unknown321/lib/preload/AudioInPlayerService.so 2>/dev/null
 
     # 2. Now the binaries. EVERY file install_cinderhome.sh puts in $BIN is listed here; the three
     #    that used to be missing (cinder-battery, cinder-voltable, cinder-signature.sh) meant two

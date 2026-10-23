@@ -32,7 +32,7 @@ const H: i32 = crate::canvas::H as i32;
 /// The layout of a style other than Cinder.
 pub fn layout(style: Style, lyrics: bool) -> Layout {
     match style {
-        Style::Terminal => terminal_layout(lyrics),
+        Style::Terminal | Style::Cassette | Style::Winamp => terminal_layout(lyrics),
         _ => nocturne_layout(lyrics),
     }
 }
@@ -42,6 +42,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     let l = layout(t.style, np.lyrics);
     match t.style {
         Style::Terminal => terminal_render(c, t, f, np, &l),
+        Style::Cassette => cassette_render(c, t, f, np, &l),
+        Style::Winamp => winamp_render(c, t, f, np, &l),
         _ => nocturne_render(c, t, f, np, &l),
     }
     if np.lyrics {
@@ -355,8 +357,11 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     let quiet = idle(np);
     let mid = (ART_X + ART / 2) as f32;
 
-    // The page block: the cover, or the audio pages in its place.
-    if quiet {
+    // The page block: the cover, or the audio pages in its place. Clock puts the time there.
+    let clock = t.style == Style::Clock;
+    if clock && (quiet || np::page_from_index(np.page) == NpPage::Cover) {
+        clock_face(c, t, f, np);
+    } else if quiet {
         nothing_playing(c, t, f, mid, (ART_Y + ART / 2) as f32, false);
     } else if np::page_from_index(np.page) == NpPage::Cover {
         cover(c, t, np, ART_X, ART_Y, ART);
@@ -776,5 +781,484 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
         let label = crate::i18n::text(label);
         let col = if quiet && i == 0 { t.acc } else { t.dim };
         word(c, Hit::Toolbar(i as u8), label, col);
+    }
+}
+
+// ── Cassette ──────────────────────────────────────────────────────────────────────────────────
+//
+// A tape in a deck: the cover block is a cassette whose two reels show how far through the song
+// you are (the tape winds from the left reel to the right), the title on its label, and the
+// transport as a row of piano keys. Terminal's geometry exactly — `layout` hands it Terminal's —
+// so every target is where the contract already proved it. ASCII labels, for the font reason
+// Terminal gives.
+
+fn cassette_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &Layout) {
+    use term::*;
+    c.fill(t.bg);
+    let quiet = idle(np);
+    let mono = |size: f32, w: Weight, col: Rgb888| s(Family::Mono, w, size, col, 0.06);
+    let (bx, by, bw, bh) = (FRAME_X, FRAME_Y + 40, FRAME, 300);
+
+    if quiet || np::page_from_index(np.page) == NpPage::Cover {
+        // The shell, its label, and the window the reels show through.
+        fill_rect(c, bx, by, bw, bh, t.panel);
+        stroke_rect(c, bx, by, bw, bh, t.line, 2);
+        let (lx, ly, lw, lh) = (bx + 20, by + 16, bw - 40, 96);
+        fill_rect(c, lx, ly, lw, lh, t.bg);
+        stroke_rect(c, lx, ly, lw, lh, t.line, 1);
+        fill_rect(c, lx, ly + 10, lw, 3, t.acc);
+        let thumb = lh - 30;
+        if !quiet {
+            cover(c, t, np, lx + 8, ly + 22, thumb);
+        }
+        let tx = (lx + 16 + thumb) as f32;
+        let tw = (lw - 24 - thumb) as f32;
+        let side = mono(11.0, Weight::Regular, t.faint);
+        text::draw(
+            c,
+            f,
+            tx,
+            (ly + 34) as f32,
+            crate::i18n::text("SIDE A"),
+            &side,
+        );
+        if quiet {
+            text::draw(
+                c,
+                f,
+                tx,
+                (ly + 62) as f32,
+                crate::i18n::text("NO TAPE"),
+                &mono(18.0, Weight::Bold, t.dim),
+            );
+        } else {
+            let st = mono(18.0, Weight::Bold, t.ink);
+            text::draw(
+                c,
+                f,
+                tx,
+                (ly + 62) as f32,
+                &widgets::fit(f, np.title, &st, tw),
+                &st,
+            );
+            let st = mono(12.0, Weight::Regular, t.dim);
+            text::draw(
+                c,
+                f,
+                tx,
+                (ly + 82) as f32,
+                &widgets::fit(f, np.artist, &st, tw),
+                &st,
+            );
+        }
+        // The window, and the tape packed on each reel: all on the left at the start of a song,
+        // all on the right at its end. The spokes turn while it plays.
+        let (wx, wy, ww, wh) = (bx + 70, by + 132, bw - 140, 104);
+        fill_rect(c, wx, wy, ww, wh, t.bg);
+        stroke_rect(c, wx, wy, ww, wh, t.line, 1);
+        let p = if quiet {
+            0.0
+        } else {
+            np.progress.clamp(0.0, 1.0)
+        };
+        let (rmin, rmax) = (22.0f32, 48.0f32);
+        let cy = wy + wh / 2;
+        let spin = if np.playing && !quiet {
+            np.viz_seed
+        } else {
+            0.0
+        };
+        for (cx, packed) in [(wx + 62, 1.0 - p), (wx + ww - 62, p)] {
+            let r = rmin + (rmax - rmin) * packed;
+            widgets::disc(c, cx, cy, (2.0 * r) as u32, t.dim);
+            widgets::disc(c, cx, cy, 2 * rmin as u32 - 4, t.panel);
+            widgets::disc(c, cx, cy, 18, t.bg);
+            for k in 0..6 {
+                let a = spin * 2.0 + k as f32 * std::f32::consts::PI / 3.0;
+                let (sx, sy) = (cx as f32 + 14.0 * a.cos(), cy as f32 + 14.0 * a.sin());
+                widgets::disc(c, sx.round() as i32, sy.round() as i32, 5, t.faint);
+            }
+        }
+        // The tape across the bottom of the window, and the head opening under it.
+        fill_rect(c, wx + 8, wy + wh - 10, ww - 16, 1, t.dim);
+        let (hx, hy, hw, hh) = (bx + 110, by + bh - 44, bw - 220, 44);
+        stroke_rect(c, hx, hy, hw, hh, t.line, 1);
+        for x in [hx + 30, hx + hw - 30] {
+            widgets::disc(c, x, hy + hh / 2, 10, t.line);
+        }
+    } else {
+        audio_page(c, t, f, np, (FRAME_X, FRAME_Y, FRAME, FRAME));
+    }
+
+    // Under the tape: the codec, the title and artist in full, the heart.
+    if !quiet {
+        let cap = mono(11.0, Weight::Regular, t.faint);
+        text::draw(
+            c,
+            f,
+            TEXT_X,
+            READOUT_Y,
+            &widgets::fit(f, np.codec, &cap, TEXT_W),
+            &cap,
+        );
+        let mut pg = *b"1/3";
+        pg[0] = b'1' + (np.page % np::PAGES);
+        widgets::right(
+            c,
+            f,
+            456.0,
+            READOUT_Y,
+            core::str::from_utf8(&pg).unwrap_or(""),
+            &cap,
+        );
+        widgets::marquee(
+            c,
+            f,
+            TEXT_X,
+            TITLE_Y,
+            np.title,
+            &s(Family::Sans, Weight::SemiBold, 24.0, t.ink, 0.0),
+            TEXT_W,
+        );
+        widgets::marquee(
+            c,
+            f,
+            TEXT_X,
+            ARTIST_Y,
+            np.artist,
+            &s(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
+            TEXT_W,
+        );
+        let (hx, hy) = centre(l, Hit::Like);
+        icons::heart(c, hx, hy, 24.0, if np.liked { t.acc } else { t.faint });
+    }
+
+    // The rail: a counter's strip, filled to the position.
+    let r = l.rail;
+    fill_rect(c, r.x0, r.y + r.h / 2 - 2, r.w, 4, t.line);
+    if !quiet {
+        let fw = (r.w as f32 * np.progress.clamp(0.0, 1.0)).round() as i32;
+        fill_rect(c, r.x0, r.y + r.h / 2 - 2, fw, 4, t.acc);
+        fill_rect(c, r.x0 + fw - 3, r.y, 6, r.h, t.ink);
+    }
+    if np.scrubbing {
+        stroke_rect(c, r.x0 - 3, r.y - 3, r.w + 6, r.h + 6, t.acc, 1);
+    }
+    if !quiet {
+        let ts = mono(13.0, Weight::Regular, t.dim);
+        text::draw(c, f, r.x0 as f32, TIMES_Y, np.elapsed, &ts);
+        widgets::right(c, f, (r.x0 + r.w) as f32, TIMES_Y, np.remaining, &ts);
+    }
+
+    // The keys. A key that is on (playing, shuffle, repeat) is pressed down: filled with the accent.
+    let key = |c: &mut Canvas, h: Hit, label: &str, down: bool| {
+        if let Some(Shape::Rect { x, y, w, h }) = l.at(h) {
+            let (x, y, w, h) = (x + 3, y + 3, w - 6, h - 6);
+            fill_rect(c, x, y, w, h, if down { t.acc } else { t.panel });
+            stroke_rect(c, x, y, w, h, if down { t.acc } else { t.line }, 1);
+            if !down {
+                fill_rect(c, x, y + h - 4, w, 4, t.line);
+            }
+            let col = if down {
+                t.acc_ink
+            } else if quiet {
+                t.faint
+            } else {
+                t.ink
+            };
+            widgets::center(
+                c,
+                f,
+                (x + w / 2) as f32,
+                (y + h / 2 + 5) as f32,
+                label,
+                &mono(13.0, Weight::Bold, col),
+            );
+        }
+    };
+    let playing = np.playing && !quiet;
+    key(
+        c,
+        Hit::PlayPause,
+        if playing {
+            crate::i18n::text("PAUSE")
+        } else {
+            crate::i18n::text("PLAY")
+        },
+        playing,
+    );
+    key(c, Hit::Prev, crate::i18n::text("REW"), false);
+    key(c, Hit::Next, crate::i18n::text("FF"), false);
+    key(
+        c,
+        Hit::Shuffle,
+        crate::i18n::text("SHUF"),
+        np.shuffle && !quiet,
+    );
+    let rpt = match np.repeat {
+        _ if quiet => crate::i18n::text("RPT"),
+        1 => crate::i18n::text("RPT1"),
+        np::REPEAT_ALBUM => crate::i18n::text("ALBM"),
+        _ => crate::i18n::text("RPT"),
+    };
+    key(c, Hit::Repeat, rpt, np.repeat > 0 && !quiet);
+
+    hline(c, TOOLBAR_TOP, t.line);
+    for (i, label) in ["LIBRARY", "QUEUE", "BT", "SETTINGS"].iter().enumerate() {
+        let (x, y) = centre(l, Hit::Toolbar(i as u8));
+        let col = if quiet && i == 0 { t.acc } else { t.dim };
+        widgets::center(
+            c,
+            f,
+            x,
+            y + 5.0,
+            crate::i18n::text(label),
+            &mono(12.0, Weight::Bold, col),
+        );
+    }
+}
+
+/// Clock: Nocturne, with the time large where the cover was. The cover's page is the clock; the
+/// other two pages are the usual ones. Shown when nothing plays too, since a clock is useful then.
+fn clock_face(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
+    use noc::*;
+    let mid = (ART_X + ART / 2) as f32;
+    let cy = (ART_Y + ART / 2) as f32;
+    widgets::center(
+        c,
+        f,
+        mid,
+        cy + 30.0,
+        np.clock,
+        &s(Family::Mono, Weight::Light, 112.0, t.ink, 0.0),
+    );
+    fill_rect(c, ART_X, ART_Y + ART / 2 + 70, ART, 1, t.line);
+    if !np.title.is_empty() {
+        let st = s(Family::Mono, Weight::Regular, 12.0, t.faint, 0.18);
+        widgets::center(c, f, mid, cy + 100.0, crate::i18n::text("NOW PLAYING"), &st);
+    }
+}
+
+// ── Winamp ────────────────────────────────────────────────────────────────────────────────────
+//
+// A classic Winamp skin from the drive (`skin.rs`): its main window across the top of the page
+// block with the time in the skin's digits and the title in its font, the cover under it, the seek
+// bar from posbar.bmp and the transport from cbuttons.bmp and shufrep.bmp, each sprite scaled up
+// into Terminal's targets — Terminal's geometry, as Cassette, so the contract holds. Without a
+// skin it is Terminal with a line that says how to add one.
+
+fn winamp_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &Layout) {
+    use term::*;
+    let Some(skin) = np.skin.filter(|s| s.main.is_some()) else {
+        terminal_render(c, t, f, np, l);
+        fill_rect(c, FRAME_X, FRAME_Y, FRAME, 40, t.panel);
+        widgets::center(
+            c,
+            f,
+            240.0,
+            (FRAME_Y + 25) as f32,
+            crate::i18n::text("NO SKIN: COPY A .WSZ TO THE TOP OF THE DRIVE"),
+            &s(Family::Mono, Weight::Regular, 11.0, t.acc, 0.06),
+        );
+        return;
+    };
+    use crate::skin::{self, MAIN_SCALE};
+    c.fill(t.bg);
+    let quiet = idle(np);
+    let dim = t.dim_pct;
+    let (mx, my) = (FRAME_X, FRAME_Y);
+    let sc = |v: i32| (v as f32 * MAIN_SCALE).round() as i32;
+    // The main window's top: title bar and display (skin rows 0..72; the buttons below them are
+    // drawn as Cinder's transport instead).
+    if let Some(main) = &skin.main {
+        skin::blit(
+            c,
+            dim,
+            main,
+            (0, 0, skin::MAIN_W as i32, sc(72)),
+            (mx, my, skin::MAIN_W as i32, sc(72)),
+        );
+    }
+    if let Some(tb) = &skin.titlebar {
+        skin::blit(c, dim, tb, (27, 0, 275, 14), (mx, my, sc(275), sc(14)));
+    }
+    if !quiet {
+        // mm:ss in the skin's digits, where Winamp puts them.
+        if let Some(nums) = &skin.numbers {
+            let digits: Vec<u32> = np
+                .elapsed
+                .chars()
+                .filter_map(|ch| ch.to_digit(10))
+                .collect();
+            let n = digits.len();
+            let (m, sec) = if n >= 4 {
+                (
+                    digits[n - 4] * 10 + digits[n - 3],
+                    digits[n - 2] * 10 + digits[n - 1],
+                )
+            } else if n == 3 {
+                (digits[0], digits[1] * 10 + digits[2])
+            } else {
+                (0, 0)
+            };
+            for (i, (d, x)) in [
+                (m / 10 % 10, 48),
+                (m % 10, 60),
+                (sec / 10, 78),
+                (sec % 10, 90),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let _ = i;
+                skin::draw_digit(c, dim, nums, d, (mx + sc(x), my + sc(26), sc(9), sc(13)));
+            }
+        }
+        if let Some(font) = &skin.text {
+            let line = format!("{} - {}", np.artist, np.title);
+            skin::draw_text(c, dim, font, &line, (mx + sc(111), my + sc(27)), 1, sc(154));
+        }
+    }
+
+    // Under the window: the cover, or the audio pages.
+    let below = my + sc(72) + 8;
+    let room = FRAME_Y + FRAME - below;
+    if quiet {
+        nothing_playing(c, t, f, 240.0, (below + room / 2) as f32, true);
+    } else if np::page_from_index(np.page) == NpPage::Cover {
+        let size = room - 8;
+        cover(c, t, np, 240 - size / 2, below + 4, size);
+    } else {
+        audio_page(c, t, f, np, (FRAME_X, below, FRAME, room));
+    }
+
+    // The title block: the title in the skin's font, three times its size; the artist under it.
+    if !quiet {
+        match &skin.text {
+            Some(font) => {
+                let at = (TEXT_X as i32, TITLE_Y as i32 - 18);
+                skin::draw_text(c, dim, font, np.title, at, 3, TEXT_W as i32);
+            }
+            None => {
+                let st = s(Family::Sans, Weight::SemiBold, 22.0, t.ink, 0.0);
+                widgets::marquee(c, f, TEXT_X, TITLE_Y, np.title, &st, TEXT_W);
+            }
+        }
+        widgets::marquee(
+            c,
+            f,
+            TEXT_X,
+            ARTIST_Y,
+            np.artist,
+            &s(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
+            TEXT_W,
+        );
+        let (hx, hy) = centre(l, Hit::Like);
+        icons::heart(c, hx, hy, 24.0, if np.liked { t.acc } else { t.faint });
+    }
+
+    // The seek bar: posbar's track stretched to the rail, its thumb at the position.
+    let r = l.rail;
+    match &skin.posbar {
+        Some(pb) => {
+            skin::blit(c, dim, pb, (0, 0, 248, 10), (r.x0, r.y, r.w, r.h));
+            if !quiet {
+                let tw = r.h * 29 / 10;
+                let tx = r.x0 + ((r.w - tw) as f32 * np.progress.clamp(0.0, 1.0)) as i32;
+                skin::blit(c, dim, pb, (248, 0, 29, 10), (tx, r.y, tw, r.h));
+            }
+        }
+        None => {
+            fill_rect(c, r.x0, r.y + r.h / 2 - 2, r.w, 4, t.line);
+            let fw = (r.w as f32 * np.progress.clamp(0.0, 1.0)) as i32;
+            fill_rect(c, r.x0, r.y + r.h / 2 - 2, fw, 4, t.acc);
+        }
+    }
+    if np.scrubbing {
+        stroke_rect(c, r.x0 - 3, r.y - 3, r.w + 6, r.h + 6, t.acc, 1);
+    }
+    if !quiet {
+        let ts = s(Family::Mono, Weight::Regular, 13.0, t.dim, 0.04);
+        text::draw(c, f, r.x0 as f32, TIMES_Y, np.elapsed, &ts);
+        widgets::right(c, f, (r.x0 + r.w) as f32, TIMES_Y, np.remaining, &ts);
+    }
+
+    // The transport: the skin's own buttons, as large as each target allows at their shape.
+    let sprite =
+        |c: &mut Canvas, h: Hit, sheet: &Option<crate::art::Image>, src: (i32, i32, i32, i32)| {
+            let (Some(img), Some(Shape::Rect { x, y, w, h })) = (sheet, l.at(h)) else {
+                return false;
+            };
+            let k = ((w - 8) * 100 / src.2).min((h - 4) * 100 / src.3);
+            let (dw, dh) = (src.2 * k / 100, src.3 * k / 100);
+            skin::blit(
+                c,
+                dim,
+                img,
+                src,
+                (x + (w - dw) / 2, y + (h - dh) / 2, dw, dh),
+            );
+            true
+        };
+    let playing = np.playing && !quiet;
+    let (px, pw) = if playing {
+        skin::CB_PAUSE
+    } else {
+        skin::CB_PLAY
+    };
+    let mut drawn = sprite(c, Hit::PlayPause, &skin.cbuttons, (px, 0, pw, 18));
+    drawn &= sprite(
+        c,
+        Hit::Prev,
+        &skin.cbuttons,
+        (skin::CB_PREV.0, 0, skin::CB_PREV.1, 18),
+    );
+    drawn &= sprite(
+        c,
+        Hit::Next,
+        &skin.cbuttons,
+        (skin::CB_NEXT.0, 0, skin::CB_NEXT.1, 18),
+    );
+    let on = |b: bool| if b && !quiet { 30 } else { 0 };
+    drawn &= sprite(c, Hit::Shuffle, &skin.shufrep, (28, on(np.shuffle), 47, 15));
+    drawn &= sprite(
+        c,
+        Hit::Repeat,
+        &skin.shufrep,
+        (0, on(np.repeat > 0), 28, 15),
+    );
+    if !drawn {
+        // A sheet the skin lacks: name the controls rather than leave blank targets.
+        for (h, label) in [
+            (Hit::PlayPause, if playing { "PAUSE" } else { "PLAY" }),
+            (Hit::Prev, "PREV"),
+            (Hit::Next, "NEXT"),
+            (Hit::Shuffle, "SHUF"),
+            (Hit::Repeat, "RPT"),
+        ] {
+            let (x, y) = centre(l, h);
+            widgets::center(
+                c,
+                f,
+                x,
+                y + 5.0,
+                label,
+                &s(Family::Mono, Weight::Bold, 13.0, t.faint, 0.06),
+            );
+        }
+    }
+
+    hline(c, TOOLBAR_TOP, t.line);
+    for (i, label) in ["LIBRARY", "QUEUE", "BT", "SETTINGS"].iter().enumerate() {
+        let (x, y) = centre(l, Hit::Toolbar(i as u8));
+        let col = if quiet && i == 0 { t.acc } else { t.dim };
+        widgets::center(
+            c,
+            f,
+            x,
+            y + 5.0,
+            crate::i18n::text(label),
+            &s(Family::Mono, Weight::Bold, 12.0, col, 0.06),
+        );
     }
 }

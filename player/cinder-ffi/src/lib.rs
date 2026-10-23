@@ -14,6 +14,7 @@
 mod art_cache;
 mod art_load;
 mod books;
+mod cue;
 mod likes;
 mod lyrics;
 mod pcm_tap;
@@ -23,6 +24,7 @@ mod scrobble;
 mod spectrum;
 mod stats;
 mod vizsig;
+mod wsz;
 
 use cinder_ui::now_playing::NowPlaying;
 use cinder_ui::{Canvas, FontSet, H, W};
@@ -490,6 +492,8 @@ struct Render {
     fm_seek_dir: i32,
     fm_power: bool,
     fm_bt: bool,
+    /// What the last CINDER_ACT_FM_RECORD asked for.
+    fm_rec: bool,
     scrub_ms: Option<i64>,
     /// Action produced by a settings-slider drag, waiting for the shell to collect it.
     scrub_act: Option<libc::c_int>,
@@ -620,6 +624,11 @@ struct Render {
     /// One-shot: how far into the chapter to seek once the sequence a `PlayBook` queued is playing.
     /// The shell takes it with `cinder_take_play_seek_ms`.
     book_seek_ms: i64,
+    /// The playing file's CUE sheet, when one sits beside it (`cue.rs`).
+    cue: Option<cue::Sheet>,
+    /// The Winamp style's skin (`wsz.rs`), read the first time that style draws.
+    skin: Option<cinder_ui::skin::Skin>,
+    skin_tried: bool,
     /// The chapter (path, position ms, when) a `PlayBook` just started. Until playback reaches that
     /// position, a saved position EARLIER than it is the chapter's first moments before the seek
     /// lands, not the listener going back, and must not overwrite the place being resumed.
@@ -805,6 +814,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         fm_seek_dir: 1,
         fm_power: false,
         fm_bt: false,
+        fm_rec: false,
         scrub_ms: None,
         scrub_act: None,
         pending_screenshot: None,
@@ -846,6 +856,9 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         books: books::Store::default(),
         books_changed: std::time::Instant::now(),
         book_seek_ms: 0,
+        cue: None,
+        skin: None,
+        skin_tried: false,
         book_hold: None,
         stats_changed: std::time::Instant::now(),
         views_path: None,
@@ -983,6 +996,10 @@ struct ProfileLoad {
     presets: Vec<ProfileLoad>,
     /// `jack_eq=`: Some(true) for the DAC, Some(false) for the 10-band, None when absent.
     jack_eq: Option<bool>,
+    /// `album_sound=<preset>\t<album key>`, one line per album (Track info ▸ ALBUM SOUND).
+    album_sounds: Vec<(String, u8)>,
+    /// `album_prev_*`: the sound from before an album's preset took over, read like the spare.
+    album_prev: Option<Box<ProfileLoad>>,
 }
 
 impl Default for ProfileLoad {
@@ -994,6 +1011,8 @@ impl Default for ProfileLoad {
             live_idx: 0,
             presets: Vec::new(),
             jack_eq: None,
+            album_sounds: Vec::new(),
+            album_prev: None,
         }
     }
 }
@@ -1094,6 +1113,19 @@ impl ProfileLoad {
             // Sound profiles per output, retired 2026-10-18: taken and ignored.
             "profile_jack" | "profile_bt" | "profile_usb" => {}
             "jack_eq" => self.jack_eq = Some(v != "10band"),
+            "album_sound" => {
+                if let Some((n, key)) = v.split_once('\t') {
+                    if let Ok(n) = n.parse::<u8>() {
+                        self.album_sounds.push((key.to_string(), n));
+                    }
+                }
+            }
+            k if k.starts_with("album_prev_") => {
+                let rest = &k["album_prev_".len()..];
+                self.album_prev
+                    .get_or_insert_with(Default::default)
+                    .line(&format!("bank_{rest}"), v);
+            }
             k if k.starts_with("preset") => {
                 let Some((n, rest)) = k[6..].split_once('_') else {
                     return false;
@@ -1141,6 +1173,8 @@ impl ProfileLoad {
                 .map(|p| p.bank)
                 .collect(),
         );
+        app.restore_album_sounds(self.album_sounds);
+        app.restore_album_sound_prev(self.album_prev.filter(|p| p.bank_seen).map(|p| p.bank));
         // A file from before 2026-10-18 has no `jack_eq`: the DAC unless the owner has a 10-band
         // curve, so an upgrade never takes a curve they hear off the jack.
         app.set_jack_eq_dac(self.jack_eq.unwrap_or(app.eq_bands() == [0; 10]));
@@ -1210,6 +1244,13 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&setup_body(&r.app.setup_inactive()));
     // Saved presets (Sound ▸ Presets): the spare's keys, numbered — `preset1_eq=` and so on.
     body.push_str(&presets_body(r.app.presets()));
+    // The sound an album's preset replaced, so a restart mid-album still puts it back after.
+    if let Some(prev) = r.app.album_sound_prev() {
+        body.push_str(&setup_body(prev).replace("bank_", "album_prev_"));
+    }
+    for (key, n) in r.app.album_sounds() {
+        body.push_str(&format!("album_sound={n}\t{}\n", key.replace('\n', " ")));
+    }
     body.push_str(&format!(
         "jack_eq={}\n",
         if r.app.jack_eq_dac() { "dac" } else { "10band" }
@@ -1252,6 +1293,16 @@ fn settings_body(r: &Render) -> String {
     ));
     // Settings ▸ Shuffle: what the shuffle button deals, as a word.
     body.push_str(&format!("shuffle_by={}\n", r.app.shuffle_by()));
+    // Sound ▸ Advanced ▸ Volume curve: Sony's step at volume 0, 20 … 120, and whether it is used.
+    let (vc, vc_on) = r.app.vol_curve_points();
+    body.push_str(&format!(
+        "vol_curve={}\nvol_curve_on={}\n",
+        vc.iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        vc_on as u8
+    ));
     // Sound ▸ Advanced ▸ DAC EQ, RAW half-decibels in the helper's argument order.
     body.push_str(&format!(
         "dac_eq={}\n",
@@ -1784,6 +1835,7 @@ fn build_library_with(
     // shows under the header. Alongside, derive each album's "recently added" key (newest track
     // addedtime) and its release-year label (first track that resolves one) for the ORDER chip.
     let mut album_tracks: BTreeMap<i64, Vec<SongRow>> = BTreeMap::new();
+    let mut long_files: BTreeMap<i64, (String, i64)> = BTreeMap::new();
     let mut album_added: BTreeMap<i64, i64> = BTreeMap::new();
     let mut album_year: BTreeMap<i64, String> = BTreeMap::new();
     let t_phase = std::time::Instant::now();
@@ -1812,6 +1864,14 @@ fn build_library_with(
                 }
             }
             album_tracks.entry(aid).or_default().push(song_row(&t));
+            // A file longer than 20 minutes may be a whole album with a CUE sheet beside it.
+            // Only those are looked at: a few stats, not one per track in the library.
+            if t.duration_raw.unwrap_or(0) > 20 * 60 * 1000 {
+                long_files.insert(
+                    t.object_id,
+                    (t.filename.clone(), t.duration_raw.unwrap_or(0)),
+                );
+            }
         }
     }
 
@@ -1844,6 +1904,7 @@ fn build_library_with(
                 artist = trs[0].artist.clone();
             }
             AlbumRow {
+                cue: Vec::new(),
                 artist,
                 year: album_year.get(&a.id).cloned().unwrap_or_default(),
                 tracks: a.track_count.max(0) as u32,
@@ -1873,6 +1934,7 @@ fn build_library_with(
         let added = album_added.get(&aid).copied().unwrap_or(0);
         let count = trs.len() as u32;
         album_rows.push(AlbumRow {
+            cue: Vec::new(),
             artist,
             year,
             tracks: count,
@@ -1882,6 +1944,16 @@ fn build_library_with(
             name,
             album_id: aid,
         });
+    }
+
+    // CUE sheets: an album whose long files have one lists the sheet's tracks on its page.
+    let mut cue_albums = 0;
+    for al in album_rows.iter_mut() {
+        al.cue = cue_rows(&al.track_list, &long_files);
+        cue_albums += usize::from(!al.cue.is_empty());
+    }
+    if cue_albums > 0 {
+        eprintln!("cinder-ffi: CUE sheets — {cue_albums} album(s) listed by their CUE tracks");
     }
 
     // One alphabetical order for the whole Library (cinder_ui::collate): byte order put every
@@ -2179,7 +2251,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 47] = [
+const SCREEN_NAMES: [&str; 48] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2229,6 +2301,7 @@ const SCREEN_NAMES: [&str; 47] = [
     "Books",
     "Language",
     "Zappin",
+    "VolCurve",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2274,6 +2347,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Palette => 35,
         S::Help => 36,
         S::DacEq => 37,
+        S::VolCurve => 47,
         S::PlaylistEdit => 38,
         S::ViewEdit => 39,
         S::Soundscape => 40,
@@ -2625,9 +2699,15 @@ pub extern "C" fn cinder_render_tick() {
         );
     }
     load_grid_covers(r);
+    // The Winamp style's skin, read the first time that style is chosen (one zip off the drive).
+    if !r.skin_tried && r.app.style() == cinder_ui::style::Style::Winamp {
+        r.skin_tried = true;
+        r.skin = wsz::find_in("/contents");
+    }
     r.canvas.clear_clip();
     let sig = r.sig.view();
     let np = NowPlaying {
+        skin: r.skin.as_ref(),
         title: &r.np.title,
         artist: &r.np.artist,
         codec: &r.np.codec,
@@ -2775,6 +2855,7 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
             }
         }
         let np2 = NowPlaying {
+            skin: None,
             title: &np.title,
             artist: &np.artist,
             codec: &np.codec,
@@ -4336,6 +4417,72 @@ fn zappin_prepare_mutated_queue(r: &mut Render, candidate: Option<(i64, usize)>)
     true
 }
 
+/// The CUE tracks of an album's files, in order, or nothing when none of its files has a sheet.
+/// A file without one keeps a row of its own between the CUE tracks, so nothing goes missing.
+fn cue_rows(
+    files: &[cinder_ui::model::SongRow],
+    long_files: &std::collections::BTreeMap<i64, (String, i64)>,
+) -> Vec<cinder_ui::model::CueRow> {
+    let mut out = Vec::new();
+    let mut any = false;
+    for (fi, s) in files.iter().enumerate() {
+        let sheet = long_files
+            .get(&s.object_id)
+            .and_then(|(path, _)| cue::load_for(path));
+        match sheet {
+            Some(sh) => {
+                any = true;
+                let len = long_files.get(&s.object_id).map_or(0, |(_, d)| *d);
+                for (i, e) in sh.entries.iter().enumerate() {
+                    let end = sh.entries.get(i + 1).map_or(len, |n| n.start_ms);
+                    out.push(cinder_ui::model::CueRow {
+                        file: fi,
+                        title: e.title.clone(),
+                        start_ms: e.start_ms,
+                        dur: if end > e.start_ms {
+                            fmt_time(end - e.start_ms)
+                        } else {
+                            String::new()
+                        },
+                    });
+                }
+            }
+            None => out.push(cinder_ui::model::CueRow {
+                file: fi,
+                title: s.title.clone(),
+                start_ms: 0,
+                dur: s.dur.clone(),
+            }),
+        }
+    }
+    if any {
+        out
+    } else {
+        Vec::new()
+    }
+}
+
+/// Play a library track in its album context (URIs in play order + start index), so the shell can
+/// hand PlayerService a real sequence. No DB / no match -> no action.
+fn play_index(r: &mut Render, object_id: i64) -> Option<libc::c_int> {
+    let ctx =
+        r.db.as_ref()
+            .and_then(|db| db.album_context(object_id).ok().flatten());
+    match ctx {
+        Some((tracks, idx)) if !tracks.is_empty() => {
+            // Tapping a track plays its ALBUM, from that track, in album order.
+            // See `play_in_order`.
+            play_in_order(r);
+            set_pending(r, tracks, idx);
+            Some(8)
+        }
+        _ => {
+            eprintln!("cinder-ffi: PlayIndex({object_id}): no DB context — ignored");
+            None
+        }
+    }
+}
+
 fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_int> {
     use cinder_ui::nav::Action;
     // These actions mutate the UI queue entirely inside FFI; the shell cannot cancel the preview
@@ -4399,25 +4546,13 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::PrevAlbum => 5,
         Action::VolUp => 6,
         Action::VolDown => 7,
-        Action::PlayIndex(object_id) => {
-            // Resolve the chosen track to its album context (URIs in play order + start index)
-            // so the shell can hand PlayerService a real sequence. No DB / no match -> no action.
-            let ctx =
-                r.db.as_ref()
-                    .and_then(|db| db.album_context(*object_id).ok().flatten());
-            match ctx {
-                Some((tracks, idx)) if !tracks.is_empty() => {
-                    // Tapping a track plays its ALBUM, from that track, in album order.
-                    // See `play_in_order`.
-                    play_in_order(r);
-                    set_pending(r, tracks, idx);
-                    8
-                }
-                _ => {
-                    eprintln!("cinder-ffi: PlayIndex({object_id}): no DB context — ignored");
-                    return None;
-                }
-            }
+        Action::PlayIndex(object_id) => play_index(r, *object_id)?,
+        // A CUE track: its file, then the seek the shell already makes for an audiobook
+        // (`cinder_take_play_seek_ms`, taken straight after the sequence starts).
+        Action::PlayIndexAt(object_id, ms) => {
+            let code = play_index(r, *object_id)?;
+            r.book_seek_ms = *ms as i64;
+            code
         }
         Action::PlayListAt(n) => {
             // The list the user tapped in — the Songs tab as sorted and filtered, a folder, an
@@ -4972,6 +5107,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             r.fm_bt = *on;
             44
         }
+        Action::FmRecord(on) => {
+            r.fm_rec = *on;
+            59
+        }
         Action::ThemeChanged(_) => 16, // shell also drives the backlight (night = minimal light)
         Action::Sleep => 10,
         Action::EnterUsbMsc => {
@@ -5020,6 +5159,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::MonoChanged => 46,
         Action::AmbientChanged => 51,
         Action::DacEqChanged => 48,
+        Action::VolCurveChanged => 60,
         Action::RxChanged => 49,
         Action::RxCodecChanged => 58,
         Action::BootToSonyReceiver => 50, // shell stores stock's resume function, then boots to stock
@@ -6895,6 +7035,45 @@ pub extern "C" fn cinder_get_dac_eq(out: *mut libc::c_schar) -> libc::c_int {
     }
 }
 
+/// Sound ▸ Advanced ▸ Volume curve: writes the seven points (Sony's step at volume 0, 20 … 120)
+/// into `out` and returns 7 while the owner's curve is in use; 0 when it is not (the installer's
+/// curve applies) or before the renderer is up.
+#[no_mangle]
+pub extern "C" fn cinder_get_vol_curve(out: *mut libc::c_uchar) -> libc::c_int {
+    if out.is_null() {
+        return 0;
+    }
+    match cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|r| r.app.vol_curve())
+    {
+        Some(p) => {
+            unsafe { std::ptr::copy_nonoverlapping(p.as_ptr(), out, p.len()) };
+            p.len() as libc::c_int
+        }
+        None => 0,
+    }
+}
+
+/// 0: `cinder-voltable` is not installed, and the Volume curve screen explains and edits nothing.
+/// 1: it is (the conf not read yet). 2: it is, and `/contents/cinder_voltable.conf` holds the
+/// owner's curve. 3: it is, and the conf holds another one: an Update chose it, so the screen's
+/// switch goes off.
+#[no_mangle]
+pub extern "C" fn cinder_set_vol_curve_available(ok: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_vol_curve_available(ok != 0);
+        if ok == 3 && r.app.vol_curve().is_some() {
+            let (p, _) = r.app.vol_curve_points();
+            r.app.restore_vol_curve(p, false);
+            save_settings(r);
+        }
+        r.dirty = true;
+    }
+}
+
 /// ── FM radio ────────────────────────────────────────────────────────────────────────────────
 #[no_mangle]
 pub extern "C" fn cinder_fm_khz() -> libc::c_int {
@@ -6925,6 +7104,35 @@ pub extern "C" fn cinder_fm_bt_out() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {
         Some(r) => r.fm_bt as libc::c_int,
         None => 0,
+    }
+}
+
+/// Did the user just ask to start (1) or stop (0) a recording? Valid right after CINDER_ACT_FM_RECORD.
+#[no_mangle]
+pub extern "C" fn cinder_fm_record() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.fm_rec as libc::c_int,
+        None => 0,
+    }
+}
+
+/// The recorder is installed: the FM screen shows REC.
+#[no_mangle]
+pub extern "C" fn cinder_fm_set_rec_available(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.fm_set_rec_available(on != 0);
+        r.dirty = true;
+    }
+}
+
+/// Seconds recorded so far, or -1 when not recording. Redraws only when the value changes.
+#[no_mangle]
+pub extern "C" fn cinder_fm_report_rec(secs: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if r.app.fm_rec_secs() != secs.max(-1) {
+            r.app.fm_set_rec_secs(secs);
+            r.dirty = true;
+        }
     }
 }
 
@@ -7986,6 +8194,20 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             }
                         }
                         r.app.set_tone_bands(b);
+                    }
+                    // Volume curve points; restore_vol_curve ignores one the helper would refuse.
+                    // `vol_curve_on` comes after it in every file Cinder writes.
+                    "vol_curve" => {
+                        let mut p = cinder_ui::vol_curve::STRAIGHT;
+                        for (i, part) in v.split(',').take(p.len()).enumerate() {
+                            p[i] = part.trim().parse::<u8>().unwrap_or(u8::MAX);
+                        }
+                        let on = r.app.vol_curve().is_some();
+                        r.app.restore_vol_curve(p, on);
+                    }
+                    "vol_curve_on" => {
+                        let (p, _) = r.app.vol_curve_points();
+                        r.app.restore_vol_curve(p, v == "1");
                     }
                     // DAC EQ bands. Absent in older files = flat, which is exactly the table Sony
                     // loads. set_dac_eq clamps: the helper REFUSES an out-of-range gain, so an
@@ -9125,7 +9347,57 @@ pub extern "C" fn cinder_notify_seek_ms(ms: libc::c_int) {
     r.real_pos_at = std::time::Instant::now();
     let dur = r.cur_duration_ms;
     set_progress(&mut r.np, target, dur);
+    cue_title(r);
     r.dirty = true;
+}
+
+/// With a CUE sheet, Now Playing names the CUE track under the playhead rather than the file, and
+/// the scrobbler logs each CUE track as a song of its own.
+fn cue_title(r: &mut Render) {
+    let Some(s) = &r.cue else { return };
+    let i = s.index_at(r.play_pos_ms);
+    let e = &s.entries[i];
+    if r.np.title == e.title {
+        return;
+    }
+    r.np.title = e.title.clone();
+    if !e.performer.is_empty() {
+        r.np.artist = e.performer.clone();
+    }
+    r.dirty = true;
+    let end = s
+        .entries
+        .get(i + 1)
+        .map_or(r.cur_duration_ms, |n| n.start_ms);
+    let meta = scrobble::Track {
+        artist: r.np.artist.clone(),
+        album: r
+            .last_track
+            .as_ref()
+            .map(|t| t.album.clone())
+            .unwrap_or_default(),
+        title: e.title.clone(),
+        track_no: i as u32 + 1,
+        length_s: ((end - e.start_ms).max(0) / 1000) as u32,
+    };
+    if !r.zappin_resume_hold {
+        if let Some(sc) = r.scrob.as_mut() {
+            sc.set_track(meta, now_unix());
+        }
+    }
+}
+
+/// ◁ (`dir` < 0) or ▷ inside a file with a CUE sheet: the position to seek to, in ms, or -1 to
+/// skip as usual (no sheet, the first track for ◁, the last for ▷). The shell seeks with
+/// cinder_audio_seek_ms and reports it with cinder_notify_seek_ms.
+#[no_mangle]
+pub extern "C" fn cinder_cue_skip(dir: libc::c_int) -> libc::c_int {
+    let guard = cell().lock().unwrap();
+    let Some(r) = guard.as_ref() else { return -1 };
+    match r.cue.as_ref().and_then(|s| s.skip(live_pos_ms(r), dir)) {
+        Some(ms) => ms.clamp(0, i32::MAX as i64) as libc::c_int,
+        None => -1,
+    }
 }
 
 /// Move an in-progress scrub to UI (x, y). Returns the seek target in ms (>= 0) when the gesture
@@ -9305,6 +9577,7 @@ pub extern "C" fn cinder_set_play_position(
         r.play_pos_ms = (cur_ms as i64).min(r.cur_duration_ms.max(0));
         let (pos, dur) = (r.play_pos_ms, r.cur_duration_ms);
         set_progress(&mut r.np, pos, dur);
+        cue_title(r);
     }
     // Repaint when the bar is on screen, or whenever play/pause flipped (the transport glyph
     // changes on every screen that shows it).
@@ -9343,6 +9616,9 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 .as_ref()
                 .map_or(true, |p| p.object_id != t.object_id);
             apply_track(&mut r.np, &t);
+            if changed {
+                r.cue = cue::load_for(&t.filename);
+            }
             if changed {
                 // A preview's samples are not listening history: while the hold is on, ◁ must
                 // not learn them (the confirmed Full play pushes the pre-preview track instead).
@@ -9398,6 +9674,11 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 } else {
                     r.app.track_started(t.object_id, owed)
                 };
+                // Sound ▸ Sound for this album. Raises profile_apply; the shell collects it with
+                // cinder_take_profile_apply after this call.
+                if !r.zappin_active && r.app.album_sound_follow() {
+                    save_settings(r);
+                }
                 r.album_lap_staged = false;
                 let was_refused = std::mem::take(&mut r.queue_edit_refused);
                 if preempt {
@@ -9494,7 +9775,8 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 };
                 if !r.zappin_resume_hold {
                     r.listen.set_track(&t.filename, length_s);
-                    if let Some(s) = r.scrob.as_mut() {
+                    // A file with a CUE sheet is scrobbled a CUE track at a time (`cue_title`).
+                    if let Some(s) = r.scrob.as_mut().filter(|_| r.cue.is_none()) {
                         if !s.is_current(&meta) {
                             s.set_track(meta, now_unix());
                         }
@@ -9510,6 +9792,19 @@ pub extern "C" fn cinder_set_now_playing_uri(
             // or the audio. The row sits with the other links, not below the file facts.
             let lyr = lyrics::load_for(&t.filename);
             let mut rows = track_info_rows(r, &t);
+            if let Some(c) = &r.cue {
+                let at = rows
+                    .iter()
+                    .position(|(k, _)| k == "Album")
+                    .map_or(rows.len().min(2), |i| i + 1);
+                rows.insert(
+                    at,
+                    (
+                        "CUE sheet".to_string(),
+                        format!("{} tracks", c.entries.len()),
+                    ),
+                );
+            }
             if let Some(l) = &lyr {
                 let at = rows
                     .iter()
@@ -9520,11 +9815,14 @@ pub extern "C" fn cinder_set_now_playing_uri(
             r.app.set_track_info(rows);
             r.app.set_lyrics(lyr);
             r.last_track = Some(t);
+            // After `last_track`: the CUE track's scrobble names this file's album.
+            cue_title(r);
             0
         }
         None => {
             r.np.title = u.rsplit('/').next().unwrap_or(&u).to_string();
             r.np.artist.clear();
+            r.cue = None;
             // Unknown track → unknown duration: no estimated bar. And no cover.
             r.cur_duration_ms = 0;
             r.play_pos_ms = 0;
@@ -9827,6 +10125,7 @@ mod tests {
             S::Books,
             S::Language,
             S::Zappin,
+            S::VolCurve,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
         const RESERVED: usize = 1;
@@ -9936,6 +10235,74 @@ mod tests {
         assert_eq!(app.setup_idx(), 0);
         assert_eq!(app.presets(), &[spare, SoundSetup::default()]);
         assert!(!app.jack_eq_dac());
+    }
+
+    /// An album of one long file with a sheet beside it lists the sheet's tracks with their
+    /// lengths; a file of the same album without one keeps its own row; an album with no sheet
+    /// lists nothing extra.
+    #[test]
+    fn cue_rows_come_from_the_sheet_beside_a_long_file() {
+        use cinder_ui::model::SongRow;
+        let dir = std::env::temp_dir().join(format!("cinder-cuerows-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let flac = dir.join("Album.flac");
+        std::fs::write(&flac, b"").unwrap();
+        std::fs::write(
+            dir.join("Album.cue"),
+            "FILE \"Album.flac\" WAVE\n TRACK 01 AUDIO\n  TITLE \"One\"\n  INDEX 01 00:00:00\n TRACK 02 AUDIO\n  TITLE \"Two\"\n  INDEX 01 10:00:00\n",
+        )
+        .unwrap();
+        let row = |id: i64, t: &str| SongRow {
+            title: t.into(),
+            object_id: id,
+            dur: "3:00".into(),
+            ..Default::default()
+        };
+        let mut long = std::collections::BTreeMap::new();
+        long.insert(1, (flac.to_str().unwrap().to_string(), 25 * 60 * 1000));
+        let rows = cue_rows(&[row(1, "Album"), row(2, "Bonus")], &long);
+        let none = cue_rows(&[row(2, "Bonus")], &long);
+        std::fs::remove_dir_all(&dir).ok();
+        let titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, ["One", "Two", "Bonus"]);
+        assert_eq!((rows[1].file, rows[1].start_ms), (0, 600_000));
+        assert_eq!(rows[0].dur, fmt_time(600_000));
+        assert_eq!(
+            rows[1].dur,
+            fmt_time(15 * 60 * 1000),
+            "the last runs to the file's end"
+        );
+        assert_eq!((rows[2].file, rows[2].dur.as_str()), (1, "3:00"));
+        assert!(none.is_empty());
+    }
+
+    /// Track info ▸ ALBUM SOUND: the albums' presets and the sound an album's preset replaced come
+    /// back after a restart, so leaving the album still puts that sound back.
+    #[test]
+    fn album_sounds_survive_a_save() {
+        use cinder_ui::nav::SoundSetup;
+        let prev = SoundSetup {
+            dsee: true,
+            balance: 40,
+            ..SoundSetup::default()
+        };
+        let body = format!(
+            "{}{}album_sound=1\tKind of Blue\u{1f}Miles Davis\n",
+            presets_body(&[SoundSetup::default()]),
+            setup_body(&prev).replace("bank_", "album_prev_"),
+        );
+        let mut pl = ProfileLoad::default();
+        for line in body.lines() {
+            let (k, v) = line.split_once('=').unwrap();
+            assert!(pl.line(k, v), "{k} was not taken");
+        }
+        let mut app = cinder_ui::nav::App::new();
+        pl.install(&mut app);
+        assert_eq!(
+            app.album_sounds(),
+            &[("Kind of Blue\u{1f}Miles Davis".to_string(), 1)]
+        );
+        assert_eq!(app.album_sound_prev(), Some(&prev));
     }
 
     /// No `jack_eq` key: the DAC, unless the file's live 10-band curve is not flat.
@@ -11300,6 +11667,7 @@ mod tests {
             fm_seek_dir: 1,
             fm_power: false,
             fm_bt: false,
+            fm_rec: false,
             scrub_ms: None,
             scrub_act: None,
             pending_screenshot: None,
@@ -11341,6 +11709,9 @@ mod tests {
             books: books::Store::default(),
             books_changed: std::time::Instant::now(),
             book_seek_ms: 0,
+            cue: None,
+            skin: None,
+            skin_tried: false,
             book_hold: None,
             stats_changed: std::time::Instant::now(),
             views_path: None,

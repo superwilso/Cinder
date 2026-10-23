@@ -14,6 +14,7 @@ use cinder_ui::Theme;
 
 fn np<'a>(page: u8, viz_size: u8, viz_kind: u8, levels: &'a [f32]) -> NowPlaying<'a> {
     NowPlaying {
+        skin: None,
         title: "Atlas Hands",
         artist: "Benjamin Francis Leftwich",
         codec: "FLAC · 24bit / 96.0 kHz",
@@ -175,6 +176,7 @@ fn bench_library_tabs() {
                 .collect();
             songs.extend(track_list.iter().cloned());
             albums.push(AlbumRow {
+                cue: Vec::new(),
                 name: an.clone(),
                 artist: name.clone(),
                 year: "2019".into(),
@@ -337,6 +339,7 @@ fn bench_derived_state() {
                 .collect();
             songs.extend(track_list.iter().cloned());
             albums.push(AlbumRow {
+                cue: Vec::new(),
                 name: an.clone(),
                 artist: name.clone(),
                 year: "2019".into(),

@@ -7,7 +7,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::catalogue::{Comp, Kind};
+use crate::catalogue::{Comp, Kind, Start};
 use crate::device::{self, Installed};
 use crate::stage::{self, Action};
 
@@ -31,6 +31,9 @@ fn show(comps: &[Comp], target: &Path, action: Action) {
     println!("  player: {}", target.display());
     println!("  ------------------------------------------------------------");
     for (i, c) in comps.iter().enumerate() {
+        if i == 0 || comps[i - 1].group != c.group {
+            println!("   {}", c.group.to_uppercase());
+        }
         match c.kind {
             Kind::Bool => println!(
                 "   {:>2}  [{}]  {}",
@@ -125,6 +128,20 @@ pub fn run(
         }
     }
 
+    if !assume_yes && action == Action::Install {
+        // Where to begin: the pages below still change any one option.
+        println!("\n  Start from:");
+        for (i, s) in Start::ALL.iter().enumerate() {
+            println!("   {}  {} — {}", i + 1, s.label(), s.help());
+        }
+        let a = prompt("  [1] > ");
+        let pick = a
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=Start::ALL.len()).contains(n));
+        crate::catalogue::apply_start(&mut comps, Start::ALL[pick.unwrap_or(1) - 1]);
+    }
+
     if !assume_yes {
         // Every description once, up front. They used to be reprinted under the list after
         // every keypress, which scrolled the list itself off the screen.
@@ -175,6 +192,14 @@ pub fn run(
         );
         for c in comps.iter().filter(|c| !c.is_language()) {
             println!("    {}: {}", c.title, c.shown());
+            // What a chosen option changes on the player, and how to take it off again.
+            let on = match c.kind {
+                Kind::Bool => c.is_on(),
+                Kind::Enum(_) => c.value != c.default,
+            };
+            if on {
+                print!("{}", wrap(&c.risk, 68, "        "));
+            }
         }
         println!(
             "\n  {} files ({} KB) will be copied to the player's storage root.",

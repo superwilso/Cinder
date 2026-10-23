@@ -116,6 +116,39 @@ pub struct AlbumRow {
     pub added: i64,
     /// The album's tracks in play order (for the drill-in view). May be empty if not loaded.
     pub track_list: Vec<SongRow>,
+    /// When the album is one long file (or several) with a CUE sheet beside it: the CUE tracks,
+    /// which the album page lists in place of the files. Empty for every other album.
+    pub cue: Vec<CueRow>,
+}
+
+/// One CUE track on an album page: which file of `track_list` holds it, and where it starts.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CueRow {
+    pub file: usize,
+    pub title: String,
+    pub start_ms: i64,
+    /// "4:31", like `SongRow::dur`.
+    pub dur: String,
+}
+
+impl AlbumRow {
+    /// How many rows the album page lists: its CUE tracks, or its files.
+    pub fn rows(&self) -> usize {
+        if self.cue.is_empty() {
+            self.track_list.len()
+        } else {
+            self.cue.len()
+        }
+    }
+
+    /// The file behind page row `r`, and where in it that row starts (0 for an ordinary track).
+    pub fn row_file(&self, r: usize) -> Option<(&SongRow, i64)> {
+        if self.cue.is_empty() {
+            return self.track_list.get(r).map(|s| (s, 0));
+        }
+        let c = self.cue.get(r)?;
+        self.track_list.get(c.file).map(|s| (s, c.start_ms))
+    }
 }
 
 /// One entry in the genre filter picker: the id to filter by, its display name, and how many
@@ -652,6 +685,7 @@ impl Library {
                     .map(|a| {
                         let year_num: i32 = a.y.parse().unwrap_or(0);
                         AlbumRow {
+                            cue: Vec::new(),
                             name: a.n.into(),
                             artist: g.artist.into(),
                             year: a.y.into(),

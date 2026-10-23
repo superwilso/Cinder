@@ -286,6 +286,8 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/cinder-preload.sh
     cinder-home/dist/stable/libcinder_aac.so
     cinder-home/dist/stable/libfdk-aac-enc.so
+    cinder-home/dist/stable/libcinder_atrac.so
+    cinder-home/dist/stable/libcinder_fmrec.so
     cinder-home/dist/stable/cinder_components.conf
     cinder-home/dist/stable/cinder_home_install.upg
     cinder-home/dist/stable/cinder_home_uninstall.upg

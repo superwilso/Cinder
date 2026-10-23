@@ -34,6 +34,69 @@ pub struct Comp {
     /// One per enum value, in the catalogue's order. Empty for a bool.
     pub choices: Vec<Choice>,
     pub value: String,
+    /// The `[Name]` above it in the catalogue: the installer page it is on.
+    pub group: String,
+    /// What it changes on the player and how to undo it (`! ` lines), for the review page.
+    pub risk: String,
+    /// The starting point that ticks it (`+ ` line): a [`Start`]'s word, or empty.
+    pub start: String,
+}
+
+/// Where a guided install begins, before any page is changed. `Cinder` is the defaults; the other
+/// two tick every bool tagged for them (`+ sound`, `+ everything`), `Everything` both kinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Start {
+    Cinder,
+    Sound,
+    Everything,
+}
+
+impl Start {
+    pub const ALL: [Start; 3] = [Start::Cinder, Start::Sound, Start::Everything];
+    pub fn label(self) -> &'static str {
+        match self {
+            Start::Cinder => "Cinder",
+            Start::Sound => "Cinder with the sound options",
+            Start::Everything => "Everything",
+        }
+    }
+    pub fn help(self) -> &'static str {
+        match self {
+            Start::Cinder => "The player, with the options most people want. Add more later with Update.",
+            Start::Sound => "Adds the equalizer over Bluetooth, mono without Wampy, and the AAC and SBC XQ codecs.",
+            Start::Everything => "Every option that is new as well. The pages after this still let you take any of them off.",
+        }
+    }
+    fn ticks(self, tag: &str) -> bool {
+        match self {
+            Start::Cinder => false,
+            Start::Sound => tag == "sound",
+            Start::Everything => tag == "sound" || tag == "everything",
+        }
+    }
+}
+
+/// Set every component to `start`: defaults, then the bools it ticks.
+pub fn apply_start(comps: &mut [Comp], start: Start) {
+    for c in comps {
+        c.value = if matches!(c.kind, Kind::Bool) && start.ticks(&c.start) {
+            "1".into()
+        } else {
+            c.default.clone()
+        };
+    }
+}
+
+/// The groups, in catalogue order, each once: the window's option pages.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn groups(comps: &[Comp]) -> Vec<String> {
+    let mut g: Vec<String> = Vec::new();
+    for c in comps {
+        if !g.contains(&c.group) {
+            g.push(c.group.clone());
+        }
+    }
+    g
 }
 
 impl Comp {
@@ -149,6 +212,7 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
     let mut out: Vec<Comp> = Vec::new();
     // a blank line was seen since the last description line, so the next one opens a paragraph
     let mut para = false;
+    let mut group = String::new();
     for line in text.lines() {
         let t = line.trim();
         if t.starts_with('#') {
@@ -159,6 +223,10 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
             continue;
         }
         let indented = line.starts_with(' ') || line.starts_with('\t');
+        if !indented && t.starts_with('[') && t.ends_with(']') {
+            group = t[1..t.len() - 1].trim().to_string();
+            continue;
+        }
         if !indented && line.contains('|') {
             let f: Vec<&str> = line.split('|').map(|s| s.trim()).collect();
             if f.len() < 5 {
@@ -180,10 +248,28 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
                 desc: String::new(),
                 choices: Vec::new(),
                 value: f[3].into(),
+                group: if group.is_empty() {
+                    "Options".into()
+                } else {
+                    group.clone()
+                },
+                risk: String::new(),
+                start: String::new(),
             });
             para = false;
         } else if indented {
             let Some(last) = out.last_mut() else { continue };
+            if let Some(rest) = t.strip_prefix("! ") {
+                if !last.risk.is_empty() {
+                    last.risk.push(' ');
+                }
+                last.risk.push_str(rest.trim());
+                continue;
+            }
+            if let Some(rest) = t.strip_prefix("+ ") {
+                last.start = rest.trim().to_string();
+                continue;
+            }
             if let Some(rest) = t.strip_prefix('=') {
                 let f: Vec<&str> = rest.splitn(3, '|').map(str::trim).collect();
                 if f.len() < 3 || f.iter().any(|x| x.is_empty()) {
@@ -233,6 +319,14 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
                 }
             }
             Kind::Bool => {}
+        }
+        let start_ok =
+            matches!(c.kind, Kind::Bool) && ["sound", "everything"].contains(&c.start.as_str());
+        if !c.start.is_empty() && !start_ok {
+            return Err(format!(
+                "'{}': `+ {}` is not a starting point for a bool",
+                c.id, c.start
+            ));
         }
     }
     Ok(out)
@@ -312,6 +406,62 @@ signature | CINDER_SIGNATURE | enum:stock,pv1,pv2 | stock | Audio sound signatur
     Second paragraph.
     # a developer note, never shown
 ";
+
+    const GROUPED: &str = "\
+[Library]
+search | CINDER_SEARCH | bool | 0 | Search
+    Finds things.
+    ! Nothing outside Cinder.
+    + everything
+scrobble | CINDER_SCROBBLE | bool | 1 | Scrobble
+    Logs plays.
+[Sound]
+preload | CINDER_PRELOAD | bool | 0 | Preload
+    Sound everywhere.
+    ! Edits a start-up script.
+    ! Undo: untick it.
+    + sound
+";
+
+    #[test]
+    fn groups_risks_and_starting_points() {
+        let mut c = parse_catalogue(GROUPED).unwrap();
+        assert_eq!(groups(&c), vec!["Library", "Sound"]);
+        assert_eq!(c[2].group, "Sound");
+        assert_eq!(c[2].risk, "Edits a start-up script. Undo: untick it.");
+        assert!(
+            !c[0].desc.contains('!') && !c[2].desc.contains('+'),
+            "not description text"
+        );
+        apply_start(&mut c, Start::Sound);
+        assert_eq!(
+            (
+                c[0].value.as_str(),
+                c[1].value.as_str(),
+                c[2].value.as_str()
+            ),
+            ("0", "1", "1")
+        );
+        apply_start(&mut c, Start::Everything);
+        assert!(c.iter().all(|c| c.value == "1"));
+        apply_start(&mut c, Start::Cinder);
+        assert_eq!(c[2].value, "0", "Cinder is the defaults");
+        assert!(parse_catalogue(
+            "x | X | enum:a,b | a | X\n    = a | A | a\n    = b | B | b\n    + sound\n"
+        )
+        .is_err());
+    }
+
+    /// The real catalogue: every component has a group and says what it changes.
+    #[test]
+    fn the_shipped_catalogue_is_grouped_and_explained() {
+        let c = parse_catalogue(include_str!("../../cinder-home/deploy/components.conf")).unwrap();
+        for x in &c {
+            assert_ne!(x.group, "Options", "{} has no group", x.id);
+            assert!(!x.risk.is_empty(), "{} does not say what it changes", x.id);
+        }
+        assert!(groups(&c).len() >= 4);
+    }
 
     #[test]
     fn parses_both_kinds() {

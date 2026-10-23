@@ -1,0 +1,293 @@
+//! Winamp classic skins: a `.wsz` is a zip of BMP sheets (`cinder_ui::skin`).
+//!
+//! The first `.wsz` at the top of the internal drive, by name, is the skin. It is read only when
+//! the Winamp style is chosen, once per start. A zip member is stored or deflated (the two methods
+//! skin tools write); BMPs are the uncompressed kinds: 24/32-bit and 1/4/8-bit with a palette.
+//! ponytail: RLE-compressed BMPs are rare in skins and not read; that sheet falls back.
+
+use cinder_ui::art::Image;
+use cinder_ui::skin::{Skin, MAIN_H, MAIN_W};
+
+const MAX_MEMBER: usize = 4 * 1024 * 1024;
+
+fn u16le(b: &[u8], o: usize) -> Option<usize> {
+    Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?) as usize)
+}
+fn u32le(b: &[u8], o: usize) -> Option<usize> {
+    Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize)
+}
+
+/// Every member of a zip as (name, bytes). Folders inside the zip are kept in the name.
+pub fn unzip(z: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    // The end-of-central-directory record, within the last 64 KiB (its comment can be that long).
+    let lo = z.len().saturating_sub(65_557);
+    let Some(eocd) = (lo..z.len().saturating_sub(21))
+        .rev()
+        .find(|&i| z[i..i + 4] == [0x50, 0x4b, 0x05, 0x06])
+    else {
+        return out;
+    };
+    let (Some(n), Some(mut p)) = (u16le(z, eocd + 10), u32le(z, eocd + 16)) else {
+        return out;
+    };
+    for _ in 0..n {
+        if z.get(p..p + 4) != Some(&[0x50, 0x4b, 0x01, 0x02][..]) {
+            break;
+        }
+        let (
+            Some(method),
+            Some(csize),
+            Some(usize_),
+            Some(nlen),
+            Some(xlen),
+            Some(clen),
+            Some(lho),
+        ) = (
+            u16le(z, p + 10),
+            u32le(z, p + 20),
+            u32le(z, p + 24),
+            u16le(z, p + 28),
+            u16le(z, p + 30),
+            u16le(z, p + 32),
+            u32le(z, p + 42),
+        )
+        else {
+            break;
+        };
+        let name =
+            String::from_utf8_lossy(z.get(p + 46..p + 46 + nlen).unwrap_or(&[])).into_owned();
+        p += 46 + nlen + xlen + clen;
+        if usize_ > MAX_MEMBER || name.ends_with('/') {
+            continue;
+        }
+        let (Some(ln), Some(lx)) = (u16le(z, lho + 26), u16le(z, lho + 28)) else {
+            continue;
+        };
+        let start = lho + 30 + ln + lx;
+        let Some(data) = z.get(start..start + csize) else {
+            continue;
+        };
+        let bytes = match method {
+            0 => data.to_vec(),
+            8 => match miniz_oxide::inflate::decompress_to_vec_with_limit(data, MAX_MEMBER) {
+                Ok(v) => v,
+                Err(_) => continue,
+            },
+            _ => continue,
+        };
+        out.push((name, bytes));
+    }
+    out
+}
+
+/// A BMP sheet: uncompressed 24/32-bit, or 1/4/8-bit with a palette; bottom-up or top-down.
+pub fn decode_bmp(b: &[u8]) -> Option<Image> {
+    if b.get(0..2)? != b"BM" {
+        return None;
+    }
+    let data_off = u32le(b, 0x0A)?;
+    let hdr = u32le(b, 0x0E)?;
+    if hdr < 40 {
+        return None;
+    }
+    let w = i32::from_le_bytes(b.get(0x12..0x16)?.try_into().ok()?);
+    let hr = i32::from_le_bytes(b.get(0x16..0x1A)?.try_into().ok()?);
+    let bpp = u16le(b, 0x1C)?;
+    let compression = u32le(b, 0x1E)?;
+    if w <= 0 || w > 4096 || hr == 0 || hr.unsigned_abs() > 4096 || compression != 0 {
+        return None;
+    }
+    let (w, h) = (w as usize, hr.unsigned_abs() as usize);
+    let palette: Vec<[u8; 3]> = if bpp <= 8 {
+        let used = u32le(b, 0x2E)?;
+        let n = if used == 0 { 1 << bpp } else { used.min(256) };
+        let at = 14 + hdr;
+        (0..n)
+            .map(|i| {
+                let q = b.get(at + i * 4..at + i * 4 + 3)?;
+                Some([q[2], q[1], q[0]])
+            })
+            .collect::<Option<_>>()?
+    } else {
+        Vec::new()
+    };
+    if !matches!(bpp, 1 | 4 | 8 | 24 | 32) {
+        return None;
+    }
+    let stride = (w * bpp).div_ceil(32) * 4;
+    if data_off.checked_add(stride.checked_mul(h)?)? > b.len() {
+        return None;
+    }
+    let mut rgb = vec![0u8; w * h * 3];
+    for y in 0..h {
+        let row = data_off + if hr < 0 { y } else { h - 1 - y } * stride;
+        for x in 0..w {
+            let px = match bpp {
+                24 | 32 => {
+                    let s = row + x * bpp / 8;
+                    [b[s + 2], b[s + 1], b[s]]
+                }
+                _ => {
+                    let bit = x * bpp;
+                    let byte = b[row + bit / 8];
+                    let idx = (byte >> (8 - bpp - bit % 8)) & ((1u16 << bpp) - 1) as u8;
+                    *palette.get(idx as usize)?
+                }
+            };
+            rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&px);
+        }
+    }
+    Some(Image { w, h, rgb })
+}
+
+/// The skin in `z` (a whole `.wsz`), named `name`. None without a readable main.bmp.
+pub fn skin_from(z: &[u8], name: &str) -> Option<Skin> {
+    let members = unzip(z);
+    let sheet = |want: &str| {
+        members
+            .iter()
+            .find(|(n, _)| {
+                n.rsplit(['/', '\\'])
+                    .next()
+                    .is_some_and(|b| b.eq_ignore_ascii_case(want))
+            })
+            .and_then(|(_, d)| decode_bmp(d))
+    };
+    let main = sheet("main.bmp")?.scaled_to(MAIN_W, MAIN_H);
+    Some(Skin {
+        main: Some(main),
+        titlebar: sheet("titlebar.bmp"),
+        cbuttons: sheet("cbuttons.bmp"),
+        numbers: sheet("numbers.bmp").or_else(|| sheet("nums_ex.bmp")),
+        text: sheet("text.bmp"),
+        posbar: sheet("posbar.bmp"),
+        shufrep: sheet("shufrep.bmp"),
+        name: name.to_string(),
+    })
+}
+
+/// The first `.wsz` in `dir` by name, loaded; None when there is none or it is not a skin.
+pub fn find_in(dir: &str) -> Option<Skin> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.to_ascii_lowercase().ends_with(".wsz"))
+        .collect();
+    names.sort();
+    let name = names.first()?;
+    let z = std::fs::read(std::path::Path::new(dir).join(name)).ok()?;
+    let skin = skin_from(&z, name);
+    eprintln!(
+        "cinder-ffi: Winamp skin {name}: {}",
+        if skin.is_some() {
+            "loaded"
+        } else {
+            "no readable main.bmp"
+        }
+    );
+    skin
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An 8-bit palette BMP, `w`×`h`, every pixel palette index (x + y) % 2: red / blue.
+    fn bmp8(w: usize, h: usize) -> Vec<u8> {
+        let stride = (w + 3) & !3;
+        let data_off = 14 + 40 + 2 * 4;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"BM");
+        b.extend_from_slice(&((data_off + stride * h) as u32).to_le_bytes());
+        b.extend_from_slice(&[0; 4]);
+        b.extend_from_slice(&(data_off as u32).to_le_bytes());
+        b.extend_from_slice(&40u32.to_le_bytes());
+        b.extend_from_slice(&(w as i32).to_le_bytes());
+        b.extend_from_slice(&(h as i32).to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&8u16.to_le_bytes());
+        b.extend_from_slice(&[0; 4]); // BI_RGB
+        b.extend_from_slice(&[0; 12]);
+        b.extend_from_slice(&2u32.to_le_bytes()); // colours used
+        b.extend_from_slice(&[0; 4]);
+        b.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]); // BGRA: red, blue
+        for y in 0..h {
+            let row: Vec<u8> = (0..stride).map(|x| ((x + (h - 1 - y)) % 2) as u8).collect();
+            b.extend_from_slice(&row);
+        }
+        b
+    }
+
+    /// A zip of stored and deflated members, as a skin tool writes it.
+    fn zip(members: &[(&str, &[u8], bool)]) -> Vec<u8> {
+        let mut z = Vec::new();
+        let mut cd = Vec::new();
+        for (name, data, deflate) in members {
+            let body = if *deflate {
+                miniz_oxide::deflate::compress_to_vec(data, 6)
+            } else {
+                data.to_vec()
+            };
+            let off = z.len() as u32;
+            let method: u16 = if *deflate { 8 } else { 0 };
+            z.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04, 20, 0, 0, 0]);
+            z.extend_from_slice(&method.to_le_bytes());
+            z.extend_from_slice(&[0; 8]); // time, date, crc (not checked)
+            z.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            z.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            z.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            z.extend_from_slice(&0u16.to_le_bytes());
+            z.extend_from_slice(name.as_bytes());
+            z.extend_from_slice(&body);
+            cd.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02, 20, 0, 20, 0, 0, 0]);
+            cd.extend_from_slice(&method.to_le_bytes());
+            cd.extend_from_slice(&[0; 8]);
+            cd.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            cd.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            cd.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            cd.extend_from_slice(&[0; 12]);
+            cd.extend_from_slice(&off.to_le_bytes());
+            cd.extend_from_slice(name.as_bytes());
+        }
+        let cd_off = z.len() as u32;
+        z.extend_from_slice(&cd);
+        z.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0]);
+        z.extend_from_slice(&(members.len() as u16).to_le_bytes());
+        z.extend_from_slice(&(members.len() as u16).to_le_bytes());
+        z.extend_from_slice(&(cd.len() as u32).to_le_bytes());
+        z.extend_from_slice(&cd_off.to_le_bytes());
+        z.extend_from_slice(&0u16.to_le_bytes());
+        z
+    }
+
+    #[test]
+    fn palette_bmps_decode_top_row_first() {
+        let img = decode_bmp(&bmp8(3, 2)).unwrap();
+        assert_eq!((img.w, img.h), (3, 2));
+        assert_eq!(&img.rgb[0..3], &[255, 0, 0], "top-left is index 0: red");
+        assert_eq!(&img.rgb[3..6], &[0, 0, 255], "then blue");
+        assert_eq!(&img.rgb[9..12], &[0, 0, 255], "the next row starts blue");
+    }
+
+    #[test]
+    fn a_skin_comes_out_of_a_wsz_in_a_folder_with_either_method() {
+        let main = bmp8(275, 116);
+        let nums = bmp8(99, 13);
+        let z = zip(&[
+            ("Base/MAIN.BMP", &main, true),
+            ("Base/numbers.bmp", &nums, false),
+        ]);
+        let skin = skin_from(&z, "base.wsz").expect("main.bmp is enough");
+        let m = skin.main.as_ref().unwrap();
+        assert_eq!((m.w, m.h), (MAIN_W, MAIN_H), "scaled once, at load");
+        assert_eq!(skin.numbers.as_ref().map(|n| n.w), Some(99));
+        assert!(
+            skin.cbuttons.is_none(),
+            "a missing sheet is None, not a failure"
+        );
+        assert!(skin_from(&zip(&[("x.bmp", &nums, false)]), "x.wsz").is_none());
+        assert!(skin_from(b"not a zip", "y.wsz").is_none());
+    }
+}

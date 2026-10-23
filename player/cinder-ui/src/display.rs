@@ -379,11 +379,14 @@ mod tests {
         let top = row_top(ROW_STYLE);
         assert!(style_chips_top() >= top && style_chips_top() + kit::CHIP_H <= top + kit::ROW_H);
         let y = style_chips_top() + kit::CHIP_H / 2;
-        let picks: Vec<usize> = [60, 240, 420]
-            .iter()
-            .filter_map(|&x| style_chip_at(x, y))
+        let n = crate::style::Style::COUNT;
+        let picks: Vec<usize> = (0..n)
+            .filter_map(|i| {
+                let (x, w) = kit::chip_span(i, n);
+                style_chip_at(x + w / 2, y)
+            })
             .collect();
-        assert_eq!(picks, [0, 1, 2]);
+        assert_eq!(picks, (0..n).collect::<Vec<_>>());
         assert_eq!(
             style_chip_at(240, top - 5),
             None,

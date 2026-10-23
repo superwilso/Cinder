@@ -226,6 +226,11 @@ typedef enum {
     CINDER_ACT_RX_CHANGED = 49,
     /* Receiver codec preference changed; read the independent receive preference. */
     CINDER_ACT_RX_CODEC_CHANGED = 58,
+    CINDER_ACT_FM_RECORD = 59,
+    /* Sound ▸ Advanced ▸ Volume curve changed or switched. cinder_get_vol_curve() == 7: run
+     * `cinder-voltable curve stock P0..P120` and write `curve,stock,P0,...` to
+     * /contents/cinder_voltable.conf; 0: put the installer's curve back. */
+    CINDER_ACT_VOL_CURVE_CHANGED = 60,
     /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
      * resume function (Configuration 5008/5039), then boot to stock exactly as
      * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */
@@ -535,6 +540,15 @@ int  cinder_get_tone_bands(signed char *out);
  * needs room for 5. Returns the count written, or 0 before the renderer is up. Stored values: hold
  * the EQ flat yourself while Source Direct is on. */
 int  cinder_get_dac_eq(signed char *out);
+/* Volume curve: 7 points (Sony's step 0..120 at volume 0, 20 ... 120) while the owner's curve is
+ * in use, else 0. `out` needs room for 7. */
+int  cinder_get_vol_curve(unsigned char *out);
+/* Prev (dir < 0) / Next inside a file with a CUE sheet: the ms to seek to, or -1 to skip as usual. */
+int  cinder_cue_skip(int dir);
+/* 0: cinder-voltable is not installed. 1: it is (conf not read yet). 2: it is and
+ * cinder_voltable.conf holds the owner's curve. 3: it is and the conf holds another curve, which
+ * switches the UI's curve off. */
+void cinder_set_vol_curve_available(int ok);
 /* BT Receiver: 1 while the switch is on AND its page is still open. */
 int  cinder_get_rx_on(void);
 /* Receiver-only preference: 0 Auto, 1 prefer LDAC, 2 prefer AAC, 3 prefer SBC. */
@@ -565,6 +579,9 @@ void cinder_fm_report_scan_progress(int pct);
 void cinder_fm_report_stations(const int *khz, int n);
 int  cinder_fm_bt_out(void);          /* did the user just ask for BT output? */
 void cinder_fm_report_bt_out(int on);
+int  cinder_fm_record(void);              /* start (1) / stop (0), valid after CINDER_ACT_FM_RECORD */
+void cinder_fm_set_rec_available(int on); /* the recorder is installed: show REC */
+void cinder_fm_report_rec(int secs);      /* seconds recorded, -1 when not recording */
 /* Read the current UI volume as the raw 0..120 step level (the stock scale — 1:1 with ALSA card0
  * 'master volume'). Call after a CINDER_ACT_VOLUP/VOLDOWN action and write it to the mixer. */
 int  cinder_get_volume(void);

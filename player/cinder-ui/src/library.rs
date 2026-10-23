@@ -1236,7 +1236,7 @@ pub fn max_scroll_px(
 
 /// Largest useful `scroll_px` for the album drill-in track list.
 pub fn album_max_scroll_px(album: &crate::model::AlbumRow) -> i32 {
-    (album.track_list.len() as i32 * ALBUM_TRACK_RH - (LIST_BOTTOM - album_tracks_top())).max(0)
+    (album.rows() as i32 * ALBUM_TRACK_RH - (LIST_BOTTOM - album_tracks_top())).max(0)
 }
 
 /// Virtual y (content px) of selectable row `idx` — for the cursor-follow used by button nav. For
@@ -1431,7 +1431,7 @@ pub fn album_hit_track(album: &crate::model::AlbumRow, scroll_px: i32, y: i32) -
     }
     let cy = y - album_tracks_top() + scroll_px.max(0);
     let r = (cy / ALBUM_TRACK_RH) as usize;
-    (r < album.track_list.len()).then_some(r)
+    (r < album.rows()).then_some(r)
 }
 
 /// Thin scrollbar on the right edge: window position in PIXEL space (scroll_px over content_h).
@@ -2610,10 +2610,16 @@ pub fn album_view(
         &crate::widgets::fit(f, &album.artist, &ast, (W as f32) - 150.0),
         &ast,
     );
-    let meta = if album.year.is_empty() {
-        crate::ui_format!("{} TRACKS", album.tracks)
+    // A CUE album counts the sheet's tracks, which is what it lists, not its one file.
+    let n = if album.cue.is_empty() {
+        album.tracks
     } else {
-        crate::ui_format!("{} · {} TRACKS", album.year, album.tracks)
+        album.cue.len() as u32
+    };
+    let meta = if album.year.is_empty() {
+        crate::ui_format!("{} TRACKS", n)
+    } else {
+        crate::ui_format!("{} · {} TRACKS", album.year, n)
     };
     let mst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
     text::draw(
@@ -2635,15 +2641,22 @@ pub fn album_view(
     );
     let top = album_tracks_top();
     let rh = ALBUM_TRACK_RH;
-    let total = album.track_list.len();
+    let total = album.rows();
     let first = (scroll_px / rh) as usize;
     let mut y = top - (scroll_px % rh);
     c.set_clip_y(top, LIST_BOTTOM);
-    for idx in first..album.track_list.len() {
+    for idx in first..total {
         if y >= LIST_BOTTOM {
             break;
         }
-        let sgn = &album.track_list[idx];
+        // A CUE track is drawn as a track: its own title and length, from the sheet.
+        let (title, dur) = match album.cue.get(idx) {
+            Some(cr) => (cr.title.as_str(), cr.dur.as_str()),
+            None => {
+                let s = &album.track_list[idx];
+                (s.title.as_str(), s.dur.as_str())
+            }
+        };
         let now = idx == track_idx;
         let cy = y + rh / 2;
         let sw = swipe_for(swipe, y, rh);
@@ -2676,7 +2689,7 @@ pub fn album_view(
             f,
             56.0,
             (cy - 2) as f32,
-            &crate::widgets::fit(f, &sgn.title, &tst, 320.0),
+            &crate::widgets::fit(f, title, &tst, 320.0),
             &tst,
         );
         if now {
@@ -2687,7 +2700,7 @@ pub fn album_view(
             f,
             452.0,
             (cy + 4) as f32,
-            &sgn.dur,
+            dur,
             &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0),
         );
         hline(c, y + rh, t.line);

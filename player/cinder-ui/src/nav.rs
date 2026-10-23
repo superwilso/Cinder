@@ -68,6 +68,9 @@ pub enum Screen {
     /// Sound ▸ Advanced ▸ DAC EQ — five bands in the codec chip itself, applied by the setuid
     /// `cinder-voltable eq` helper. Same slider-field idiom as `Tone`. See `dac_eq.rs`.
     DacEq,
+    /// Sound ▸ Advanced ▸ Volume curve — the owner's own headphone volume curve, applied by the
+    /// setuid `cinder-voltable curve` helper. See `vol_curve.rs`.
+    VolCurve,
     /// Sound ▸ Presets: saved sounds, and the A/B compare's tools. See `presets.rs`.
     Presets,
     /// Sound ▸ Noise cancelling, reachable only while Sony's NC earphones are in. See `nc.rs`.
@@ -416,6 +419,8 @@ pub enum Action {
     VolUp,
     VolDown,
     PlayIndex(i64), // play the library track with this DB object_id (the shell resolves it to a URI)
+    /// `PlayIndex`, then seek this many ms into the track: a CUE track on an album page.
+    PlayIndexAt(i64, u32),
     PlayPlaylist(i64), // play a whole playlist from the top (DB container object_id)
     /// `(playlist id, index)` — play a whole playlist STARTING AT one of its members.
     ///
@@ -442,6 +447,8 @@ pub enum Action {
     FmScan,
     /// Send the radio out over Bluetooth instead of the jack. The cable stays in as the aerial.
     FmBtOut(bool),
+    /// Start (true) or stop (false) an FM recording.
+    FmRecord(bool),
     /// Play a SensMe channel: `chan` is Sony's channel id (0..=12), or `sensme::ALL` for every
     /// analysed track; `from` is which member to start at; `shuffle` asks for it shuffled.
     ///
@@ -541,6 +548,11 @@ pub enum Action {
     /// runs `cinder-voltable eq`, which rebuilds the codec's tone table. Sent per tap and once at
     /// the end of a drag, never per motion event: each one is a helper run and a codec RAM reload.
     DacEqChanged,
+    /// Sound ▸ Advanced ▸ Volume curve changed, or was switched on or off. The shell reads
+    /// `vol_curve()` and runs `cinder-voltable curve` (or puts the installer's curve back), and
+    /// writes `/contents/cinder_voltable.conf` so the launcher applies it at every start. Sent per
+    /// tap and once at the end of a drag.
+    VolCurveChanged,
     /// BT Receiver switched (or left, which switches it off). The shell reads `rx_on()` and runs
     /// the whole enter / leave chain; idempotent, so a repeat is harmless.
     RxChanged,
@@ -904,6 +916,7 @@ fn screen_token(s: Screen) -> &'static str {
         Screen::Eq => "eq",
         Screen::Tone => "tone",
         Screen::DacEq => "daceq",
+        Screen::VolCurve => "volcurve",
         Screen::Sound => "sound",
         Screen::Soundscape => "soundscape",
         Screen::Bluetooth => "bt",
@@ -999,6 +1012,8 @@ enum Scrub {
     /// Sound ▸ Advanced ▸ DAC EQ ▸ one band column. PREVIEW ONLY while the finger moves: applying
     /// it runs a setuid helper and reloads codec RAM, so it is sent once, at release.
     DacEqBand(usize),
+    /// Sound ▸ Advanced ▸ Volume curve ▸ one point. Applied once, at release, like the DAC EQ.
+    VolCurvePoint(usize),
     /// Sound ▸ L/R balance slider. Applies LIVE on every motion event rather than at release: the
     /// point of dragging a balance control is hearing the image move under your finger. The cost is
     /// bounded because the shell's `apply_balance` caches the last raw pair and skips the mixer
@@ -1417,6 +1432,10 @@ pub struct App {
     /// noise and the screen says so rather than looking broken.
     fm_antenna: bool,
     fm_bt_out: bool,
+    /// The FM recorder is installed (shell-reported); the screen shows REC only then.
+    fm_rec_available: bool,
+    /// Seconds recorded so far as the shell reports them, or -1 when not recording.
+    fm_rec_secs: i32,
     /// Live RSSI straight off the Si4708 (STATUS_RSSI[7:0]), or -1 when the register path is down
     /// and there is no meter to draw. NOT Sony's GetSignalLevel, which is a constant 1.
     fm_signal: i32,
@@ -1436,6 +1455,13 @@ pub struct App {
     dac_eq: [i8; crate::dac_eq::BANDS],
     /// Focused band on the DAC EQ screen.
     dac_eq_sel: usize,
+    /// Sound ▸ Advanced ▸ Volume curve: Sony's step at volume 0, 20 … 120 (`vol_curve.rs`).
+    vol_curve: [u8; crate::vol_curve::POINTS],
+    /// The owner's curve is in use.
+    vol_curve_on: bool,
+    /// `cinder-voltable` is installed (the shell reports it).
+    vol_curve_ok: bool,
+    vol_curve_sel: usize,
     /// Focused row on the Advanced screen.
     adv_sel: usize,
     /// Sound ▸ Advanced scroll offset (px): twelve rows are taller than the glass.
@@ -1454,6 +1480,12 @@ pub struct App {
     presets: Vec<SoundSetup>,
     /// The preset whose Delete was tapped once; a second tap deletes it.
     preset_armed: Option<usize>,
+    /// Track info ▸ ALBUM SOUND: `(album key, preset 1-based)`. Persisted as `album_sound=`.
+    album_sounds: Vec<(String, u8)>,
+    /// The album the follow last looked at, so it acts once per album, not once per track.
+    album_sound_key: Option<String>,
+    /// The sound that was live before an album's preset took over; put back when it ends.
+    album_sound_prev: Option<SoundSetup>,
     /// Which of mono / linear amp / DAC EQ travel with a sound through A/B and presets
     /// (`FOLLOW_*`). 0 = none, the default: one value for both sides.
     profile_follow: u8,
@@ -1919,6 +1951,8 @@ impl Default for App {
             fm_scan_pct: 0,
             fm_antenna: false,
             fm_bt_out: false,
+            fm_rec_available: false,
+            fm_rec_secs: -1,
             fm_signal: -1,
             fm_hw: false,
             fm_stereo: false,
@@ -1926,6 +1960,10 @@ impl Default for App {
             tone_sel: 0,
             dac_eq: [0; crate::dac_eq::BANDS],
             dac_eq_sel: 0,
+            vol_curve: crate::vol_curve::STRAIGHT,
+            vol_curve_on: false,
+            vol_curve_ok: false,
+            vol_curve_sel: 0,
             adv_sel: crate::advanced::ROW_VPT,
             adv_scroll_px: 0,
             snd_dc: false,
@@ -1936,6 +1974,9 @@ impl Default for App {
             setup_idx: 0,
             presets: Vec::new(),
             preset_armed: None,
+            album_sounds: Vec::new(),
+            album_sound_key: None,
+            album_sound_prev: None,
             profile_follow: 0,
             live_output: crate::profile::Output::Jack,
             profile_apply: false,
@@ -2360,6 +2401,18 @@ impl App {
     /// random depending on which screen you started from.
     fn start_play(&mut self, id: i64) -> Vec<Action> {
         self.start_play_action(Action::PlayIndex(id))
+    }
+
+    /// Play row `r` of an album page: its file, from the CUE track's start when it is one.
+    fn play_album_row(&mut self, album: &crate::model::AlbumRow, r: usize) -> Vec<Action> {
+        match album.row_file(r) {
+            Some((s, 0)) => self.start_play(s.object_id),
+            Some((s, ms)) => self.start_play_action(Action::PlayIndexAt(
+                s.object_id,
+                ms.clamp(0, u32::MAX as i64) as u32,
+            )),
+            None => vec![],
+        }
     }
 
     /// The same funnel for a play action that already knows its context (a playlist member, say).
@@ -4158,6 +4211,11 @@ impl App {
                 self.push(Screen::DacEq);
                 return vec![];
             }
+            adv::ROW_VOL_CURVE => {
+                self.vol_curve_sel = 0;
+                self.push(Screen::VolCurve);
+                return vec![];
+            }
             _ => {}
         }
         vec![Action::SoundChanged]
@@ -4180,6 +4238,39 @@ impl App {
 
     /// Nudge the focused DAC EQ band one step (1.0 dB). Emits only when the value moved, so a tap
     /// past either end does not run the helper for nothing.
+    /// One step up or down for the selected volume-curve point, held between its neighbours.
+    fn vol_curve_nudge(&mut self, dir: i32) -> Vec<Action> {
+        let i = self.vol_curve_sel;
+        let was = self.vol_curve[i];
+        let want = (was as i32 + dir).clamp(0, crate::vol_curve::MAX as i32) as u8;
+        crate::vol_curve::set(&mut self.vol_curve, i, want);
+        if self.vol_curve[i] == was {
+            return vec![];
+        }
+        self.vol_curve_on = true;
+        vec![Action::VolCurveChanged]
+    }
+
+    /// The volume curve for the shell: `Some(points)` when the owner's curve is in use.
+    pub fn vol_curve(&self) -> Option<[u8; crate::vol_curve::POINTS]> {
+        self.vol_curve_on.then_some(self.vol_curve)
+    }
+    /// The edited points, in use or not, for the settings file.
+    pub fn vol_curve_points(&self) -> ([u8; crate::vol_curve::POINTS], bool) {
+        (self.vol_curve, self.vol_curve_on)
+    }
+    /// Restore the curve at boot. A curve the helper would refuse is ignored.
+    pub fn restore_vol_curve(&mut self, pts: [u8; crate::vol_curve::POINTS], on: bool) {
+        if crate::vol_curve::valid(&pts) {
+            self.vol_curve = pts;
+            self.vol_curve_on = on;
+        }
+    }
+    /// The shell's report: is `cinder-voltable` installed?
+    pub fn set_vol_curve_available(&mut self, ok: bool) {
+        self.vol_curve_ok = ok;
+    }
+
     fn dac_eq_nudge(&mut self, dir: i32) -> Vec<Action> {
         let g = &mut self.dac_eq[self.dac_eq_sel];
         let want = if dir > 0 {
@@ -4500,8 +4591,7 @@ impl App {
                 {
                     if let Some(row) = library::album_hit_track(&album, self.album_scroll_px, y) {
                         self.album_track_idx = row;
-                        let id = album.track_list.get(row).map(|s| s.object_id);
-                        return id.map(|i| self.start_play(i)).unwrap_or_default();
+                        return self.play_album_row(&album, row);
                     }
                     // The "Play album" band: play from track 1 — the shell's album_context
                     // expands it to the whole album in order. (Hit-tested through the band's own
@@ -4516,6 +4606,9 @@ impl App {
             }
             // Track information: the pinned action band, plus the link rows.
             Screen::TrackInfo => {
+                if !self.presets.is_empty() && crate::track_info::hit_album_sound(x, y) {
+                    return self.album_sound_step();
+                }
                 if crate::track_info::hit_add_to_playlist(y) {
                     if let Some(oid) = self.playing_object_id() {
                         self.open_playlist_pick(oid);
@@ -4887,7 +4980,7 @@ impl App {
                 // A scan owns the tuner for about a minute; taking taps during it would queue
                 // retunes behind a job that is already retuning. Only Scan responds, and it cancels.
                 if self.fm_scanning {
-                    return match crate::fm::hit(x, y) {
+                    return match crate::fm::hit(x, y, self.fm_rec_available) {
                         Some(Hit::Scan) => {
                             self.fm_scanning = false;
                             vec![Action::FmScan]
@@ -4895,7 +4988,7 @@ impl App {
                         _ => vec![],
                     };
                 }
-                match crate::fm::hit(x, y) {
+                match crate::fm::hit(x, y, self.fm_rec_available) {
                     Some(Hit::Power) => {
                         self.fm_playing = !self.fm_playing;
                         vec![Action::FmPower(self.fm_playing)]
@@ -4923,6 +5016,9 @@ impl App {
                         self.fm_bt_out = !self.fm_bt_out;
                         vec![Action::FmBtOut(self.fm_bt_out)]
                     }
+                    // The shell owns the recording; this only asks. REC lights when the shell
+                    // reports seconds, so a request that fails never shows as recording.
+                    Some(Hit::Rec) => vec![Action::FmRecord(self.fm_rec_secs < 0)],
                     Some(Hit::Scan) => {
                         self.fm_scanning = true;
                         self.fm_scan_pct = 0;
@@ -5029,6 +5125,47 @@ impl App {
                 if crate::dac_eq::jack_row_at(y) {
                     self.jack_eq_dac = !self.jack_eq_dac;
                     return vec![Action::SoundChanged];
+                }
+                vec![]
+            }
+            Screen::VolCurve => {
+                use crate::vol_curve as vc;
+                if !self.vol_curve_ok {
+                    self.notify(crate::i18n::text(
+                        "Needs the installer's volume curve option",
+                    ));
+                    return vec![];
+                }
+                if (vc::FIELD_TOP..vc::FIELD_BOTTOM).contains(&y) {
+                    // A tap above the knob raises the point by one step, below lowers it.
+                    if let Some(i) = vc::point_at(x) {
+                        self.vol_curve_sel = i;
+                        return self.vol_curve_nudge(if y < vc::knob_y(self.vol_curve[i]) {
+                            1
+                        } else {
+                            -1
+                        });
+                    }
+                    return vec![];
+                }
+                let preset = if vc::reset_at(x, y) {
+                    Some(vc::STRAIGHT)
+                } else if vc::every_at(x, y) {
+                    Some(vc::EVERY_STEP)
+                } else {
+                    None
+                };
+                if let Some(p) = preset {
+                    if p == self.vol_curve && self.vol_curve_on {
+                        return vec![];
+                    }
+                    self.vol_curve = p;
+                    self.vol_curve_on = true;
+                    return vec![Action::VolCurveChanged];
+                }
+                if vc::switch_at(y) {
+                    self.vol_curve_on = !self.vol_curve_on;
+                    return vec![Action::VolCurveChanged];
                 }
                 vec![]
             }
@@ -6852,6 +6989,18 @@ impl App {
                 }
                 false
             }
+            Screen::VolCurve => {
+                use crate::vol_curve as vc;
+                if self.vol_curve_ok && (vc::FIELD_TOP..vc::FIELD_BOTTOM).contains(&y) {
+                    if let Some(i) = vc::point_at(x) {
+                        self.scrub = Scrub::VolCurvePoint(i);
+                        self.vol_curve_sel = i;
+                        vc::set(&mut self.vol_curve, i, vc::value_at_y(y));
+                        return true;
+                    }
+                }
+                false
+            }
             Screen::Soundscape => match crate::soundscape::level_row_at(y) {
                 Some(row) if crate::soundscape::slider_grab(x) => {
                     self.scrub = Scrub::AmbientLevel(row);
@@ -6908,6 +7057,10 @@ impl App {
                 self.dac_eq[b] = crate::dac_eq::value_at_y(y);
                 vec![]
             }
+            Scrub::VolCurvePoint(i) => {
+                crate::vol_curve::set(&mut self.vol_curve, i, crate::vol_curve::value_at_y(y));
+                vec![]
+            }
             Scrub::Progress => {
                 self.scrub_permille = self.rail_permille(x);
                 vec![]
@@ -6952,6 +7105,11 @@ impl App {
             Scrub::ToneBand(_) => vec![Action::SoundChanged],
             // The only point this one is applied: one helper run per drag, not one per step.
             Scrub::DacEqBand(_) => vec![Action::DacEqChanged],
+            // Dragging a point is choosing a curve: it switches the curve on.
+            Scrub::VolCurvePoint(_) => {
+                self.vol_curve_on = true;
+                vec![Action::VolCurveChanged]
+            }
             Scrub::AmbientLevel(_) => vec![Action::AmbientChanged],
             Scrub::None => vec![],
         };
@@ -7554,7 +7712,7 @@ impl App {
             Screen::Album if dir < 0 => {
                 let song = self.lib.albums_flat().get(self.album_view).and_then(|al| {
                     library::album_hit_track(al, self.album_scroll_px, y)
-                        .and_then(|ti| al.track_list.get(ti).cloned())
+                        .and_then(|ti| al.row_file(ti).map(|(s, _)| s.clone()))
                 });
                 match song {
                     Some(s) => self.enqueue_at(s, y, QueueAt::Next),
@@ -7644,7 +7802,7 @@ impl App {
                 // flush. The mirror gesture one arm up (`dir < 0`, Play Next) always returned it.
                 let song = self.lib.albums_flat().get(self.album_view).and_then(|al| {
                     library::album_hit_track(al, self.album_scroll_px, y)
-                        .and_then(|ti| al.track_list.get(ti).cloned())
+                        .and_then(|ti| al.row_file(ti).map(|(s, _)| s.clone()))
                 });
                 match song {
                     Some(s) => self.enqueue_at(s, y, QueueAt::Later),
@@ -8721,7 +8879,7 @@ impl App {
                     .lib
                     .albums_flat()
                     .get(self.album_view)
-                    .map(|a| a.track_list.len())
+                    .map(|a| a.rows())
                     .unwrap_or(0);
                 match b {
                     Button::Up => {
@@ -8737,13 +8895,15 @@ impl App {
                         vec![]
                     }
                     Button::Select => {
-                        let id = self
+                        let album = self
                             .lib
                             .albums_flat()
                             .get(self.album_view)
-                            .and_then(|a| a.track_list.get(self.album_track_idx))
-                            .map(|s| s.object_id);
-                        id.map(|i| self.start_play(i)).unwrap_or_default()
+                            .map(|a| (*a).clone());
+                        match album {
+                            Some(al) => self.play_album_row(&al, self.album_track_idx),
+                            None => vec![],
+                        }
                     }
                     Button::Back | Button::Left => {
                         self.pop();
@@ -8895,6 +9055,25 @@ impl App {
                 }
                 Button::Up => self.dac_eq_nudge(1),
                 Button::Down => self.dac_eq_nudge(-1),
+                Button::Back => {
+                    self.pop();
+                    vec![]
+                }
+                _ => vec![],
+            },
+            Screen::VolCurve => match b {
+                Button::Left => {
+                    self.vol_curve_sel = self.vol_curve_sel.saturating_sub(1);
+                    vec![]
+                }
+                Button::Right => {
+                    if self.vol_curve_sel + 1 < crate::vol_curve::POINTS {
+                        self.vol_curve_sel += 1;
+                    }
+                    vec![]
+                }
+                Button::Up if self.vol_curve_ok => self.vol_curve_nudge(1),
+                Button::Down if self.vol_curve_ok => self.vol_curve_nudge(-1),
                 Button::Back => {
                     self.pop();
                     vec![]
@@ -9388,6 +9567,8 @@ impl App {
                     self.track_info_scroll_px,
                     self.sbar_active(),
                     rating,
+                    (!self.presets.is_empty())
+                        .then(|| self.album_sound_row().map_or(0, |(_, n)| n)),
                 )
             }
             Screen::Lyrics => {
@@ -9593,6 +9774,14 @@ impl App {
                 };
                 crate::dac_eq::render(c, &theme, fonts, &d, self.dac_eq_sel)
             }
+            Screen::VolCurve => {
+                let v = crate::vol_curve::VolCurve {
+                    pts: self.vol_curve,
+                    on: self.vol_curve_on,
+                    available: self.vol_curve_ok,
+                };
+                crate::vol_curve::render(c, &theme, fonts, &v, self.vol_curve_sel)
+            }
             Screen::Soundscape => {
                 let v = self.soundscape_view();
                 crate::soundscape::render(c, &theme, fonts, self.ambient_sel, &v)
@@ -9649,6 +9838,7 @@ impl App {
                     tone_control: self.adv_tone,
                     hp_linear: self.adv_hp_linear,
                     dac_eq_on: self.dac_eq != [0; crate::dac_eq::BANDS],
+                    vol_curve: self.vol_curve_ok.then_some(self.vol_curve_on),
                     clear_bass: self
                         .clear_bass_available
                         .then(|| crate::advanced::CLEAR_BASS[self.adv_clear_bass]),
@@ -9903,6 +10093,8 @@ impl App {
                     signal: self.fm_signal,
                     hw: self.fm_hw,
                     stereo: self.fm_stereo,
+                    rec_available: self.fm_rec_available,
+                    rec_secs: self.fm_rec_secs,
                 };
                 crate::fm::render(c, &theme, fonts, &v)
             }
@@ -10866,6 +11058,13 @@ impl App {
             Hit::Delete(i) => {
                 if self.preset_armed == Some(i) && i < self.presets.len() {
                     self.presets.remove(i);
+                    let gone = (i + 1) as u8;
+                    self.album_sounds.retain(|(_, n)| *n != gone);
+                    for (_, n) in &mut self.album_sounds {
+                        if *n > gone {
+                            *n -= 1;
+                        }
+                    }
                     self.preset_armed = None;
                     self.notify_format("Preset {} deleted", vec![("0", (i + 1).to_string())]);
                 } else {
@@ -10893,6 +11092,123 @@ impl App {
                 vec![]
             }
         }
+    }
+
+    /// The playing album as `(key, title)`. The key is album and album artist, not the DB's
+    /// album id, which a rescan renumbers.
+    fn playing_album(&self) -> Option<(String, String)> {
+        let t = self.context.get(self.context_idx)?;
+        Some((
+            format!("{}\u{1f}{}", t.art, t.group_artist()),
+            t.art.clone(),
+        ))
+    }
+
+    /// The playing album and its preset (0 = none), for Track info's band.
+    fn album_sound_row(&self) -> Option<(String, u8)> {
+        let (key, title) = self.playing_album()?;
+        let n = self
+            .album_sounds
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or(0, |(_, n)| *n);
+        Some((title, n))
+    }
+
+    /// Load preset `n` (1-based) as an album's sound, keeping what was live to put back after.
+    fn album_sound_load(&mut self, n: u8) -> bool {
+        let Some(mut p) = self.presets.get(n as usize - 1).copied() else {
+            return false;
+        };
+        if self.album_sound_prev.is_none() {
+            self.album_sound_prev = Some(self.setup());
+        }
+        p.share_unfollowed(&self.setup(), self.profile_follow);
+        self.set_setup(p);
+        true
+    }
+
+    /// Put back the sound from before an album's preset, if one took over.
+    fn album_sound_restore(&mut self) -> bool {
+        let Some(mut p) = self.album_sound_prev.take() else {
+            return false;
+        };
+        p.share_unfollowed(&self.setup(), self.profile_follow);
+        self.set_setup(p);
+        true
+    }
+
+    /// A tap on Track info's ALBUM SOUND: Off, Preset 1, Preset 2, … and back to Off.
+    fn album_sound_step(&mut self) -> Vec<Action> {
+        let Some((key, _)) = self.playing_album() else {
+            self.notify(crate::i18n::text("Nothing playing"));
+            return vec![];
+        };
+        if self.presets.is_empty() {
+            self.notify(crate::i18n::text(
+                "Save a preset first (Sound \u{25b8} Presets)",
+            ));
+            return vec![];
+        }
+        let cur = self.album_sound_row().map_or(0, |(_, n)| n);
+        let next = ((cur as usize + 1) % (self.presets.len() + 1)) as u8;
+        self.album_sounds.retain(|(k, _)| *k != key);
+        self.album_sound_key = Some(key.clone());
+        let changed = if next == 0 {
+            self.album_sound_restore()
+        } else {
+            self.album_sounds.push((key, next));
+            self.album_sound_load(next)
+        };
+        if changed {
+            vec![Action::SoundChanged]
+        } else {
+            vec![]
+        }
+    }
+
+    /// Called by the shell when the playing track changes. A new album with a preset loads it; a
+    /// new album without one puts back the sound from before. True when the sound changed: the
+    /// shell collects that with [`Self::take_profile_apply`], which this raises.
+    pub fn album_sound_follow(&mut self) -> bool {
+        let Some((key, _)) = self.playing_album() else {
+            return false;
+        };
+        if self.album_sound_key.as_deref() == Some(key.as_str()) {
+            return false;
+        }
+        self.album_sound_key = Some(key);
+        let n = self.album_sound_row().map_or(0, |(_, n)| n);
+        let changed = if n > 0 {
+            let ok = self.album_sound_load(n);
+            if ok {
+                self.notify_format("Preset {} for this album", vec![("0", n.to_string())]);
+            }
+            ok
+        } else {
+            self.album_sound_restore()
+        };
+        self.profile_apply |= changed;
+        changed
+    }
+
+    /// The sound an album's preset replaced, for the settings file.
+    pub fn album_sound_prev(&self) -> Option<&SoundSetup> {
+        self.album_sound_prev.as_ref()
+    }
+    pub fn restore_album_sound_prev(&mut self, p: Option<SoundSetup>) {
+        self.album_sound_prev = p;
+    }
+
+    /// Every album's preset, for the settings file.
+    pub fn album_sounds(&self) -> &[(String, u8)] {
+        &self.album_sounds
+    }
+    /// Restore the album presets at boot. Entries naming a preset that is not saved are dropped.
+    pub fn restore_album_sounds(&mut self, mut v: Vec<(String, u8)>) {
+        let n = self.presets.len() as u8;
+        v.retain(|(_, p)| (1..=n).contains(p));
+        self.album_sounds = v;
     }
 
     /// Saved presets, oldest first.
@@ -11692,6 +12008,16 @@ impl App {
     }
     pub fn fm_set_bt_out(&mut self, on: bool) {
         self.fm_bt_out = on;
+    }
+    pub fn fm_set_rec_available(&mut self, on: bool) {
+        self.fm_rec_available = on;
+    }
+    /// Seconds recorded, or negative when not recording.
+    pub fn fm_set_rec_secs(&mut self, secs: i32) {
+        self.fm_rec_secs = secs.max(-1);
+    }
+    pub fn fm_rec_secs(&self) -> i32 {
+        self.fm_rec_secs
     }
     pub fn fm_scanning(&self) -> bool {
         self.fm_scanning
@@ -14448,6 +14774,52 @@ mod tests {
         assert_eq!(a.context_idx(), 1);
     }
 
+    /// An album that is one file with a CUE sheet lists the sheet's tracks; a tap plays the file
+    /// from that track, a swipe queues the file, and Select does what the tap does.
+    #[test]
+    fn a_cue_album_page_plays_its_tracks() {
+        use crate::model::{ArtistGroup, CueRow, Library};
+        let cue = |t: &str, ms: i64| CueRow {
+            file: 0,
+            title: t.into(),
+            start_ms: ms,
+            dur: "5:00".into(),
+        };
+        let album = AlbumRow {
+            name: "Kind of Blue".into(),
+            track_list: vec![SongRow {
+                title: "Kind of Blue".into(),
+                object_id: 70,
+                ..Default::default()
+            }],
+            cue: vec![cue("So What", 0), cue("Freddie Freeloader", 562_000)],
+            ..Default::default()
+        };
+        let mut a = unlocked();
+        a.set_library(Library {
+            album_groups: vec![ArtistGroup {
+                artist: "Miles Davis".into(),
+                albums: vec![album],
+            }],
+            ..Default::default()
+        });
+        assert!(a.open_album_named("Kind of Blue"));
+        let row =
+            |i: i32| crate::library::album_tracks_top() + i * crate::library::ALBUM_TRACK_RH + 10;
+        assert_eq!(a.tap(240, row(1)), vec![Action::PlayIndexAt(70, 562_000)]);
+        assert_eq!(
+            a.tap(240, row(0)),
+            vec![Action::PlayIndex(70)],
+            "the first starts at 0"
+        );
+        assert!(a.tap(240, row(2)).is_empty(), "two CUE tracks, two rows");
+        a.album_track_idx = 1;
+        assert_eq!(
+            a.press(Button::Select),
+            vec![Action::PlayIndexAt(70, 562_000)]
+        );
+    }
+
     /// An album queued with Add to queue plays AFTER the album that is playing — the request this
     /// list was merged for. Play next puts a track in front of the rest.
     #[test]
@@ -16082,6 +16454,7 @@ mod tests {
             Screen::Advanced,
             Screen::Tone,
             Screen::DacEq,
+            Screen::VolCurve,
             Screen::Presets,
             Screen::Nc,
             Screen::Bluetooth,
@@ -16479,6 +16852,7 @@ mod tests {
         let mut c = Canvas::new();
         let fonts = crate::text::FontSet::load();
         let np = NowPlaying {
+            skin: None,
             title: "t",
             artist: "a",
             codec: "",
@@ -18601,12 +18975,16 @@ mod tests {
         let mut a = unlocked();
         a.stack = vec![Screen::NowPlaying, Screen::Display];
         let y = crate::display::row_top(crate::display::ROW_STYLE) + crate::kit::ROW_H / 2;
-        a.tap(420, y);
-        assert_eq!(a.style(), Style::Terminal);
+        let chip = |i: usize| {
+            let (x, w) = crate::kit::chip_span(i, Style::COUNT);
+            x + w / 2
+        };
+        a.tap(chip(Style::COUNT - 1), y);
+        assert_eq!(a.style(), Style::ALL[Style::COUNT - 1]);
         a.display_sel = crate::display::ROW_STYLE;
         a.display_activate();
         assert_eq!(a.style(), Style::Cinder, "Select wraps round");
-        a.tap(240, y);
+        a.tap(chip(1), y);
         assert_eq!(a.style(), Style::Nocturne);
         let saved = a.style_token();
         let mut b = unlocked();
@@ -20505,6 +20883,79 @@ mod tests {
         assert_eq!(a.presets().len(), MAX - 1);
     }
 
+    /// Track info's ALBUM SOUND: a tap steps Off → Preset 1 → … → Off; a track from another album
+    /// puts back the sound from before, and coming back to the album loads its preset again.
+    #[test]
+    fn album_sound_follows_the_playing_album() {
+        use crate::model::SongRow;
+        let song = |id: i64, album: &str| SongRow {
+            title: format!("t{id}"),
+            art: album.into(),
+            object_id: id,
+            ..Default::default()
+        };
+        let mut a = unlocked();
+        a.set_play_context(
+            vec![song(1, "A"), song(2, "A"), song(3, "B"), song(4, "A")],
+            0,
+        );
+        a.go(Screen::TrackInfo);
+        let (x, y) = (400, crate::track_info::BOTTOM + 10);
+        a.tap(x, y);
+        assert_eq!(
+            a.current(),
+            Screen::PlaylistPick,
+            "no presets: the band is Add to playlist"
+        );
+        a.go(Screen::TrackInfo);
+        a.snd_dsee = true;
+        a.presets.push(a.setup());
+        a.snd_dsee = false;
+        assert_eq!(a.tap(x, y), vec![Action::SoundChanged]);
+        assert!(a.snd_dsee, "album A plays with Preset 1");
+        assert_eq!(a.album_sounds().len(), 1);
+        // The next track is the same album: nothing to do.
+        a.track_started(2, false);
+        assert!(!a.album_sound_follow() && a.snd_dsee);
+        // Another album: the sound from before comes back, and the shell is asked to apply it.
+        a.track_started(3, false);
+        assert!(a.album_sound_follow());
+        assert!(!a.snd_dsee && a.take_profile_apply());
+        // Back on album A: its preset again.
+        a.track_started(4, false);
+        assert!(a.album_sound_follow() && a.snd_dsee);
+        // Stepping past the last preset is Off, which forgets the album and restores.
+        assert_eq!(a.tap(x, y), vec![Action::SoundChanged]);
+        assert!(a.album_sounds().is_empty() && !a.snd_dsee);
+    }
+
+    /// Deleting a preset drops the albums that used it and renumbers the ones after it.
+    #[test]
+    fn deleting_a_preset_renumbers_album_sounds() {
+        use crate::presets::{centre, Hit};
+        let mut a = unlocked();
+        a.presets = vec![a.setup(); 3];
+        a.restore_album_sounds(vec![
+            ("x".into(), 1),
+            ("y".into(), 2),
+            ("z".into(), 3),
+            ("w".into(), 9),
+        ]);
+        assert_eq!(
+            a.album_sounds().len(),
+            3,
+            "a preset that is not saved is dropped"
+        );
+        a.go(Screen::Presets);
+        let x = crate::canvas::W as i32 - 10;
+        a.tap(x, centre(Hit::Load(1), 3));
+        a.tap(x, centre(Hit::Load(1), 3));
+        assert_eq!(
+            a.album_sounds(),
+            &[("x".to_string(), 1), ("z".to_string(), 2)]
+        );
+    }
+
     /// "Copy A to B" makes the other side the same as the live one, and changes nothing heard.
     #[test]
     fn copy_makes_the_other_side_match_the_live_one() {
@@ -20518,6 +20969,48 @@ mod tests {
         assert_eq!(a.setup_inactive(), a.setup());
         a.select_setup(1);
         assert!(a.snd_vpt && a.snd_vpt_mode == 2);
+    }
+
+    /// Volume curve: nothing to edit without the helper; with it, a tap or a drag sets a point,
+    /// switches the curve on and asks the shell to apply it once; a point never passes its
+    /// neighbours; the switch puts the installer's curve back.
+    #[test]
+    fn the_volume_curve_screen() {
+        use crate::vol_curve as vc;
+        let mut a = unlocked();
+        a.go(Screen::Advanced);
+        a.adv_scroll_px = crate::advanced::max_scroll(false);
+        let y = crate::advanced::row_top(crate::advanced::ROW_VOL_CURVE, false, a.adv_scroll_px);
+        assert!(a.tap(240, y + 20).is_empty());
+        assert_eq!(a.current(), Screen::VolCurve, "Advanced ▸ Volume curve");
+        let x = vc::point_x(3);
+        assert!(
+            a.tap(x, vc::FIELD_TOP + 5).is_empty(),
+            "no helper: nothing changes"
+        );
+        assert_eq!(a.vol_curve(), None);
+        a.set_vol_curve_available(true);
+        assert_eq!(a.tap(x, vc::FIELD_TOP + 5), vec![Action::VolCurveChanged]);
+        assert_eq!(a.vol_curve().map(|p| p[3]), Some(61));
+        assert!(a.scrub_begin(x, vc::knob_y(5)));
+        assert!(a.scrub_move(x, vc::knob_y(10)).is_empty());
+        assert_eq!(a.scrub_end(), vec![Action::VolCurveChanged]);
+        assert_eq!(
+            a.vol_curve().map(|p| p[3]),
+            Some(40),
+            "held at the point before"
+        );
+        assert_eq!(
+            a.tap(400, vc::FOOTER_TOP + 10),
+            vec![Action::VolCurveChanged]
+        );
+        assert_eq!(a.vol_curve(), Some(vc::EVERY_STEP));
+        assert_eq!(
+            a.tap(240, vc::SWITCH_TOP + 10),
+            vec![Action::VolCurveChanged]
+        );
+        assert_eq!(a.vol_curve(), None, "off: the installer's curve");
+        assert_eq!(a.vol_curve_points().0, vc::EVERY_STEP, "the edit is kept");
     }
 
     /// On the jack the curve is the DAC's: Sony's 10-band gets flat bands, the Equalizer row opens
@@ -21245,6 +21738,7 @@ mod tests {
 
         // The player says PLAYING and the UI agrees.
         let mut np = NowPlaying {
+            skin: None,
             title: "Atlas Hands",
             artist: "Benjamin Francis Leftwich",
             codec: "FLAC",
@@ -22366,6 +22860,7 @@ mod palette_tests {
         let _scale = crate::text::scale_guard();
         let fonts = FontSet::load();
         let np = NowPlaying {
+            skin: None,
             title: "",
             artist: "",
             codec: "",

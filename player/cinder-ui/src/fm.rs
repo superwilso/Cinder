@@ -64,6 +64,10 @@ const PRESET_H: i32 = 52;
 const PRESET_COLS: [i32; 3] = [22, 170, 318];
 const SCAN_Y: i32 = 620;
 const SCAN_H: i32 = 52;
+/// With the recorder installed the scan row splits: SCAN on the left, REC on the right. Without it
+/// SCAN keeps the whole row, exactly as before.
+const SCAN_HALF_W: i32 = 214;
+const REC_X: i32 = 244;
 const POWER: (i32, i32, i32, i32) = (352, 46, 106, 34);
 /// Send the radio out over Bluetooth instead of the jack. The cable stays in either way — it is
 /// the AERIAL, not the output, and those are independent.
@@ -93,6 +97,8 @@ pub enum Hit {
     Scan,
     /// Toggle Bluetooth output.
     BtOut,
+    /// Start or stop a recording (only when the recorder is installed).
+    Rec,
     /// Tap on the dial — tune straight to that frequency.
     Dial(i32),
 }
@@ -109,7 +115,8 @@ fn dial_x(khz: i32) -> i32 {
     DIAL_X0 + (f.clamp(0.0, 1.0) * DIAL_W as f32) as i32
 }
 
-pub fn hit(x: i32, y: i32) -> Option<Hit> {
+/// `rec`: the recorder is installed, so the scan row holds REC as well.
+pub fn hit(x: i32, y: i32, rec: bool) -> Option<Hit> {
     let (px, py, pw, ph) = POWER;
     if (px..px + pw).contains(&x) && (py..py + ph).contains(&y) {
         return Some(Hit::Power);
@@ -143,8 +150,14 @@ pub fn hit(x: i32, y: i32) -> Option<Hit> {
             return Some(Hit::Preset(i));
         }
     }
-    if (SCAN_Y..SCAN_Y + SCAN_H).contains(&y) && (22..458).contains(&x) {
-        return Some(Hit::Scan);
+    if (SCAN_Y..SCAN_Y + SCAN_H).contains(&y) {
+        if rec && (REC_X..REC_X + SCAN_HALF_W).contains(&x) {
+            return Some(Hit::Rec);
+        }
+        let scan_w = if rec { SCAN_HALF_W } else { 436 };
+        if (22..22 + scan_w).contains(&x) {
+            return Some(Hit::Scan);
+        }
     }
     None
 }
@@ -170,6 +183,10 @@ pub struct Fm {
     pub hw: bool,
     /// Chip's ST bit — a genuine stereo lock, not Sony's GetStereoState (which reads 0 always).
     pub stereo: bool,
+    /// The recorder is installed (the `fmrec` component): the scan row shows REC.
+    pub rec_available: bool,
+    /// Seconds recorded so far, or negative when not recording.
+    pub rec_secs: i32,
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
@@ -378,24 +395,25 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     } else {
         crate::i18n::text("SCAN THE BAND").to_string()
     };
+    let scan_w = if s.rec_available { SCAN_HALF_W } else { 436 };
     stroke_rect(
         c,
         22,
         SCAN_Y,
-        436,
+        scan_w,
         SCAN_H,
         if s.scanning { t.acc } else { t.line },
         1,
     );
     if s.scanning {
         // fill proportional to progress — the only honest progress bar is one driven by real work
-        let w = 436 * s.scan_pct.min(100) as i32 / 100;
+        let w = scan_w * s.scan_pct.min(100) as i32 / 100;
         fill_rect(c, 22, SCAN_Y, w, SCAN_H, t.row_sel);
     }
     center(
         c,
         f,
-        240.0,
+        (22 + scan_w / 2) as f32,
         (SCAN_Y + SCAN_H / 2 + 5) as f32,
         &scan_label,
         &sty(
@@ -406,6 +424,41 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
             0.10,
         ),
     );
+    if s.rec_available {
+        let on = s.rec_secs >= 0;
+        if on {
+            fill_rect(c, REC_X, SCAN_Y, SCAN_HALF_W, SCAN_H, t.acc);
+        }
+        stroke_rect(
+            c,
+            REC_X,
+            SCAN_Y,
+            SCAN_HALF_W,
+            SCAN_H,
+            if on { t.acc } else { t.line },
+            1,
+        );
+        let label = if on {
+            let secs = s.rec_secs;
+            crate::ui_format!("\u{25CF} REC {}:{:02}", secs / 60, secs % 60)
+        } else {
+            crate::i18n::text("RECORD").to_string()
+        };
+        center(
+            c,
+            f,
+            (REC_X + SCAN_HALF_W / 2) as f32,
+            (SCAN_Y + SCAN_H / 2 + 5) as f32,
+            &label,
+            &sty(
+                Family::Mono,
+                Weight::Regular,
+                14.0,
+                if on { t.acc_ink } else { t.dim },
+                0.10,
+            ),
+        );
+    }
     // What the scan actually costs depends on which route is live, and the difference is two
     // orders of magnitude — so say which one the user is about to get.
     let scan_note = if s.hw {
@@ -465,31 +518,54 @@ mod tests {
 
     #[test]
     fn every_button_is_hittable() {
-        assert_eq!(hit(btn_x(0) + 10, BTN_Y + 10), Some(Hit::Step(-STEP_KHZ)));
-        assert_eq!(hit(btn_x(1) + 10, BTN_Y + 10), Some(Hit::Prev));
-        assert_eq!(hit(btn_x(2) + 10, BTN_Y + 10), Some(Hit::Next));
-        assert_eq!(hit(btn_x(3) + 10, BTN_Y + 10), Some(Hit::Step(STEP_KHZ)));
-        assert_eq!(hit(POWER.0 + 5, POWER.1 + 5), Some(Hit::Power));
-        assert_eq!(hit(BTOUT.0 + 5, BTOUT.1 + 5), Some(Hit::BtOut));
-        assert_eq!(hit(240, SCAN_Y + 10), Some(Hit::Scan));
+        assert_eq!(
+            hit(btn_x(0) + 10, BTN_Y + 10, false),
+            Some(Hit::Step(-STEP_KHZ))
+        );
+        assert_eq!(hit(btn_x(1) + 10, BTN_Y + 10, false), Some(Hit::Prev));
+        assert_eq!(hit(btn_x(2) + 10, BTN_Y + 10, false), Some(Hit::Next));
+        assert_eq!(
+            hit(btn_x(3) + 10, BTN_Y + 10, false),
+            Some(Hit::Step(STEP_KHZ))
+        );
+        assert_eq!(hit(POWER.0 + 5, POWER.1 + 5, false), Some(Hit::Power));
+        assert_eq!(hit(BTOUT.0 + 5, BTOUT.1 + 5, false), Some(Hit::BtOut));
+        assert_eq!(hit(240, SCAN_Y + 10, false), Some(Hit::Scan));
         for i in 0..PRESETS {
             let cx = PRESET_COLS[i % 3];
             let cy = PRESET_Y0 + (i / 3) as i32 * (PRESET_H + 10);
-            assert_eq!(hit(cx + 5, cy + 5), Some(Hit::Preset(i)));
+            assert_eq!(hit(cx + 5, cy + 5, false), Some(Hit::Preset(i)));
         }
+    }
+
+    /// With the recorder installed the scan row splits in two, and the gap between them is dead.
+    #[test]
+    fn the_record_button_only_exists_when_installed() {
+        assert_eq!(hit(REC_X + 20, SCAN_Y + 10, true), Some(Hit::Rec));
+        assert_eq!(hit(40, SCAN_Y + 10, true), Some(Hit::Scan));
+        assert_eq!(
+            hit(240, SCAN_Y + 10, true),
+            None,
+            "the gap between SCAN and REC"
+        );
+        assert_eq!(hit(REC_X + 20, SCAN_Y + 10, false), Some(Hit::Scan));
     }
 
     /// The gaps between controls must do nothing, or a fat finger retunes the radio by accident.
     #[test]
     fn gaps_are_not_targets() {
         assert_eq!(
-            hit(btn_x(0) - 6, BTN_Y + 10),
+            hit(btn_x(0) - 6, BTN_Y + 10, false),
             None,
             "left of the first button"
         );
-        assert_eq!(hit(240, BTN_Y + BTN_H + 4), None, "below the button row");
         assert_eq!(
-            hit(5, PRESET_Y0 + 5),
+            hit(240, BTN_Y + BTN_H + 4, false),
+            None,
+            "below the button row"
+        );
+        assert_eq!(
+            hit(5, PRESET_Y0 + 5, false),
             None,
             "left margin of the preset grid"
         );

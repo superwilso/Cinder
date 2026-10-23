@@ -28,10 +28,24 @@ pub enum Style {
     /// Retro and blunt: a framed cover, monospace capitals, bracketed text buttons and a rail of
     /// cells. From the design exploration's "Terminal" direction. Pairs well with an amber palette.
     Terminal,
+    /// A cassette in a deck: reels that wind as the song plays, the title on the tape's label,
+    /// piano keys for the transport. Terminal's geometry.
+    Cassette,
+    /// A large digital clock where the cover was, Nocturne around it.
+    Clock,
+    /// A classic Winamp skin (`.wsz`) from the top of the drive. Terminal's geometry.
+    Winamp,
 }
 
 impl Style {
-    pub const ALL: [Style; 3] = [Style::Cinder, Style::Nocturne, Style::Terminal];
+    pub const ALL: [Style; 6] = [
+        Style::Cinder,
+        Style::Nocturne,
+        Style::Terminal,
+        Style::Cassette,
+        Style::Clock,
+        Style::Winamp,
+    ];
     pub const COUNT: usize = Self::ALL.len();
 
     /// As Settings shows it.
@@ -40,6 +54,9 @@ impl Style {
             Style::Cinder => "Cinder",
             Style::Nocturne => "Nocturne",
             Style::Terminal => "Terminal",
+            Style::Cassette => "Cassette",
+            Style::Clock => "Clock",
+            Style::Winamp => "Winamp",
         }
     }
 
@@ -49,6 +66,9 @@ impl Style {
             Style::Cinder => "cinder",
             Style::Nocturne => "nocturne",
             Style::Terminal => "terminal",
+            Style::Cassette => "cassette",
+            Style::Clock => "clock",
+            Style::Winamp => "winamp",
         }
     }
 
@@ -72,6 +92,9 @@ impl Style {
             Style::Cinder => crate::i18n::text("Full-bleed cover, big controls"),
             Style::Nocturne => crate::i18n::text("Quiet: inset cover, thin lines"),
             Style::Terminal => crate::i18n::text("Framed cover, text buttons"),
+            Style::Cassette => crate::i18n::text("A tape: reels wind as it plays"),
+            Style::Clock => crate::i18n::text("A large clock in place of the cover"),
+            Style::Winamp => crate::i18n::text("A Winamp skin from the drive (.wsz)"),
         }
     }
 }

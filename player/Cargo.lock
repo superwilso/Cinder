@@ -92,6 +92,7 @@ dependencies = [
  "cinder-db",
  "cinder-ui",
  "libc",
+ "miniz_oxide",
  "png",
  "zune-jpeg",
 ]

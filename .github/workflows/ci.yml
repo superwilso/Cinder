@@ -212,6 +212,15 @@ jobs:
         run: bash cinder-home/tools/test_chain.sh
       - name: boot guard (wrapper trial, Home app backstop)
         run: bash cinder-home/tools/test_guard.sh
+      # The FM recorder's WAV writer (src/fmrec.h), shared by the AudioIn preload and cinder-home:
+      # nothing written without a request, a playable header mid-recording, refusals not retried.
+      - name: FM recorder (WAV writer)
+        run: bash cinder-home/tools/test_fmrec.sh
+      # The custom volume curve (src/vol_curve.h): interpolation, refusal of a curve that goes
+      # down, and every step a whole row of Sony's table. Sony's table itself is not in CI, so the
+      # trailer check runs locally (test_volcurve.sh finds the extracted firmware).
+      - name: volume curve (custom table builder)
+        run: bash cinder-home/tools/test_volcurve.sh
 
       # The /data mount + cable-pass write from the issue #14 fix: the install payload's
       # boot-critical state write, proven in a user+mount namespace (the stub mount does real

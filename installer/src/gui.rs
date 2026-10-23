@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use crate::catalogue::{Comp, Kind};
+use crate::catalogue::{Comp, Kind, Start};
 use crate::device::{self, Installed};
 use crate::stage::{self, Action};
 
@@ -249,6 +249,7 @@ const WS_BORDER: u32 = 0x0080_0000;
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
 const WS_CLIPCHILDREN: u32 = 0x0200_0000;
 const BS_AUTOCHECKBOX: u32 = 0x0003;
+const BS_AUTORADIOBUTTON: u32 = 0x0009;
 const BS_DEFPUSHBUTTON: u32 = 0x0001;
 const BS_MULTILINE: u32 = 0x2000;
 const ES_MULTILINE: u32 = 0x0004;
@@ -361,11 +362,15 @@ const ID_BODY: usize = 110;
 const ID_HINT: usize = 111;
 const ID_CLEAN: usize = 112;
 const ID_LANGS: usize = 113;
+const ID_START_BASE: usize = 120;
 const ID_COMP_BASE: usize = 200;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Home,
+    /// Install only: where to begin (`catalogue::Start`), before the option pages.
+    Start,
+    /// One page per catalogue group; which one is `App::group`.
     Options,
     Confirm,
     Working,
@@ -384,6 +389,13 @@ struct App {
     kids: Vec<HWND>,
     /// (component index, its control, its label or null) for the options page.
     comp_ctl: Vec<(usize, HWND, HWND)>,
+    /// The options page on screen: an index into `catalogue::groups`.
+    group: usize,
+    /// The Start page's three choices, in `Start::ALL` order.
+    start_ctl: Vec<HWND>,
+    /// The starting point last applied, so coming back to Start and going on without changing it
+    /// keeps every choice made on the pages since.
+    start_applied: Option<Start>,
     /// The Languages list on the options page, and the component behind each of its items. It
     /// is one row of `comp_ctl` (under the first language), however many languages there are.
     langs: HWND,
@@ -648,6 +660,9 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
             state: Installed::default(),
             kids: Vec::new(),
             comp_ctl: Vec::new(),
+            group: 0,
+            start_ctl: Vec::new(),
+            start_applied: None,
             langs: std::ptr::null_mut(),
             lang_ids: Vec::new(),
             b_rescan: std::ptr::null_mut(),
@@ -749,10 +764,18 @@ const PW_CLIENTONLY: u32 = 0x0001;
 const PW_RENDERFULLCONTENT: u32 = 0x0002;
 
 /// The pages the README shows, in its order.
-const SHOTS: [(&str, Page, Action); 3] = [
-    ("installer-home", Page::Home, Action::Install),
-    ("installer-options", Page::Options, Action::Install),
-    ("installer-confirm", Page::Confirm, Action::Install),
+/// `usize` is the options page's group. The README shows the first three.
+const SHOTS: [(&str, Page, Action, usize); 5] = [
+    ("installer-home", Page::Home, Action::Install, 0),
+    ("installer-options", Page::Options, Action::Install, 3),
+    ("installer-confirm", Page::Confirm, Action::Install, 0),
+    ("installer-start", Page::Start, Action::Install, 0),
+    (
+        "installer-options-library",
+        Page::Options,
+        Action::Install,
+        1,
+    ),
 ];
 
 pub fn screenshots(dir: &std::path::Path) -> i32 {
@@ -778,10 +801,11 @@ pub fn screenshots(dir: &std::path::Path) -> i32 {
     unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
 
     let mut rc = 0;
-    for (name, page, action) in SHOTS {
+    for (name, page, action, group) in SHOTS {
         with_app(|a| {
             a.action = action;
             a.page = page;
+            a.group = group;
             a.build_page();
         });
         // SAFETY: as above. Repaint the whole client area now that no borrow of the app is held,
@@ -1106,6 +1130,7 @@ impl App {
             unsafe { DestroyWindow(h) };
         }
         self.comp_ctl.clear();
+        self.start_ctl.clear();
         self.langs = std::ptr::null_mut();
         self.lang_ids.clear();
         for h in [
@@ -1222,16 +1247,51 @@ impl App {
                 });
                 self.hint = self.mk("STATIC", &hint, SS_NOPREFIX, ID_HINT, f);
             }
+            Page::Start => {
+                self.body = self.mk(
+                    "STATIC",
+                    "Where to start. The next pages show every option, a group at a time.",
+                    SS_NOPREFIX | SS_ENDELLIPSIS,
+                    ID_BODY,
+                    fb,
+                );
+                let cur = self.start_applied.unwrap_or(Start::Cinder);
+                for (n, st) in Start::ALL.iter().enumerate() {
+                    let text = format!("{}\r\n{}", st.label(), st.help());
+                    let style = BS_AUTORADIOBUTTON | BS_MULTILINE | WS_TABSTOP;
+                    let h = self.mk("BUTTON", &text, style, ID_START_BASE + n, f);
+                    // SAFETY: h is live.
+                    unsafe { SendMessageW(h, BM_SETCHECK, usize::from(*st == cur), 0) };
+                    self.start_ctl.push(h);
+                }
+                self.back = self.mk("BUTTON", "Back", WS_TABSTOP, ID_BACK, f);
+                self.next = self.mk(
+                    "BUTTON",
+                    "Continue",
+                    BS_DEFPUSHBUTTON | WS_TABSTOP,
+                    ID_NEXT,
+                    f,
+                );
+            }
             Page::Options => {
-                let title = if self.action == Action::Update {
-                    "These are the choices already on your player. Change any you like."
-                } else {
-                    "Choose the extras you want. Click one to read what it does."
-                };
-                self.body = self.mk("STATIC", title, SS_NOPREFIX | SS_ENDELLIPSIS, ID_BODY, fb);
+                let groups = crate::catalogue::groups(&self.comps);
+                self.group = self.group.min(groups.len().saturating_sub(1));
+                let name = groups.get(self.group).cloned().unwrap_or_default();
+                let title = format!(
+                    "{} \u{2014} step {} of {}. Click an option to read what it does.",
+                    name,
+                    self.group + 1,
+                    groups.len()
+                );
+                self.body = self.mk("STATIC", &title, SS_NOPREFIX | SS_ENDELLIPSIS, ID_BODY, fb);
 
+                let mut first = None;
                 for i in 0..self.comps.len() {
                     let c = self.comps[i].clone();
+                    if c.group != name {
+                        continue;
+                    }
+                    first.get_or_insert(i);
                     let id = ID_COMP_BASE + i;
                     let mut label: HWND = std::ptr::null_mut();
                     if c.is_language() {
@@ -1304,7 +1364,7 @@ impl App {
                     ID_NEXT,
                     f,
                 );
-                self.show_desc(0);
+                self.show_desc(first.unwrap_or(0));
             }
             Page::Confirm => {
                 // A READ-ONLY EDIT for the same reason the Options description is one: this is
@@ -1407,6 +1467,14 @@ impl App {
         ));
         for c in self.comps.iter().filter(|c| !c.is_language()) {
             s.push_str(&format!("    {}:  {}\r\n", c.title, c.shown()));
+            // What a chosen option changes on the player, and how to take it off again.
+            let on = match c.kind {
+                Kind::Bool => c.is_on(),
+                Kind::Enum(_) => c.value != c.default,
+            };
+            if on && !c.risk.is_empty() {
+                s.push_str(&format!("        {}\r\n", c.risk));
+            }
         }
         match plan {
             Ok(p) => s.push_str(&format!(
@@ -1603,17 +1671,34 @@ impl App {
                         crate::catalogue::apply_saved(&mut self.comps, &text);
                     }
                 }
-                self.go(if self.action.is_removal() {
-                    Page::Confirm
-                } else {
-                    Page::Options
+                // An update opens on the review of what is installed now; Back walks the groups.
+                self.group = 0;
+                self.go(match self.action {
+                    Action::Install => Page::Start,
+                    _ => Page::Confirm,
                 });
             }
             ID_CHECK => self.check_release(),
             ID_BACK => match self.page {
                 Page::Options | Page::Confirm if self.action.is_removal() => self.go(Page::Home),
-                Page::Options => self.go(Page::Home),
-                Page::Confirm => self.go(Page::Options),
+                Page::Start => self.go(Page::Home),
+                Page::Options => {
+                    self.read_controls();
+                    if self.group > 0 {
+                        self.group -= 1;
+                        self.go(Page::Options);
+                    } else if self.action == Action::Install {
+                        self.go(Page::Start);
+                    } else {
+                        self.go(Page::Home);
+                    }
+                }
+                Page::Confirm => {
+                    self.group = crate::catalogue::groups(&self.comps)
+                        .len()
+                        .saturating_sub(1);
+                    self.go(Page::Options);
+                }
                 Page::Done => {
                     self.rescan();
                     self.go(Page::Home);
@@ -1621,9 +1706,28 @@ impl App {
                 _ => {}
             },
             ID_NEXT => match self.page {
+                Page::Start => {
+                    let picked = (0..self.start_ctl.len()).find(|&n| {
+                        // SAFETY: the radio buttons are live while the Start page is up.
+                        let c = unsafe { SendMessageW(self.start_ctl[n], BM_GETCHECK, 0, 0) };
+                        c == 1
+                    });
+                    let st = Start::ALL[picked.unwrap_or(0)];
+                    if self.start_applied != Some(st) {
+                        crate::catalogue::apply_start(&mut self.comps, st);
+                        self.start_applied = Some(st);
+                    }
+                    self.group = 0;
+                    self.go(Page::Options);
+                }
                 Page::Options => {
                     self.read_controls();
-                    self.go(Page::Confirm);
+                    if self.group + 1 < crate::catalogue::groups(&self.comps).len() {
+                        self.group += 1;
+                        self.go(Page::Options);
+                    } else {
+                        self.go(Page::Confirm);
+                    }
                 }
                 Page::Confirm => self.start(),
                 Page::Working | Page::Done => {
@@ -1818,6 +1922,25 @@ impl App {
                     hint_top,
                     wd - pad * 2,
                     (bottom - hint_top - self.s(4)).max(row),
+                );
+            }
+            Page::Start => {
+                let mut y = head + pad;
+                mv(self.body, pad, y, wd - pad * 2, row);
+                y += row + self.s(10);
+                let card = self.s(62);
+                for h in self.start_ctl.clone() {
+                    mv(h, pad + self.s(4), y, wd - pad * 2 - self.s(8), card);
+                    y += card + self.s(10);
+                }
+                let bottom = ht - pad - btn_h;
+                mv(self.back, pad, bottom, self.s(110), btn_h);
+                mv(
+                    self.next,
+                    wd - pad - self.s(150),
+                    bottom,
+                    self.s(150),
+                    btn_h,
                 );
             }
             Page::Options => {

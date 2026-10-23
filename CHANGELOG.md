@@ -18,6 +18,51 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **ATRAC files on any player** (`atrac`, off by default, needs `preload`). Sony builds the ATRAC
+  decoder into every A50 and switches it off outside Japan with one call,
+  `DmpFeature::IsFeaturedAtrac`, asked once when the playback service starts. A one-function
+  library loaded into that service answers yes. *Device-verified by hand-install 10-22 on Walkman
+  One 3.02: the service logs "ATRAC enabled.", and a SonicStage `.aa3` plays. With the library
+  removed it logs "ATRAC disabled." and the same file does not start. The installer path is
+  device-unverified.* Files with Sony's OpenMG copy protection still do not play.
+- **Record FM radio** (`fmrec`, off by default, needs `preload`). The FM screen gains RECORD,
+  which writes a WAV file to `MUSIC/FM Recordings`, named by station and time. On the headphone
+  jack a library loaded into Sony's radio service copies what it reads; with BT OUT on, Cinder
+  records from its own bridge. The file stays playable if the player stops mid-recording (its
+  header is rewritten every five seconds). *Jack recording device-verified by hand-install 10-22:
+  a 7.9 s WAV of the radio. The RECORD button, BT OUT recording and the installer path are
+  device-unverified.*
+- **A preset for each album.** Once a preset is saved (Sound ▸ Presets), Track information (tap
+  the title on Now Playing) gains ALBUM SOUND beside Add to playlist. Tap it to step Off, P1, P2…
+  for the album that is playing. That preset loads whenever the album starts, and the sound from
+  before comes back when something else plays. Deleting a preset takes it off its albums.
+  *Device-unverified.*
+- **Your own volume curve** (Sound ▸ Advanced ▸ Volume curve, needs the volume-curve option).
+  Seven points choose which of Sony's volume steps volume 0, 20, 40 … 120 plays, with a straight
+  line between them. "Use every step" spreads 0–120 over Sony's steps 0–100, so the dead steps
+  at the top (nothing changes from 100 to 120) are gone. Every step plays one of Sony's own
+  register rows, so nothing can be louder than Sony's maximum, and a curve that goes down is
+  refused. Applied straight away and at every start; switching it off puts the installer's curve
+  back. *Table builder host-tested, including a byte-identical rebuild of Sony's table;
+  device-unverified.*
+- **CUE sheets.** An album kept as one file (FLAC, APE or WAV) with a `.cue` beside it now plays
+  as its tracks: Now Playing names the CUE track that is playing, ◁ and ▷ move between CUE tracks
+  inside the file (at either end they skip as usual), and Track information says how many tracks
+  the sheet holds. The file plays straight through, so the album stays gapless. The album's page
+  lists the CUE tracks with their lengths, and tapping one plays the file from that track; the
+  scrobble log gets each CUE track as a song of its own. The Songs tab still lists the file once. *Host-tested (parser, skip rules, the album page, a harness
+  scenario for the transport); device-unverified.*
+- **Winamp skins** (Settings ▸ Display ▸ Style ▸ Winamp). Copy a classic Winamp skin (`.wsz`) to the
+  top of the player's drive and Now Playing draws with it: the skin's main window with the time in
+  its digits and the song in its font, the seek bar and the transport buttons from its own sheets,
+  scaled up to Cinder's touch targets. The first `.wsz` by name is used. Without one, the style is
+  Terminal with a line saying how to add one. No skin ships with Cinder. *Host-tested (zip and BMP
+  readers, layout with a stand-in skin); not yet tried with a real skin or on the device.*
+- **Two Now Playing styles: Cassette and Clock** (Settings ▸ Display ▸ Style). Cassette draws the
+  song as a tape in a deck: the title and cover on its label, reels that wind from left to right as
+  the song plays, and piano keys for the transport. Clock puts a large clock where the cover was,
+  and shows it when nothing is playing too. Both keep every control, page and tap target the other
+  styles have. *Host-tested (the style contract and every state); device-unverified.*
 - **Search finds artists, albums and audiobooks**, listed in that order above the songs. An artist
   or album row opens its page; an audiobook plays from where you stopped.
 - **Hold a song to play it next** (opt-in): `hold_play_next` in `cinder_advanced.conf`. A hold on
@@ -38,8 +83,22 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   (the `preload` component) now adds both, after the six-band EQ. Walkman One's chain is left as it
   is. *Host- and qemu-tested; device-unverified.*
 
+### Changed
+
+- **The installer walks you through it.** Install now asks where to start (Cinder; Cinder with the
+  sound options; everything), then shows the options a group at a time (Languages, Library, Radio,
+  Sound, Bluetooth, Device), then a review that says, for every option you chose, what it changes
+  on the player and how to undo it. Update opens on that review with what is installed now; Back
+  walks the groups. The console installer asks the same first question and shows the same
+  groups and review. *Window pages checked from their screenshots and console run dry; a real
+  install through the new pages has not been run.*
+
 ### Fixed
 
+- **FM over Bluetooth (BT OUT) read the radio as 32-bit audio.** The radio's capture is 16-bit,
+  and the bridge it shares with USB-DAC → LDAC converted every block as 32-bit, which would have
+  sent half the samples at the wrong rate. It now converts each source as what it is. FM over
+  Bluetooth has still never been run with headphones connected. *Device-unverified.*
 - **Sony's EQ after Boot to stock** ([#35](https://github.com/superwilso/Cinder/issues/35)). The
   hand-back set Sony's EQ selector, but Sony keeps settings in a cache that only reaches storage on
   a flush, a suspend or a shutdown, and Cinder's restart skips all three. Stock came up with

@@ -103,7 +103,7 @@ done
 # glibc itself — the service must not have to find a library it did not already load. The bt-aac
 # pair (libcinder_aac.so and the encoder it loads) go into the Bluetooth service on the same terms;
 # they are checked when present, since a dist/ from before 0.3.19 has none.
-for b in libcinder_mono.so libcinder_aac.so libfdk-aac-enc.so; do
+for b in libcinder_mono.so libcinder_aac.so libfdk-aac-enc.so libcinder_atrac.so libcinder_fmrec.so; do
 f="$DIR/$b"
 if [ ! -f "$f" ]; then
     if [ "$b" = libcinder_mono.so ]; then bad "$b" "missing"; fi

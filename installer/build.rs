@@ -105,6 +105,20 @@ const FILES: &[(&str, &str, &str, bool)] = &[
         "bt-aac",
         false,
     ),
+    // The `atrac` component: ATRAC on any region (cinder-home/src/cinder-atrac.c).
+    (
+        "dist/{ch}/libcinder_atrac.so",
+        "libcinder_atrac.so",
+        "atrac",
+        false,
+    ),
+    // The `fmrec` component: FM recording on the jack (cinder-home/src/cinder-fmrec.c).
+    (
+        "dist/{ch}/libcinder_fmrec.so",
+        "libcinder_fmrec.so",
+        "fmrec",
+        false,
+    ),
     // Every advanced switch, commented out: the user renames it to cinder_advanced.conf to use one.
     // Read from deploy/, not dist/: it is text that changes with the source, not a build output.
     (

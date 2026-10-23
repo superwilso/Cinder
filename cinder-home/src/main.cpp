@@ -58,6 +58,7 @@
 #include "bt_switch.h" // radio-vs-switch reconcile (host-tested)
 #include "db_sig.h"   // has the library database moved? (host-tested)
 #include "jack_edge.h"
+#include "fmrec.h"    // FM recording: the WAV writer both radio readers share (host-tested)
 #include "zappin_policy.h"
 #include "batt_slew.h" // how far the voltage-derived gauge may move per reading (host-tested)
 #include "soundscape.h" // procedural soundscapes (host-tested by tools/soundscape_selftest.cpp)
@@ -2451,6 +2452,22 @@ static bool clearaudio_featured() {
 
 void apply_sound_fn() {
     cinder_set_clear_bass_available(clear_bass_in_chain());
+    // The Volume curve screen: is the helper here, and is the owner's curve the one the launcher
+    // applies? Asked until /contents answers (it is unreadable for the first ~10 s of a boot), so
+    // an Update that chose another curve turns the screen's switch off instead of leaving it lying.
+    static bool vc_told = false;
+    if (!vc_told) {
+        const bool helper = ::access("/system/vendor/unknown321/bin/cinder-voltable", X_OK) == 0;
+        if (FILE* f = std::fopen("/contents/cinder_voltable.conf", "r")) {
+            char w[16] = {0};
+            if (!std::fgets(w, sizeof w, f)) w[0] = 0;
+            std::fclose(f);
+            cinder_set_vol_curve_available(!helper ? 0 : std::strncmp(w, "curve,", 6) == 0 ? 2 : 3);
+            vc_told = true;
+        } else {
+            cinder_set_vol_curve_available(helper ? 1 : 0);
+        }
+    }
     cinder_set_w1_chain(g_w1_chain);
     if (!clearaudio_featured()) cinder_set_clearaudio_supported(0);
     // Slot numbers are local to this function and only have to be unique; see fx_dirty's note for
@@ -7761,7 +7778,16 @@ enum ldac_end {
 
 // The pump. 512 frames × 8 bytes = 4 KB a go, which is ~11.6 ms of audio — small enough to keep
 // latency sane, large enough that the syscall rate stays negligible on one ARMv7 core.
-static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, unsigned rate, unsigned long long* frames_out) {
+// FM recording over Bluetooth (fm_record_fn): the radio bridge feeds every block it reads here
+// while the tap is set. Only fmbt_thread sets it; the USB-DAC bridge shares ldac_pump and never does.
+static struct fmrec g_fmrec_bt;
+static volatile int g_fmrec_bt_tap = 0;
+
+// `s16_in`: the capture is S16_LE (FM's hw:0,1) rather than the UAC gadget's S32_LE. Until 10-23
+// FM went through the S32 conversion too, which reads two of its frames as one: half the samples,
+// at the wrong rate. It had never been run with a headphone connected (STATUS.md, FM).
+static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, unsigned rate, unsigned long long* frames_out,
+                          bool s16_in) {
     static unsigned char buf[512 * 8];
     unsigned long long frames = 0;
     int err_streak   = 0;      // consecutive recoverable errors in this stall
@@ -7872,6 +7898,8 @@ static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, unsigned rate, unsigned long l
             std::snprintf(m, sizeof m, "ldac: FIRST CAPTURE READ ok — %ld frames from the host", got);
             clog_(m);
         }
+        // FM recording over Bluetooth: the radio's own frames, as read (fmbt_thread opens S16_LE).
+        if (g_fmrec_bt_tap) fmrec_feed(&g_fmrec_bt, buf, (unsigned long)got, rate, 2, 2);
 
         // S32_LE in, S16_LE out. The capture side is 32-bit because that is what the UAC gadget
         // presents; the transmitter's reader is 16-bit, which is not a guess — the peer drained the
@@ -7892,7 +7920,18 @@ static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, unsigned rate, unsigned long l
         // handshake to chans=1 — that is what "both ears get everything" means, it needs no
         // renegotiation mid-session, and the handshake's channel field is read once at connect.
         static short out16[512 * 2];
-        {
+        if (s16_in) {
+            const short* s16 = (const short*)buf;
+            for (long i = 0; i < got; i++) {
+                if (mono) {
+                    const short m = (short)((s16[i * 2] + s16[i * 2 + 1]) / 2);
+                    out16[i * 2] = out16[i * 2 + 1] = m;
+                } else {
+                    out16[i * 2] = s16[i * 2];
+                    out16[i * 2 + 1] = s16[i * 2 + 1];
+                }
+            }
+        } else {
             const int* s32 = (const int*)buf;
             if (mono) {
                 for (long i = 0; i < got; i++) {
@@ -8109,7 +8148,7 @@ static void* ldac_thread(void*) {
                 std::snprintf(m, sizeof m, "ldac: streaming %u Hz %u ch", rate, chans);
                 clog_(m);
                 unsigned long long frames = 0;
-                ldac_end why = ldac_pump(fd, pcm, rate, &frames);
+                ldac_end why = ldac_pump(fd, pcm, rate, &frames, false);
                 g_alsa.close(pcm);
                 total += frames;
                 std::snprintf(m, sizeof m, "ldac: session ended after %llu frames (%llu s at %u Hz)",
@@ -8228,7 +8267,10 @@ static void* fmbt_thread(void*) {
         return nullptr;
     }
     unsigned long long frames = 0;
-    ldac_end why = ldac_pump(fd, pcm, RATE, &frames);
+    g_fmrec_bt_tap = 1;
+    ldac_end why = ldac_pump(fd, pcm, RATE, &frames, true);
+    g_fmrec_bt_tap = 0;
+    fmrec_stop(&g_fmrec_bt, "the radio stopped");
     char m[192];
     std::snprintf(m, sizeof m, "fm-bt: pump ended (%d) after %llu frames", (int)why, frames);
     clog_(m);
@@ -9990,6 +10032,7 @@ static void zappin_clear_stale_handoff_for_action(int act) {
 // audio — about 0.14 s per 100 kHz step for a seek, 0.45 s for a scan. Both paint every step so
 // the dial visibly sweeps rather than freezing.
 static bool g_fm_on = false;
+static void fmrec_stop_now(const char* toast);   // FM recording, below
 
 // Called from inside the shim for every frequency a seek passes through.
 static void fm_on_step(int khz) {
@@ -10038,6 +10081,7 @@ static void fm_power_fn() {
         cinder_fm_report_playing(g_fm_on ? 1 : 0);
         if (g_fm_on) cinder_fm_report_khz(cinder_tuner_get_khz());
     } else {
+        fmrec_stop_now("Saved to FM Recordings");
         cinder_tuner_stop();
         g_fm_on = false;
         cinder_fm_report_playing(0);
@@ -10053,11 +10097,98 @@ static void fm_power_fn() {
 // screen's switch back in step.
 static void fm_off_now() {
     if (!g_fm_on) return;
+    fmrec_stop_now("Saved to FM Recordings");
     cinder_tuner_stop();
     g_fm_on = false;
     cinder_fm_report_playing(0);
     cinder_audio_init("cinder");
     cinder_resume_rearm();
+}
+
+// FM RECORDING (the `fmrec` component). Whichever process reads the radio writes the WAV: Sony's
+// AudioInPlayerService on the jack, through the preloaded src/cinder-fmrec.c, or the Bluetooth
+// bridge below. This side only names the file in FMREC_CTL, deletes it to stop, and reads
+// FMREC_STATE for what the reader did. See src/fmrec.h.
+//
+// One recording per reader: BT OUT moves the radio from one reader to the other, so switching it
+// ends the recording rather than leaving two half-files.
+static const char* const FMREC_LIB = "/system/vendor/unknown321/lib/preload/AudioInPlayerService.so";
+static const char* const FMREC_DIR = "/contents/MUSIC/FM Recordings";
+static bool g_fmrec_on = false;
+static long long g_fmrec_t0 = 0;
+
+static long long fmrec_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static bool fmrec_installed() {
+    struct stat st;
+    return ::stat(FMREC_LIB, &st) == 0 && st.st_size > 0;
+}
+
+static void fmrec_stop_now(const char* toast) {
+    if (!g_fmrec_on) return;
+    ::unlink(FMREC_CTL);
+    g_fmrec_on = false;
+    cinder_fm_report_rec(-1);
+    if (toast) cinder_toast(toast);
+    clog_("fm-rec: stopped");
+}
+
+static void fm_record_fn() {
+    if (!cinder_fm_record()) { fmrec_stop_now("Saved to FM Recordings"); return; }
+    if (g_fmrec_on) return;
+    if (!g_fm_on) { cinder_toast("Turn the radio on first"); return; }
+    ::mkdir("/contents/MUSIC", 0777);
+    ::mkdir(FMREC_DIR, 0777);
+    time_t now = time(nullptr);
+    struct tm lt;
+    localtime_r(&now, &lt);
+    char path[200];
+    std::snprintf(path, sizeof path, "%s/FM %.1f MHz %04d-%02d-%02d %02d.%02d.%02d.wav", FMREC_DIR,
+                  cinder_fm_khz() / 1000.0, lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
+                  lt.tm_hour, lt.tm_min, lt.tm_sec);
+    ::unlink(FMREC_STATE);
+    // Written whole under a temporary name and renamed, so a reader never sees half a path.
+    char tmp[64];
+    std::snprintf(tmp, sizeof tmp, "%s.tmp", FMREC_CTL);
+    FILE* f = std::fopen(tmp, "w");
+    if (!f) { cinder_toast("Couldn't start recording"); return; }
+    std::fprintf(f, "%s\n", path);
+    std::fclose(f);
+    ::chmod(tmp, 0644);
+    if (::rename(tmp, FMREC_CTL) != 0) { ::unlink(tmp); cinder_toast("Couldn't start recording"); return; }
+    g_fmrec_on = true;
+    g_fmrec_t0 = fmrec_ms();
+    cinder_fm_report_rec(0);
+    char m[260];
+    std::snprintf(m, sizeof m, "fm-rec: recording to %s", path);
+    clog_(m);
+}
+
+// Once a second while recording: the elapsed time for the button, and whether the reader is still
+// writing. A reader that never starts (nothing reading the radio, a full drive) is noticed within
+// three seconds and said in words.
+static void fm_rec_tick() {
+    // REC on the FM screen only when the recorder is installed. Asked once, on the first tick.
+    static bool told = false;
+    if (!told) { told = true; cinder_fm_set_rec_available(fmrec_installed() ? 1 : 0); }
+    if (!g_fmrec_on) return;
+    const int secs = (int)((fmrec_ms() - g_fmrec_t0) / 1000);
+    cinder_fm_report_rec(secs);
+    if (secs < 3) return;
+    char st[128] = {0};
+    FILE* f = std::fopen(FMREC_STATE, "r");
+    if (f) { if (!std::fgets(st, sizeof st, f)) st[0] = 0; std::fclose(f); }
+    st[std::strcspn(st, "\r\n")] = 0;
+    if (st[0] == '1') return;
+    char m[160];
+    std::snprintf(m, sizeof m, "fm-rec: the reader %s", st[0] ? st + 2 : "never started");
+    clog_(m);
+    fmrec_stop_now(st[0] == '0' && std::strstr(st, "full") ? "Recording stopped: the drive is full"
+                                                          : "Recording stopped");
 }
 
 // The signal meter. Three register reads through the shim, so it is cheap enough to ride the 1 Hz
@@ -10407,6 +10538,7 @@ static void fm_scan_fn() {
 // output on stops the local audio path; switching it off brings it back.
 static void fm_btout_fn() {
     const bool want = cinder_fm_bt_out() != 0;
+    fmrec_stop_now("Recording saved: changing the output ends it");
     if (!g_fm_on) { cinder_fm_report_bt_out(0); clog_("fm-bt: radio is off — nothing to send"); return; }
     if (want) {
         cinder_tuner_audio_stop();      // release hw:0,1 from AudioInPlayerService
@@ -10906,6 +11038,90 @@ static void ambient_tick() {
     }
 }
 
+// Sound > Advanced > Volume curve (player/cinder-ui/src/vol_curve.rs). The owner's curve is built
+// by the setuid cinder-voltable from the player's own table (src/vol_curve.h) and written into the
+// codec now; /contents/cinder_voltable.conf then says `curve,stock,P0,...` so the launcher applies
+// it at every start. The keyword it replaced (stock, wm1a, w1, eu or region) is kept in
+// cinder_voltable.prev and put back when the curve is switched off. GUARD_FATAL, like apply_dac_eq:
+// system() owns a child.
+static const char kVolConf[] = "/contents/cinder_voltable.conf";
+static const char kVolPrev[] = "/contents/cinder_voltable.prev";
+static const char kVolHelper[] = "/system/vendor/unknown321/bin/cinder-voltable";
+
+static void vol_read_word(const char* path, char* out, size_t n) {
+    out[0] = 0;
+    FILE* f = std::fopen(path, "r");
+    if (!f) return;
+    if (!std::fgets(out, (int)n, f)) out[0] = 0;
+    std::fclose(f);
+    out[std::strcspn(out, " \t\r\n")] = 0;
+}
+
+static bool vol_write_word(const char* path, const char* word) {
+    char tmp[96];
+    std::snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE* f = std::fopen(tmp, "w");
+    if (!f) return false;
+    const bool ok = std::fprintf(f, "%s\n", word) > 0 && std::fclose(f) == 0;
+    if (!ok) { ::unlink(tmp); return false; }
+    return ::rename(tmp, path) == 0;
+}
+
+static int vol_helper(const char* args) {
+    char cmd[200];
+    std::snprintf(cmd, sizeof cmd, "%s %s >/dev/null 2>&1", kVolHelper, args);
+    const int rc = std::system(cmd);
+    return rc == -1 ? -1 : ((rc >> 8) & 0xff);
+}
+
+void apply_vol_curve() {
+    if (g_msc_active) {
+        clog_("volume curve: the drive is with the PC — not applied; change it again afterwards");
+        return;
+    }
+    unsigned char p[7];
+    char conf[96], m[200];
+    vol_read_word(kVolConf, conf, sizeof conf);
+    if (cinder_get_vol_curve(p) == 7) {
+        char args[64], word[80];
+        std::snprintf(args, sizeof args, "curve stock %d %d %d %d %d %d %d",
+                      p[0], p[1], p[2], p[3], p[4], p[5], p[6]);
+        std::snprintf(word, sizeof word, "curve,stock,%d,%d,%d,%d,%d,%d,%d",
+                      p[0], p[1], p[2], p[3], p[4], p[5], p[6]);
+        const int code = vol_helper(args);
+        bool saved = false;
+        if (code == 0) {
+            // Keep what the installer chose, once: a second curve must not overwrite it.
+            if (std::strncmp(conf, "curve,", 6) != 0)
+                vol_write_word(kVolPrev, conf[0] ? conf : "stock");
+            saved = vol_write_word(kVolConf, word);
+        }
+        std::snprintf(m, sizeof m, "volume curve: %s -> rc=%d%s", args, code,
+                      code == 0 ? (saved ? " (applied, saved for every start)" : " (applied; the conf did not save)")
+                                : code == 4 ? " (no Sony table found)" : " (not applied)");
+        clog_(m);
+        return;
+    }
+    // Off: the installer's choice comes back.
+    if (std::strncmp(conf, "curve,", 6) != 0) return;   // nothing of ours to undo
+    char prev[32];
+    vol_read_word(kVolPrev, prev, sizeof prev);
+    static const char* const ok[] = { "stock", "wm1a", "w1", "eu", "region" };
+    bool known = false;
+    for (const char* k : ok) known |= std::strcmp(prev, k) == 0;
+    if (!known) std::snprintf(prev, sizeof prev, "stock");
+    vol_write_word(kVolConf, prev);
+    ::unlink(kVolPrev);
+    if (std::strcmp(prev, "region") == 0) {
+        // The boot script's own table is the region one, and nothing can reload it now.
+        clog_("volume curve: off — the region curve comes back at the next start");
+        return;
+    }
+    const int code = vol_helper(prev);
+    std::snprintf(m, sizeof m, "volume curve: off -> %s rc=%d", prev, code);
+    clog_(m);
+}
+
 void carry_out(int act) {
     zappin_clear_stale_handoff_for_action(act);
     if (g_zappin.owns_sequence && g_zappin.active
@@ -11047,6 +11263,14 @@ void carry_out(int act) {
                     clog_("transport: next -> user queue");
                     return;
                 }
+                // A file with a CUE sheet: the next CUE track is a seek inside it.
+                const int cue = cinder_cue_skip(1);
+                if (cue >= 0) {
+                    cinder_notify_seek_ms(cue);
+                    cinder_audio_seek_ms(cue);
+                    clog_("transport: next -> next CUE track");
+                    return;
+                }
                 cinder_audio_next_track();
             });
             break;
@@ -11062,6 +11286,14 @@ void carry_out(int act) {
             // is the proven path (it pauses, seeks and resumes — the engine refuses to seek while
             // streaming), and notify_seek re-anchors the bar so it doesn't drift back for a second.
             run_guarded("carry_out: prev", 8, []() {
+                // A file with a CUE sheet: the CUE track's start, or the one before, by seeking.
+                const int cue = cinder_cue_skip(-1);
+                if (cue >= 0) {
+                    cinder_notify_seek_ms(cue);
+                    cinder_audio_seek_ms(cue);
+                    clog_("transport: prev -> CUE track");
+                    return;
+                }
                 if (cinder_prev_means_restart()) {
                     cinder_notify_seek_ms(0);
                     cinder_audio_seek_ms(0);
@@ -11190,6 +11422,9 @@ void carry_out(int act) {
             break;
         case CINDER_ACT_DAC_EQ_CHANGED:
             run_watchdog_only("carry_out: DAC EQ", 6, apply_dac_eq);
+            break;
+        case CINDER_ACT_VOL_CURVE_CHANGED:
+            run_watchdog_only("carry_out: volume curve", 8, apply_vol_curve);
             break;
         case CINDER_ACT_CLOCK_SET:
             run_guarded("carry_out: set clock", 8, apply_clock);
@@ -11430,6 +11665,9 @@ void carry_out(int act) {
             break;
         case CINDER_ACT_FM_BT_OUT:
             run_guarded("carry_out: FM Bluetooth out", 20, fm_btout_fn);
+            break;
+        case CINDER_ACT_FM_RECORD:
+            run_guarded("carry_out: FM record", 4, fm_record_fn);
             break;
         case CINDER_ACT_FM_SCAN:
             // 150 s is for the AUDIO fallback (~0.45 s per step across 206 steps), which still
@@ -13914,10 +14152,15 @@ void* render_driver(void*) {
             ambient_tick();             // a compare unless the play state or a setting moved
             hci_log_tick();             // one stat() while the Bluetooth debug log runs; else nothing
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
+            // Track info > ALBUM SOUND: a new album may have brought its preset (or put the
+            // sound from before back). The FFI raised profile_apply during the poll; applied here,
+            // outside its guard, since guards do not nest. One call that returns 0 otherwise.
+            apply_profile_if_switched("album sound");
             run_guarded("pump: headphone unplug", 4, jack_watch_tick);
             // FM signal meter. Register reads only — no Sony service call, no ALSA — so it is far
             // cheaper than the poll above it and safe on the same tick.
             run_guarded("pump: FM signal", 4, fm_signal_fn);
+            fm_rec_tick();
             // Scrobble writes /contents — skip while it's handed to the PC (stale mountpoint).
             if (!g_msc_active) cinder_scrobble_tick(g_playing ? 1 : 0);
             // g_playing changes on its own (a track ends, the sleep timer pauses), and the screen

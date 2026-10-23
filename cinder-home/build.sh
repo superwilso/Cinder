@@ -318,6 +318,23 @@ echo "[6j] build cinder-hagowrap (hagodaemon wrapper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -Wextra -Werror -o "$HERE/cinder-hagowrap" "$HERE/src/cinder-hagowrap.c"
 echo "built: $HERE/cinder-hagowrap ($(stat -c %s "$HERE/cinder-hagowrap") bytes)"
 
+# libcinder_atrac.so: ATRAC on any region, the `atrac` component (src/cinder-atrac.c). Loaded into
+# Sony's MediaStoreService/PlayerService process by cinder-hagowrap. One function, no libc.
+echo "[6l] build libcinder_atrac.so (ATRAC switch for PlayerService)…"
+$CC -O2 -Wall -Werror -shared -fPIC -nostdlib -Wl,-soname,libcinder_atrac.so \
+    -o "$HERE/libcinder_atrac.so" "$HERE/src/cinder-atrac.c"
+echo "built: $HERE/libcinder_atrac.so ($(stat -c %s "$HERE/libcinder_atrac.so") bytes)"
+
+# libcinder_fmrec.so: FM recording on the jack, the `fmrec` component (src/cinder-fmrec.c). Loaded
+# into Sony's AudioInPlayerService by cinder-hagowrap; same terms as the mono shim (device glibc,
+# nothing else). The WAV writer it shares with cinder-home is tested by tools/test_fmrec.sh.
+echo "[6m] build libcinder_fmrec.so (FM recorder for AudioInPlayerService, glibc 2.23)…"
+$CC -O2 -Wall -Werror -shared -fPIC "${T32[@]}" "${SYS223[@]}" -I"$HERE/src" -Wl,-soname,libcinder_fmrec.so \
+    -o "$HERE/libcinder_fmrec.so" "$HERE/src/cinder-fmrec.c" \
+    -nostdlib -L"$RAMLIB" -l:libc.so.6 -l:libdl.so.2 "$($CC -print-libgcc-file-name)"
+gate_glibc "$HERE/libcinder_fmrec.so"
+echo "built: $HERE/libcinder_fmrec.so ($(stat -c %s "$HERE/libcinder_fmrec.so") bytes)"
+
 # cinder-aac/: AAC Bluetooth transmit and SBC XQ, the `bt-aac` component (deploy/components.conf).
 # Loaded into the Bluetooth service by cinder-hagowrap, so it needs the `preload` component on the
 # player. Its own build scripts, because the encoder (fdk-aac, fetched on first build) is C++.
@@ -341,6 +358,8 @@ cp -f "$HERE/cinder-power" "$DIST/cinder-power"
 cp -f "$HERE/cinder-clock" "$DIST/cinder-clock"
 cp -f "$HERE/cinder-msc" "$DIST/cinder-msc"
 cp -f "$HERE/libcinder_mono.so" "$DIST/libcinder_mono.so"
+cp -f "$HERE/libcinder_atrac.so" "$DIST/libcinder_atrac.so"
+cp -f "$HERE/libcinder_fmrec.so" "$DIST/libcinder_fmrec.so"
 cp -f "$HERE/cinder-hagowrap" "$DIST/cinder-hagowrap"
 cp -f "$HERE/deploy/cinder-guard.sh" "$DIST/cinder-guard.sh"
 cp -f "$HERE/deploy/cinder-preload.sh" "$DIST/cinder-preload.sh"

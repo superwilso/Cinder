@@ -37,6 +37,7 @@ fn scale_lock(idx: usize) -> MutexGuard<'static, ()> {
 /// wide glyphs that a proportional font makes longest.
 fn np_hostile() -> NowPlaying<'static> {
     NowPlaying {
+        skin: None,
         title: "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364 — III. Presto",
         artist: "Королевский филармонический оркестр / 東京都交響楽団 feat. A Very Long Guest Artist Name",
         codec: "FLAC · 24bit / 192.0 kHz · Hi-Res Audio Wireless",

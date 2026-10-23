@@ -249,6 +249,7 @@ fn main() {
 
     // Sample now-playing (on the device this is pushed from PlayerService each second).
     let mut np = NowPlaying {
+        skin: None,
         title: if std::env::args().any(|a| a == "--long-title") {
             "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364 — III. Presto"
         } else {

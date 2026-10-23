@@ -993,6 +993,16 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 
 ### ◐ Partial (UI works; backend/hardware leg pending — device-gated)
 
+- **Standalone parity, 2026-10-23 — code done, device-gated** (`docs/DEVICE_CHECKLIST.md` §39):
+  * **ATRAC on any region** (`atrac`): verified by hand-install 10-22; installer path unrun.
+  * **FM recording** (`fmrec`): the jack recorder verified by hand-install 10-22 (a 7.9 s WAV);
+    the RECORD button, BT OUT recording and the installer path unrun. FM over BT OUT had a 16/32-bit
+    conversion bug, fixed 10-23 and also unrun.
+  * **Album sound** (Track information ▸ ALBUM SOUND), **Volume curve** (Sound ▸ Advanced; the
+    helper's `curve` verified writing a byte-identical table 10-23), **CUE sheets** (playback:
+    titles and ◁/▷ inside the file, and the album page lists the CUE tracks), **Cassette, Clock and Winamp
+    (`.wsz` skins)** Now Playing styles, and the **guided installer** (window pages checked from screenshots).
+
 - **Library views — built and host-tested, not yet on the panel.** *(2026-09-29)* The Library
   header's view button switches each tab between List, **Grid** (Albums, Artists, Playlists: 96 px
   covers four across) and **Compact** (Songs, Albums, Artists: one text line per item), saved per

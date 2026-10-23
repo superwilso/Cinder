@@ -70,7 +70,7 @@ bf45aea0c2a4d954 sound_balance_day
 423b1aa7e421b6b8 sound_mono_day
 3be0809c63b873f7 sound_mono_live_day
 5dde39042dcd1aca settings_day
-bc7afd673cacacc7 display_day
+75c4df65588a2999 display_day
 aa5a1c551b1762a9 genre_picker_day
 52c1fb364b3921aa library_songs_filtered_day
 1502b690f7f1b536 folders_root_day
@@ -100,6 +100,7 @@ bc1751fff30bd4bf receiver_waiting_day
 dd39e7a6acb095d0 receiver_playing_day
 e0325520533d2609 receiver_code_day
 4efbbb8b5f90b730 fm_day
+cf7035f0f78e977a fm-rec_day
 eba524fbf8c077d0 usbdac_day
 5213b5f6dfd76a6e library_albums_grid_day
 07ef7ad3744afe9a library_albums_grid_az_day
@@ -176,7 +177,7 @@ b697bb7aaa800e55 sound_balance_night
 2fdff1d682f66077 sound_mono_night
 3d5e0d360b6f2a41 sound_mono_live_night
 6cb280b098e77739 settings_night
-c4823d84caf6c604 display_night
+228dc0262fa2a044 display_night
 6a18465a7a81b920 genre_picker_night
 0eb7c4ffa2f6c59c library_songs_filtered_night
 0fe1ff330af32285 folders_root_night
@@ -206,6 +207,7 @@ a5004a39bec57b9f pairing_connecting_night
 1be2dcc079c7d2b7 receiver_playing_night
 e9910b5d86ac47be receiver_code_night
 e7d3abd77e03c619 fm_night
+77954bf91155bc1b fm-rec_night
 8975d617bd1dc6bb usbdac_night
 ace966bd73d61c0b library_albums_grid_night
 16e87ac5ebd5c437 library_albums_grid_az_night
@@ -263,17 +265,17 @@ cdd1bd6747c6fb0e vizset_peaks_fixed
 b9a97b23b9198a50 viz_below_line
 e22dec69c4d7c5ff viz_below_pulse
 2c0314c25f0e38bc accent_amber_now_playing
-03e96804f2259826 accent_amber_display
+99b06d52a9cdfb3c accent_amber_display
 4b1a6e1db4f45174 accent_crimson_now_playing
-08d7e5201cb36573 accent_crimson_display
+b350dfe5050ce58f accent_crimson_display
 2e87fdcce69b627c accent_violet_now_playing
-c295691b169d5206 accent_violet_display
+fa365fda71e7dbb2 accent_violet_display
 b3d715d20e39116c accent_azure_now_playing
-04a7b28d4744a463 accent_azure_display
+68979f3575619e83 accent_azure_display
 201618fbc75eaf26 accent_mint_now_playing
-5f7afe37fbd8d68d accent_mint_display
+23761b9381f9cf61 accent_mint_display
 6e47e9c74d6ea2e2 accent_bone_now_playing
-91465b9c5d798cea accent_bone_display
+49c5d24d3b7de0c8 accent_bone_display
 950663098198cf80 nav_0_now_playing
 e7c15d96055cd6a3 nav_1_menu
 e7c15d96055cd6a3 nav_2_menu_library
@@ -301,7 +303,7 @@ b6fce007a75af2d0 swipe_queue_5_132px_armed
 496c7ad697bc9ac2 swipe_play_next_5_132px_armed
 5d4c67bdbe86080a uiscale_80_library
 f19941844071a45d uiscale_80_settings
-35e00b04912012a1 uiscale_80_display
+d107e3b2400153fc uiscale_80_display
 7707dee9275f651d uiscale_80_bluetooth
 eb638ec32a7cab87 uiscale_80_sound
 6ad8538b1e2a31f5 uiscale_80_nowplaying
@@ -314,7 +316,7 @@ fc6d8ca2cdd20ec4 uiscale_80_receiver_ldac
 42ed5d8f14a9d2b3 uiscale_80_settings_bottom
 574aed9a3729307a uiscale_100_library
 864865797e747cfc uiscale_100_settings
-1e0a45a86de63f76 uiscale_100_display
+41ed6bbc3b67fe8c uiscale_100_display
 9f4cd0a4ce6301b1 uiscale_100_bluetooth
 6ccc001cc2eadec9 uiscale_100_sound
 950663098198cf80 uiscale_100_nowplaying
@@ -327,7 +329,7 @@ b523c3e6a0090d55 uiscale_100_receiver_sbc
 05c368e29ec4fc0d uiscale_100_settings_bottom
 069f6eb6479e5bed uiscale_120_library
 6b4a96be7e7cc5ef uiscale_120_settings
-90665ab4f6f43f60 uiscale_120_display
+38f1f8babc046eed uiscale_120_display
 bf8d8c3e60eb8557 uiscale_120_bluetooth
 6c9bf374fed1ecdd uiscale_120_sound
 14a04bb6d1b88759 uiscale_120_nowplaying
@@ -340,7 +342,7 @@ a4b2574ff192c824 uiscale_120_receiver_aac
 3509302179efdfa8 uiscale_120_settings_bottom
 f12fa65a5659e7aa uiscale_140_library
 36eac6d517a4079e uiscale_140_settings
-ab67a48467f5286c uiscale_140_display
+b3c97b8b1f08dd7a uiscale_140_display
 b4ad5ed704a36d1c uiscale_140_bluetooth
 93ef1e3929581b84 uiscale_140_sound
 63c1326ef445007c uiscale_140_nowplaying
@@ -373,7 +375,7 @@ d6f4d2f16a0e327b help_top
 c224339ad58fdbeb advanced
 ff0248f5f53880ea dac_eq
 cca52766f39653a6 dac_eq_source_direct
-da49a44390814fe1 advanced_end
+14e367b53f604767 advanced_end
 aa3bc5b6e0801b27 presets_empty
 dea2c73fd021ae83 presets_two
 624998e498f8f648 sound_end_presets
@@ -403,3 +405,13 @@ d6e548c29e37ae2f zappin_complete_en
 1431907847e9dfd5 zappin_140_sabi_en
 73e03506be91768e zappin_140_unknown_zh
 f2bdfaececc2eed1 zappin_active_zh_night
+acd25f9c4a857a95 vol_curve
+d8f51a4e2cab1d64 vol_curve_missing
+480a0e65fbf96dfc track_info_album_sound
+05c5a7c89ac374ed album_cue
+ddfdc33279b976ca now_playing_winamp_noskin
+aaeb933326ef97dc now_playing_winamp_standin
+6d009d6edc84c5b4 now_playing_cassette
+528218b70e45a68f now_playing_cassette_idle
+3d2a7f4bcee3214c now_playing_clock
+2bc9f4c7cf6df5b0 now_playing_clock_idle

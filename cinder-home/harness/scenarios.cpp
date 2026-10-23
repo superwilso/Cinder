@@ -1316,6 +1316,32 @@ static void s_rapid_skip(void) {
           "housekeeping kept running through the burst");
 }
 
+// ── ▷ and ◁ inside a file with a CUE sheet ─────────────────────────────────────────────────────
+// One file holding a whole album: the FFI answers cinder_cue_skip with where the next (or earlier)
+// CUE track starts, and the shell SEEKS there instead of asking PlayerService for another file.
+// Without a sheet it answers -1 and the ordinary skip runs; rapid-skip above is that case.
+static void s_cue_skip(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    static const long long acts[] = {2, 3};                 // CINDER_ACT_NEXT, then _PREV
+    cinder_harness_script_seq("cinder_input", acts, 2);
+    static const long long cue[] = {125000, 60000};
+    cinder_harness_script_seq("cinder_cue_skip", cue, 2);
+    cinder_harness_key_at(30000, 106, 1);
+    cinder_harness_key_at(30060, 106, 0);
+    cinder_harness_key_at(34000, 105, 1);
+    cinder_harness_key_at(34060, 105, 0);
+    cinder_harness_set_budget_ms(40000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_audio_next_track"), 0, "▷ in a CUE file asks for no other file");
+    check_eq(cinder_harness_count("cinder_audio_prev_track"), 0, "…and neither does ◁");
+    const int n = cinder_harness_count("cinder_audio_seek_ms");
+    check(n >= 2 && cinder_harness_arg("cinder_audio_seek_ms", n - 2) == 125000
+                 && cinder_harness_arg("cinder_audio_seek_ms", n - 1) == 60000,
+          "both seek to the CUE track the FFI named");
+}
+
 // The same burst from the GLASS rather than the side button, which is the case that wedges. A
 // finger on the panel streams position frames for as long as it is down, and those frames arrive
 // while the app is blocked inside the previous skip — so the drain loop's "read came back short"
@@ -2841,6 +2867,7 @@ static const Scenario kScenarios[] = {
     {"library-changed",   s_library_changed,         "a database that changes underneath us is noticed and reloaded"},
     {"rapid-skip",        s_rapid_skip,              "skipping faster than PlayerService answers must not wedge the UI"},
     {"rapid-skip-touch",  s_rapid_skip_touch,        "the same burst from the glass, where the panel keeps streaming"},
+    {"cue-skip",          s_cue_skip,                "▷/◁ inside a CUE file seek to its tracks instead of skipping"},
     {"contents-orphan",   s_contents_orphan,         "/contents unmounted by something that is not us is taken back"},
     {"contents-ours",     s_contents_orphan_not_ours,"…but a session we started is left alone"},
     {"repeat-all",        s_repeat_all,              "a queue that runs out loops Cinder's context, once"},

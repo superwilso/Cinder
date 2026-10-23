@@ -60,6 +60,8 @@ SRC_HAGOWRAP=/contents/cinder-hagowrap
 SRC_GUARD=/contents/cinder-guard.sh
 SRC_PRELOAD=/contents/cinder-preload.sh
 SRC_BTAAC=/contents/libcinder_aac.so
+SRC_ATRAC=/contents/libcinder_atrac.so
+SRC_FMREC=/contents/libcinder_fmrec.so
 SRC_FDK=/contents/libfdk-aac-enc.so
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
@@ -114,6 +116,8 @@ WANT_SCROBBLE="$(comp_bool CINDER_SCROBBLE 1)"
 WANT_MONO="$(comp_bool CINDER_MONO 1)"
 WANT_PRELOAD="$(comp_bool CINDER_PRELOAD 0)"
 WANT_BT_AAC="$(comp_bool CINDER_BT_AAC 0)"
+WANT_ATRAC="$(comp_bool CINDER_ATRAC 0)"
+WANT_FMREC="$(comp_bool CINDER_FMREC 0)"
 WANT_BT_SBC_XQ="$(comp_bool CINDER_BT_SBC_XQ 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
@@ -124,7 +128,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE"
+echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC"
 
 # ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
 # Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
@@ -762,6 +766,53 @@ if [ "$BTAAC_IN" = 0 ]; then
     "$BB" rm -f "$BTAAC_LIB" "$BTAAC_FDK" 2>/dev/null
 fi
 
+# 1g5) ATRAC on any region: the `atrac` component (src/cinder-atrac.c). Loaded by the wrapper from
+#      1g3 into the process that starts with MediaStoreService, which also runs PlayerService, the
+#      one caller of DmpFeature::IsFeaturedAtrac. Same rules as 1g4: only where the wrapper is in
+#      place, and taken off by every install that does not select it.
+ATRAC_LIB=$VENDOR/lib/preload/MediaStoreService.so
+ATRAC_IN=0
+if [ "$WANT_ATRAC" = 1 ]; then
+    if ! "$BB" grep -q cinder-hagowrap "$SONYBIN/hagodaemon" 2>/dev/null; then
+        echo "components: atrac needs the 'preload' component in place — not installed."
+    elif [ ! -s "$SRC_ATRAC" ]; then
+        echo "WARN: atrac selected but its library is not staged — nothing installed."
+    else
+        "$BB" mkdir -p "$VENDOR/lib/preload" 2>/dev/null
+        "$BB" chmod 755 "$VENDOR/lib/preload" 2>/dev/null
+        if btaac_put "$SRC_ATRAC" "$ATRAC_LIB"; then
+            ATRAC_IN=1
+            echo "atrac: installed (ATRAC plays from the next start)"
+        else
+            echo "WARN: atrac — the library did not copy whole; not installed."
+        fi
+    fi
+fi
+[ "$ATRAC_IN" = 0 ] && "$BB" rm -f "$ATRAC_LIB" 2>/dev/null
+
+# 1g6) FM recording on the jack: the `fmrec` component (src/cinder-fmrec.c). Loaded by the wrapper
+#      into the process that starts with AudioInPlayerService, which reads the radio from hw:0,1.
+#      cinder-home shows the RECORD button only while this file is in place. Same rules as 1g5.
+FMREC_LIB=$VENDOR/lib/preload/AudioInPlayerService.so
+FMREC_IN=0
+if [ "$WANT_FMREC" = 1 ]; then
+    if ! "$BB" grep -q cinder-hagowrap "$SONYBIN/hagodaemon" 2>/dev/null; then
+        echo "components: fmrec needs the 'preload' component in place — not installed."
+    elif [ ! -s "$SRC_FMREC" ]; then
+        echo "WARN: fmrec selected but its library is not staged — nothing installed."
+    else
+        "$BB" mkdir -p "$VENDOR/lib/preload" 2>/dev/null
+        "$BB" chmod 755 "$VENDOR/lib/preload" 2>/dev/null
+        if btaac_put "$SRC_FMREC" "$FMREC_LIB"; then
+            FMREC_IN=1
+            echo "fmrec: installed (RECORD appears on the FM screen from the next start)"
+        else
+            echo "WARN: fmrec — the library did not copy whole; not installed."
+        fi
+    fi
+fi
+[ "$FMREC_IN" = 0 ] && "$BB" rm -f "$FMREC_LIB" 2>/dev/null
+
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
 #    the .appcfg (otherwise the stock launch config is lost with no .real to restore).
 if [ ! -f "$APPCFG.real" ]; then
@@ -1180,6 +1231,17 @@ if [ -x "$VOLTABLE_BIN" ] && [ -f "$VOLTABLE_CONF" ]; then
                 vt_log "volume curve: $vt applied"
             else
                 vt_log "volume curve: cinder-voltable $vt FAILED — no copy of the $vt table found, the boot script's table stays"
+            fi
+            ;;
+        curve,*)
+            # Sound > Advanced > Volume curve: the owner's own curve, `curve,BASE,P0,...,P120`,
+            # written by cinder-home. The helper checks every number (a curve that goes down is
+            # refused), so a hand-edited line can do no more than fail here.
+            vt_args=$(echo "$vt" | tr ',' ' ')
+            if "$VOLTABLE_BIN" $vt_args >/dev/null 2>&1; then
+                vt_log "volume curve: custom applied ($vt_args)"
+            else
+                vt_log "volume curve: custom '$vt' FAILED — the boot script's table stays"
             fi
             ;;
         "") : ;;

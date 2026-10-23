@@ -80,7 +80,7 @@ cinder-home/dist/dev/
 cinder-home/*.o
 # Every linked output build.sh writes here; it copies them into dist/<channel>/, the committed copy.
 /cinder-home/cinder-*
-cinder-home/libcinder_mono.so
+cinder-home/libcinder_*.so
 
 # Installer build output — built from dist/, published by CI; never committed.
 cinder-home/dist/*/cinder-installer*

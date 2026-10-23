@@ -29,9 +29,15 @@ pub const ACTION_H: i32 = 56;
 /// never find — which is how the whole picker ended up shipped and unreachable.
 pub const BOTTOM: i32 = LIST_BOTTOM - ACTION_H;
 
-/// Is this point on the "Add to playlist" band? The band spans the full width, so only y decides.
+/// Is this point on the "Add to playlist" band? Full width, or its left half while the album
+/// control shares the band (`album_sound` is Some in [`render`]).
 pub fn hit_add_to_playlist(y: i32) -> bool {
     (BOTTOM..BOTTOM + ACTION_H).contains(&y)
+}
+
+/// Is this point on the album control, the band's right half? Only drawn once a preset is saved.
+pub fn hit_album_sound(x: i32, y: i32) -> bool {
+    hit_add_to_playlist(y) && x >= crate::canvas::W as i32 / 2
 }
 /// Label column x, value column x, and the right edge values wrap against.
 const LABEL_X: f32 = 22.0;
@@ -190,6 +196,8 @@ pub fn render(
     sbar_active: bool,
     // The playing song's rating, 0..=5, for the Rating row's stars.
     rating: u8,
+    // Sound ▸ Presets kept for the playing album (0 = none); None while no preset is saved.
+    album_sound: Option<u8>,
 ) {
     let scroll = scroll_px.clamp(0, max_scroll_px(f, t, rows));
     c.fill(t.bg);
@@ -286,22 +294,37 @@ pub fn render(
         content_h(f, t, rows),
         sbar_active,
     );
-    action_band(c, t, f);
+    action_band(c, t, f, album_sound);
 }
 
-/// The one action this screen offers, pinned under the list.
-fn action_band(c: &mut Canvas, t: &Theme, f: &FontSet) {
+/// The actions this screen offers, pinned under the list: Add to playlist, and once a preset is
+/// saved, the album's sound (Wampy's per-song sound, by album) in the right half. A tap there
+/// steps Off, Preset 1, Preset 2 … for the album that is playing.
+fn action_band(c: &mut Canvas, t: &Theme, f: &FontSet, album_sound: Option<u8>) {
     let w = crate::canvas::W as i32;
     fill_rect(c, 0, BOTTOM, w, ACTION_H, t.panel);
     hline(c, BOTTOM, t.line);
-    center(
-        c,
-        f,
-        (w / 2) as f32,
-        (BOTTOM + ACTION_H / 2 + 6) as f32,
-        crate::i18n::text("+  ADD TO PLAYLIST"),
-        &sty(Family::Mono, Weight::Bold, 13.0, t.acc, 0.14),
-    );
+    let st = sty(Family::Mono, Weight::Bold, 13.0, t.acc, 0.14);
+    let y = (BOTTOM + ACTION_H / 2 + 6) as f32;
+    let add = crate::i18n::text("+  ADD TO PLAYLIST");
+    match album_sound {
+        None => center(c, f, (w / 2) as f32, y, add, &st),
+        Some(n) => {
+            center(c, f, (w / 4) as f32, y, add, &st);
+            fill_rect(c, w / 2, BOTTOM + 12, 1, ACTION_H - 24, t.line);
+            let v = if n == 0 {
+                crate::i18n::text("ALBUM SOUND \u{b7} OFF").to_string()
+            } else {
+                crate::ui_format!("ALBUM SOUND \u{b7} P{}", n)
+            };
+            let st = if n == 0 {
+                sty(Family::Mono, Weight::Bold, 13.0, t.dim, 0.14)
+            } else {
+                st
+            };
+            center(c, f, (w * 3 / 4) as f32, y, &v, &st);
+        }
+    }
 }
 
 #[cfg(test)]

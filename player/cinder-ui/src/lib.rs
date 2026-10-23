@@ -55,6 +55,7 @@ pub mod sensme;
 pub mod settings;
 pub mod shelf;
 pub mod shuffle;
+pub mod skin;
 pub mod sound;
 pub mod soundscape;
 pub mod style;
@@ -70,6 +71,7 @@ pub mod views;
 pub mod viz;
 pub mod vizcfg;
 pub mod vizset;
+pub mod vol_curve;
 pub mod widgets;
 pub mod zappin;
 

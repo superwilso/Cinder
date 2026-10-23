@@ -92,7 +92,9 @@ factory image, `bc41b677…`, checked 10-22).
    lookups, `phases/phase1.sh` cloning Wampy's repos, and CLAUDE.md Part E's "install Walkman One
    and Wampy as the baseline". Detection of either stays, so a player that has them still installs.
 
-**B. A guided installer.** Every option keeps its page; the order changes.
+**B. A guided installer.** **Code done 10-23** (both points below; groups are Languages, Library,
+Radio, Sound, Bluetooth, Device). Left: a real install and update through the new window pages, and
+the README's screenshots (`tools/render_installer_screenshots.sh`).
 
 1. Pages: the player and its firmware, then a starting point (Cinder; Cinder with the sound
    options; everything), then one page per group, then a review that says what each choice touches,
@@ -104,17 +106,25 @@ factory image, `bc41b677…`, checked 10-22).
 
 | Feature | How | Size |
 |---|---|---|
-| ATRAC on any region | Sony locks ATRAC to Japan through `DmpFeature::IsFeaturedAtrac`; answer true from Cinder's per-service preload | half a day + device |
-| FM recording | Record the radio's capture to `/contents` from the FM screen (watch `reference_audioin_holds_pcm`) | about a day |
-| CUE sheets | Cinder's library reads a `.cue` next to an APE or FLAC as tracks | 1–2 days |
-| Per-song sound | Remember a preset per song or album and apply it on track change | 1–2 days |
-| Volume curve editor | Edit and save a curve, installed as `voltable=custom` | about 2 days |
+| ~~ATRAC on any region~~ | **Done 10-22** (`atrac`, `src/cinder-atrac.c`): verified on the owner's player by hand-install; the `.UPG` install path is not yet run. Test files: genuine `.aa3`/`.oma` from samples.ffmpeg.org `A-codecs/ATRAC3+/` (ffmpeg-muxed OMA is refused by Sony's parser, `omg_oma_init() error = 0x7`) | — |
+| ~~FM recording~~ | **Code done 10-23** (`fmrec`, `src/cinder-fmrec.c`, `src/fmrec.h`): jack path verified by hand-install 10-22 (7.9 s WAV). Left: the RECORD button, BT OUT recording, and the installer path on the device | — |
+| ~~CUE sheets~~ | **Code done 10-23** (`cinder-ffi/src/cue.rs`, `cinder_cue_skip`, `AlbumRow::cue`): Now Playing names the CUE track, ◁/▷ seek between them, the album page lists them and plays from one (`PlayIndexAt`, the audiobook seek). Scrobbled per CUE track. Left: the Songs tab still lists the file once | — |
+| ~~Per-song sound~~ | **Code done 10-23**, by album (Track information ▸ ALBUM SOUND; `album_sound=` in the settings file). Host-tested; device-unverified | — |
+| ~~Volume curve editor~~ | **Code done 10-23** (Sound ▸ Advanced ▸ Volume curve; `cinder-voltable curve`, `src/vol_curve.h`, `tools/test_volcurve.sh`). A remap of Sony's own rows; the conf reads `curve,stock,P0,…`. Host-tested; device-unverified | — |
 | Low-latency USB-DAC | llusbdac is GPL (zhangboyang's, not Wampy's): its own repo, built from upstream source, fetched by the installer like Sony's tables | 2–3 days + device |
-| Winamp and cassette skins, digital clock | Now Playing styles; Winamp's read `.wsz` files | 1–2 weeks |
+| ~~Winamp skins, cassette, digital clock~~ | **Code done 10-23**: Cassette and Clock styles; the Winamp style reads the first `.wsz` at the top of the drive (`cinder-ffi/src/wsz.rs`, `cinder-ui/src/skin.rs`). Left: a run with real skins (RLE-compressed BMPs are not read), a skin picker if one is not enough | — |
 
 **D. Walkman One's last two.**
 
-1. **The RMT-NWS20 remote (`REM`):** a Bluetooth setting; the remote is an ordinary peer.
+1. **The RMT-NWS20 remote (`REM`):** a Bluetooth setting; the remote is an ordinary peer. Needs the
+   remote to test. Start (10-23 notes): `libBtBleCommonService.so` exports only
+   `BtBleCommonServiceClientFactory::CreateInstance`; the client's methods each log their own name
+   (`BtBleCommonServiceClient::StartScan`, `RequestConnection`, `GetPairedDeviceInfo`, …) and the
+   listener's (`OnNotifyScanResult(addr, rssi, adv)`), so the vtable slots can be recovered by
+   matching each function's string to its `.data.rel.ro` slot, as `BtCommonServiceClient`'s were
+   (main.cpp, "Bluetooth: make the switch drive the RADIO"). Then: scan, list by the advert's name,
+   `RequestConnection(addr)`; `BtBleRemoteService` turns the remote's HID reports into a uinput
+   device, which cinder-home's input pump has to open alongside event0/event1.
 2. **Changing the player's region,** which Walkman One does in NVP. Optional, and it writes NVP:
    back up first, and only if someone asks, since `voltable` already lifts the volume cap.
 

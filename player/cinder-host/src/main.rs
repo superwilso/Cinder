@@ -161,6 +161,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     let preview_paired_list = preview_paired();
 
     let np = now_playing::NowPlaying {
+        skin: None,
         title: "Atlas Hands",
         artist: "Benjamin Francis Leftwich",
         codec: "FLAC · 24bit / 96.0 kHz",
@@ -1502,7 +1503,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ("Size".into(), "48.2 MB".into()),
                     ("File".into(), "/contents/Music/Benjamin Francis Leftwich/Last Smoke Before the Snowstorm/03 Atlas Hands.flac".into()),
                 ];
-                cinder_ui::track_info::render(c, &theme, &fonts, &rows, 0, false, 4)
+                cinder_ui::track_info::render(c, &theme, &fonts, &rows, 0, false, 4, None)
             }),
             ("lyrics", &|c: &mut Canvas| {
                 use cinder_ui::lyrics::{Line, Lyrics};
@@ -1850,6 +1851,31 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         signal: 12,
                         hw: true,
                         stereo: true,
+                        rec_available: false,
+                        rec_secs: -1,
+                    },
+                )
+            }),
+            // With the recorder installed, 1:23 into a recording.
+            ("fm-rec", &|c: &mut Canvas| {
+                fm::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    &fm::Fm {
+                        khz: 97300,
+                        playing: true,
+                        stations: [97300, 100000, 107800, 0, 0, 0],
+                        n_stations: 3,
+                        scanning: false,
+                        scan_pct: 0,
+                        antenna: true,
+                        bt_out: false,
+                        signal: 12,
+                        hw: true,
+                        stereo: true,
+                        rec_available: true,
+                        rec_secs: 83,
                     },
                 )
             }),
@@ -2540,6 +2566,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 .map(|k| {
                     let n = 8 + (k as u32 % 5);
                     AlbumRow {
+                        cue: Vec::new(),
                         name: format!(
                             "{} — Vol. {}",
                             ["Nightfall", "Driftwood", "Halo", "Cinder"][k % 4],
@@ -2660,6 +2687,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             .map(|(i, (t, a, _))| ArtistGroup {
                 artist: a.to_string(),
                 albums: vec![AlbumRow {
+                    cue: Vec::new(),
                     name: t.to_string(),
                     artist: a.to_string(),
                     year: "2020".into(),
@@ -3400,6 +3428,194 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 15_000,
                 true,
             );
+        }
+    }
+
+    // Sound ▸ Advanced ▸ Volume curve: "Use every step" in use, and the screen on a player without
+    // the helper. LAST, for the glyph-cache reason above.
+    {
+        use cinder_ui::nav::Screen;
+        for (name, ok) in [("vol_curve", true), ("vol_curve_missing", false)] {
+            let mut app = new_app();
+            app.set_vol_curve_available(ok);
+            app.restore_vol_curve(cinder_ui::vol_curve::EVERY_STEP, ok);
+            app.go_for_preview(Screen::VolCurve);
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, name);
+        }
+    }
+
+    // Track information with a preset saved: Add to playlist shares the band with ALBUM SOUND.
+    {
+        let rows: Vec<(String, String)> = vec![
+            ("Title".into(), "So Far".into()),
+            ("Album".into(), "Kind of Blue".into()),
+        ];
+        let mut c = Canvas::new();
+        cinder_ui::track_info::render(
+            &mut c,
+            &th(false, amber),
+            &fonts,
+            &rows,
+            0,
+            false,
+            0,
+            Some(2),
+        );
+        save(&c, "track_info_album_sound");
+    }
+
+    // An album page for one long file with a CUE sheet: the sheet's tracks, the second selected.
+    {
+        use cinder_ui::model::{AlbumRow, CueRow, SongRow};
+        let names = [
+            "So What",
+            "Freddie Freeloader",
+            "Blue in Green",
+            "All Blues",
+            "Flamenco Sketches",
+        ];
+        let lens = ["9:22", "9:46", "5:37", "11:33", "9:26"];
+        let album = AlbumRow {
+            name: "Kind of Blue".into(),
+            artist: "Miles Davis".into(),
+            year: "1959".into(),
+            tracks: 1,
+            art: "Kind of Blue".into(),
+            track_list: vec![SongRow {
+                title: "Kind of Blue".into(),
+                dur: "45:44".into(),
+                ..Default::default()
+            }],
+            cue: names
+                .iter()
+                .zip(lens)
+                .map(|(t, d)| CueRow {
+                    file: 0,
+                    title: t.to_string(),
+                    start_ms: 0,
+                    dur: d.into(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut c = Canvas::new();
+        cinder_ui::library::album_view(
+            &mut c,
+            &th(false, amber),
+            &fonts,
+            &album,
+            1,
+            0,
+            None,
+            None,
+            false,
+            None,
+        );
+        save(&c, "album_cue");
+    }
+
+    // Now Playing in the Winamp style: with no skin on the drive (Terminal and a line saying so),
+    // and with a stand-in skin of flat blocks — no real skin can ship — to check where the sheets
+    // land. LAST, as above.
+    {
+        use cinder_ui::art::Image;
+        use cinder_ui::style::Style;
+        let sheet = |w: usize, h: usize, f: &dyn Fn(usize, usize) -> [u8; 3]| Image {
+            w,
+            h,
+            rgb: (0..w * h).flat_map(|i| f(i % w, i / w)).collect(),
+        };
+        let skin = cinder_ui::skin::Skin {
+            main: Some(sheet(
+                cinder_ui::skin::MAIN_W,
+                cinder_ui::skin::MAIN_H,
+                &|x, y| {
+                    let lcd = (16..140).contains(&x) && (30..95).contains(&y);
+                    if lcd {
+                        [0, 0, 0]
+                    } else {
+                        [40 + (y / 4) as u8, 40 + (y / 4) as u8, 60]
+                    }
+                },
+            )),
+            cbuttons: Some(sheet(136, 36, &|x, _| {
+                let k = (x / 23) as u8;
+                [90 + 20 * k, 90 + 10 * k, 100]
+            })),
+            posbar: Some(sheet(307, 10, &|x, _| {
+                if x < 248 {
+                    [30, 30, 40]
+                } else {
+                    [200, 200, 80]
+                }
+            })),
+            shufrep: Some(sheet(75, 60, &|_, y| {
+                if y >= 30 {
+                    [80, 200, 80]
+                } else {
+                    [70, 70, 80]
+                }
+            })),
+            name: "stand-in.wsz".into(),
+            ..Default::default()
+        };
+        for (name, sk) in [
+            ("now_playing_winamp_noskin", None),
+            ("now_playing_winamp_standin", Some(&skin)),
+        ] {
+            let t = cinder_ui::Theme {
+                style: Style::Winamp,
+                ..th(false, amber)
+            };
+            let state = now_playing::NowPlaying {
+                skin: sk,
+                progress: 0.4,
+                ..np
+            };
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &t, &fonts, &state);
+            save(&c, name);
+        }
+    }
+
+    // Now Playing in Cassette and Clock, playing and with nothing playing. LAST, as above.
+    {
+        use cinder_ui::style::Style;
+        let idle = now_playing::NowPlaying {
+            title: "",
+            artist: "",
+            codec: "",
+            badge: "",
+            elapsed: "",
+            remaining: "",
+            progress: 0.0,
+            playing: false,
+            liked: false,
+            art: "",
+            viz_size: 0,
+            page: 0,
+            ..np
+        };
+        let playing = now_playing::NowPlaying {
+            progress: 0.3,
+            shuffle: true,
+            ..np
+        };
+        for (name, style, state) in [
+            ("now_playing_cassette", Style::Cassette, &playing),
+            ("now_playing_cassette_idle", Style::Cassette, &idle),
+            ("now_playing_clock", Style::Clock, &playing),
+            ("now_playing_clock_idle", Style::Clock, &idle),
+        ] {
+            let t = cinder_ui::Theme {
+                style,
+                ..th(false, amber)
+            };
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &t, &fonts, state);
+            save(&c, name);
         }
     }
 }

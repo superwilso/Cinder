@@ -24,3 +24,5 @@ libc = "0.2"
 # in art_load.rs (the DB's pre-rendered `bmpfile` thumbnails).
 zune-jpeg = "0.5"
 png = "0.18"
+# Winamp skins (.wsz) are zips; already in the tree through `png`, so nothing new is fetched.
+miniz_oxide = "0.8"

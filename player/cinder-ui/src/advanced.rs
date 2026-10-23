@@ -28,7 +28,7 @@ use crate::widgets::{fill_rect, hline, sty, toggle};
 use crate::Canvas;
 
 /// Row ids. IDENTITIES, not positions: the screen draws them in [`order`].
-pub const ROWS: usize = 12;
+pub const ROWS: usize = 13;
 pub const ROW_CLEAR_PHASE: usize = 0;
 pub const ROW_DSEE_AI: usize = 1;
 pub const ROW_DSEE_CUSTOM: usize = 2;
@@ -49,6 +49,9 @@ pub const ROW_CLEAR_BASS: usize = 8;
 pub const ROW_VPT: usize = 9;
 pub const ROW_DC: usize = 10;
 pub const ROW_VINYL: usize = 11;
+/// The route to the owner's own volume curve (`vol_curve.rs`). Hardware, like the DAC EQ: no
+/// effect mode takes it out of the path.
+pub const ROW_VOL_CURVE: usize = 12;
 
 /// Clear Bass steps. The index times two is the gain handed to the six-band's band 0. Measured at
 /// the jack 2026-10-11: +10 is about +7 dB from 35 to 90 Hz.
@@ -72,6 +75,7 @@ pub fn order(clear_bass: bool) -> Vec<usize> {
         ROW_TONE_BANDS,
         ROW_HP_AMP,
         ROW_DAC_EQ,
+        ROW_VOL_CURVE,
     ]);
     v
 }
@@ -156,6 +160,9 @@ pub struct Advanced {
     pub hp_linear: bool,
     /// The DAC EQ has at least one band off zero.
     pub dac_eq_on: bool,
+    /// The volume curve: None without the installer's volume-curve option, else whether the
+    /// owner's own curve is in use.
+    pub vol_curve: Option<bool>,
     /// One of [`CLEAR_BASS`], or None where the firmware has no six-band EQ in its chain.
     pub clear_bass: Option<&'static str>,
     pub clear_bass_on: bool,
@@ -169,7 +176,8 @@ pub struct Advanced {
 /// Is this row one of the ones an upstream override hides? Source Direct itself never dims — it is
 /// the thing doing the overriding, so greying it out would strand the user with no way back.
 fn dimmed(a: &Advanced, row: usize) -> bool {
-    (a.overridden_by.is_some() && row != ROW_HP_AMP && row != ROW_DAC_EQ) || not_here(a, row)
+    (a.overridden_by.is_some() && !matches!(row, ROW_HP_AMP | ROW_DAC_EQ | ROW_VOL_CURVE))
+        || not_here(a, row)
 }
 
 /// A row whose filter is not in this player's effect chain at all.
@@ -369,6 +377,15 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             }),
             End::Open,
         ),
+        ROW_VOL_CURVE => (
+            "Volume curve",
+            s(match a.vol_curve {
+                None => "Needs the installer's volume curve option",
+                Some(true) => "Your own curve \u{2014} on",
+                Some(false) => "What each volume step does \u{2014} the installer's",
+            }),
+            End::Open,
+        ),
         // Clear Bass. Sony's six-band EQ is a third alternative beside the 10-band EQ and Tone
         // Control (measured 2026-10-11), so the row says what it displaces.
         _ => {
@@ -474,6 +491,7 @@ mod tests {
             tone_control: false,
             hp_linear: false,
             dac_eq_on: false,
+            vol_curve: Some(false),
             clear_bass: None,
             clear_bass_on: false,
             overridden_by: None,
@@ -535,7 +553,7 @@ mod tests {
             ..sample()
         };
         for r in 0..ROWS {
-            if r == ROW_HP_AMP || r == ROW_DAC_EQ {
+            if r == ROW_HP_AMP || r == ROW_DAC_EQ || r == ROW_VOL_CURVE {
                 continue;
             }
             assert!(dimmed(&a, r), "row {r} should be dimmed while overridden");
