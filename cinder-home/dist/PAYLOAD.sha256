@@ -2,25 +2,27 @@
 # Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
-tag v0.3.19
-84458f28ad2ca77caa7559ac8354e6ccd4db6bc8da9d13b5356a2fccecc60a70  cinder-home/dist/stable/cinder-home
+tag v0.3.20-rc1
+f9698d174f8a7fb7ecc9d13f6b6f7e9ba5a37b99093dcba350d4cf962d93db39  cinder-home/dist/stable/cinder-home
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
 f3fe97b5deacf21e6bc2079df75367468e6b4711f5aa45aae87b706f56ef6903  cinder-home/dist/stable/cinder-power
 e02071f40bc08baedbccc357b8a03782e7b95404f62f4a99f6c5974d34f17871  cinder-home/dist/stable/cinder-msc
 d2eeb22e165bd9dcf01b9862af6e17dbdd157817cbfac54fd14adf77516193fd  cinder-home/dist/stable/cinder-clock
 6774e9aace1185c5c9361a7c21d43f5b51b68d586f01ed204211c01b681d3d38  cinder-home/dist/stable/cinder-fm
-285d4b822d5ea44e059a49bc7ddee101c64a9d8d4ec61b6812120481ed72ad8d  cinder-home/dist/stable/cinder-voltable
+5a89aceceec8baabc0292c0007e4e902884ba862258be7f5eec28f4b359726fd  cinder-home/dist/stable/cinder-voltable
 f7682696f4f1c200c5ceb9ae04b82aac7ca5a7515ba3ff76db8f92cf61624898  cinder-home/dist/stable/cinder-battery
 8e88f2ad3304175dae9b7ac79c04afbb68c8b3b4399f1117ef4f53327ebe4272  cinder-home/dist/stable/cinder-signature.sh
 a01c243ee55fe108bcb52876b6dba5fb267d33e612b2ef66267b893282bb3d82  cinder-home/dist/stable/cinder-chain.sh
-3f8974b063a1625c4e6a53b6d90f290025dd48fa45428de5cb07f7ecf3a787b1  cinder-home/dist/stable/libcinder_mono.so
+32ef7d29912715b4c32c358d2d312c0a7abe7274ffb9e90c308d395c576baad1  cinder-home/dist/stable/libcinder_mono.so
 35be5b578ea2aed54533145989424c6f73a25c261158dba55560a9ff87e443ff  cinder-home/dist/stable/cinder-hagowrap
 34133209fe968ee45ee8f89175a922e9487902631094428985566c0cc7610c9e  cinder-home/dist/stable/cinder-guard.sh
 a521696108b5e7dfc2dde52f42413ec2dd028129bf8be738734919423ec518a9  cinder-home/dist/stable/cinder-preload.sh
 256bbb869dff0321c6a22064454af498b145d1ec675a3dd81c62d95b00170ee8  cinder-home/dist/stable/libcinder_aac.so
 d41899380b7074e3f58c16868dbbd52ffb6c66ea759ba06b74a53ce16641c957  cinder-home/dist/stable/libfdk-aac-enc.so
+7b454471067f2eb93e5c5e76bf250b7bf7a7a4bdd8f5d231c17179a70275647e  cinder-home/dist/stable/libcinder_atrac.so
+8537f9e10c450947fdc18a1652f65ccbe53474e883dd493e8a6623cac9a03ec9  cinder-home/dist/stable/libcinder_fmrec.so
 458a402e8e1a5b5c37721e5a33298ecbb76173552f1ff2daa4708e1eb7735e05  cinder-home/dist/stable/cinder_components.conf
-c54da89d451e75a766da78aaf3bd59217a2eec5cd2e1f5a2a7ca00021e96094c  cinder-home/dist/stable/cinder_home_install.upg
-1cbdcddf0fadc28d0a3bff5b10edca809e67df52950a6bb6b16b101ab66ef943  cinder-home/dist/stable/cinder_home_uninstall.upg
-0f039805d4537247653161d03370bb2b2832ffc1a5671a7dc4d0e57ba7a7e607  cinder-home/dist/stable/cinder_home_install.nw-wm1a.upg
-5fcdcedc5757e33acf75d9dc86b6969649acd1a3b01c6ef69274ce6ef73f5d46  cinder-home/dist/stable/cinder_home_uninstall.nw-wm1a.upg
+99efcd87ba55fadec68bcccfa43f6905c65ee642a20c49c6bb008034346046d9  cinder-home/dist/stable/cinder_home_install.upg
+7b8fda79610c0e6700612745c16a73a5a59015acbcfee37c71e5643f3d800ec8  cinder-home/dist/stable/cinder_home_uninstall.upg
+772cce40b3937cae59fe4648999041799cc1cf44e34e296387478e95df6ac0c7  cinder-home/dist/stable/cinder_home_install.nw-wm1a.upg
+6794d3c8c0e2f4a59f802be21d0525541671c63f9e5c0abe0daf65a5644f1122  cinder-home/dist/stable/cinder_home_uninstall.nw-wm1a.upg

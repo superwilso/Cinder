@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.20] — 2026-10-23
+
 ### Added
 
 - **ATRAC files on any player** (`atrac`, off by default, needs `preload`). Sony builds the ATRAC
@@ -3007,7 +3009,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.19...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.20-rc1...HEAD
+[0.3.20]: https://github.com/superwilso/Cinder/compare/v0.3.19...v0.3.20-rc1
 [0.3.19]: https://github.com/superwilso/Cinder/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/superwilso/Cinder/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/superwilso/Cinder/compare/v0.3.16...v0.3.17-rc3
