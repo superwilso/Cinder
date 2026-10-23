@@ -253,6 +253,7 @@ pub fn skin_from(z: &[u8], name: &str) -> Option<Skin> {
         pledit: sheet("pledit.bmp"),
         pl_colors: txt("pledit.txt").map_or(skin::PL_DEFAULT, |t| skin::parse_pledit(&t)),
         viscolor: txt("viscolor.txt").map_or(skin::VIS_DEFAULT, |t| skin::parse_viscolor(&t)),
+        region: txt("region.txt").map_or(Vec::new(), |t| skin::parse_region(&t)),
         name: name.to_string(),
     })
 }

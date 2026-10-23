@@ -83,18 +83,18 @@ factory image, `bc41b677…`, checked 10-22).
    stock 1.02 with no Wampy. Then the Bluetooth codec options stop needing a second tick.
 2. **Retire `mono`** (it rides Wampy's sound library). The installer removes it on Update and ticks
    `preload` in its place.
-3. **Retire `w1tuning`.** It writes Walkman One's own NVRAM images, and nothing it unlocks is
+3. ~~**Retire `w1tuning`.**~~ **Done 10-23** (a969f61). It writes Walkman One's own NVRAM images, and nothing it unlocks is
    audible. Keep reading Walkman One's settings only to detect it.
 4. **Move out of Wampy's folder:** `/system/vendor/unknown321/` to `/system/vendor/cinder/`, about
    110 references including the launcher's path. Migration on Update, a device test, and the
    uninstaller handles both paths.
-5. **Drop the Wampy-era hooks and tooling:** the `ldac-run.sh` hook, the `WAMPY_SS`/`.mod` volume
+5. ~~**Drop the Wampy-era hooks and tooling:**~~ **Done 10-23** (91eac2c). the `ldac-run.sh` hook, the `WAMPY_SS`/`.mod` volume
    lookups, `phases/phase1.sh` cloning Wampy's repos, and CLAUDE.md Part E's "install Walkman One
    and Wampy as the baseline". Detection of either stays, so a player that has them still installs.
 
 **B. A guided installer.** **Code done 10-23** (both points below; groups are Languages, Library,
-Radio, Sound, Bluetooth, Device). Left: a real install and update through the new window pages, and
-the README's screenshots (`tools/render_installer_screenshots.sh`).
+Radio, Sound, Bluetooth, Device). Screenshots rendered 10-23 (`docs/SCREENSHOTS.md`). Left: a
+real install and update through the new window pages.
 
 1. Pages: the player and its firmware, then a starting point (Cinder; Cinder with the sound
    options; everything), then one page per group, then a review that says what each choice touches,
@@ -139,23 +139,26 @@ within each group.
 
 | Feature | In Cinder today | To do |
 |---|---|---|
-| Custom cassette tapes: an 800×480 JPEG tape, reel frames every 55 ms, `config.txt` text positions, `cassette.txt` per folder | Cassette is drawn, not skinnable | Read a tape folder like the `.wsz` (JPEG decode needed); per-folder override like album sound |
-| Per-song EQ | Per album (Track information ▸ ALBUM SOUND) | A per-track key beside the album one |
-| Volume table editor: every value of every table, DSD too | A 7-point curve over Sony's rows | Point editing past 7, the DSD table |
-| Skin transparency (`region.txt`) | Not read | Mask the window by the polygons; black behind |
+| ~~Custom cassette tapes~~ | **Done 10-23** (`cinder-ui/src/tape.rs`, `cinder-ffi/src/tape_load.rs`): Wampy's folder layout and `config.txt`, landscape, the reel at 55 ms, `cassette.txt` per folder, the chip again for the next tape | Device: §39.10. Wampy's `.pkm` atlases are not read |
+| ~~Per-song EQ~~ | **Done 10-23**: Track information ▸ ALBUM and SONG; a song's preset wins | Device: §39.4 |
+| Volume table editor: every value of every table, DSD too | A 7-point curve over Sony's own rows | Deliberately not raw values: a curve over Sony's rows cannot go past what Sony allows. More points or the DSD table if asked |
+| ~~Skin transparency (`region.txt`)~~ | **Done 10-23**: the `[Normal]` polygons, pixel-exact at the skin's own size, black behind | — |
 | Skin dropdown | Tap the Winamp chip again (cycles) | A list screen, if cycling is not enough |
-| Swap prev/next; ignore keys when the screen is off | Hold switch locks touch | Two settings rows |
+| Swap prev/next; ignore keys when the screen is off | The Hold switch covers the second. The first depends on which way the player's own ⏮ ⏭ read on its side, so it waits for a look at the player | Decide with the player in hand |
 | Visualiser "Winamp mode" bands, sensitivity | Cinder's own visualiser settings | Band set as a row in Visualiser |
-| Export Sony's bookmarks | Cinder's own audiobook positions | Read Sony's bookmark store |
+| Export Sony's bookmarks | Cinder's own audiobook positions | Sony keeps ten lists as `/cache/bookmark01.json`…`bookmark10.json` (Wampy copies them; Sony's player names `BookmarkModel` and `kJsonReadError`). Their layout is not in any string: first `adb pull /cache/bookmark01.json` from a player that has one (read-only), then show them as playlists |
 | User font | Bundled + Sony fonts | — |
-| Low-latency USB-DAC (llusbdac) | — | Owner's call (a GPL repo of its own), above |
+| Low-latency USB-DAC (llusbdac) | `cinder-llusbdac` repo **ready locally 10-23** (`/home/sony/cinder-llusbdac`): pinned build from Sony's NW-A57 kernel (BBDMP5) + upstream eeb31d5 + GCC 4.9.3; vermagic matches the player's modules | Owner: create the public repo and push (the auto-mode classifier refused to). Then the installer component and a USB DAC row; first insmod with the owner present |
+
+Wampy's filter list (Dynamic Normalizer, VPT, 6- and 10-band EQ, Tone, DC Phase, Vinyl, Direct
+Source, ClearAudio+) is all on Cinder's Sound screens already.
 
 *Wampy's own unbuilt wishes, which Cinder could do:*
 
 | Wish | Where Cinder stands |
 |---|---|
-| Winamp playlist scrolling, editing, its bottom buttons | Up Next edits and scrolls; the skin's playlist shows from the playing track. Scrolling it is next |
-| More spectrum styles (thin bands, fire, line), an oscilloscope | Oscilloscope **done 10-23** (the PCM tap); Cinder's own visualiser has 13 styles |
+| Winamp playlist scrolling, editing, its bottom buttons | Scrolling **done 10-23** (a swipe pages through the whole queue; Wampy only ever had 15 tracks), rows in Cinder's font so every script shows. Editing is Up Next's |
+| ~~More spectrum styles (thin bands, fire, line), an oscilloscope~~ | **Done 10-23** in the Winamp view: V steps normal / fire / line, thick or thin, with peaks; the display cycles spectrum, oscilloscope, off; kept across restarts (`wa=`) |
 | Title scrolled by dragging | — |
 | Enqueue | Done (Up Next, swipe a row) |
 | Apply tunings on boot | Done (the launcher applies voltable/signature/EQ) |
@@ -168,6 +171,16 @@ tunings hold nothing audible. Left: the REM remote and the region change (stage 
 losses (FM, NC, VPT, ClearAudio+, Line-out) never apply, because Cinder does not swap the model.
 
 **Installer — finish an install from a Mac** (owner, 10-22; Montree on Head-Fi asked for it)
+
+**Steps 1–3 code done 10-23** (`installer/src/bot.rs` + the macOS `trigger_fw_upgrade` in
+`stage.rs`, `rusb` as a macOS-only dependency; a macOS job in `ci.yml`; `build-macos` in
+`release.yml` makes one universal binary; `install.md` has the steps). Type-checked here against
+rusb's real API (a Cargo `links` override skips libusb's C build, which needs Apple's SDK); the
+first real compile is CI's macOS job. The key is not read on a Mac (taking the interface ejects
+the volume), so Walkman One is told from the files on the drive there (`device::w1_from_files`). **Owner
+decision before releasing it:** the vendored libusb is LGPL-2.1, linked statically into the Mac
+binary. Cinder's full source is public, which arguably meets LGPL 2.1 §6a (the user can relink),
+but say so in the release notes or drop the macOS job. Left: step 4, a real Mac.
 
 Today the macOS build stages every file and stops: the last step, the vendor command
 `fc 00 04 'dbmn'` that reboots the player into its updater (`stage::FW_UPGRADE_CDB`), needs raw SCSI,
@@ -212,16 +225,35 @@ About half a day of code plus the Mac session.
 10. **2038 (goal 10):** an i64 audit of Cinder's own timestamps.
 11. A host benchmark with a 10,000-line playlist; discovering an **unpaired** Bluetooth device; a
     Windows installer smoke test per release (Install → Update → Uninstall → Install).
+12. **Bluetooth still drops and loses its volume** (owner, 10-23). Connections still have problems
+    with the volume and with disconnects. No details captured yet. Next time it happens: switch on
+    THIS DEVICE ▸ Debug log first (the HCI snoop, the stack's only failure channel), reproduce it,
+    then pull the snoop and `logcat`. Read it against the known traps: the retry mode that refuses
+    connects (`BT connect jam`), the route flag trusting `GetBtStatus == 3`, and the BT volume being
+    AVRCP steps that are separate from the jack's level.
+13. **One file, two albums** (owner idea, 10-23; Flint item 5): Cinder lists a song that Flint
+    stored once under every album it belongs to. Needs a small file from Flint naming the extra
+    album entries for each stored file (like the `.m3u8` playlists, read at the same time), and
+    library rows that point at the one file, as CUE rows do. Each album shows its own copy; plays,
+    likes and scrobbles go to whichever one was played.
 
 **Flint**
 
 1. After decision 1: adopt music already on the player by content key (G3.2).
-2. E7 the album unit is the top-level folder; E9 refused scrobbles to `.scrobbler.refused.log`;
+2. E7 the album unit is the top-level folder; ~~E9 refused scrobbles to `.scrobbler.refused.log`~~ (**done 10-23**, uncommitted in Flint);
    E10 the 25 s lossless test; E11 one WinHTTP session for the palette shop.
 3. Features in the 10-01 order: G1.1 backup of the player's state, G1.2 health card, G3.1 library
    lint, G1.3 device-aware transfer, G2.1 per-headphone profiles, G1.4 LRCLIB lyrics, G2.2 resume.
 4. R6 / Flint 0.3: Setup, convert-on-transfer, Copying, the palette preview, SensMe reasons, the
    SensMe MP3 path.
+5. **The same song on two albums, stored once** (owner idea, 10-23). A track that appears on two
+   albums (the album and a best-of, a single and its album) is often the same recording. You
+   select the two, or Flint suggests pairs by matching decoded audio. Flint then copies one file
+   and writes the other album's entry into a small list on the player. Cinder (item 13 above)
+   shows both under their own albums, so the library looks exactly as on the PC, and the storage
+   is spent once. Open questions: which tags the second entry keeps (track number, album artist,
+   cover); what happens when one album is removed from the sync; and Sony's own player, which
+   will show only the stored copy.
 
 **cinder-themes:** nothing open. **cinder-sony-analysis:** decision 8.
 

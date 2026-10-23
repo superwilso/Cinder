@@ -1049,7 +1049,7 @@ fn clock_face(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 fn winamp_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &Layout) {
     use term::*;
     if let Some(skin) = np.skin.filter(|s| s.main.is_some()) {
-        crate::winamp::render(c, t, np, skin, &crate::winamp::View::default());
+        crate::winamp::render(c, t, f, np, skin, &crate::winamp::View::default());
         return;
     }
     terminal_render(c, t, f, np, l);

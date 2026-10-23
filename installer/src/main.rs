@@ -21,6 +21,8 @@
 //! module docs for why); `console` is the text one, and is what runs on Linux, over RDP, and with
 //! `--yes`. Both drive `stage`, so there is one implementation of what an install actually is.
 
+#[cfg(any(test, target_os = "macos"))]
+mod bot;
 mod catalogue;
 mod console;
 mod device;

@@ -41,7 +41,7 @@ src, dst = map(pathlib.Path, sys.argv[1:3])
 def chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
-for name in ("installer-home", "installer-options", "installer-confirm"):
+for name in ("installer-home", "installer-start", "installer-options-library", "installer-options", "installer-confirm"):
     magic, size, maxval, rgb = (src / f"{name}.ppm").read_bytes().split(b"\n", 3)  # gui.rs's header
     w, h = map(int, size.split())
     assert magic == b"P6" and maxval == b"255" and len(rgb) == w * h * 3, f"{name}.ppm is malformed"

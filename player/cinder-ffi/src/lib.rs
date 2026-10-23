@@ -23,6 +23,7 @@ mod present;
 mod scrobble;
 mod spectrum;
 mod stats;
+mod tape_load;
 mod vizsig;
 mod wsz;
 
@@ -629,6 +630,12 @@ struct Render {
     /// The Winamp style's skin (`wsz.rs`), read the first time that style draws.
     skin: Option<cinder_ui::skin::Skin>,
     skin_tried: bool,
+    /// The Cassette style's tape (`tape_load.rs`), read the first time that style draws, and
+    /// again when the playing folder's `cassette.txt` names another.
+    tape: Option<cinder_ui::tape::Tape>,
+    tape_tried: bool,
+    /// The tape chosen with the Cassette chip (`tape=`); empty is the first by name.
+    tape_pref: String,
     /// The skin chosen with the Winamp chip (`wsz=`), by file name; empty is the first by name.
     skin_pref: String,
     /// The chapter (path, position ms, when) a `PlayBook` just started. Until playback reaches that
@@ -860,7 +867,10 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         book_seek_ms: 0,
         cue: None,
         skin: None,
+        tape: None,
         skin_tried: false,
+        tape_tried: false,
+        tape_pref: String::new(),
         skin_pref: String::new(),
         book_hold: None,
         stats_changed: std::time::Instant::now(),
@@ -1322,6 +1332,10 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("style={}\n", r.app.style_token()));
     if !r.skin_pref.is_empty() {
         body.push_str(&format!("wsz={}\n", r.skin_pref));
+    }
+    body.push_str(&format!("wa={}\n", r.app.winamp_prefs()));
+    if !r.tape_pref.is_empty() {
+        body.push_str(&format!("tape={}\n", r.tape_pref));
     }
     // What the player opens on (the Menu's START ON chips), and — only when that is "last" — the
     // place to reopen, encoded like a Shelf pin.
@@ -2658,7 +2672,10 @@ pub extern "C" fn cinder_render_tick() {
     // Visualiser: advance + force a repaint ONLY while playing on the Now Playing screen (and
     // enabled), and at most ~20 fps (the pump may tick at 60) — that bounds the battery cost.
     let animate = r.app.viz_visible() && r.np.playing;
-    if animate {
+    // A cassette tape's reel turns while the song plays, on the same clock as the visualiser.
+    let reel_turns =
+        r.app.tape_view() && r.app.current() == cinder_ui::nav::Screen::NowPlaying && r.np.playing;
+    if animate || reel_turns {
         let since = r.last_viz.elapsed().as_millis() as f32;
         if since >= 50.0 {
             // Advance by the REAL time that passed, not a flat step. The 50 ms gate caps the repaint
@@ -2671,7 +2688,9 @@ pub extern "C" fn cinder_render_tick() {
             r.dirty = true;
             // The visualiser's own FFT, at the same ~20 fps: a pread of one queue slot and a
             // 2048-point transform. When it has nothing, the analyzer's frames draw instead.
-            viz_tap(r);
+            if animate {
+                viz_tap(r);
+            }
         }
     }
     // MARQUEE CLOCK. Advanced before the dirty gate so the phase a painted frame reads is the
@@ -2711,10 +2730,17 @@ pub extern "C" fn cinder_render_tick() {
         r.skin = wsz::find_in("/contents", &r.skin_pref);
         r.app.set_winamp_skin(r.skin.is_some());
     }
+    // The Cassette style's tape, likewise: the playing folder's `cassette.txt`, else the chosen one.
+    if !r.tape_tried && r.app.style() == cinder_ui::style::Style::Cassette {
+        r.tape_tried = true;
+        let path = r.last_track.as_ref().map(|t| t.filename.clone());
+        tape_follow(r, path.as_deref());
+    }
     r.canvas.clear_clip();
     let sig = r.sig.view();
     let np = NowPlaying {
         skin: r.skin.as_ref(),
+        tape: r.tape.as_ref(),
         title: &r.np.title,
         artist: &r.np.artist,
         codec: &r.np.codec,
@@ -2731,7 +2757,11 @@ pub extern "C" fn cinder_render_tick() {
         playing: r.np.playing,
         shuffle: r.np.shuffle,
         repeat: r.np.repeat,
-        viz_seed: if animate { r.viz_phase } else { 2.0 },
+        viz_seed: if animate || reel_turns {
+            r.viz_phase
+        } else {
+            2.0
+        },
         viz_kind: 0, // nav injects the real viz type on the NowPlaying render
         viz_size: r.app.viz_size(), // nav re-injects this too; kept honest here
         page: r.app.np_page(),
@@ -2863,6 +2893,7 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
         }
         let np2 = NowPlaying {
             skin: None,
+            tape: None,
             title: &np.title,
             artist: &np.artist,
             codec: &np.codec,
@@ -4424,6 +4455,39 @@ fn zappin_prepare_mutated_queue(r: &mut Render, candidate: Option<(i64, usize)>)
     true
 }
 
+/// Load the tape the playing folder's `cassette.txt` names, else the chosen one, unless it is the
+/// one already loaded. ponytail: a tape and its reel are decoded again on every change of tape
+/// (about a second for 57 JPEG frames); a cache of the last two if albums alternate.
+fn tape_follow(r: &mut Render, audio_path: Option<&str>) {
+    let (folder_tape, folder_reel) = audio_path
+        .and_then(tape_load::folder_choice)
+        .unwrap_or((None, None));
+    let names = tape_load::names_in(tape_load::ROOT);
+    let want = folder_tape
+        .or_else(|| names.iter().find(|n| **n == r.tape_pref).cloned())
+        .or_else(|| names.first().cloned());
+    let Some(want) = want else {
+        r.tape = None;
+        r.app.set_tape_loaded(false);
+        return;
+    };
+    let same_reel = |t: &cinder_ui::tape::Tape| {
+        folder_reel.is_none() || t.config.reel == *folder_reel.as_ref().unwrap()
+    };
+    if r.tape
+        .as_ref()
+        .is_some_and(|t| t.name == want && same_reel(t))
+    {
+        return;
+    }
+    r.tape = tape_load::load(tape_load::ROOT, &want, folder_reel.as_deref());
+    if let (Some(t), Some(reel)) = (r.tape.as_mut(), folder_reel) {
+        t.config.reel = reel;
+    }
+    r.app.set_tape_loaded(r.tape.is_some());
+    r.dirty = true;
+}
+
 /// The CUE tracks of an album's files, in order, or nothing when none of its files has a sheet.
 /// A file without one keeps a row of its own between the CUE tracks, so nothing goes missing.
 fn cue_rows(
@@ -5168,6 +5232,26 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::DacEqChanged => 48,
         Action::VolCurveChanged => 60,
         Action::Stop => 61,
+        Action::NextSkin if r.app.style() == cinder_ui::style::Style::Cassette => {
+            let names = tape_load::names_in(tape_load::ROOT);
+            let cur = r.tape.as_ref().map(|t| t.name.clone()).unwrap_or_default();
+            match wsz::next_name(&names, &cur).cloned() {
+                None => r
+                    .app
+                    .notify("No tape: copy a tape folder to cinder_cassette/tape"),
+                Some(n) => {
+                    r.tape = tape_load::load(tape_load::ROOT, &n, None);
+                    r.tape_tried = true;
+                    r.app.set_tape_loaded(r.tape.is_some());
+                    let i = names.iter().position(|x| *x == n).unwrap_or(0) + 1;
+                    r.app.notify_raw(&format!("{n} ({i}/{})", names.len()));
+                    r.tape_pref = n;
+                    save_settings(r);
+                }
+            }
+            r.dirty = true;
+            return None;
+        }
         Action::NextSkin => {
             // The one after the skin on screen, so the first tap moves even with no choice saved.
             let names = wsz::names_in("/contents");
@@ -7970,6 +8054,8 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "lib_views" => r.app.set_lib_views_str(v),
                     "style" => r.app.set_style_token(v),
                     "wsz" => r.skin_pref = v.to_string(),
+                    "tape" => r.tape_pref = v.to_string(),
+                    "wa" => r.app.set_winamp_prefs(v),
                     "sensme_follow_time" => r.app.set_sensme_follow(v == "1"),
                     "shuffle_by" => r.app.set_shuffle_by(v),
                     "volume_hud" => r.app.set_volume_hud(v),
@@ -9648,6 +9734,9 @@ pub extern "C" fn cinder_set_now_playing_uri(
             apply_track(&mut r.np, &t);
             if changed {
                 r.cue = cue::load_for(&t.filename);
+                if r.tape_tried && r.app.style() == cinder_ui::style::Style::Cassette {
+                    tape_follow(r, Some(&t.filename));
+                }
             }
             if changed {
                 // A preview's samples are not listening history: while the hold is on, ◁ must
@@ -11741,7 +11830,10 @@ mod tests {
             book_seek_ms: 0,
             cue: None,
             skin: None,
+            tape: None,
             skin_tried: false,
+            tape_tried: false,
+            tape_pref: String::new(),
             skin_pref: String::new(),
             book_hold: None,
             stats_changed: std::time::Instant::now(),

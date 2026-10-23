@@ -318,12 +318,12 @@ fn print_trigger_failed(e: &io::Error) {
             println!("  Re-running it is safe — it stages the same files again, then fires.");
         }
     } else if cfg!(target_os = "macos") {
-        println!("  macOS cannot send this command at all. It is a vendor SCSI passthrough, and");
-        println!("  macOS only exposes that through an IOKit SCSITaskUserClient, which the kernel");
-        println!("  refuses for a disk it has already mounted — the exact state the player is in.");
+        println!("  macOS would not hand over the player's USB connection. Sending the command");
+        println!("  needs sudo, and a macOS that lets root take a USB disk from its own driver.");
         println!();
-        println!("  Finish from a Linux or Windows machine. THE STAGING IS ALREADY DONE, so plug");
-        println!("  the player into one and run the installer there; it will re-stage and fire.");
+        println!("  If it keeps failing, finish from a Linux or Windows machine. THE STAGING IS");
+        println!("  ALREADY DONE, so plug the player into one and run the installer there; it");
+        println!("  will re-stage and fire.");
     } else {
         println!("  The player is still holding a valid payload, so nothing is broken. Re-running");
         println!(

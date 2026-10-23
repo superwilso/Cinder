@@ -50,6 +50,9 @@ pub struct Skin {
     pub pl_colors: [u32; 4],
     /// viscolor.txt: 24 colours; 2..=17 are the spectrum from top to bottom.
     pub viscolor: [u32; 24],
+    /// region.txt's mask: the window's pixels outside every polygon, as `(y, x0, x1)` runs in skin
+    /// pixels, which draw black. Empty: the whole window shows.
+    pub region: Vec<(i32, i32, i32)>,
     /// The file name, for the line that says which skin is in use.
     pub name: String,
 }
@@ -85,6 +88,7 @@ impl Default for Skin {
             pledit: None,
             pl_colors: PL_DEFAULT,
             viscolor: VIS_DEFAULT,
+            region: Vec::new(),
             name: String::new(),
         }
     }
@@ -131,6 +135,89 @@ pub fn parse_viscolor(txt: &str) -> [u32; 24] {
     });
     for (o, c) in out.iter_mut().zip(rows) {
         *o = c;
+    }
+    out
+}
+
+/// region.txt: the first `[Normal]` section's polygons (`NumPoints` counts, `PointList` x,y pairs
+/// on the pixel grid's corners), as the runs of the 275×116 window outside all of them. A pixel is
+/// inside when its centre is (even-odd within a polygon, any polygon counts). Comments (`;`) are
+/// skipped; a section that does not add up is no mask at all.
+pub fn parse_region(txt: &str) -> Vec<(i32, i32, i32)> {
+    let nums = |v: &str| -> Vec<i32> {
+        v.split(|ch: char| !(ch.is_ascii_digit() || ch == '-'))
+            .filter_map(|p| p.parse().ok())
+            .collect()
+    };
+    let (mut section, mut counts, mut points) = (String::new(), None, None);
+    for line in txt.lines() {
+        let line = line.split(';').next().unwrap_or("").trim();
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            if counts.is_some() && points.is_some() {
+                break;
+            }
+            section = name.trim().to_ascii_lowercase();
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if section != "normal" {
+            continue;
+        }
+        match k.trim().to_ascii_lowercase().as_str() {
+            "numpoints" if counts.is_none() => counts = Some(nums(v)),
+            "pointlist" if points.is_none() => points = Some(nums(v)),
+            _ => {}
+        }
+    }
+    let (Some(counts), Some(points)) = (counts, points) else {
+        return Vec::new();
+    };
+    let total: i32 = counts.iter().sum();
+    if counts.iter().any(|&n| n < 3) || total * 2 != points.len() as i32 {
+        return Vec::new();
+    }
+    let mut polys: Vec<Vec<(f32, f32)>> = Vec::new();
+    let mut at = 0;
+    for &n in &counts {
+        let n = n as usize;
+        polys.push(
+            points[at..at + 2 * n]
+                .chunks(2)
+                .map(|p| (p[0] as f32, p[1] as f32))
+                .collect(),
+        );
+        at += 2 * n;
+    }
+    let inside = |px: f32, py: f32| {
+        polys.iter().any(|poly| {
+            let mut odd = false;
+            let mut j = poly.len() - 1;
+            for i in 0..poly.len() {
+                let ((xi, yi), (xj, yj)) = (poly[i], poly[j]);
+                if (yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi {
+                    odd = !odd;
+                }
+                j = i;
+            }
+            odd
+        })
+    };
+    let mut out = Vec::new();
+    for y in 0..116 {
+        let mut run: Option<i32> = None;
+        for x in 0..=275 {
+            let hole = x < 275 && !inside(x as f32 + 0.5, y as f32 + 0.5);
+            match (hole, run) {
+                (true, None) => run = Some(x),
+                (false, Some(x0)) => {
+                    out.push((y, x0, x));
+                    run = None;
+                }
+                _ => {}
+            }
+        }
     }
     out
 }

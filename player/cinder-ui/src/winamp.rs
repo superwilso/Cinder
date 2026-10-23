@@ -22,7 +22,7 @@
 //! | the menu icon (top left) | Menu |
 //! | PL, windowshade, the playlist's title bar | the playlist full screen, and back |
 //! | EQ | the equaliser |
-//! | O A I D V (the clutter bar) | Settings, Display, Track information, the next skin, the visualiser settings |
+//! | O A I D V (the clutter bar) | Settings, Display, Track information, the next skin, the analyzer's look |
 //! | the time | elapsed ⇄ remaining |
 //! | the visualiser | Winamp's cycle: spectrum, oscilloscope, off |
 //! | the song title | Track information |
@@ -34,6 +34,7 @@ use crate::canvas::{Canvas, W};
 use crate::model::SongRow;
 use crate::now_playing::NowPlaying;
 use crate::skin::{blit_to, text_cell, Skin, MAIN_H, MAIN_W};
+use crate::text::{Family, FontSet, TextStyle, Weight};
 use crate::theme::Theme;
 use embedded_graphics::pixelcolor::Rgb888;
 
@@ -89,7 +90,7 @@ pub enum Ctl {
     Eject,
     Shuffle,
     Repeat,
-    /// Row `n` of the playlist, counted from the playing track.
+    /// Row `n` of the playlist as it is scrolled.
     PlRow(usize),
 }
 
@@ -138,6 +139,11 @@ fn pl_top(full: bool) -> i32 {
 /// the panel cuts short still counts; it is drawn clipped.
 pub fn pl_rows(full: bool) -> usize {
     ((LH - pl_top(full) - PL_TITLE_H + ROW_H - 1) / ROW_H) as usize
+}
+
+/// Is `ly` on the playlist (title bar or rows)?
+pub fn on_playlist(ly: i32, full: bool) -> bool {
+    ly >= pl_top(full)
 }
 
 /// The control at `(lx, ly)`: on the window, an exact hit first, else the nearest within `SLOP`;
@@ -192,9 +198,10 @@ pub fn balance_at(lx: i32) -> usize {
 
 /// What the view shows that Now Playing's data does not carry.
 pub struct View<'a> {
-    /// Up Next, and the playing track's place in it.
+    /// Up Next, the playing track's place in it, and the playlist's first row (it scrolls).
     pub queue: &'a [SongRow],
     pub at: usize,
+    pub first: usize,
     /// The volume the rocker drives, and its top.
     pub volume: (u8, u8),
     /// 0..=100, 50 the centre.
@@ -205,18 +212,34 @@ pub struct View<'a> {
     pub playlist: bool,
     /// The display's visualiser: 0 spectrum, 1 oscilloscope, 2 off (Winamp's cycle).
     pub vis: u8,
+    /// The analyzer's look: `ANALYZER_STYLES[style]`.
+    pub style: u8,
 }
+
+/// The analyzer's looks, Winamp's preferences, in the order the clutter bar's V steps through
+/// them: thick or thin bands, coloured by row (normal), from each band's top (fire), or by its
+/// height (line).
+pub const ANALYZER_STYLES: [&str; 6] = [
+    "Normal",
+    "Fire",
+    "Line",
+    "Normal, thin bands",
+    "Fire, thin bands",
+    "Line, thin bands",
+];
 
 impl Default for View<'_> {
     fn default() -> Self {
         View {
             queue: &[],
             at: 0,
+            first: 0,
             volume: (60, 120),
             balance: 50,
             remaining: false,
             playlist: false,
             vis: 0,
+            style: 0,
         }
     }
 }
@@ -301,15 +324,7 @@ fn text(
     }
 }
 
-/// The font's background colour: the space cell's corner.
-fn font_bg(font: &Image) -> u32 {
-    let o = 150 * 3;
-    font.rgb.get(o..o + 3).map_or(0, |p| {
-        (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32
-    })
-}
-
-pub fn render(c: &mut Canvas, t: &Theme, np: &NowPlaying, skin: &Skin, v: &View) {
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, skin: &Skin, v: &View) {
     let dim = t.dim_pct;
     let idle = np.title.is_empty() && np.artist.is_empty();
     let sprite = |c: &mut Canvas, img: &Option<Image>, src, dst| {
@@ -325,13 +340,25 @@ pub fn render(c: &mut Canvas, t: &Theme, np: &NowPlaying, skin: &Skin, v: &View)
         }
         sprite(c, &skin.titlebar, (27, 0, 275, 14), (0, 0, 275, 14));
         sprite(c, &skin.titlebar, (304, 0, 8, 43), (10, 22, 8, 43));
-        window(c, dim, np, skin, v, idle);
+        window(c, dim, f, np, skin, v, idle);
+        // region.txt's holes, black as in Wampy.
+        for &(y, x0, x1) in &skin.region {
+            fill(c, kr((x0, y, x1 - x0, 1)), 0);
+        }
     }
-    playlist(c, dim, skin, v);
+    playlist(c, dim, f, skin, v);
 }
 
 /// Everything inside the window that moves.
-fn window(c: &mut Canvas, dim: u32, np: &NowPlaying, skin: &Skin, v: &View, idle: bool) {
+fn window(
+    c: &mut Canvas,
+    dim: u32,
+    f: &FontSet,
+    np: &NowPlaying,
+    skin: &Skin,
+    v: &View,
+    idle: bool,
+) {
     let sprite = |c: &mut Canvas, img: &Option<Image>, src, dst| {
         if let Some(i) = img {
             blit_to(c, dim, i, src, kr(dst), true, None);
@@ -367,15 +394,28 @@ fn window(c: &mut Canvas, dim: u32, np: &NowPlaying, skin: &Skin, v: &View, idle
                 blit_to(c, dim, nums, src, kr(dst), true, None);
             }
         }
-        // The spectrum: 19 bars of 3 px, coloured by row from viscolor.txt.
+        // The spectrum, in viscolor.txt's colours 2..=17 (top to bottom): 19 bands of 3 px, or 75
+        // of 1, each coloured by row, from its own top, or by its height; peaks in colour 23.
         let levels = np.viz_levels.filter(|l| !l.is_empty() && v.vis == 0);
         if let Some(levels) = levels {
-            for i in 0..19 {
-                let lv = levels[i * levels.len() / 19].clamp(0.0, 1.0);
-                let h = (lv * 16.0).round() as i32;
+            let thin = v.style >= 3;
+            let (n, pitch, w) = if thin { (75, 1, 1) } else { (19, 4, 3) };
+            let at = |l: &[f32], i: usize| l[i * l.len() / n].clamp(0.0, 1.0);
+            for i in 0..n {
+                let h = (at(levels, i) * 16.0).round() as i32;
+                let x = 24 + i as i32 * pitch;
                 for r in 16 - h..16 {
-                    let col = dimmed(skin.viscolor[2 + r as usize], dim);
-                    fill(c, kr((24 + i as i32 * 4, 43 + r, 3, 1)), col);
+                    let idx = match v.style % 3 {
+                        1 => r - (16 - h),
+                        2 => 16 - h,
+                        _ => r,
+                    };
+                    let col = dimmed(skin.viscolor[2 + idx.clamp(0, 15) as usize], dim);
+                    fill(c, kr((x, 43 + r, w, 1)), col);
+                }
+                if let Some(peaks) = np.viz_peaks.filter(|p| !p.is_empty()) {
+                    let r = 15 - ((at(peaks, i) * 16.0).round() as i32).clamp(1, 16) + 1;
+                    fill(c, kr((x, 43 + r, w, 1)), dimmed(skin.viscolor[23], dim));
                 }
             }
         }
@@ -394,10 +434,26 @@ fn window(c: &mut Canvas, dim: u32, np: &NowPlaying, skin: &Skin, v: &View, idle
             }
         }
         if let Some(font) = &skin.text {
-            let line = marquee(&format!("{} - {}", np.artist, np.title), np.elapsed, 31);
-            text(c, dim, font, &line, 31, None, |i| {
-                kr((111 + 5 * i, 27, 5, 6))
-            });
+            let full = format!("{} - {}", np.artist, np.title);
+            if full.is_ascii() {
+                let line = marquee(&full, np.elapsed, 31);
+                text(c, dim, font, &line, 31, None, |i| {
+                    kr((111 + 5 * i, 27, 5, 6))
+                });
+            } else {
+                // The skin's font has Latin capitals only: anything else in Cinder's own, in the
+                // playlist's text colour, as Wampy does.
+                let line = marquee(&full, np.elapsed, 26);
+                let st = sty(skin.pl_colors[0], dim, 15.0);
+                text_land(
+                    c,
+                    f,
+                    (k(111) as f32, k(33) as f32),
+                    &line,
+                    &st,
+                    k(154) as f32,
+                );
+            }
             let khz = number_before(np.codec, "kHz");
             text(c, dim, font, khz, 3, None, |i| kr((156 + 5 * i, 43, 5, 6)));
             let kbps = number_before(np.codec, "kbps");
@@ -465,7 +521,7 @@ fn window(c: &mut Canvas, dim: u32, np: &NowPlaying, skin: &Skin, v: &View, idle
 
 /// The playlist, under the window or across the panel: pledit.bmp's title bar and sides, then Up
 /// Next from the playing track, in the skin's font and pledit.txt's colours.
-fn playlist(c: &mut Canvas, dim: u32, skin: &Skin, v: &View) {
+fn playlist(c: &mut Canvas, dim: u32, f: &FontSet, skin: &Skin, v: &View) {
     let top = pl_top(v.playlist);
     let [fg, cur, bg, sel] = skin.pl_colors.map(|col| dimmed(col, dim));
     fill(c, (0, top, LW, LH - top), bg);
@@ -489,34 +545,42 @@ fn playlist(c: &mut Canvas, dim: u32, skin: &Skin, v: &View) {
             y += k(29);
         }
     }
-    let Some(font) = &skin.text else {
-        return;
-    };
-    let key = font_bg(font);
-    let (x0, x1) = (side_l + 6, LW - side_r - 6);
-    let cols = ((x1 - x0) / 15) as usize;
+    // Rows in Cinder's own font, in pledit.txt's colours, as Wampy draws them by default: every
+    // script shows, where the skin's font has Latin capitals only.
+    let (x0, x1) = (side_l + 8, LW - side_r - 8);
     for i in 0..pl_rows(v.playlist) {
-        let qi = v.at + i;
+        let qi = v.first + i;
         let Some(s) = v.queue.get(qi) else {
             break;
         };
         let y = top + PL_TITLE_H + i as i32 * ROW_H;
-        if i == 0 {
+        let playing = qi == v.at;
+        if playing {
             fill(c, (x0 - 3, y, x1 - x0 + 6, ROW_H), sel);
         }
-        let colour = if i == 0 { cur } else { fg };
-        let dur_w = s.dur.chars().count();
+        let st = sty(if playing { cur } else { fg }, 100, 17.0);
+        let base = (y + ROW_H - 9) as f32;
+        let dur_w = crate::text::measure(f, &s.dur, &st);
         let line = format!("{}. {} - {}", qi + 1, s.artist, s.title);
-        let ty = y + (ROW_H - 18) / 2;
-        let room = cols.saturating_sub(dur_w + 1);
-        text(c, dim, font, &line, room, Some((key, colour)), |j| {
-            (x0 + 15 * j, ty, 15, 18)
-        });
-        let dx = x1 - 15 * dur_w as i32;
-        text(c, dim, font, &s.dur, dur_w, Some((key, colour)), |j| {
-            (dx + 15 * j, ty, 15, 18)
-        });
+        let room = (x1 - x0) as f32 - dur_w - 12.0;
+        text_land(c, f, (x0 as f32, base), &line, &st, room);
+        text_land(c, f, (x1 as f32 - dur_w, base), &s.dur, &st, dur_w + 1.0);
     }
+}
+
+fn sty(col: u32, dim: u32, size: f32) -> TextStyle {
+    let col = dimmed(col, dim);
+    TextStyle {
+        fam: Family::Sans,
+        weight: Weight::Regular,
+        size,
+        color: Rgb888::new((col >> 16) as u8, (col >> 8) as u8, col as u8),
+        tracking: 0.0,
+    }
+}
+
+fn text_land(c: &mut Canvas, f: &FontSet, at: (f32, f32), s: &str, st: &TextStyle, max_w: f32) {
+    crate::text::draw_land(c, f, at, s, st, max_w);
 }
 
 #[cfg(test)]
@@ -582,6 +646,26 @@ mod tests {
         assert_eq!(marquee("SHORT", "0:09", 31), "SHORT");
         assert_eq!(marquee("ABCDEF", "0:00", 4), "ABCD");
         assert_eq!(marquee("ABCDEF", "0:02", 4), "CDEF");
+    }
+
+    #[test]
+    fn region_txt_cuts_the_window_to_its_polygons() {
+        use crate::skin::parse_region;
+        // One rectangle covering the window but its top row and a 3 px left strip.
+        let r = parse_region(
+            "; a comment\n[Normal]\nNumPoints = 4 ; four\nPointList = 3,1, 275,1, 275,116, 3,116\n[Equalizer]\nNumPoints=4\n",
+        );
+        assert_eq!(r.first(), Some(&(0, 0, 275)), "the whole top row is a hole");
+        assert_eq!(r[1], (1, 0, 3), "then the left strip on every row");
+        assert_eq!(r.len(), 1 + 115);
+        assert!(
+            parse_region("[Normal]\nNumPoints=4\nPointList=0,0,1,1\n").is_empty(),
+            "does not add up"
+        );
+        assert!(
+            parse_region(";[Normal]\n;NumPoints=4\n").is_empty(),
+            "all commented out, as in base"
+        );
     }
 
     #[test]

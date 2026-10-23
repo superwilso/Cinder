@@ -59,6 +59,7 @@ pub mod skin;
 pub mod sound;
 pub mod soundscape;
 pub mod style;
+pub mod tape;
 pub mod text;
 pub mod theme;
 pub mod tone;

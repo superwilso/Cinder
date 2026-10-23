@@ -1342,10 +1342,17 @@ pub struct App {
     /// The shell has a Winamp skin loaded, so the Winamp style is the landscape view
     /// (`winamp.rs`), with its counting-down time and folded window.
     winamp_skin: bool,
+    /// The shell has a cassette tape loaded (`tape.rs`), so the Cassette style turns on its side.
+    tape_loaded: bool,
     wa_remaining: bool,
     wa_playlist: bool,
+    /// The queue index of the playlist's first row once it has been scrolled; None follows the
+    /// playing track.
+    wa_pl_first: Option<usize>,
     /// The skin's visualiser: 0 spectrum, 1 oscilloscope, 2 off.
     wa_vis: u8,
+    /// The skin's analyzer look, `winamp::ANALYZER_STYLES`; the clutter bar's V steps it.
+    wa_style: u8,
     /// Battery care (Sony "Itawari" charging, ~90% cap). Mirrors the device state; the shell reads
     /// the real value at boot via cinder_set_battery_care and applies toggles via the action.
     battery_care: bool,
@@ -1841,9 +1848,12 @@ impl Default for App {
             vol_overlay: 0,
             volume_limit: false,
             winamp_skin: false,
+            tape_loaded: false,
             wa_remaining: false,
             wa_playlist: false,
+            wa_pl_first: None,
             wa_vis: 0,
+            wa_style: 0,
             ignore_the: false,
             lib_views: Default::default(),
             bt_volume: 15,
@@ -2601,7 +2611,11 @@ impl App {
     /// re-open what it might have been trying to dismiss). Returns whether it took the gesture, so
     /// the shell can fall back to a scroll if it did not.
     pub fn shelf_swipe_open(&mut self) -> bool {
-        if self.locked || self.shelf_open || self.quick_open || self.current() == Screen::Onboarding
+        if self.locked
+            || self.shelf_open
+            || self.quick_open
+            || self.current() == Screen::Onboarding
+            || self.landscape()
         {
             return false;
         }
@@ -2643,7 +2657,16 @@ impl App {
     /// up. With the panel off the answer is always no, so the contact scrolls exactly as it did
     /// before the panel existed.
     pub fn quick_pull_begin(&self, _x: i32, y: i32) -> bool {
-        self.quick_enabled && (0..crate::chrome::STATUS_H).contains(&y) && self.quick_allowed()
+        self.quick_enabled
+            && (0..crate::chrome::STATUS_H).contains(&y)
+            && self.quick_allowed()
+            && !self.landscape()
+    }
+
+    /// Now Playing is on its side (a Winamp skin or a cassette tape): the panel's edges and the
+    /// status strip belong to the view, which has no status bar of its own.
+    pub fn landscape(&self) -> bool {
+        self.current() == Screen::NowPlaying && (self.winamp_view() || self.tape_view())
     }
 
     /// The pull travelled far enough: open the panel. False if something modal came up meanwhile.
@@ -4442,7 +4465,7 @@ impl App {
                 self.search_enabled,
                 !self.lib.books.is_empty(),
             );
-        match crate::chrome::status_hit(x, y).filter(|_| !sort_chip) {
+        match crate::chrome::status_hit(x, y).filter(|_| !sort_chip && !self.landscape()) {
             Some(crate::chrome::StatusTap::Shelf) => {
                 self.open_shelf();
                 return vec![];
@@ -4509,6 +4532,22 @@ impl App {
                 vec![]
             }
             Screen::NowPlaying if self.winamp_view() => self.winamp_tap(x, y),
+            Screen::NowPlaying if self.tape_view() => {
+                use crate::tape::Tap;
+                let (lx, ly) = crate::winamp::to_land(x, y);
+                match crate::tape::tap_at(lx, ly) {
+                    Tap::Menu => {
+                        self.push(Screen::Menu);
+                        vec![]
+                    }
+                    Tap::Prev => vec![Action::Prev],
+                    Tap::Next => vec![Action::Next],
+                    Tap::PlayPause => {
+                        self.set_playing_optimistic(!self.playing);
+                        vec![Action::PlayPause]
+                    }
+                }
+            }
             Screen::NowPlaying => {
                 // One question, asked of the same layout the style draws from
                 // (`now_playing::layout`): no coordinate for this screen lives in `nav`. The
@@ -4627,7 +4666,10 @@ impl App {
             // Track information: the pinned action band, plus the link rows.
             Screen::TrackInfo => {
                 if !self.presets.is_empty() && crate::track_info::hit_album_sound(x, y) {
-                    return self.album_sound_step();
+                    return self.album_sound_step(false);
+                }
+                if !self.presets.is_empty() && crate::track_info::hit_song_sound(x, y) {
+                    return self.album_sound_step(true);
                 }
                 if crate::track_info::hit_add_to_playlist(y) {
                     if let Some(oid) = self.playing_object_id() {
@@ -4890,8 +4932,13 @@ impl App {
                 if let Some(i) = crate::display::style_chip_at(x, y) {
                     self.display_sel = crate::display::ROW_STYLE;
                     let style = crate::style::Style::from_index(i);
-                    // Winamp again: the next skin on the drive, Wampy's on-the-fly skin change.
-                    if style == crate::style::Style::Winamp && self.style == style {
+                    // Winamp or Cassette again: the next skin or tape on the drive, Wampy's
+                    // on-the-fly skin change.
+                    let skinned = matches!(
+                        style,
+                        crate::style::Style::Winamp | crate::style::Style::Cassette
+                    );
+                    if skinned && self.style == style {
                         return vec![Action::NextSkin];
                     }
                     self.style = style;
@@ -6972,6 +7019,38 @@ impl App {
         self.winamp_skin && self.style == crate::style::Style::Winamp
     }
 
+    /// The shell has (or no longer has) a cassette tape loaded.
+    pub fn set_tape_loaded(&mut self, loaded: bool) {
+        self.tape_loaded = loaded;
+    }
+
+    /// Now Playing is a cassette tape on its side (`tape.rs`).
+    pub fn tape_view(&self) -> bool {
+        self.tape_loaded && self.style == crate::style::Style::Cassette
+    }
+
+    /// The skin's display choices, for the settings file (`wa=`): remaining time, the visualiser
+    /// (spectrum, oscilloscope, off) and the analyzer's look.
+    pub fn winamp_prefs(&self) -> String {
+        format!(
+            "{},{},{}",
+            self.wa_remaining as u8, self.wa_vis, self.wa_style
+        )
+    }
+    pub fn set_winamp_prefs(&mut self, v: &str) {
+        let n: Vec<u8> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        if let [rem, vis, style] = n[..] {
+            self.wa_remaining = rem != 0;
+            self.wa_vis = vis % 3;
+            self.wa_style = style % crate::winamp::ANALYZER_STYLES.len() as u8;
+        }
+    }
+
+    /// The Winamp playlist's first row: where it was scrolled to, else the playing track.
+    fn wa_pl_first(&self) -> usize {
+        self.wa_pl_first.unwrap_or(self.context_idx)
+    }
+
     /// The skin's volume slider moved to `lx`. On the jack the level is set outright, and the
     /// shell writes whatever level it reads back; on Bluetooth, where a step is relative, one step
     /// toward the finger per move.
@@ -7010,6 +7089,7 @@ impl App {
             // The playlist takes the whole panel, and gives it back (Wampy's PL button).
             Some(Ctl::Shade | Ctl::Pl) => {
                 self.wa_playlist = !self.wa_playlist;
+                self.wa_pl_first = None;
                 vec![]
             }
             Some(Ctl::Options) => open(self, Screen::Settings),
@@ -7019,7 +7099,15 @@ impl App {
                 open(self, Screen::TrackInfo)
             }
             Some(Ctl::Double) => vec![Action::NextSkin],
-            Some(Ctl::VisMenu) => open(self, Screen::VizSet),
+            // Winamp's V opens its visualisation menu; here it steps the analyzer's look.
+            Some(Ctl::VisMenu) => {
+                let n = crate::winamp::ANALYZER_STYLES.len() as u8;
+                self.wa_style = (self.wa_style + 1) % n;
+                self.wa_vis = 0;
+                let name = crate::winamp::ANALYZER_STYLES[self.wa_style as usize];
+                self.notify_raw(&format!("Analyzer: {name}"));
+                vec![]
+            }
             Some(Ctl::Vis) => {
                 self.wa_vis = (self.wa_vis + 1) % 3;
                 vec![]
@@ -7045,10 +7133,15 @@ impl App {
             }
             Some(Ctl::Shuffle) => vec![Action::ShuffleToggle],
             Some(Ctl::Repeat) => vec![Action::RepeatCycle],
-            // Row 0 is the playing track; a later row jumps to it, as Up Next's rows do.
-            Some(Ctl::PlRow(i)) if i > 0 && self.context_idx + i < self.context.len() => {
+            // A row jumps to its track, as Up Next's rows do; the playing one does nothing.
+            Some(Ctl::PlRow(i)) => {
+                let qi = self.wa_pl_first() + i;
+                if qi == self.context_idx || qi >= self.context.len() {
+                    return vec![];
+                }
                 self.queue_follow = true;
-                vec![Action::PlayContextAt(self.context_idx + i)]
+                self.wa_pl_first = None;
+                vec![Action::PlayContextAt(qi)]
             }
             _ => vec![],
         }
@@ -7061,6 +7154,8 @@ impl App {
             return false;
         }
         match self.current() {
+            // A tape has nothing to drag.
+            Screen::NowPlaying if self.tape_view() => false,
             Screen::NowPlaying if self.winamp_view() => {
                 use crate::winamp::{self, Ctl};
                 let (lx, ly) = winamp::to_land(x, y);
@@ -7786,7 +7881,7 @@ impl App {
         self.sbar.is_some()
     }
 
-    pub fn swipe(&mut self, dir: i32, _x: i32, y: i32) -> Vec<Action> {
+    pub fn swipe(&mut self, dir: i32, x: i32, y: i32) -> Vec<Action> {
         if self.locked || self.overlay_open() {
             return vec![];
         }
@@ -7804,7 +7899,26 @@ impl App {
                 vec![]
             }
             // Turned on its side, a swipe means nothing the window has: Winamp has no gestures.
-            Screen::NowPlaying if self.winamp_view() => vec![],
+            Screen::NowPlaying if self.tape_view() => vec![],
+            // On its side a swipe across the panel runs along the playlist: it pages through the
+            // queue, a page a swipe, toward where the finger went. Anywhere else it means nothing.
+            Screen::NowPlaying if self.winamp_view() => {
+                let ly = crate::winamp::to_land(x, y).1;
+                if crate::winamp::on_playlist(ly, self.wa_playlist) && !self.context.is_empty() {
+                    let page = crate::winamp::pl_rows(self.wa_playlist)
+                        .saturating_sub(1)
+                        .max(1);
+                    let last = self.context.len() - 1;
+                    let first = self.wa_pl_first();
+                    // Leftward on the panel is downward on its side: the earlier tracks.
+                    self.wa_pl_first = Some(if dir < 0 {
+                        first.saturating_sub(page)
+                    } else {
+                        (first + page).min(last)
+                    });
+                }
+                vec![]
+            }
             Screen::NowPlaying => {
                 // Zoned by y. A swipe on the PAGING BLOCK (the artwork) turns the page; a swipe
                 // anywhere below it still skips tracks, which is where the transport already is.
@@ -9465,10 +9579,38 @@ impl App {
                     lyrics: self.has_lyrics(),
                     ..*np
                 };
-                if let (true, Some(skin)) = (self.winamp_view(), np2.skin) {
+                if let (true, Some(tape)) = (self.tape_view(), np2.tape) {
+                    let row = self.context.get(self.context_idx);
+                    let year = row.map_or(0, |r| r.year);
+                    let track = row.map_or(0, |r| r.track);
+                    let (year, track) = (
+                        if year > 0 {
+                            year.to_string()
+                        } else {
+                            String::new()
+                        },
+                        if track > 0 {
+                            track.to_string()
+                        } else {
+                            String::new()
+                        },
+                    );
+                    let song = crate::tape::Song {
+                        title: np2.title,
+                        artist: np2.artist,
+                        album: row.map_or("", |r| r.art.as_str()),
+                        year: &year,
+                        track: &track,
+                        duration: row.map_or(0, |r| crate::tape::secs(&r.dur)),
+                    };
+                    // The reel's clock: the visualiser phase, which runs only while it plays.
+                    let ms = (np2.viz_seed / 0.0036) as u32;
+                    crate::tape::render(c, &theme, fonts, &np2, tape, &song, ms);
+                } else if let (true, Some(skin)) = (self.winamp_view(), np2.skin) {
                     let view = crate::winamp::View {
                         queue: &self.context,
                         at: self.context_idx,
+                        first: self.wa_pl_first(),
                         volume: if self.bt_route {
                             (self.bt_volume, crate::overlay::BT_VOL_MAX)
                         } else {
@@ -9478,8 +9620,9 @@ impl App {
                         remaining: self.wa_remaining,
                         playlist: self.wa_playlist,
                         vis: self.wa_vis,
+                        style: self.wa_style,
                     };
-                    crate::winamp::render(c, &theme, &np2, skin, &view);
+                    crate::winamp::render(c, &theme, fonts, &np2, skin, &view);
                 } else {
                     crate::now_playing::render(c, &theme, fonts, &np2);
                     // sleep-timer countdown badge (nav owns the live remaining minutes)
@@ -9742,8 +9885,7 @@ impl App {
                     self.track_info_scroll_px,
                     self.sbar_active(),
                     rating,
-                    (!self.presets.is_empty())
-                        .then(|| self.album_sound_row().map_or(0, |(_, n)| n)),
+                    (!self.presets.is_empty()).then(|| self.album_sound_row().unwrap_or((0, 0))),
                 )
             }
             Screen::Lyrics => {
@@ -10481,7 +10623,7 @@ impl App {
         // Drawn AFTER the screen (each one fills its own background first) but BEFORE the return
         // bar and the overlays, so the previous layering is preserved — the Shelf's dim still
         // covers it. Onboarding and the USB-storage modal own the whole panel and never had one.
-        if !matches!(self.current(), Screen::Onboarding | Screen::UsbStorage) {
+        if !matches!(self.current(), Screen::Onboarding | Screen::UsbStorage) && !self.landscape() {
             crate::chrome::status_bar(c, &theme, fonts, np.clock, np.badge, np.battery);
         }
 
@@ -10543,8 +10685,8 @@ impl App {
         // y 406..800 opaquely) painted straight over both: the pin/clear confirmation was
         // invisible in the one place it fires, and the volume HUD — which still responds to Vol±
         // while the sheet is open — came up half-covered.
-        // The Winamp view has its own volume slider, and the HUD would lie across it sideways.
-        let wa = self.current() == Screen::NowPlaying && self.winamp_view();
+        // On its side the HUD would lie across the view sideways (and Winamp has its own slider).
+        let wa = self.landscape();
         if self.vol_overlay > 0 && self.current() != Screen::Lock && !wa {
             if self.volume_hud == 1 {
                 crate::overlay::volume_minimal(c, &theme, self.display_volume());
@@ -11281,15 +11423,56 @@ impl App {
         ))
     }
 
-    /// The playing album and its preset (0 = none), for Track info's band.
-    fn album_sound_row(&self) -> Option<(String, u8)> {
-        let (key, title) = self.playing_album()?;
-        let n = self
-            .album_sounds
+    /// The playing song's key among the album ones: a song entry is told from an album entry by
+    /// its leading \u{1e}, so both share `album_sounds` and the `album_sound=` lines.
+    fn playing_song_key(&self) -> Option<String> {
+        let t = self.context.get(self.context_idx)?;
+        Some(format!(
+            "\u{1e}{}\u{1f}{}\u{1f}{}",
+            t.title, t.artist, t.art
+        ))
+    }
+
+    /// The preset saved for `key` (0 = none).
+    fn sound_n(&self, key: &str) -> u8 {
+        self.album_sounds
             .iter()
-            .find(|(k, _)| *k == key)
-            .map_or(0, |(_, n)| *n);
-        Some((title, n))
+            .find(|(k, _)| k == key)
+            .map_or(0, |(_, n)| *n)
+    }
+
+    /// The playing album's preset and the playing song's (0 = none), for Track info's band.
+    fn album_sound_row(&self) -> Option<(u8, u8)> {
+        let (album, _) = self.playing_album()?;
+        let song = self.playing_song_key()?;
+        Some((self.sound_n(&album), self.sound_n(&song)))
+    }
+
+    /// The preset that should be live for the playing track, and the entry it comes from: the
+    /// song's when it has one, else the album's (0 = neither).
+    fn sound_effective(&self) -> Option<(String, u8)> {
+        let (album, _) = self.playing_album()?;
+        let song = self.playing_song_key()?;
+        let n = self.sound_n(&song);
+        Some(if n > 0 {
+            (song, n)
+        } else {
+            let n = self.sound_n(&album);
+            (album, n)
+        })
+    }
+
+    /// Make the effective preset live, or put back the sound from before. True when it changed.
+    fn sound_apply(&mut self) -> bool {
+        let Some((key, n)) = self.sound_effective() else {
+            return false;
+        };
+        self.album_sound_key = Some(key);
+        if n > 0 {
+            self.album_sound_load(n)
+        } else {
+            self.album_sound_restore()
+        }
     }
 
     /// Load preset `n` (1-based) as an album's sound, keeping what was live to put back after.
@@ -11315,9 +11498,15 @@ impl App {
         true
     }
 
-    /// A tap on Track info's ALBUM SOUND: Off, Preset 1, Preset 2, … and back to Off.
-    fn album_sound_step(&mut self) -> Vec<Action> {
-        let Some((key, _)) = self.playing_album() else {
+    /// A tap on Track info's ALBUM (`song` false) or SONG control: Off, Preset 1, Preset 2, … and
+    /// back to Off, for the playing album or song. A song's preset wins over its album's.
+    fn album_sound_step(&mut self, song: bool) -> Vec<Action> {
+        let key = if song {
+            self.playing_song_key()
+        } else {
+            self.playing_album().map(|(k, _)| k)
+        };
+        let Some(key) = key else {
             self.notify(crate::i18n::text("Nothing playing"));
             return vec![];
         };
@@ -11327,44 +11516,38 @@ impl App {
             ));
             return vec![];
         }
-        let cur = self.album_sound_row().map_or(0, |(_, n)| n);
-        let next = ((cur as usize + 1) % (self.presets.len() + 1)) as u8;
+        let next = ((self.sound_n(&key) as usize + 1) % (self.presets.len() + 1)) as u8;
         self.album_sounds.retain(|(k, _)| *k != key);
-        self.album_sound_key = Some(key.clone());
-        let changed = if next == 0 {
-            self.album_sound_restore()
-        } else {
+        if next > 0 {
             self.album_sounds.push((key, next));
-            self.album_sound_load(next)
-        };
-        if changed {
+        }
+        if self.sound_apply() {
             vec![Action::SoundChanged]
         } else {
             vec![]
         }
     }
 
-    /// Called by the shell when the playing track changes. A new album with a preset loads it; a
-    /// new album without one puts back the sound from before. True when the sound changed: the
-    /// shell collects that with [`Self::take_profile_apply`], which this raises.
+    /// Called by the shell when the playing track changes. A song or album with a preset loads it;
+    /// one without puts back the sound from before. Tracks that resolve to the same entry (an
+    /// album's songs) change nothing. True when the sound changed: the shell collects that with
+    /// [`Self::take_profile_apply`], which this raises.
     pub fn album_sound_follow(&mut self) -> bool {
-        let Some((key, _)) = self.playing_album() else {
+        let Some((key, n)) = self.sound_effective() else {
             return false;
         };
         if self.album_sound_key.as_deref() == Some(key.as_str()) {
             return false;
         }
-        self.album_sound_key = Some(key);
-        let n = self.album_sound_row().map_or(0, |(_, n)| n);
-        let changed = if n > 0 {
-            let ok = self.album_sound_load(n);
-            if ok {
-                self.notify_format("Preset {} for this album", vec![("0", n.to_string())]);
-            }
-            ok
-        } else {
-            self.album_sound_restore()
-        };
+        let changed = self.sound_apply();
+        if changed && n > 0 {
+            let msg = if key.starts_with('\u{1e}') {
+                "Preset {} for this song"
+            } else {
+                "Preset {} for this album"
+            };
+            self.notify_format(msg, vec![("0", n.to_string())]);
+        }
         self.profile_apply |= changed;
         changed
     }
@@ -17034,6 +17217,7 @@ mod tests {
         let fonts = crate::text::FontSet::load();
         let np = NowPlaying {
             skin: None,
+            tape: None,
             title: "t",
             artist: "a",
             codec: "",
@@ -19148,6 +19332,39 @@ mod tests {
     /// Display ▸ Style: a chip picks the style, Select steps through them, and `style=` in the
     /// settings file brings it back — while an unknown word keeps what was there.
     #[test]
+    fn a_cassette_tape_turns_now_playing_on_its_side() {
+        let mut a = unlocked();
+        a.set_style(crate::style::Style::Cassette);
+        assert!(!a.tape_view(), "no tape: Cinder's drawn cassette");
+        a.set_tape_loaded(true);
+        assert!(a.tape_view());
+        // Landscape (lx, ly) on the panel.
+        let at = |lx: i32, ly: i32| (479 - ly, lx);
+        let (x, y) = at(100, 300);
+        assert_eq!(a.tap(x, y), vec![Action::Prev]);
+        let (x, y) = at(700, 300);
+        assert_eq!(a.tap(x, y), vec![Action::Next]);
+        let (x, y) = at(400, 300);
+        assert_eq!(a.tap(x, y), vec![Action::PlayPause]);
+        let (x, y) = at(400, 300);
+        assert!(!a.scrub_begin(x, y), "nothing to drag on a tape");
+        assert_eq!(a.swipe(-1, x, y), vec![]);
+        let (x, y) = at(790, 20);
+        a.tap(x, y);
+        assert_eq!(
+            a.current(),
+            Screen::Menu,
+            "the corner Wampy keeps its settings in"
+        );
+        a.go(Screen::NowPlaying);
+        // The status strip (the panel's top, the view's left edge) is the view's: a tap at the
+        // left middle is ◁, not the strip's Menu.
+        let (x, y) = at(10, 240);
+        assert_eq!(a.tap(x, y), vec![Action::Prev]);
+        assert!(!a.shelf_swipe_open(), "no Shelf on its side");
+    }
+
+    #[test]
     fn the_winamp_skin_view_answers_every_control() {
         use crate::winamp::{self, Ctl};
         let mut a = unlocked();
@@ -19194,6 +19411,18 @@ mod tests {
             tap(&mut a, Ctl::Vis);
             assert_eq!(a.wa_vis, want, "spectrum, oscilloscope, off");
         }
+        tap(&mut a, Ctl::VisMenu);
+        assert_eq!(a.wa_style, 1, "V steps the analyzer's look");
+        let saved = a.winamp_prefs();
+        let mut b = unlocked();
+        b.set_winamp_prefs(&saved);
+        assert_eq!(
+            (b.wa_remaining, b.wa_vis, b.wa_style),
+            (true, 0, 1),
+            "and they survive a restart"
+        );
+        b.set_winamp_prefs("junk");
+        assert_eq!(b.wa_style, 1, "an unreadable line changes nothing");
         for (ctl, screen) in [
             (Ctl::Eject, Screen::Settings),
             (Ctl::Menu, Screen::Menu),
@@ -19202,7 +19431,6 @@ mod tests {
             (Ctl::OnTop, Screen::Display),
             (Ctl::FileInfo, Screen::TrackInfo),
             (Ctl::Title, Screen::TrackInfo),
-            (Ctl::VisMenu, Screen::VizSet),
             (Ctl::Eq, Screen::Eq),
         ] {
             tap(&mut a, ctl);
@@ -19247,6 +19475,12 @@ mod tests {
         assert_eq!(tap(&mut a, Ctl::PlRow(2)), vec![Action::PlayContextAt(3)]);
         assert_eq!(tap(&mut a, Ctl::PlRow(0)), vec![], "the playing track");
         assert!(!a.scrub_begin(240, 400), "no sliders on the playlist");
+        // A swipe pages through the queue; a row then plays that track and follows it again.
+        assert_eq!(a.swipe(1, 240, 400), vec![]);
+        let first = a.wa_pl_first();
+        assert!(first > 1, "paged on");
+        a.swipe(-1, 240, 400);
+        assert_eq!(a.wa_pl_first(), 0, "and back, no further than the top");
         tap(&mut a, Ctl::Pl);
         assert!(!a.wa_playlist);
         assert_eq!(
@@ -21200,7 +21434,7 @@ mod tests {
             0,
         );
         a.go(Screen::TrackInfo);
-        let (x, y) = (400, crate::track_info::BOTTOM + 10);
+        let (x, y) = (240, crate::track_info::BOTTOM + 10);
         a.tap(x, y);
         assert_eq!(
             a.current(),
@@ -21227,6 +21461,47 @@ mod tests {
         // Stepping past the last preset is Off, which forgets the album and restores.
         assert_eq!(a.tap(x, y), vec![Action::SoundChanged]);
         assert!(a.album_sounds().is_empty() && !a.snd_dsee);
+    }
+
+    /// Track info's SONG control: a song's preset wins over its album's, only for that song.
+    #[test]
+    fn a_song_preset_wins_over_its_album() {
+        use crate::model::SongRow;
+        let song = |id: i64| SongRow {
+            title: format!("t{id}"),
+            art: "A".into(),
+            object_id: id,
+            ..Default::default()
+        };
+        let mut a = unlocked();
+        a.set_play_context(vec![song(1), song(2), song(3)], 0);
+        a.snd_dsee = true;
+        a.presets.push(a.setup()); // Preset 1: DSEE on
+        a.snd_dsee = false;
+        a.snd_vinyl = true;
+        a.presets.push(a.setup()); // Preset 2: vinyl on, DSEE off
+        a.snd_vinyl = false;
+        a.go(Screen::TrackInfo);
+        let y = crate::track_info::BOTTOM + 10;
+        let (album, song_x) = (240, 400);
+        a.tap(album, y);
+        assert!(a.snd_dsee, "album A: Preset 1");
+        // Song 2 gets Preset 2 (two taps); it is not the playing song, so nothing changes yet.
+        a.track_started(2, false);
+        a.album_sound_follow();
+        a.go(Screen::TrackInfo);
+        a.tap(song_x, y);
+        assert_eq!(a.tap(song_x, y), vec![Action::SoundChanged]);
+        assert!(
+            a.snd_vinyl && !a.snd_dsee,
+            "song 2: Preset 2 over the album's"
+        );
+        // Song 3: back to the album's preset; song 2 again: its own.
+        a.track_started(3, false);
+        assert!(a.album_sound_follow() && a.snd_dsee && !a.snd_vinyl);
+        a.track_started(2, false);
+        assert!(a.album_sound_follow() && a.snd_vinyl);
+        assert_eq!(a.album_sounds().len(), 2, "one album entry, one song entry");
     }
 
     /// Deleting a preset drops the albums that used it and renumbers the ones after it.
@@ -22039,6 +22314,7 @@ mod tests {
         // The player says PLAYING and the UI agrees.
         let mut np = NowPlaying {
             skin: None,
+            tape: None,
             title: "Atlas Hands",
             artist: "Benjamin Francis Leftwich",
             codec: "FLAC",
@@ -23161,6 +23437,7 @@ mod palette_tests {
         let fonts = FontSet::load();
         let np = NowPlaying {
             skin: None,
+            tape: None,
             title: "",
             artist: "",
             codec: "",

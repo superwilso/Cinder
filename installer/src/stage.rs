@@ -300,19 +300,20 @@ const RETIRED: &[&str] = &["cinder-probe", "cinder-gpunode"];
 ///
 /// The same twelve bytes go out on Linux through `SG_IO` and on Windows through SCSI
 /// pass-through. Keeping one constant is deliberate: two copies of a device command drift.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 pub const FW_UPGRADE_CDB: [u8; 12] = [0xfc, 0, 0x04, b'd', b'b', b'm', b'n', 0, 0, 0, 0, 0];
 
 /// Read the player's KAS, the key Sony's updater decrypts a package with: DNK property 0x23,
 /// entry 22, 64 bytes of hex text (Rockbox `scsitool get_dnk_prop kas`). Walkman One rewrites it,
 /// so it says which package this player takes. Bytes 8-9 are the length, 7 must be 0xbc.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", windows, test))]
 pub const KAS_CDB: [u8; 12] = [0xdd, 0, 0, 0, 0, 0, 0, 0xbc, 0, 64, 0x23, 22];
 
 /// The KAS an NW-A50-series player reports under Walkman One: the NW-WM1A's (`upgtool -m ?`).
 pub const W1_KAS: &str = "e8d171a5d92f35eed9658c03fb9f86a169591659851fd7c49525f587a70b526c";
 
 /// The key text out of a KAS reply: printable bytes up to the first NUL, lower case.
+#[cfg(any(target_os = "linux", windows, test))]
 pub fn kas_text(reply: &[u8]) -> String {
     reply
         .iter()
@@ -822,24 +823,172 @@ pub fn trigger_fw_upgrade(target: &Path, mut log: impl FnMut(&str)) -> io::Resul
     }
 }
 
-/// No raw SCSI on macOS (below): the key cannot be read there.
+/// The key is not read on macOS: taking the player's USB interface (below) ejects its volume, and
+/// the key is wanted before the files are staged onto it.
 #[cfg(all(unix, not(target_os = "linux")))]
 pub fn read_kas(_target: &Path) -> io::Result<String> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "no raw SCSI on this system",
+        "the key is not read on this system",
     ))
 }
 
-/// macOS has no SG_IO. Raw SCSI passthrough there needs an IOKit `SCSITaskUserClient`, and the
-/// kernel will not hand one over for a disk it has already claimed and mounted — which is exactly
-/// the state a staged Walkman is in. Rather than pretend, the macOS build stages and says so.
-#[cfg(all(unix, not(target_os = "linux")))]
+/// Other Unixes have no way in at all; the staging is done and they say so.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 pub fn trigger_fw_upgrade(_target: &Path, _log: impl FnMut(&str)) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "macOS cannot send the vendor SCSI command",
+        "this system cannot send the vendor SCSI command",
     ))
+}
+
+/// Sony's USB vendor id.
+#[cfg(target_os = "macos")]
+const SONY_VID: u16 = 0x054c;
+
+#[cfg(target_os = "macos")]
+fn usb_err(e: rusb::Error) -> io::Error {
+    let kind = match e {
+        rusb::Error::Access => io::ErrorKind::PermissionDenied,
+        rusb::Error::NotFound | rusb::Error::NoDevice => io::ErrorKind::NotFound,
+        rusb::Error::Timeout => io::ErrorKind::TimedOut,
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, format!("USB: {e}"))
+}
+
+/// The player's mass-storage interface, taken from macOS: (handle, bulk-OUT, bulk-IN). macOS
+/// SCSI passthrough refuses a disk it has mounted, so the command goes out as raw USB mass storage
+/// (`bot.rs`) instead. Taking the interface from macOS's driver needs root and libusb's "capture"
+/// (libusb 1.0.25+, which rusb's vendored build is).
+#[cfg(target_os = "macos")]
+fn open_player() -> io::Result<(rusb::DeviceHandle<rusb::Context>, u8, u8)> {
+    use rusb::UsbContext;
+    let ctx = rusb::Context::new().map_err(usb_err)?;
+    let mut found = Vec::new();
+    for dev in ctx.devices().map_err(usb_err)?.iter() {
+        let Ok(d) = dev.device_descriptor() else {
+            continue;
+        };
+        if d.vendor_id() != SONY_VID {
+            continue;
+        }
+        let Ok(cfg) = dev.active_config_descriptor() else {
+            continue;
+        };
+        let mut msc = None;
+        for iface in cfg.interfaces() {
+            for alt in iface.descriptors() {
+                // Mass storage, SCSI transparent command set, bulk-only transport.
+                if (alt.class_code(), alt.sub_class_code(), alt.protocol_code()) != (8, 6, 0x50) {
+                    continue;
+                }
+                let (mut out, mut inp) = (None, None);
+                for ep in alt.endpoint_descriptors() {
+                    if ep.transfer_type() == rusb::TransferType::Bulk {
+                        match ep.direction() {
+                            rusb::Direction::Out => out = Some(ep.address()),
+                            rusb::Direction::In => inp = Some(ep.address()),
+                        }
+                    }
+                }
+                if let (Some(o), Some(i)) = (out, inp) {
+                    msc = Some((alt.interface_number(), o, i));
+                }
+            }
+        }
+        if let Some(m) = msc {
+            found.push((dev, m));
+        }
+    }
+    if found.len() > 1 {
+        return Err(io::Error::other(format!(
+            "{} Sony storage devices are plugged in; unplug all but the player",
+            found.len()
+        )));
+    }
+    let Some((dev, (n, out, inp))) = found.pop() else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no Sony storage device on USB",
+        ));
+    };
+    let h = dev.open().map_err(usb_err)?;
+    if h.kernel_driver_active(n).unwrap_or(true) {
+        h.detach_kernel_driver(n).map_err(usb_err)?;
+    }
+    h.claim_interface(n).map_err(usb_err)?;
+    Ok((h, out, inp))
+}
+
+/// Send one 12-byte CDB that reads up to `want` bytes, over raw USB mass storage, and return what
+/// came back. `reboots`: the command restarts the player, so the player vanishing before its
+/// status arrives is success, not failure.
+#[cfg(target_os = "macos")]
+fn send_cdb_usb(cdb: &[u8; 12], want: usize, reboots: bool) -> io::Result<Vec<u8>> {
+    use crate::bot;
+    let (h, out, inp) = open_player()?;
+    let t = std::time::Duration::from_secs(30);
+    let tag = u32::from_le_bytes(*b"Cind");
+    h.write_bulk(out, &bot::cbw(tag, want as u32, cdb), t)
+        .map_err(usb_err)?;
+    let gone = |e: &rusb::Error| reboots && matches!(e, rusb::Error::NoDevice | rusb::Error::Io);
+    let mut data = vec![0u8; want];
+    // A device may send less than asked or stall the data stage; the status follows either way.
+    let got = match h.read_bulk(inp, &mut data, t) {
+        Ok(n) => n,
+        Err(rusb::Error::Pipe) => {
+            let _ = h.clear_halt(inp);
+            0
+        }
+        Err(e) if gone(&e) => return Ok(Vec::new()),
+        Err(e) => return Err(usb_err(e)),
+    };
+    data.truncate(got);
+    let mut st = [0u8; 13];
+    let n = match h.read_bulk(inp, &mut st, t) {
+        Ok(n) => n,
+        Err(e) if gone(&e) => return Ok(data),
+        Err(e) => return Err(usb_err(e)),
+    };
+    match bot::csw(&st[..n], tag).map_err(io::Error::other)? {
+        bot::Status::Passed => Ok(data),
+        s => Err(io::Error::other(format!(
+            "drive rejected the command ({s:?})"
+        ))),
+    }
+}
+
+/// Flush, unmount the player's volume (the disk stays attached), then tell it to reboot into its
+/// updater over raw USB mass storage. The order matters for the reason the Linux one gives.
+#[cfg(target_os = "macos")]
+pub fn trigger_fw_upgrade(target: &Path, mut log: impl FnMut(&str)) -> io::Result<()> {
+    use std::process::Command;
+    let _ = Command::new("sync").status();
+    let unmounted = Command::new("diskutil")
+        .arg("unmountDisk")
+        .arg(target)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !unmounted {
+        log("diskutil could not unmount the player; trying anyway");
+    }
+    log("telling the player to reboot into its own updater (raw USB)");
+    let fire = |flag: u8| {
+        let mut cdb = FW_UPGRADE_CDB;
+        cdb[8] = flag;
+        send_cdb_usb(&cdb, 0x80, true).map(|_| ())
+    };
+    match fire(0x80) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Err(e),
+        Err(first) => {
+            log(&format!(
+                "newer-style command refused: {first} — trying the older one"
+            ));
+            fire(0x00)
+        }
+    }
 }
 
 #[cfg(test)]

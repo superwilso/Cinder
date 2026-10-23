@@ -29,15 +29,21 @@ pub const ACTION_H: i32 = 56;
 /// never find — which is how the whole picker ended up shipped and unreachable.
 pub const BOTTOM: i32 = LIST_BOTTOM - ACTION_H;
 
-/// Is this point on the "Add to playlist" band? Full width, or its left half while the album
-/// control shares the band (`album_sound` is Some in [`render`]).
+/// Is this point on the "Add to playlist" band? Full width, or its left third while the album
+/// and song controls share the band (`album_sound` is Some in [`render`]).
 pub fn hit_add_to_playlist(y: i32) -> bool {
     (BOTTOM..BOTTOM + ACTION_H).contains(&y)
 }
 
-/// Is this point on the album control, the band's right half? Only drawn once a preset is saved.
+/// Is this point on the album control, the band's middle third? Only drawn once a preset is saved.
 pub fn hit_album_sound(x: i32, y: i32) -> bool {
-    hit_add_to_playlist(y) && x >= crate::canvas::W as i32 / 2
+    let w = crate::canvas::W as i32;
+    hit_add_to_playlist(y) && (w / 3..w * 2 / 3).contains(&x)
+}
+
+/// Is this point on the song control, the band's right third?
+pub fn hit_song_sound(x: i32, y: i32) -> bool {
+    hit_add_to_playlist(y) && x >= crate::canvas::W as i32 * 2 / 3
 }
 /// Label column x, value column x, and the right edge values wrap against.
 const LABEL_X: f32 = 22.0;
@@ -197,7 +203,7 @@ pub fn render(
     // The playing song's rating, 0..=5, for the Rating row's stars.
     rating: u8,
     // Sound ▸ Presets kept for the playing album (0 = none); None while no preset is saved.
-    album_sound: Option<u8>,
+    album_sound: Option<(u8, u8)>,
 ) {
     let scroll = scroll_px.clamp(0, max_scroll_px(f, t, rows));
     c.fill(t.bg);
@@ -298,9 +304,9 @@ pub fn render(
 }
 
 /// The actions this screen offers, pinned under the list: Add to playlist, and once a preset is
-/// saved, the album's sound (Wampy's per-song sound, by album) in the right half. A tap there
-/// steps Off, Preset 1, Preset 2 … for the album that is playing.
-fn action_band(c: &mut Canvas, t: &Theme, f: &FontSet, album_sound: Option<u8>) {
+/// saved, the album's and the song's sound (Wampy's per-song sound) in the other two thirds. A tap
+/// on either steps Off, Preset 1, Preset 2 … for the album or song that is playing.
+fn action_band(c: &mut Canvas, t: &Theme, f: &FontSet, album_sound: Option<(u8, u8)>) {
     let w = crate::canvas::W as i32;
     fill_rect(c, 0, BOTTOM, w, ACTION_H, t.panel);
     hline(c, BOTTOM, t.line);
@@ -309,20 +315,34 @@ fn action_band(c: &mut Canvas, t: &Theme, f: &FontSet, album_sound: Option<u8>) 
     let add = crate::i18n::text("+  ADD TO PLAYLIST");
     match album_sound {
         None => center(c, f, (w / 2) as f32, y, add, &st),
-        Some(n) => {
-            center(c, f, (w / 4) as f32, y, add, &st);
-            fill_rect(c, w / 2, BOTTOM + 12, 1, ACTION_H - 24, t.line);
-            let v = if n == 0 {
-                crate::i18n::text("ALBUM SOUND \u{b7} OFF").to_string()
-            } else {
-                crate::ui_format!("ALBUM SOUND \u{b7} P{}", n)
-            };
-            let st = if n == 0 {
-                sty(Family::Mono, Weight::Bold, 13.0, t.dim, 0.14)
-            } else {
-                st
-            };
-            center(c, f, (w * 3 / 4) as f32, y, &v, &st);
+        Some((album, song)) => {
+            let third = w / 3;
+            center(
+                c,
+                f,
+                (third / 2) as f32,
+                y,
+                crate::i18n::text("+  PLAYLIST"),
+                &st,
+            );
+            for (i, (n, off, on)) in [
+                (album, "ALBUM \u{b7} OFF", "ALBUM \u{b7} P{}"),
+                (song, "SONG \u{b7} OFF", "SONG \u{b7} P{}"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let x0 = third * (i as i32 + 1);
+                fill_rect(c, x0, BOTTOM + 12, 1, ACTION_H - 24, t.line);
+                let v = if n == 0 {
+                    crate::i18n::text(off).to_string()
+                } else {
+                    crate::i18n::text(on).replace("{}", &n.to_string())
+                };
+                let col = if n == 0 { t.dim } else { t.acc };
+                let st = sty(Family::Mono, Weight::Bold, 13.0, col, 0.14);
+                center(c, f, (x0 + third / 2) as f32, y, &v, &st);
+            }
         }
     }
 }

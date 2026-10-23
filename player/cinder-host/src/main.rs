@@ -162,6 +162,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
 
     let np = now_playing::NowPlaying {
         skin: None,
+        tape: None,
         title: "Atlas Hands",
         artist: "Benjamin Francis Leftwich",
         codec: "FLAC · 24bit / 96.0 kHz",
@@ -3461,7 +3462,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             0,
             false,
             0,
-            Some(2),
+            Some((2, 0)),
         );
         save(&c, "track_info_album_sound");
     }
@@ -3571,6 +3572,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             };
             let state = now_playing::NowPlaying {
                 skin: sk,
+                tape: None,
                 progress: 0.4,
                 ..np
             };
@@ -3618,6 +3620,47 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             save(&c, name);
         }
     }
+
+    // Now Playing in Cassette with a stand-in tape on the drive: the panel on its side, the tape
+    // across it, a reel frame and the song in the tape's colour. LAST, as above.
+    {
+        use cinder_ui::art::Image;
+        use cinder_ui::style::Style;
+        let sheet = |w: usize, h: usize, f: &dyn Fn(usize, usize) -> [u8; 3]| Image {
+            w,
+            h,
+            rgb: (0..w * h).flat_map(|i| f(i % w, i / w)).collect(),
+        };
+        let tape = cinder_ui::tape::Tape {
+            image: sheet(800, 480, &|x, y| {
+                let label = (60..740).contains(&x) && (60..200).contains(&y);
+                if label {
+                    [230, 225, 205]
+                } else {
+                    [40 + (x / 20) as u8, 40, 50]
+                }
+            }),
+            reel: vec![sheet(528, 116, &|x, _| {
+                if (x / 66) % 2 == 0 {
+                    [20, 20, 20]
+                } else {
+                    [120, 120, 120]
+                }
+            })],
+            config: cinder_ui::tape::Config::default(),
+            name: "stand-in".into(),
+        };
+        let mut a = cinder_ui::nav::App::unlocked();
+        a.set_style(Style::Cassette);
+        a.set_tape_loaded(true);
+        let state = now_playing::NowPlaying {
+            tape: Some(&tape),
+            ..np
+        };
+        let mut c = Canvas::new();
+        a.render(&mut c, &fonts, &state);
+        save(&c, "now_playing_tape_standin");
+    }
 }
 
 // ── Golden pixel hashes ────────────────────────────────────────────────────────────────────────
@@ -3632,6 +3675,7 @@ fn pixel_hash(c: &Canvas) -> u64 {
         h ^= px as u64;
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
+
     h
 }
 

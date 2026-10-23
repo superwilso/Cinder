@@ -60,6 +60,10 @@ jobs:
           - what: installer (windows)
             os: windows-latest
             dir: installer
+          # Builds the macOS USB path (stage.rs, bot.rs) that nothing else compiles.
+          - what: installer (macos)
+            os: macos-latest
+            dir: installer
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -238,8 +242,9 @@ jobs:
 
   # ── the dependency tree, which nothing looked at ───────────────────────────────────────────────
   # ~130 crates reach the binary that runs as the device's Home app, and until now no gate checked
-  # any of them against the RustSec advisory database. The installer has ZERO dependencies by
-  # design — it is audited here anyway so that stays true rather than merely being true today.
+  # any of them against the RustSec advisory database. The installer has no dependencies on Windows
+  # and Linux by design, and one on macOS (rusb, with libusb vendored, for the raw USB command there);
+  # it is audited here so that stays all there is.
   #
   # `cargo audit` exits non-zero on a VULNERABILITY and zero on an unmaintained-crate warning, which
   # is the right split for this repo: a vulnerability in the tree is a stop, whereas `instant` and

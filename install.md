@@ -22,7 +22,18 @@ it shows up as a drive, and run it.
 
 `cinder-installer-linux-x64` is published alongside it and does the same job, looking under
 `/media`, `/run/media`, `/mnt` and `/Volumes` — but **run it with `sudo`**, because the final
-upgrade command is a raw SCSI passthrough. On macOS it stages the files and stops; see
+upgrade command is a raw SCSI passthrough.
+
+`cinder-installer-macos` (Apple silicon and Intel) is **experimental**: it has not yet installed
+onto a player from a real Mac. It is unsigned, so in Terminal, from the folder it downloaded to:
+
+```sh
+xattr -d com.apple.quarantine cinder-installer-macos
+chmod +x cinder-installer-macos
+sudo ./cinder-installer-macos
+```
+
+If it stages the files but cannot send the last command, finish on Linux or Windows; see
 [the platform note](#a1-what-actually-triggers-the-update) below.
 
 The installer carries everything it needs inside the one file: the device binaries, the component
@@ -184,7 +195,7 @@ Settings, not anywhere. The upgrade is always triggered by the host over USB, an
 |---|---|---|
 | Windows | The installer sends it directly (SCSI pass-through on the drive's volume handle) | **Run as administrator** — Windows grants raw volume access to nothing less |
 | Linux | The installer sends it directly (`SG_IO`), the same command `tools/flash.sh` ends with | `sudo` |
-| macOS | **Cannot be sent.** Raw SCSI needs an IOKit `SCSITaskUserClient`, which the kernel refuses for an already-mounted disk | finish on Linux/Windows |
+| macOS (experimental) | macOS refuses SCSI passthrough for a mounted disk, so the installer unmounts the volume (`diskutil unmountDisk`), takes the player's USB interface from macOS's driver, and sends the same command as raw USB mass storage (`installer/src/bot.rs`) | `sudo`; if macOS will not let go of the interface, finish on Linux/Windows |
 
 > Until v0.3.1 the Windows installer sent this command by launching **Sony's own
 > `SoftwareUpdateTool.exe`**, which it carried inside itself. It sends the command directly now.

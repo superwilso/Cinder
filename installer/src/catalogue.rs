@@ -152,6 +152,7 @@ impl Comp {
 
     /// The language in its own name only, as language pickers show it: "简体中文", without the
     /// "(Simplified Chinese)" the confirmation and the description keep.
+    #[cfg(any(windows, test))]
     pub fn language_native(&self) -> &str {
         let name = self.language_name();
         name.split_once(" (").map_or(name, |(native, _)| native)

@@ -32,10 +32,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   header is rewritten every five seconds). *Jack recording device-verified by hand-install 10-22:
   a 7.9 s WAV of the radio. The RECORD button, BT OUT recording and the installer path are
   device-unverified.*
-- **A preset for each album.** Once a preset is saved (Sound ▸ Presets), Track information (tap
-  the title on Now Playing) gains ALBUM SOUND beside Add to playlist. Tap it to step Off, P1, P2…
-  for the album that is playing. That preset loads whenever the album starts, and the sound from
-  before comes back when something else plays. Deleting a preset takes it off its albums.
+- **A preset for each album or song.** Once a preset is saved (Sound ▸ Presets), Track
+  information (tap the title on Now Playing) gains ALBUM and SONG beside Add to playlist. Tap
+  either to step Off, P1, P2… for the album or the song that is playing. The preset loads whenever
+  that album or song starts, a song's preset wins over its album's, and the sound from before
+  comes back when something else plays. Deleting a preset takes it off its albums and songs.
   *Device-unverified.*
 - **Your own volume curve** (Sound ▸ Advanced ▸ Volume curve, needs the volume-curve option).
   Seven points choose which of Sony's volume steps volume 0, 20, 40 … 120 plays, with a straight
@@ -61,13 +62,25 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   - **Buttons:** EQ (the equaliser), PL (the playlist full screen and back), ⏏ (Settings), the
     title bar's buttons and the O A I D V bar.
   - **Display:** the time (tap for remaining), and the visualiser (tap for spectrum, oscilloscope,
-    off).
-  - **Playlist:** a row plays it.
+    off). The clutter bar's V steps Winamp's analyzer looks (normal, fire or line, thick or thin
+    bands, with peaks). All three choices are kept across restarts.
+  - **Skin shapes:** a skin's `region.txt` cuts the window to its shape.
+  - **Playlist:** a row plays it, and a swipe along it pages through the whole queue. Rows are
+    in Cinder's own font, in the skin's playlist colours, so every script shows.
 
   Tapping the Winamp chip again moves to the next skin on the drive, and the choice is remembered.
   Skins saved with RLE compression, as Winamp's own base skin is, are read too. Without a skin, the
   style is Terminal with a line saying how to add one. No skin ships with Cinder. *Host-tested,
   including two real skins rendered off-device; device-unverified.*
+- **Your own cassette tapes** (Settings ▸ Display ▸ Style ▸ Cassette). Put a tape folder in
+  `cinder_cassette/tape/` and reel frames in `cinder_cassette/reel/` at the top of the drive, laid
+  out as Wampy lays them out, so a Wampy tape folder copies straight over: an 800×480 picture,
+  the reel's frames, and an optional `config.txt` placing the artist, title and album lines and
+  the reel. Now Playing turns on its side and shows the tape. The reel turns while the song
+  plays. Tap the left third for ◁, the middle for ▶/‖, the right third for ▷, and the top right
+  corner for the Menu. A `cassette.txt` in a music folder (`tape:` and `reel:`) picks the tape
+  for the songs in it. Tap the Cassette chip again for the next tape. Without a tape, Cassette is
+  Cinder's drawn cassette as before. No tape ships with Cinder. *Host-tested; device-unverified.*
 - **Two Now Playing styles: Cassette and Clock** (Settings ▸ Display ▸ Style). Cassette draws the
   song as a tape in a deck: the title and cover on its label, reels that wind from left to right as
   the song plays, and piano keys for the transport. Clock puts a large clock where the cover was,
@@ -92,6 +105,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Control changed nothing unless Wampy or Walkman One had added them. Cinder's sound-service library
   (the `preload` component) now adds both, after the six-band EQ. Walkman One's chain is left as it
   is. *Host- and qemu-tested; device-unverified.*
+
+- **An installer for macOS (experimental).** `cinder-installer-macos`, one file for Apple silicon
+  and Intel. It now finishes the install too: macOS will not pass a SCSI command to a mounted disk,
+  so the installer unmounts the player's volume and sends the update command as raw USB mass
+  storage. Run it with `sudo` (`install.md` has the steps). *Built and type-checked; not yet run
+  on a real Mac with a player.*
 
 ### Changed
 

@@ -407,7 +407,7 @@ d6e548c29e37ae2f zappin_complete_en
 f2bdfaececc2eed1 zappin_active_zh_night
 acd25f9c4a857a95 vol_curve
 d8f51a4e2cab1d64 vol_curve_missing
-480a0e65fbf96dfc track_info_album_sound
+36c612c5b40469b3 track_info_album_sound
 05c5a7c89ac374ed album_cue
 ddfdc33279b976ca now_playing_winamp_noskin
 91aca9cb692062bd now_playing_winamp_standin
@@ -415,3 +415,4 @@ ddfdc33279b976ca now_playing_winamp_noskin
 528218b70e45a68f now_playing_cassette_idle
 3d2a7f4bcee3214c now_playing_clock
 2bc9f4c7cf6df5b0 now_playing_clock_idle
+3264aa31142c3ac6 now_playing_tape_standin

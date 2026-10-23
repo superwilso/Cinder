@@ -10,6 +10,11 @@ license = "PolyForm-Noncommercial-1.0.0"
 # but mingw. Every crate added here is a crate someone has to trust to plug a player in.
 [dependencies]
 
+# Except on macOS, which has no SCSI passthrough for a mounted disk: the upgrade command goes out
+# as raw USB mass storage there (stage.rs, bot.rs). Vendored libusb, so nothing to install.
+[target.'cfg(target_os = "macos")'.dependencies]
+rusb = { version = "0.9", features = ["vendored"] }
+
 [[bin]]
 name = "cinder-installer"
 path = "src/main.rs"

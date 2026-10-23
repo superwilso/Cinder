@@ -640,6 +640,42 @@ mod localization_tests {
     }
 }
 
+/// `draw` on the panel turned on its side (`winamp::to_land`): `(x, baseline)` and `max_w` are
+/// landscape pixels, and a glyph that would cross `x + max_w` is not drawn, nor any after it.
+/// Returns the pen x after.
+pub fn draw_land(
+    canvas: &mut Canvas,
+    fonts: &FontSet,
+    (x, baseline): (f32, f32),
+    s: &str,
+    st: &TextStyle,
+    max_w: f32,
+) -> f32 {
+    let size = scaled(st.size);
+    let track = st.tracking * size;
+    let w = crate::canvas::W as i32;
+    let mut pen = x;
+    for ch in s.chars() {
+        let (m, bitmap) = fonts.glyph(st.fam, st.weight, ch, size);
+        if pen + m.advance_width > x + max_w {
+            break;
+        }
+        let gx0 = (pen + m.xmin as f32).round() as i32;
+        let gy0 = (baseline - (m.height as f32 + m.ymin as f32)).round() as i32;
+        for gy in 0..m.height {
+            for gx in 0..m.width {
+                let a = bitmap[gy * m.width + gx];
+                if a > 0 {
+                    let (lx, ly) = (gx0 + gx as i32, gy0 + gy as i32);
+                    canvas.blend(w - 1 - ly, lx, st.color, a);
+                }
+            }
+        }
+        pen += m.advance_width + track;
+    }
+    pen
+}
+
 pub struct TextStyle {
     pub fam: Family,
     pub weight: Weight,

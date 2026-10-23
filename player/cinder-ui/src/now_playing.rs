@@ -417,6 +417,8 @@ pub struct NowPlaying<'a> {
     pub lyrics: bool,
     /// The Winamp style's skin (`skin.rs`), when the shell has one loaded.
     pub skin: Option<&'a crate::skin::Skin>,
+    /// The Cassette style's tape, when the shell has one loaded (`tape.rs`).
+    pub tape: Option<&'a crate::tape::Tape>,
 }
 
 /// The pages you swipe between on Now Playing. The visualiser used to be painted ON the cover,
@@ -1108,6 +1110,7 @@ mod tests {
     fn np_with(page: u8, viz_size: u8, levels: &[f32]) -> NowPlaying<'_> {
         NowPlaying {
             skin: None,
+            tape: None,
             title: "Atlas Hands",
             artist: "Benjamin Francis Leftwich",
             codec: "FLAC · 24bit / 96.0 kHz",
