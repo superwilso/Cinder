@@ -12,15 +12,15 @@
 use crate::art::Image;
 use crate::Canvas;
 
-/// The main window as the shell scales it: 275×116 at 408 px wide (×1.4836).
-pub const MAIN_W: usize = 408;
-pub const MAIN_H: usize = 172;
+/// The main window as the shell scales it: 275×116 across the 800 px of the panel turned on its
+/// side (×2.909), which is how `winamp.rs` draws it.
+pub const MAIN_W: usize = 800;
+pub const MAIN_H: usize = 337;
 /// The scale from skin pixels to `MAIN_*`, for placing sprites over the main window.
 pub const MAIN_SCALE: f32 = MAIN_W as f32 / 275.0;
 
 /// The decoded sheets. Every one but `main` is optional: a skin that lacks one falls back to
 /// Cinder's own drawing for that part.
-#[derive(Default)]
 pub struct Skin {
     /// main.bmp, already scaled to MAIN_W × MAIN_H.
     pub main: Option<Image>,
@@ -34,8 +34,22 @@ pub struct Skin {
     pub text: Option<Image>,
     /// posbar.bmp: the seek bar (0,0, 248×10) and its thumb (248,0, 29×10).
     pub posbar: Option<Image>,
-    /// shufrep.bmp: repeat (0,y, 28×15) and shuffle (28,y, 47×15); y 0 off, y 30 on.
+    /// shufrep.bmp: repeat (0,y, 28×15) and shuffle (28,y, 47×15); y 0 off, y 30 on. Also the
+    /// EQ (0,61, 23×12) and PL (23,61) buttons.
     pub shufrep: Option<Image>,
+    /// volume.bmp and balance.bmp: 28 backgrounds 15 px apart, the thumb at (15,422, 14×11).
+    pub volume: Option<Image>,
+    pub balance: Option<Image>,
+    /// playpaus.bmp: the play (0,0) and pause (9,0) indicators, 9×9.
+    pub playpaus: Option<Image>,
+    /// monoster.bmp: stereo (0,y, 29×12) and mono (29,y, 27×12); y 0 lit, y 12 dark.
+    pub monoster: Option<Image>,
+    /// pledit.bmp: the playlist's title bar and side borders.
+    pub pledit: Option<Image>,
+    /// pledit.txt: the playlist's text, current text, background and current-row colours.
+    pub pl_colors: [u32; 4],
+    /// viscolor.txt: 24 colours; 2..=17 are the spectrum from top to bottom.
+    pub viscolor: [u32; 24],
     /// The file name, for the line that says which skin is in use.
     pub name: String,
 }
@@ -46,14 +60,103 @@ pub const CB_PLAY: (i32, i32) = (23, 23);
 pub const CB_PAUSE: (i32, i32) = (46, 23);
 pub const CB_NEXT: (i32, i32) = (92, 22);
 
+/// Winamp's own colours, for a skin without pledit.txt or viscolor.txt.
+pub const PL_DEFAULT: [u32; 4] = [0x00ff00, 0xffffff, 0x000000, 0x0000c6];
+pub const VIS_DEFAULT: [u32; 24] = [
+    0x000000, 0x181821, 0xef3110, 0xce2910, 0xd65a00, 0xd66600, 0xd67300, 0xc67b08, 0xdea518,
+    0xd6b521, 0xbdde29, 0x94de21, 0x29ce10, 0x32be10, 0x39b510, 0x319c08, 0x298c00, 0x188408,
+    0x969696, 0xd6d6de, 0xadadb5, 0xbdbdc6, 0xd6d6de, 0xc8c8c8,
+];
+
+impl Default for Skin {
+    fn default() -> Self {
+        Skin {
+            main: None,
+            titlebar: None,
+            cbuttons: None,
+            numbers: None,
+            text: None,
+            posbar: None,
+            shufrep: None,
+            volume: None,
+            balance: None,
+            playpaus: None,
+            monoster: None,
+            pledit: None,
+            pl_colors: PL_DEFAULT,
+            viscolor: VIS_DEFAULT,
+            name: String::new(),
+        }
+    }
+}
+
+/// `#RRGGBB` (or `RRGGBB`) as a colour.
+pub fn hex_color(v: &str) -> Option<u32> {
+    let h = v.trim().trim_start_matches('#');
+    (h.len() >= 6).then(|| u32::from_str_radix(&h[..6], 16).ok())?
+}
+
+/// pledit.txt's `Normal`, `Current`, `NormalBG` and `SelectedBG`; Winamp's own for any it lacks.
+pub fn parse_pledit(txt: &str) -> [u32; 4] {
+    let mut out = PL_DEFAULT;
+    for line in txt.lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let i = match k.trim().to_ascii_lowercase().as_str() {
+            "normal" => 0,
+            "current" => 1,
+            "normalbg" => 2,
+            "selectedbg" => 3,
+            _ => continue,
+        };
+        if let Some(c) = hex_color(v) {
+            out[i] = c;
+        }
+    }
+    out
+}
+
+/// viscolor.txt: one `r,g,b` per line (a comment may follow); Winamp's own for missing lines.
+pub fn parse_viscolor(txt: &str) -> [u32; 24] {
+    let mut out = VIS_DEFAULT;
+    let rows = txt.lines().filter_map(|l| {
+        let n: Vec<u32> = l
+            .split(|ch: char| !ch.is_ascii_digit())
+            .filter(|p| !p.is_empty())
+            .take(3)
+            .filter_map(|p| p.parse().ok())
+            .collect();
+        (n.len() == 3).then(|| n[0].min(255) << 16 | n[1].min(255) << 8 | n[2].min(255))
+    });
+    for (o, c) in out.iter_mut().zip(rows) {
+        *o = c;
+    }
+    out
+}
+
 /// Draw `src` (x, y, w, h) of `img` into `dst` (x, y, w, h), nearest neighbour, dimmed at night
 /// like the cover. Pixels outside the sheet are skipped, so a short sheet cannot panic.
 pub fn blit(
     c: &mut Canvas,
     dim_pct: u32,
     img: &Image,
+    src: (i32, i32, i32, i32),
+    dst: (i32, i32, i32, i32),
+) {
+    blit_to(c, dim_pct, img, src, dst, false, None);
+}
+
+/// `blit`, with `land`: `dst` is on the panel turned on its side (`winamp::to_portrait`), and
+/// `key`: pixels of colour `key.0` are left out and the rest drawn in `key.1` (text in a colour).
+pub fn blit_to(
+    c: &mut Canvas,
+    dim_pct: u32,
+    img: &Image,
     (sx, sy, sw, sh): (i32, i32, i32, i32),
     (dx, dy, dw, dh): (i32, i32, i32, i32),
+    land: bool,
+    key: Option<(u32, u32)>,
 ) {
     if sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 {
         return;
@@ -73,8 +176,20 @@ pub fn blit(
             let Some(p) = img.rgb.get(o..o + 3) else {
                 continue;
             };
-            let ch = |v: u8| (v as u32 * dim / 100) & 0xff;
-            c.put(dx + x, dy + y, ch(p[0]) << 16 | ch(p[1]) << 8 | ch(p[2]));
+            let mut px = (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32;
+            if let Some((k, fg)) = key {
+                if px == k {
+                    continue;
+                }
+                px = fg;
+            }
+            let ch = |s: u32| (((px >> s) & 0xff) * dim / 100) << s;
+            let col = ch(16) | ch(8) | ch(0);
+            if land {
+                c.put(crate::canvas::W as i32 - 1 - (dy + y), dx + x, col);
+            } else {
+                c.put(dx + x, dy + y, col);
+            }
         }
     }
 }

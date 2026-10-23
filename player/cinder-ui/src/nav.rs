@@ -553,6 +553,11 @@ pub enum Action {
     /// writes `/contents/cinder_voltable.conf` so the launcher applies it at every start. Sent per
     /// tap and once at the end of a drag.
     VolCurveChanged,
+    /// Display ▸ Style: the Winamp chip tapped while Winamp is already the style. The shell loads
+    /// the next `.wsz` at the top of the drive, says which, and remembers it (`wsz=`).
+    NextSkin,
+    /// The Winamp skin's ■: pause, and back to 0:00.
+    Stop,
     /// BT Receiver switched (or left, which switches it off). The shell reads `rx_on()` and runs
     /// the whole enter / leave chain; idempotent, so a repeat is harmless.
     RxChanged,
@@ -1020,6 +1025,9 @@ enum Scrub {
     /// write when it hasn't changed — a full sweep is 100 UI steps but only ~24 distinct
     /// attenuation values per side.
     Balance,
+    /// The Winamp skin's volume and balance sliders (`winamp.rs`). Live, like the balance.
+    WaVolume,
+    WaBalance,
     /// Soundscapes ▸ one of the two level sliders (0 = on its own, 1 = with music). Live, like the
     /// balance: you set a background level by hearing it against the foreground.
     AmbientLevel(usize),
@@ -1331,6 +1339,13 @@ pub struct App {
     /// Settings ▸ Display ▸ Style. Persisted as `style=cinder|nocturne|terminal`, and put on the
     /// theme every frame so every render sees it.
     style: crate::style::Style,
+    /// The shell has a Winamp skin loaded, so the Winamp style is the landscape view
+    /// (`winamp.rs`), with its counting-down time and folded window.
+    winamp_skin: bool,
+    wa_remaining: bool,
+    wa_playlist: bool,
+    /// The skin's visualiser: 0 spectrum, 1 oscilloscope, 2 off.
+    wa_vis: u8,
     /// Battery care (Sony "Itawari" charging, ~90% cap). Mirrors the device state; the shell reads
     /// the real value at boot via cinder_set_battery_care and applies toggles via the action.
     battery_care: bool,
@@ -1825,6 +1840,10 @@ impl Default for App {
             volume: 15,
             vol_overlay: 0,
             volume_limit: false,
+            winamp_skin: false,
+            wa_remaining: false,
+            wa_playlist: false,
+            wa_vis: 0,
             ignore_the: false,
             lib_views: Default::default(),
             bt_volume: 15,
@@ -4489,6 +4508,7 @@ impl App {
                 }
                 vec![]
             }
+            Screen::NowPlaying if self.winamp_view() => self.winamp_tap(x, y),
             Screen::NowPlaying => {
                 // One question, asked of the same layout the style draws from
                 // (`now_playing::layout`): no coordinate for this screen lives in `nav`. The
@@ -4869,7 +4889,12 @@ impl App {
                 }
                 if let Some(i) = crate::display::style_chip_at(x, y) {
                     self.display_sel = crate::display::ROW_STYLE;
-                    self.style = crate::style::Style::from_index(i);
+                    let style = crate::style::Style::from_index(i);
+                    // Winamp again: the next skin on the drive, Wampy's on-the-fly skin change.
+                    if style == crate::style::Style::Winamp && self.style == style {
+                        return vec![Action::NextSkin];
+                    }
+                    self.style = style;
                     return vec![];
                 }
                 if let Some(i) = crate::display::volume_chip_at(x, y) {
@@ -6925,8 +6950,108 @@ impl App {
 
     /// Rail x → permille (0..1000), along the rail the style draws, so the preview position and the
     /// drawn handle can never disagree.
-    fn rail_permille(&self, x: i32) -> u16 {
+    fn rail_permille(&self, x: i32, y: i32) -> u16 {
+        if self.winamp_view() {
+            return crate::winamp::seek_permille(crate::winamp::to_land(x, y).0);
+        }
         (self.np_layout().rail.fraction(x) * 1000.0).round() as u16
+    }
+
+    /// Where the seek being dragged is, in permille; the shell turns it into milliseconds.
+    pub fn scrub_permille(&self) -> u16 {
+        self.scrub_permille
+    }
+
+    /// The shell has (or no longer has) a Winamp skin loaded.
+    pub fn set_winamp_skin(&mut self, loaded: bool) {
+        self.winamp_skin = loaded;
+    }
+
+    /// Now Playing is the Winamp skin's landscape view (`winamp.rs`).
+    pub fn winamp_view(&self) -> bool {
+        self.winamp_skin && self.style == crate::style::Style::Winamp
+    }
+
+    /// The skin's volume slider moved to `lx`. On the jack the level is set outright, and the
+    /// shell writes whatever level it reads back; on Bluetooth, where a step is relative, one step
+    /// toward the finger per move.
+    fn wa_volume_to(&mut self, lx: i32) -> Vec<Action> {
+        if self.bt_route {
+            let want = crate::winamp::volume_at(lx, crate::overlay::BT_VOL_MAX);
+            if want == self.bt_volume {
+                return vec![];
+            }
+            let up = want > self.bt_volume;
+            self.vol_step(up);
+            return vec![if up { Action::VolUp } else { Action::VolDown }];
+        }
+        let want = crate::winamp::volume_at(lx, crate::overlay::VOL_MAX);
+        if want == self.volume {
+            return vec![];
+        }
+        self.volume = want;
+        vec![Action::VolUp]
+    }
+
+    /// A tap on the Winamp skin's landscape view. The table in `winamp.rs` says what each does;
+    /// the sliders are not here, `scrub_begin` takes them.
+    fn winamp_tap(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::winamp::{self, Ctl};
+        let (lx, ly) = winamp::to_land(x, y);
+        let open = |a: &mut Self, s: Screen| {
+            a.push(s);
+            vec![]
+        };
+        match winamp::ctl_at(lx, ly, self.wa_playlist) {
+            Some(Ctl::Menu) => open(self, Screen::Menu),
+            Some(Ctl::Minimize | Ctl::Close) => open(self, Screen::Library),
+            // Wampy's ⏏ opens its settings.
+            Some(Ctl::Eject) => open(self, Screen::Settings),
+            // The playlist takes the whole panel, and gives it back (Wampy's PL button).
+            Some(Ctl::Shade | Ctl::Pl) => {
+                self.wa_playlist = !self.wa_playlist;
+                vec![]
+            }
+            Some(Ctl::Options) => open(self, Screen::Settings),
+            Some(Ctl::OnTop) => open(self, Screen::Display),
+            Some(Ctl::FileInfo | Ctl::Title) => {
+                self.track_info_scroll_px = 0;
+                open(self, Screen::TrackInfo)
+            }
+            Some(Ctl::Double) => vec![Action::NextSkin],
+            Some(Ctl::VisMenu) => open(self, Screen::VizSet),
+            Some(Ctl::Vis) => {
+                self.wa_vis = (self.wa_vis + 1) % 3;
+                vec![]
+            }
+            Some(Ctl::Time) => {
+                self.wa_remaining = !self.wa_remaining;
+                vec![]
+            }
+            Some(Ctl::Eq) => open(self, Screen::Eq),
+            Some(Ctl::Prev) => vec![Action::Prev],
+            Some(Ctl::Next) => vec![Action::Next],
+            Some(Ctl::Play) if !self.playing => {
+                self.set_playing_optimistic(true);
+                vec![Action::PlayPause]
+            }
+            Some(Ctl::Pause) if self.playing => {
+                self.set_playing_optimistic(false);
+                vec![Action::PlayPause]
+            }
+            Some(Ctl::Stop) => {
+                self.set_playing_optimistic(false);
+                vec![Action::Stop]
+            }
+            Some(Ctl::Shuffle) => vec![Action::ShuffleToggle],
+            Some(Ctl::Repeat) => vec![Action::RepeatCycle],
+            // Row 0 is the playing track; a later row jumps to it, as Up Next's rows do.
+            Some(Ctl::PlRow(i)) if i > 0 && self.context_idx + i < self.context.len() => {
+                self.queue_follow = true;
+                vec![Action::PlayContextAt(self.context_idx + i)]
+            }
+            _ => vec![],
+        }
     }
 
     /// A finger went down at (x, y). True if it grabbed a scrubbable control.
@@ -6936,10 +7061,22 @@ impl App {
             return false;
         }
         match self.current() {
+            Screen::NowPlaying if self.winamp_view() => {
+                use crate::winamp::{self, Ctl};
+                let (lx, ly) = winamp::to_land(x, y);
+                self.scrub = match winamp::ctl_at(lx, ly, self.wa_playlist) {
+                    Some(Ctl::Seek) => Scrub::Progress,
+                    Some(Ctl::Volume) => Scrub::WaVolume,
+                    Some(Ctl::Balance) => Scrub::WaBalance,
+                    _ => return false,
+                };
+                self.scrub_permille = self.rail_permille(x, y);
+                true
+            }
             Screen::NowPlaying => {
                 if self.np_layout().rail.grabs(x, y) {
                     self.scrub = Scrub::Progress;
-                    self.scrub_permille = self.rail_permille(x);
+                    self.scrub_permille = self.rail_permille(x, y);
                     true
                 } else {
                     false
@@ -7062,8 +7199,17 @@ impl App {
                 vec![]
             }
             Scrub::Progress => {
-                self.scrub_permille = self.rail_permille(x);
+                self.scrub_permille = self.rail_permille(x, y);
                 vec![]
+            }
+            Scrub::WaVolume => self.wa_volume_to(crate::winamp::to_land(x, y).0),
+            Scrub::WaBalance => {
+                let want = crate::winamp::balance_at(crate::winamp::to_land(x, y).0);
+                if want == self.snd_balance {
+                    return vec![];
+                }
+                self.snd_balance = want;
+                vec![Action::BalanceChanged]
             }
             Scrub::UiScale => {
                 crate::text::set_scale_idx(crate::display::size_idx_at(x));
@@ -7098,7 +7244,11 @@ impl App {
             Scrub::UiScale => vec![Action::UiScaleChanged],
             // Already applied on every move; the release only has to get the final value written to
             // the settings file, which SoundChanged does on top of re-applying the same balance.
-            Scrub::Balance => vec![Action::SoundChanged],
+            Scrub::Balance | Scrub::WaBalance => vec![Action::SoundChanged],
+            // Applied on every move; on the jack the release writes the final level once more,
+            // since the shell keeps only the newest of a drag's moves.
+            Scrub::WaVolume if !self.bt_route => vec![Action::VolUp],
+            Scrub::WaVolume => vec![],
             // Already applied on every step. The release only has to get the final curve into the
             // settings file, which is what these actions do on top of re-applying it.
             Scrub::EqBand(_) => vec![Action::EqChanged(self.eq_bands)],
@@ -7653,6 +7803,8 @@ impl App {
                 }
                 vec![]
             }
+            // Turned on its side, a swipe means nothing the window has: Winamp has no gestures.
+            Screen::NowPlaying if self.winamp_view() => vec![],
             Screen::NowPlaying => {
                 // Zoned by y. A swipe on the PAGING BLOCK (the artwork) turns the page; a swipe
                 // anywhere below it still skips tracks, which is where the transport already is.
@@ -9313,28 +9465,51 @@ impl App {
                     lyrics: self.has_lyrics(),
                     ..*np
                 };
-                crate::now_playing::render(c, &theme, fonts, &np2);
-                // sleep-timer countdown badge (nav owns the live remaining minutes)
-                crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min, self.stop_after);
-                // The queue toolbar slot becomes a persistent, touch-sized return to the preview
-                // while it is active. Its existing glyph remains; this short caption is the state
-                // marker and the whole 120px slot is already the hit target.
-                if self.zappin_active {
-                    let marker = crate::widgets::sty(
-                        crate::text::Family::Mono,
-                        crate::text::Weight::Bold,
-                        9.0,
-                        theme.acc,
-                        0.04,
-                    );
-                    crate::widgets::center(
+                if let (true, Some(skin)) = (self.winamp_view(), np2.skin) {
+                    let view = crate::winamp::View {
+                        queue: &self.context,
+                        at: self.context_idx,
+                        volume: if self.bt_route {
+                            (self.bt_volume, crate::overlay::BT_VOL_MAX)
+                        } else {
+                            (self.volume, crate::overlay::VOL_MAX)
+                        },
+                        balance: self.snd_balance,
+                        remaining: self.wa_remaining,
+                        playlist: self.wa_playlist,
+                        vis: self.wa_vis,
+                    };
+                    crate::winamp::render(c, &theme, &np2, skin, &view);
+                } else {
+                    crate::now_playing::render(c, &theme, fonts, &np2);
+                    // sleep-timer countdown badge (nav owns the live remaining minutes)
+                    crate::now_playing::sleep_badge(
                         c,
+                        &theme,
                         fonts,
-                        180.0,
-                        739.0,
-                        crate::i18n::text("PREVIEW"),
-                        &marker,
+                        self.sleep_min,
+                        self.stop_after,
                     );
+                    // The queue toolbar slot becomes a persistent, touch-sized return to the preview
+                    // while it is active. Its existing glyph remains; this short caption is the state
+                    // marker and the whole 120px slot is already the hit target.
+                    if self.zappin_active {
+                        let marker = crate::widgets::sty(
+                            crate::text::Family::Mono,
+                            crate::text::Weight::Bold,
+                            9.0,
+                            theme.acc,
+                            0.04,
+                        );
+                        crate::widgets::center(
+                            c,
+                            fonts,
+                            180.0,
+                            739.0,
+                            crate::i18n::text("PREVIEW"),
+                            &marker,
+                        );
+                    }
                 }
             }
             Screen::Menu => {
@@ -10368,7 +10543,9 @@ impl App {
         // y 406..800 opaquely) painted straight over both: the pin/clear confirmation was
         // invisible in the one place it fires, and the volume HUD — which still responds to Vol±
         // while the sheet is open — came up half-covered.
-        if self.vol_overlay > 0 && self.current() != Screen::Lock {
+        // The Winamp view has its own volume slider, and the HUD would lie across it sideways.
+        let wa = self.current() == Screen::NowPlaying && self.winamp_view();
+        if self.vol_overlay > 0 && self.current() != Screen::Lock && !wa {
             if self.volume_hud == 1 {
                 crate::overlay::volume_minimal(c, &theme, self.display_volume());
             } else {
@@ -12449,6 +12626,10 @@ impl App {
     /// cover overlay is set to, and for the cover page only when its overlay is on. The shell
     /// starts and stops Sony's analyzer to match, so a page that shows nothing costs nothing.
     pub fn wants_spectrum(&self) -> bool {
+        // The Winamp skin's display has its own switch: Winamp's spectrum, oscilloscope, off.
+        if self.winamp_view() {
+            return self.wa_vis < 2;
+        }
         self.np_page != 0 || self.viz_on()
     }
 
@@ -18967,6 +19148,117 @@ mod tests {
     /// Display ▸ Style: a chip picks the style, Select steps through them, and `style=` in the
     /// settings file brings it back — while an unknown word keeps what was there.
     #[test]
+    fn the_winamp_skin_view_answers_every_control() {
+        use crate::winamp::{self, Ctl};
+        let mut a = unlocked();
+        a.set_style(crate::style::Style::Winamp);
+        // No skin: Terminal's targets, so the transport is where Terminal draws it.
+        assert!(!a.winamp_view());
+        a.set_winamp_skin(true);
+        assert!(a.winamp_view());
+        // A landscape point on the panel: the inverse of `winamp::to_land`.
+        let at = |lx: i32, ly: i32| (479 - ly, lx);
+        // The middle of everywhere that answers as `ctl`.
+        let centre = |ctl: Ctl, shade: bool| {
+            let pts: Vec<(i32, i32)> = (0..winamp::LW)
+                .step_by(2)
+                .flat_map(|x| (0..winamp::LH).step_by(2).map(move |y| (x, y)))
+                .filter(|&(x, y)| winamp::ctl_at(x, y, shade) == Some(ctl))
+                .collect();
+            let n = pts.len().max(1) as i32;
+            let sum = pts.iter().fold((0, 0), |s, p| (s.0 + p.0, s.1 + p.1));
+            at(sum.0 / n, sum.1 / n)
+        };
+        let tap = |a: &mut App, ctl: Ctl| {
+            let (x, y) = centre(ctl, a.wa_playlist);
+            a.tap(x, y)
+        };
+        a.playing = true;
+        assert_eq!(
+            tap(&mut a, Ctl::Play),
+            vec![],
+            "▶ while playing does nothing"
+        );
+        assert_eq!(tap(&mut a, Ctl::Pause), vec![Action::PlayPause]);
+        assert_eq!(tap(&mut a, Ctl::Play), vec![Action::PlayPause]);
+        assert_eq!(tap(&mut a, Ctl::Stop), vec![Action::Stop]);
+        assert!(!a.playing);
+        assert_eq!(tap(&mut a, Ctl::Next), vec![Action::Next]);
+        assert_eq!(tap(&mut a, Ctl::Prev), vec![Action::Prev]);
+        assert_eq!(tap(&mut a, Ctl::Shuffle), vec![Action::ShuffleToggle]);
+        assert_eq!(tap(&mut a, Ctl::Repeat), vec![Action::RepeatCycle]);
+        assert_eq!(tap(&mut a, Ctl::Double), vec![Action::NextSkin]);
+        tap(&mut a, Ctl::Time);
+        assert!(a.wa_remaining);
+        for want in [1, 2, 0] {
+            tap(&mut a, Ctl::Vis);
+            assert_eq!(a.wa_vis, want, "spectrum, oscilloscope, off");
+        }
+        for (ctl, screen) in [
+            (Ctl::Eject, Screen::Settings),
+            (Ctl::Menu, Screen::Menu),
+            (Ctl::Close, Screen::Library),
+            (Ctl::Options, Screen::Settings),
+            (Ctl::OnTop, Screen::Display),
+            (Ctl::FileInfo, Screen::TrackInfo),
+            (Ctl::Title, Screen::TrackInfo),
+            (Ctl::VisMenu, Screen::VizSet),
+            (Ctl::Eq, Screen::Eq),
+        ] {
+            tap(&mut a, ctl);
+            assert_eq!(a.current(), screen, "{ctl:?}");
+            a.go(Screen::NowPlaying);
+        }
+        // The volume slider sets the level outright on the jack; the shell reads it back.
+        let (x0, y0) = centre(Ctl::Volume, false);
+        assert!(a.scrub_begin(x0, y0));
+        let vy = y0 + 60; // further along the slider (landscape x is the panel's y)
+        assert_eq!(a.scrub_move(x0, vy), vec![Action::VolUp]);
+        let set = a.volume_level();
+        assert_eq!(a.scrub_end(), vec![Action::VolUp]);
+        assert!(set > 0);
+        // The seek bar: a drop is a seek, as the rail's is.
+        let (sx, sy) = centre(Ctl::Seek, false);
+        assert!(a.scrub_begin(sx, sy));
+        assert!(a.scrub_is_rail());
+        assert!(matches!(a.scrub_end().as_slice(), [Action::Seek(_)]));
+        // The balance is live, like Sound's.
+        let (bx, by) = centre(Ctl::Balance, false);
+        assert!(a.scrub_begin(bx, by));
+        a.scrub_move(bx, by + 200);
+        assert_eq!(a.balance(), 100);
+        assert_eq!(a.scrub_end(), vec![Action::SoundChanged]);
+        // PL and windowshade swap the window for the playlist, full screen; its title bar swaps
+        // back, and a row below the playing track jumps to it.
+        for ctl in [Ctl::Pl, Ctl::Shade] {
+            tap(&mut a, ctl);
+            assert!(a.wa_playlist, "{ctl:?}");
+            tap(&mut a, Ctl::Pl);
+            assert!(!a.wa_playlist);
+        }
+        a.context = (1..=5)
+            .map(|i| SongRow {
+                object_id: i,
+                ..Default::default()
+            })
+            .collect();
+        a.context_idx = 1;
+        tap(&mut a, Ctl::Pl);
+        assert_eq!(tap(&mut a, Ctl::PlRow(2)), vec![Action::PlayContextAt(3)]);
+        assert_eq!(tap(&mut a, Ctl::PlRow(0)), vec![], "the playing track");
+        assert!(!a.scrub_begin(240, 400), "no sliders on the playlist");
+        tap(&mut a, Ctl::Pl);
+        assert!(!a.wa_playlist);
+        assert_eq!(
+            tap(&mut a, Ctl::PlRow(1)),
+            vec![Action::PlayContextAt(2)],
+            "under the window too"
+        );
+        // Swipes mean nothing on its side.
+        assert_eq!(a.swipe(-1, 240, 400), vec![]);
+    }
+
+    #[test]
     fn the_style_is_picked_on_display_and_survives_a_restart() {
         // Taps Display's rows, whose positions follow the global text scale: hold the lock
         // so a concurrent 140% test cannot move a tap onto the Size row (see text::scale_guard).
@@ -18981,6 +19273,14 @@ mod tests {
         };
         a.tap(chip(Style::COUNT - 1), y);
         assert_eq!(a.style(), Style::ALL[Style::COUNT - 1]);
+        assert_eq!(
+            a.tap(chip(Style::COUNT - 1), y),
+            vec![Action::NextSkin],
+            "Winamp again is the next skin"
+        );
+        assert_eq!(a.style(), Style::Winamp);
+        assert_eq!(a.tap(chip(1), y), vec![], "any other chip only picks");
+        a.tap(chip(Style::COUNT - 1), y);
         a.display_sel = crate::display::ROW_STYLE;
         a.display_activate();
         assert_eq!(a.style(), Style::Cinder, "Select wraps round");

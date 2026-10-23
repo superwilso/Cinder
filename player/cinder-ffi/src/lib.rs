@@ -629,6 +629,8 @@ struct Render {
     /// The Winamp style's skin (`wsz.rs`), read the first time that style draws.
     skin: Option<cinder_ui::skin::Skin>,
     skin_tried: bool,
+    /// The skin chosen with the Winamp chip (`wsz=`), by file name; empty is the first by name.
+    skin_pref: String,
     /// The chapter (path, position ms, when) a `PlayBook` just started. Until playback reaches that
     /// position, a saved position EARLIER than it is the chapter's first moments before the seek
     /// lands, not the listener going back, and must not overwrite the place being resumed.
@@ -859,6 +861,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         cue: None,
         skin: None,
         skin_tried: false,
+        skin_pref: String::new(),
         book_hold: None,
         stats_changed: std::time::Instant::now(),
         views_path: None,
@@ -1317,6 +1320,9 @@ fn settings_body(r: &Render) -> String {
     // its values, and a word survives a future third style where an index would shift.
     body.push_str(&format!("volume_hud={}\n", r.app.volume_hud()));
     body.push_str(&format!("style={}\n", r.app.style_token()));
+    if !r.skin_pref.is_empty() {
+        body.push_str(&format!("wsz={}\n", r.skin_pref));
+    }
     // What the player opens on (the Menu's START ON chips), and — only when that is "last" — the
     // place to reopen, encoded like a Shelf pin.
     body.push_str(&format!("home_screen={}\n", r.app.home_screen()));
@@ -2702,7 +2708,8 @@ pub extern "C" fn cinder_render_tick() {
     // The Winamp style's skin, read the first time that style is chosen (one zip off the drive).
     if !r.skin_tried && r.app.style() == cinder_ui::style::Style::Winamp {
         r.skin_tried = true;
-        r.skin = wsz::find_in("/contents");
+        r.skin = wsz::find_in("/contents", &r.skin_pref);
+        r.app.set_winamp_skin(r.skin.is_some());
     }
     r.canvas.clear_clip();
     let sig = r.sig.view();
@@ -5160,6 +5167,26 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::AmbientChanged => 51,
         Action::DacEqChanged => 48,
         Action::VolCurveChanged => 60,
+        Action::Stop => 61,
+        Action::NextSkin => {
+            // The one after the skin on screen, so the first tap moves even with no choice saved.
+            let names = wsz::names_in("/contents");
+            let cur = r.skin.as_ref().map(|s| s.name.clone()).unwrap_or_default();
+            match wsz::next_name(&names, &cur).cloned() {
+                None => r.app.notify("No skin: copy a .wsz to the top of the drive"),
+                Some(n) => {
+                    r.skin = wsz::find_in("/contents", &n);
+                    r.skin_tried = true;
+                    r.app.set_winamp_skin(r.skin.is_some());
+                    let i = names.iter().position(|x| *x == n).unwrap_or(0) + 1;
+                    r.app.notify_raw(&format!("{n} ({i}/{})", names.len()));
+                    r.skin_pref = n;
+                    save_settings(r);
+                }
+            }
+            r.dirty = true;
+            return None;
+        }
         Action::RxChanged => 49,
         Action::RxCodecChanged => 58,
         Action::BootToSonyReceiver => 50, // shell stores stock's resume function, then boots to stock
@@ -7942,6 +7969,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
                     "lib_views" => r.app.set_lib_views_str(v),
                     "style" => r.app.set_style_token(v),
+                    "wsz" => r.skin_pref = v.to_string(),
                     "sensme_follow_time" => r.app.set_sensme_follow(v == "1"),
                     "shuffle_by" => r.app.set_shuffle_by(v),
                     "volume_hud" => r.app.set_volume_hud(v),
@@ -9423,7 +9451,9 @@ pub extern "C" fn cinder_scrub_to(x: libc::c_int, y: libc::c_int) -> libc::c_int
     if r.cur_duration_ms <= 0 {
         return -1;
     }
-    let frac = cinder_ui::now_playing::rail_fraction(x as i32);
+    // nav knows where the rail is in every style, the Winamp skin's landscape seek bar included.
+    r.app.scrub_move(x as i32, y as i32);
+    let frac = r.app.scrub_permille() as f32 / 1000.0;
     let target = (r.cur_duration_ms as f32 * frac) as i64;
     r.scrub_ms = Some(target);
     r.play_pos_ms = target;
@@ -11712,6 +11742,7 @@ mod tests {
             cue: None,
             skin: None,
             skin_tried: false,
+            skin_pref: String::new(),
             book_hold: None,
             stats_changed: std::time::Instant::now(),
             views_path: None,

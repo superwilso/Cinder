@@ -1041,224 +1041,25 @@ fn clock_face(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 
 // ── Winamp ────────────────────────────────────────────────────────────────────────────────────
 //
-// A classic Winamp skin from the drive (`skin.rs`): its main window across the top of the page
-// block with the time in the skin's digits and the title in its font, the cover under it, the seek
-// bar from posbar.bmp and the transport from cbuttons.bmp and shufrep.bmp, each sprite scaled up
-// into Terminal's targets — Terminal's geometry, as Cassette, so the contract holds. Without a
-// skin it is Terminal with a line that says how to add one.
+// A classic Winamp skin from the drive takes the whole panel, turned on its side (`winamp.rs`);
+// `nav` draws that with the queue and the levels it holds, and this is the same view without them,
+// for a render that does not come through `nav`. Without a skin it is Terminal with a line that
+// says how to add one, and Terminal's targets.
 
 fn winamp_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &Layout) {
     use term::*;
-    let Some(skin) = np.skin.filter(|s| s.main.is_some()) else {
-        terminal_render(c, t, f, np, l);
-        fill_rect(c, FRAME_X, FRAME_Y, FRAME, 40, t.panel);
-        widgets::center(
-            c,
-            f,
-            240.0,
-            (FRAME_Y + 25) as f32,
-            crate::i18n::text("NO SKIN: COPY A .WSZ TO THE TOP OF THE DRIVE"),
-            &s(Family::Mono, Weight::Regular, 11.0, t.acc, 0.06),
-        );
+    if let Some(skin) = np.skin.filter(|s| s.main.is_some()) {
+        crate::winamp::render(c, t, np, skin, &crate::winamp::View::default());
         return;
-    };
-    use crate::skin::{self, MAIN_SCALE};
-    c.fill(t.bg);
-    let quiet = idle(np);
-    let dim = t.dim_pct;
-    let (mx, my) = (FRAME_X, FRAME_Y);
-    let sc = |v: i32| (v as f32 * MAIN_SCALE).round() as i32;
-    // The main window's top: title bar and display (skin rows 0..72; the buttons below them are
-    // drawn as Cinder's transport instead).
-    if let Some(main) = &skin.main {
-        skin::blit(
-            c,
-            dim,
-            main,
-            (0, 0, skin::MAIN_W as i32, sc(72)),
-            (mx, my, skin::MAIN_W as i32, sc(72)),
-        );
     }
-    if let Some(tb) = &skin.titlebar {
-        skin::blit(c, dim, tb, (27, 0, 275, 14), (mx, my, sc(275), sc(14)));
-    }
-    if !quiet {
-        // mm:ss in the skin's digits, where Winamp puts them.
-        if let Some(nums) = &skin.numbers {
-            let digits: Vec<u32> = np
-                .elapsed
-                .chars()
-                .filter_map(|ch| ch.to_digit(10))
-                .collect();
-            let n = digits.len();
-            let (m, sec) = if n >= 4 {
-                (
-                    digits[n - 4] * 10 + digits[n - 3],
-                    digits[n - 2] * 10 + digits[n - 1],
-                )
-            } else if n == 3 {
-                (digits[0], digits[1] * 10 + digits[2])
-            } else {
-                (0, 0)
-            };
-            for (i, (d, x)) in [
-                (m / 10 % 10, 48),
-                (m % 10, 60),
-                (sec / 10, 78),
-                (sec % 10, 90),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let _ = i;
-                skin::draw_digit(c, dim, nums, d, (mx + sc(x), my + sc(26), sc(9), sc(13)));
-            }
-        }
-        if let Some(font) = &skin.text {
-            let line = format!("{} - {}", np.artist, np.title);
-            skin::draw_text(c, dim, font, &line, (mx + sc(111), my + sc(27)), 1, sc(154));
-        }
-    }
-
-    // Under the window: the cover, or the audio pages.
-    let below = my + sc(72) + 8;
-    let room = FRAME_Y + FRAME - below;
-    if quiet {
-        nothing_playing(c, t, f, 240.0, (below + room / 2) as f32, true);
-    } else if np::page_from_index(np.page) == NpPage::Cover {
-        let size = room - 8;
-        cover(c, t, np, 240 - size / 2, below + 4, size);
-    } else {
-        audio_page(c, t, f, np, (FRAME_X, below, FRAME, room));
-    }
-
-    // The title block: the title in the skin's font, three times its size; the artist under it.
-    if !quiet {
-        match &skin.text {
-            Some(font) => {
-                let at = (TEXT_X as i32, TITLE_Y as i32 - 18);
-                skin::draw_text(c, dim, font, np.title, at, 3, TEXT_W as i32);
-            }
-            None => {
-                let st = s(Family::Sans, Weight::SemiBold, 22.0, t.ink, 0.0);
-                widgets::marquee(c, f, TEXT_X, TITLE_Y, np.title, &st, TEXT_W);
-            }
-        }
-        widgets::marquee(
-            c,
-            f,
-            TEXT_X,
-            ARTIST_Y,
-            np.artist,
-            &s(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
-            TEXT_W,
-        );
-        let (hx, hy) = centre(l, Hit::Like);
-        icons::heart(c, hx, hy, 24.0, if np.liked { t.acc } else { t.faint });
-    }
-
-    // The seek bar: posbar's track stretched to the rail, its thumb at the position.
-    let r = l.rail;
-    match &skin.posbar {
-        Some(pb) => {
-            skin::blit(c, dim, pb, (0, 0, 248, 10), (r.x0, r.y, r.w, r.h));
-            if !quiet {
-                let tw = r.h * 29 / 10;
-                let tx = r.x0 + ((r.w - tw) as f32 * np.progress.clamp(0.0, 1.0)) as i32;
-                skin::blit(c, dim, pb, (248, 0, 29, 10), (tx, r.y, tw, r.h));
-            }
-        }
-        None => {
-            fill_rect(c, r.x0, r.y + r.h / 2 - 2, r.w, 4, t.line);
-            let fw = (r.w as f32 * np.progress.clamp(0.0, 1.0)) as i32;
-            fill_rect(c, r.x0, r.y + r.h / 2 - 2, fw, 4, t.acc);
-        }
-    }
-    if np.scrubbing {
-        stroke_rect(c, r.x0 - 3, r.y - 3, r.w + 6, r.h + 6, t.acc, 1);
-    }
-    if !quiet {
-        let ts = s(Family::Mono, Weight::Regular, 13.0, t.dim, 0.04);
-        text::draw(c, f, r.x0 as f32, TIMES_Y, np.elapsed, &ts);
-        widgets::right(c, f, (r.x0 + r.w) as f32, TIMES_Y, np.remaining, &ts);
-    }
-
-    // The transport: the skin's own buttons, as large as each target allows at their shape.
-    let sprite =
-        |c: &mut Canvas, h: Hit, sheet: &Option<crate::art::Image>, src: (i32, i32, i32, i32)| {
-            let (Some(img), Some(Shape::Rect { x, y, w, h })) = (sheet, l.at(h)) else {
-                return false;
-            };
-            let k = ((w - 8) * 100 / src.2).min((h - 4) * 100 / src.3);
-            let (dw, dh) = (src.2 * k / 100, src.3 * k / 100);
-            skin::blit(
-                c,
-                dim,
-                img,
-                src,
-                (x + (w - dw) / 2, y + (h - dh) / 2, dw, dh),
-            );
-            true
-        };
-    let playing = np.playing && !quiet;
-    let (px, pw) = if playing {
-        skin::CB_PAUSE
-    } else {
-        skin::CB_PLAY
-    };
-    let mut drawn = sprite(c, Hit::PlayPause, &skin.cbuttons, (px, 0, pw, 18));
-    drawn &= sprite(
+    terminal_render(c, t, f, np, l);
+    fill_rect(c, FRAME_X, FRAME_Y, FRAME, 40, t.panel);
+    widgets::center(
         c,
-        Hit::Prev,
-        &skin.cbuttons,
-        (skin::CB_PREV.0, 0, skin::CB_PREV.1, 18),
+        f,
+        240.0,
+        (FRAME_Y + 25) as f32,
+        crate::i18n::text("NO SKIN: COPY A .WSZ TO THE TOP OF THE DRIVE"),
+        &s(Family::Mono, Weight::Regular, 11.0, t.acc, 0.06),
     );
-    drawn &= sprite(
-        c,
-        Hit::Next,
-        &skin.cbuttons,
-        (skin::CB_NEXT.0, 0, skin::CB_NEXT.1, 18),
-    );
-    let on = |b: bool| if b && !quiet { 30 } else { 0 };
-    drawn &= sprite(c, Hit::Shuffle, &skin.shufrep, (28, on(np.shuffle), 47, 15));
-    drawn &= sprite(
-        c,
-        Hit::Repeat,
-        &skin.shufrep,
-        (0, on(np.repeat > 0), 28, 15),
-    );
-    if !drawn {
-        // A sheet the skin lacks: name the controls rather than leave blank targets.
-        for (h, label) in [
-            (Hit::PlayPause, if playing { "PAUSE" } else { "PLAY" }),
-            (Hit::Prev, "PREV"),
-            (Hit::Next, "NEXT"),
-            (Hit::Shuffle, "SHUF"),
-            (Hit::Repeat, "RPT"),
-        ] {
-            let (x, y) = centre(l, h);
-            widgets::center(
-                c,
-                f,
-                x,
-                y + 5.0,
-                label,
-                &s(Family::Mono, Weight::Bold, 13.0, t.faint, 0.06),
-            );
-        }
-    }
-
-    hline(c, TOOLBAR_TOP, t.line);
-    for (i, label) in ["LIBRARY", "QUEUE", "BT", "SETTINGS"].iter().enumerate() {
-        let (x, y) = centre(l, Hit::Toolbar(i as u8));
-        let col = if quiet && i == 0 { t.acc } else { t.dim };
-        widgets::center(
-            c,
-            f,
-            x,
-            y + 5.0,
-            crate::i18n::text(label),
-            &s(Family::Mono, Weight::Bold, 12.0, col, 0.06),
-        );
-    }
 }

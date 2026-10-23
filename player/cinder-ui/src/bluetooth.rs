@@ -195,7 +195,7 @@ enum Part {
 /// `hit_codec` reads it, so a band cannot be drawn in one place and answer taps in another. The
 /// LDAC section exists only while LDAC is the chosen codec.
 fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
-    use crate::kit::{CHIP_H, ROW_H, SECTION_H, STRIP_H};
+    use crate::kit::{ROW_H, SECTION_H, STRIP_H};
     let mut out = Vec::new();
     let mut y = crate::chrome::HEADER_BOTTOM;
     let mut push = |p: Part, h: i32| {

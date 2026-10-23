@@ -73,6 +73,7 @@ pub mod vizcfg;
 pub mod vizset;
 pub mod vol_curve;
 pub mod widgets;
+pub mod winamp;
 pub mod zappin;
 
 pub use canvas::{Canvas, H, W};

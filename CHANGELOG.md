@@ -52,12 +52,22 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   lists the CUE tracks with their lengths, and tapping one plays the file from that track; the
   scrobble log gets each CUE track as a song of its own. The Songs tab still lists the file once. *Host-tested (parser, skip rules, the album page, a harness
   scenario for the transport); device-unverified.*
-- **Winamp skins** (Settings ▸ Display ▸ Style ▸ Winamp). Copy a classic Winamp skin (`.wsz`) to the
-  top of the player's drive and Now Playing draws with it: the skin's main window with the time in
-  its digits and the song in its font, the seek bar and the transport buttons from its own sheets,
-  scaled up to Cinder's touch targets. The first `.wsz` by name is used. Without one, the style is
-  Terminal with a line saying how to add one. No skin ships with Cinder. *Host-tested (zip and BMP
-  readers, layout with a stand-in skin); not yet tried with a real skin or on the device.*
+- **Winamp skins** (Settings ▸ Display ▸ Style ▸ Winamp). Copy classic Winamp skins (`.wsz`) to the
+  top of the player's drive. Now Playing turns on its side and fills the screen like Winamp: the
+  skin's main window across the top, with three rows of Up Next as its playlist under it. Every
+  control in the window works:
+  - **Transport:** ◁ ▶ ‖ ■ ▷, shuffle and repeat.
+  - **Sliders:** volume, balance and the seek bar.
+  - **Buttons:** EQ (the equaliser), PL (the playlist full screen and back), ⏏ (Settings), the
+    title bar's buttons and the O A I D V bar.
+  - **Display:** the time (tap for remaining), and the visualiser (tap for spectrum, oscilloscope,
+    off).
+  - **Playlist:** a row plays it.
+
+  Tapping the Winamp chip again moves to the next skin on the drive, and the choice is remembered.
+  Skins saved with RLE compression, as Winamp's own base skin is, are read too. Without a skin, the
+  style is Terminal with a line saying how to add one. No skin ships with Cinder. *Host-tested,
+  including two real skins rendered off-device; device-unverified.*
 - **Two Now Playing styles: Cassette and Clock** (Settings ▸ Display ▸ Style). Cassette draws the
   song as a tape in a deck: the title and cover on its label, reels that wind from left to right as
   the song plays, and piano keys for the transport. Clock puts a large clock where the cover was,

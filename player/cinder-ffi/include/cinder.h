@@ -231,6 +231,8 @@ typedef enum {
      * `cinder-voltable curve stock P0..P120` and write `curve,stock,P0,...` to
      * /contents/cinder_voltable.conf; 0: put the installer's curve back. */
     CINDER_ACT_VOL_CURVE_CHANGED = 60,
+    /* The Winamp skin's stop button: pause, then seek to 0:00. */
+    CINDER_ACT_STOP = 61,
     /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
      * resume function (Configuration 5008/5039), then boot to stock exactly as
      * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */

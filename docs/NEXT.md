@@ -107,12 +107,12 @@ the README's screenshots (`tools/render_installer_screenshots.sh`).
 | Feature | How | Size |
 |---|---|---|
 | ~~ATRAC on any region~~ | **Done 10-22** (`atrac`, `src/cinder-atrac.c`): verified on the owner's player by hand-install; the `.UPG` install path is not yet run. Test files: genuine `.aa3`/`.oma` from samples.ffmpeg.org `A-codecs/ATRAC3+/` (ffmpeg-muxed OMA is refused by Sony's parser, `omg_oma_init() error = 0x7`) | — |
-| ~~FM recording~~ | **Code done 10-23** (`fmrec`, `src/cinder-fmrec.c`, `src/fmrec.h`): jack path verified by hand-install 10-22 (7.9 s WAV). Left: the RECORD button, BT OUT recording, and the installer path on the device | — |
+| ~~FM recording~~ | **Code done 10-23** (`fmrec`, `src/cinder-fmrec.c`, `src/fmrec.h`): the REC button and BT OUT recording are in; the jack path was verified by hand-install 10-22 (7.9 s WAV). Left: DEVICE_CHECKLIST §39.2–39.3 through the installer | — |
 | ~~CUE sheets~~ | **Code done 10-23** (`cinder-ffi/src/cue.rs`, `cinder_cue_skip`, `AlbumRow::cue`): Now Playing names the CUE track, ◁/▷ seek between them, the album page lists them and plays from one (`PlayIndexAt`, the audiobook seek). Scrobbled per CUE track. Left: the Songs tab still lists the file once | — |
 | ~~Per-song sound~~ | **Code done 10-23**, by album (Track information ▸ ALBUM SOUND; `album_sound=` in the settings file). Host-tested; device-unverified | — |
 | ~~Volume curve editor~~ | **Code done 10-23** (Sound ▸ Advanced ▸ Volume curve; `cinder-voltable curve`, `src/vol_curve.h`, `tools/test_volcurve.sh`). A remap of Sony's own rows; the conf reads `curve,stock,P0,…`. Host-tested; device-unverified | — |
 | Low-latency USB-DAC | llusbdac is GPL (zhangboyang's, not Wampy's): its own repo, built from upstream source, fetched by the installer like Sony's tables | 2–3 days + device |
-| ~~Winamp skins, cassette, digital clock~~ | **Code done 10-23**: Cassette and Clock styles; the Winamp style reads the first `.wsz` at the top of the drive (`cinder-ffi/src/wsz.rs`, `cinder-ui/src/skin.rs`). Left: a run with real skins (RLE-compressed BMPs are not read), a skin picker if one is not enough | — |
+| ~~Winamp skins, cassette, digital clock~~ | **Code done 10-23**: Cassette and Clock styles. Winamp is Wampy's landscape screen (`cinder-ui/src/winamp.rs`): the window across the top, three playlist rows under it, PL for the playlist full screen, every control live, the Winamp chip again for the next skin (`wsz=`), RLE BMPs read. Host-rendered with Winamp's base skin and one other. Left: DEVICE_CHECKLIST §39.9 | — |
 
 **D. Walkman One's last two.**
 
@@ -127,6 +127,45 @@ the README's screenshots (`tools/render_installer_screenshots.sh`).
    device, which cinder-home's input pump has to open alongside event0/event1.
 2. **Changing the player's region,** which Walkman One does in NVP. Optional, and it writes NVP:
    back up first, and only if someone asks, since `voltable` already lifts the volume cap.
+
+**Parity audit (10-23): what Wampy and Walkman One have, or wanted, that Cinder does not yet**
+
+From Wampy's `README.md`, `USAGE.md` ("Not implemented"), `TODO.md` (unticked, "want", "hard to
+solve") and `not-done.md`, and from Walkman One's measured changes (`docs/VISION_four_builds.md` §3).
+Walkman One is closed and has no public tracker, so its unbuilt wishes are unknown. Smallest first
+within each group.
+
+*Wampy features Cinder lacks or has in a smaller form:*
+
+| Feature | In Cinder today | To do |
+|---|---|---|
+| Custom cassette tapes: an 800×480 JPEG tape, reel frames every 55 ms, `config.txt` text positions, `cassette.txt` per folder | Cassette is drawn, not skinnable | Read a tape folder like the `.wsz` (JPEG decode needed); per-folder override like album sound |
+| Per-song EQ | Per album (Track information ▸ ALBUM SOUND) | A per-track key beside the album one |
+| Volume table editor: every value of every table, DSD too | A 7-point curve over Sony's rows | Point editing past 7, the DSD table |
+| Skin transparency (`region.txt`) | Not read | Mask the window by the polygons; black behind |
+| Skin dropdown | Tap the Winamp chip again (cycles) | A list screen, if cycling is not enough |
+| Swap prev/next; ignore keys when the screen is off | Hold switch locks touch | Two settings rows |
+| Visualiser "Winamp mode" bands, sensitivity | Cinder's own visualiser settings | Band set as a row in Visualiser |
+| Export Sony's bookmarks | Cinder's own audiobook positions | Read Sony's bookmark store |
+| User font | Bundled + Sony fonts | — |
+| Low-latency USB-DAC (llusbdac) | — | Owner's call (a GPL repo of its own), above |
+
+*Wampy's own unbuilt wishes, which Cinder could do:*
+
+| Wish | Where Cinder stands |
+|---|---|
+| Winamp playlist scrolling, editing, its bottom buttons | Up Next edits and scrolls; the skin's playlist shows from the playing track. Scrolling it is next |
+| More spectrum styles (thin bands, fire, line), an oscilloscope | Oscilloscope **done 10-23** (the PCM tap); Cinder's own visualiser has 13 styles |
+| Title scrolled by dragging | — |
+| Enqueue | Done (Up Next, swipe a row) |
+| Apply tunings on boot | Done (the launcher applies voltable/signature/EQ) |
+| Buttons on Apple (CTIA) headphones | Research: Wampy found no difference in `regmon`. Open |
+| A backlight dimmer below level 1 | Night palette scaling does it in software; writing `duty` panics the kernel (memory) |
+| Easter eggs | — |
+
+*Walkman One:* every audio gain is in (signature, gain tables, DAC EQ, region cap); its external
+tunings hold nothing audible. Left: the REM remote and the region change (stage D). Walkman One's
+losses (FM, NC, VPT, ClearAudio+, Line-out) never apply, because Cinder does not swap the model.
 
 **Installer — finish an install from a Mac** (owner, 10-22; Montree on Head-Fi asked for it)
 

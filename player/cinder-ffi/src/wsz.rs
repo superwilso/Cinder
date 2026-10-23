@@ -2,11 +2,10 @@
 //!
 //! The first `.wsz` at the top of the internal drive, by name, is the skin. It is read only when
 //! the Winamp style is chosen, once per start. A zip member is stored or deflated (the two methods
-//! skin tools write); BMPs are the uncompressed kinds: 24/32-bit and 1/4/8-bit with a palette.
-//! ponytail: RLE-compressed BMPs are rare in skins and not read; that sheet falls back.
+//! skin tools write); BMPs are 24/32-bit, or 1/4/8-bit with a palette, uncompressed or RLE.
 
 use cinder_ui::art::Image;
-use cinder_ui::skin::{Skin, MAIN_H, MAIN_W};
+use cinder_ui::skin::{self, Skin, MAIN_H, MAIN_W};
 
 const MAX_MEMBER: usize = 4 * 1024 * 1024;
 
@@ -95,7 +94,13 @@ pub fn decode_bmp(b: &[u8]) -> Option<Image> {
     let hr = i32::from_le_bytes(b.get(0x16..0x1A)?.try_into().ok()?);
     let bpp = u16le(b, 0x1C)?;
     let compression = u32le(b, 0x1E)?;
-    if w <= 0 || w > 4096 || hr == 0 || hr.unsigned_abs() > 4096 || compression != 0 {
+    // 0 plain; 1 RLE8 and 2 RLE4, which some paint programs saved skins with.
+    let rle = match (compression, bpp) {
+        (0, _) => false,
+        (1, 8) | (2, 4) => true,
+        _ => return None,
+    };
+    if w <= 0 || w > 4096 || hr == 0 || hr.unsigned_abs() > 4096 || (rle && hr < 0) {
         return None;
     }
     let (w, h) = (w as usize, hr.unsigned_abs() as usize);
@@ -114,6 +119,16 @@ pub fn decode_bmp(b: &[u8]) -> Option<Image> {
     };
     if !matches!(bpp, 1 | 4 | 8 | 24 | 32) {
         return None;
+    }
+    if rle {
+        let idx = unrle(b.get(data_off..)?, w, h, bpp == 4);
+        let mut rgb = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for &i in &idx[(h - 1 - y) * w..(h - y) * w] {
+                rgb.extend_from_slice(palette.get(i as usize)?);
+            }
+        }
+        return Some(Image { w, h, rgb });
     }
     let stride = (w * bpp).div_ceil(32) * 4;
     if data_off.checked_add(stride.checked_mul(h)?)? > b.len() {
@@ -141,6 +156,64 @@ pub fn decode_bmp(b: &[u8]) -> Option<Image> {
     Some(Image { w, h, rgb })
 }
 
+/// An RLE8 (or, `four`, RLE4) pixel stream as palette indices, bottom row first. A run past the
+/// edge is clipped and a truncated stream leaves index 0, so a damaged sheet still draws.
+fn unrle(d: &[u8], w: usize, h: usize, four: bool) -> Vec<u8> {
+    let mut out = vec![0u8; w * h];
+    let (mut x, mut y, mut i) = (0usize, 0usize, 0usize);
+    let mut put = |x: &mut usize, y: usize, v: u8| {
+        if *x < w && y < h {
+            out[y * w + *x] = v;
+        }
+        *x += 1;
+    };
+    while i + 1 < d.len() && y < h {
+        let (n, v) = (d[i] as usize, d[i + 1]);
+        i += 2;
+        if n > 0 {
+            for k in 0..n {
+                let px = if four {
+                    if k % 2 == 0 {
+                        v >> 4
+                    } else {
+                        v & 15
+                    }
+                } else {
+                    v
+                };
+                put(&mut x, y, px);
+            }
+            continue;
+        }
+        match v {
+            0 => (x, y) = (0, y + 1),
+            1 => break,
+            2 => {
+                let (dx, dy) = (*d.get(i).unwrap_or(&0), *d.get(i + 1).unwrap_or(&0));
+                i += 2;
+                (x, y) = (x + dx as usize, y + dy as usize);
+            }
+            n => {
+                let n = n as usize;
+                let bytes = if four { n.div_ceil(2) } else { n };
+                for k in 0..n {
+                    let byte = *d.get(i + if four { k / 2 } else { k }).unwrap_or(&0);
+                    let px = if !four {
+                        byte
+                    } else if k % 2 == 0 {
+                        byte >> 4
+                    } else {
+                        byte & 15
+                    };
+                    put(&mut x, y, px);
+                }
+                i += bytes + bytes % 2; // literals pad to a 16-bit boundary
+            }
+        }
+    }
+    out
+}
+
 /// The skin in `z` (a whole `.wsz`), named `name`. None without a readable main.bmp.
 pub fn skin_from(z: &[u8], name: &str) -> Option<Skin> {
     let members = unzip(z);
@@ -155,6 +228,16 @@ pub fn skin_from(z: &[u8], name: &str) -> Option<Skin> {
             .and_then(|(_, d)| decode_bmp(d))
     };
     let main = sheet("main.bmp")?.scaled_to(MAIN_W, MAIN_H);
+    let txt = |want: &str| {
+        members
+            .iter()
+            .find(|(n, _)| {
+                n.rsplit(['/', '\\'])
+                    .next()
+                    .is_some_and(|b| b.eq_ignore_ascii_case(want))
+            })
+            .map(|(_, d)| String::from_utf8_lossy(d).into_owned())
+    };
     Some(Skin {
         main: Some(main),
         titlebar: sheet("titlebar.bmp"),
@@ -163,20 +246,42 @@ pub fn skin_from(z: &[u8], name: &str) -> Option<Skin> {
         text: sheet("text.bmp"),
         posbar: sheet("posbar.bmp"),
         shufrep: sheet("shufrep.bmp"),
+        volume: sheet("volume.bmp"),
+        balance: sheet("balance.bmp").or_else(|| sheet("volume.bmp")),
+        playpaus: sheet("playpaus.bmp"),
+        monoster: sheet("monoster.bmp"),
+        pledit: sheet("pledit.bmp"),
+        pl_colors: txt("pledit.txt").map_or(skin::PL_DEFAULT, |t| skin::parse_pledit(&t)),
+        viscolor: txt("viscolor.txt").map_or(skin::VIS_DEFAULT, |t| skin::parse_viscolor(&t)),
         name: name.to_string(),
     })
 }
 
-/// The first `.wsz` in `dir` by name, loaded; None when there is none or it is not a skin.
-pub fn find_in(dir: &str) -> Option<Skin> {
+/// The `.wsz` files in `dir`, by name.
+pub fn names_in(dir: &str) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.to_ascii_lowercase().ends_with(".wsz"))
-        .collect();
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.to_ascii_lowercase().ends_with(".wsz"))
+                .collect()
+        })
+        .unwrap_or_default();
     names.sort();
-    let name = names.first()?;
+    names
+}
+
+/// The skin after `cur` in `names`, wrapping; the first when `cur` is not there.
+pub fn next_name<'a>(names: &'a [String], cur: &str) -> Option<&'a String> {
+    let i = names.iter().position(|n| n == cur).map_or(0, |i| i + 1);
+    names.get(i % names.len().max(1))
+}
+
+/// `want` from `dir` when it is there, else the first `.wsz` by name; None when there is none or
+/// it is not a skin.
+pub fn find_in(dir: &str, want: &str) -> Option<Skin> {
+    let names = names_in(dir);
+    let name = names.iter().find(|n| *n == want).or(names.first())?;
     let z = std::fs::read(std::path::Path::new(dir).join(name)).ok()?;
     let skin = skin_from(&z, name);
     eprintln!(
@@ -289,5 +394,66 @@ mod tests {
         );
         assert!(skin_from(&zip(&[("x.bmp", &nums, false)]), "x.wsz").is_none());
         assert!(skin_from(b"not a zip", "y.wsz").is_none());
+    }
+
+    #[test]
+    fn the_skin_chip_steps_through_the_drive_and_wraps() {
+        let names: Vec<String> = ["a.wsz", "b.wsz", "c.wsz"].map(String::from).to_vec();
+        assert_eq!(
+            next_name(&names, "a.wsz").map(|s| s.as_str()),
+            Some("b.wsz")
+        );
+        assert_eq!(
+            next_name(&names, "c.wsz").map(|s| s.as_str()),
+            Some("a.wsz")
+        );
+        assert_eq!(
+            next_name(&names, "gone.wsz").map(|s| s.as_str()),
+            Some("a.wsz"),
+            "a deleted choice starts again at the first"
+        );
+        assert_eq!(next_name(&[], "a.wsz"), None);
+
+        let dir = std::env::temp_dir().join(format!("cinder-wsz-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = bmp8(275, 116);
+        for n in ["b.wsz", "a.WSZ"] {
+            std::fs::write(dir.join(n), zip(&[("main.bmp", &main, true)])).unwrap();
+        }
+        std::fs::write(dir.join("notes.txt"), b"").unwrap();
+        let d = dir.to_str().unwrap();
+        let got = (
+            names_in(d),
+            find_in(d, "b.wsz").map(|s| s.name),
+            find_in(d, "").map(|s| s.name),
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(got.0, ["a.WSZ", "b.wsz"]);
+        assert_eq!(got.1.as_deref(), Some("b.wsz"), "the saved choice");
+        assert_eq!(
+            got.2.as_deref(),
+            Some("a.WSZ"),
+            "no choice: the first by name"
+        );
+    }
+
+    #[test]
+    fn rle_bmps_decode_like_plain_ones() {
+        // A 4x2 RLE8 sheet: bottom row red ×4 (a run), top row red, blue, blue, red (literals
+        // then a run). Palette and header as `bmp8`, compression 1.
+        let mut b = bmp8(4, 2);
+        let data_off = u32le(&b, 0x0A).unwrap();
+        b[0x1E] = 1;
+        b.truncate(data_off);
+        b.extend_from_slice(&[4, 0, 0, 0, 0, 3, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1]);
+        let img = decode_bmp(&b).expect("RLE8 is read");
+        let px = |x: usize, y: usize| &img.rgb[(y * 4 + x) * 3..(y * 4 + x) * 3 + 3];
+        assert_eq!(px(0, 1), [255, 0, 0], "the bottom row's run");
+        assert_eq!(px(1, 0), [0, 0, 255], "a literal on the top row");
+        assert_eq!(px(3, 0), [255, 0, 0], "the run after the padded literals");
+        // RLE4: a run of alternating nibbles.
+        assert_eq!(unrle(&[4, 0x10, 0, 1], 4, 1, true), [1, 0, 1, 0]);
+        // Truncated or past the edge: no panic, the rest is index 0.
+        assert_eq!(unrle(&[9, 1, 0, 5, 1], 3, 2, false), [1, 1, 1, 0, 0, 0]);
     }
 }

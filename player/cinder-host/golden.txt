@@ -410,7 +410,7 @@ d8f51a4e2cab1d64 vol_curve_missing
 480a0e65fbf96dfc track_info_album_sound
 05c5a7c89ac374ed album_cue
 ddfdc33279b976ca now_playing_winamp_noskin
-aaeb933326ef97dc now_playing_winamp_standin
+91aca9cb692062bd now_playing_winamp_standin
 6d009d6edc84c5b4 now_playing_cassette
 528218b70e45a68f now_playing_cassette_idle
 3d2a7f4bcee3214c now_playing_clock

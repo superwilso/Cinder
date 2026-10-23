@@ -94,7 +94,7 @@ impl Style {
             Style::Terminal => crate::i18n::text("Framed cover, text buttons"),
             Style::Cassette => crate::i18n::text("A tape: reels wind as it plays"),
             Style::Clock => crate::i18n::text("A large clock in place of the cover"),
-            Style::Winamp => crate::i18n::text("A Winamp skin from the drive (.wsz)"),
+            Style::Winamp => crate::i18n::text("A Winamp skin (.wsz); tap again for the next"),
         }
     }
 }

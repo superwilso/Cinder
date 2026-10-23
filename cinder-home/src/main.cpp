@@ -11122,6 +11122,10 @@ void apply_vol_curve() {
     clog_(m);
 }
 
+// A seek owed at the end of the frame, -1 = nothing owed: a rail drop banks one (scrub_tick makes
+// it), and so does the Winamp skin's stop.
+static int  g_seek_pending_ms = -1;
+
 void carry_out(int act) {
     zappin_clear_stale_handoff_for_action(act);
     if (g_zappin.owns_sequence && g_zappin.active
@@ -11425,6 +11429,14 @@ void carry_out(int act) {
             break;
         case CINDER_ACT_VOL_CURVE_CHANGED:
             run_watchdog_only("carry_out: volume curve", 8, apply_vol_curve);
+            break;
+        case CINDER_ACT_STOP:
+            // The Winamp skin's stop: pause, then 0:00, the seek banked like a rail drop's.
+            if (g_playing) {
+                set_transport(false);
+                run_guarded("carry_out: stop", 6, []() { cinder_audio_pause(); });
+            }
+            g_seek_pending_ms = 0;
             break;
         case CINDER_ACT_CLOCK_SET:
             run_guarded("carry_out: set clock", 8, apply_clock);
@@ -11898,7 +11910,7 @@ static void transport_tick() {
 // live ones. Deferring to the end of the frame is itself the coalescing — a frame with eight
 // motion events now costs ONE apply instead of eight.
 static bool g_scrub_apply_pending = false;  // a slider/rail value is waiting to be applied
-static int  g_seek_pending_ms = -1;         // release seek target, -1 = nothing owed
+// g_seek_pending_ms (the release seek target) is declared above carry_out, which banks one too.
 static int  g_seek_do_ms = 0;               // arg for the guarded call (run_guarded takes no captures)
 
 static void seek_do_fn() {
