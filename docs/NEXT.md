@@ -11,8 +11,8 @@ file (battery research in full, Walkman One parity, the 0.3.17 release plan) are
 
 | | |
 |---|---|
-| Cinder | **v0.3.19** is the Latest release (10-20): the PolyForm Noncommercial licence, the installer writing the package Walkman One expects, Bluetooth AAC and SBC XQ as installer options, Simplified Chinese and installer language choice. 0.3.17 (audiobooks, presets, NC with Sony's NC earphones) and 0.3.18 (SD-card playlists) shipped before it. **On `main`, not yet released:** #30, the receiver's AAC/LDAC negotiation and codec choice (labels from #32); #31, track previews (#29 by @yin8ruo) as the opt-in `preview` installer option with the playback hand-off fixed. Neither has run on a device in its final form |
-| Flint | **v0.2.1** is the Latest release (09-28). **v0.2.3-rc1** is the pre-release (10-18) |
+| Cinder | **v0.3.19** is the Latest release (10-20): the PolyForm Noncommercial licence, the installer writing the package Walkman One expects, Bluetooth AAC and SBC XQ as installer options, Simplified Chinese and installer language choice. 0.3.17 (audiobooks, presets, NC with Sony's NC earphones) and 0.3.18 (SD-card playlists) shipped before it. **v0.3.20-rc1** is the pre-release (10-23): everything since 0.3.19, including #30 (receiver AAC/LDAC), #31 (track previews), the guided installer and the Wampy-parity options. Most of it is host-tested only; the device rows below are what promotes it |
+| Flint | **v0.2.1** is the Latest release (09-28). **v0.2.3-rc3** is the pre-release (10-23; rc2's tag has no release, its Windows build failed on CRLF contract files) |
 | Open issues | None on GitHub. **Reported on Head-Fi, not on GitHub (10-12):** after two weeks unused, one user's library came back empty on internal and SD (0.3.9 and 0.3.16) and they went back to stock — worth an issue and a boot log |
 | Open PRs | **#29**, left open for the author's answer: its code is on `main` through #31. Device run for #31: End → Play, leaving FM mid-preview, a second preview |
 | Gates | The player and installer tests, the harness, the golden previews and text audit, `cargo fmt --check` (also in pre-push), all run by CI on every PR |
