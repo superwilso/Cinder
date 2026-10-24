@@ -9499,6 +9499,17 @@ void carry_out(int act);
 
 void enter_usb_msc() {
     clog_("usb-msc: entering (session log -> /tmp/cinder_msc.log, spliced back on exit)");
+    // For the PC: Flint's health card reads this line from cinderhome.log once the drive is up.
+    // /data is not on the drive, and at 4 MB free it went unseen (AUDIT_2026-10-01 C5, G1.2).
+    {
+        struct statvfs sv;
+        if (statvfs("/data", &sv) == 0) {
+            char m[64];
+            std::snprintf(m, sizeof m, "status: /data free %llu KB",
+                          (unsigned long long)sv.f_bavail * sv.f_frsize / 1024ULL);
+            clog_(m);
+        }
+    }
     // 1) release OUR storage users. Pause is NOT enough: a paused PlayerService keeps the
     //    current track's file open under /contents, which alone makes unmount_msc1 fail EBUSY.
     //    Stop + drop the pinned sequence so the service closes the media file. Called directly

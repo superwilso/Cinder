@@ -1,0 +1,34 @@
+# artifacts/rootfs_mnt/vendor/sony/lib/libBtBleCommonService.so
+# _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv
+# GOT slot 0x0000eea8 -> vtable group base 0x0000eb90
+# primary vptr = group+8 = 0x0000eb98   (slot 0 is the first virtual)
+  0  0x0000eb98  -> 0x000094c9  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x2880
+  1  0x0000eb9c  -> 0x00009501  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x28b8
+  2  0x0000eba0  -> 0x000045b9  _ZN3pst8services25BtBleCommonServiceFactory14CreateInstanceEv@@Base+0x1b48
+  3  0x0000eba4  -> 0x000073b5  BtBleCommonServiceClient::GetConnectionStatus
+  4  0x0000eba8  -> 0x00007591  BtBleCommonServiceClient::GetBleType
+  5  0x0000ebac  -> 0x0000776d  BtBleCommonServiceClient::GetConnectedBleServiceType
+  6  0x0000ebb0  -> 0x00007949  BtBleCommonServiceClient::GetConnectInformation
+  7  0x0000ebb4  -> 0x00007b95  BtBleCommonServiceClient::StartAdvertise
+  8  0x0000ebb8  -> 0x00007e09  BtBleCommonServiceClient::StopAdvertise
+  9  0x0000ebbc  -> 0x00007fed  BtBleCommonServiceClient::StartScan
+ 10  0x0000ebc0  -> 0x000081d1  BtBleCommonServiceClient::StartScan
+ 11  0x0000ebc4  -> 0x00008555  BtBleCommonServiceClient::StopScan
+ 12  0x0000ebc8  -> 0x00008739  BtBleCommonServiceClient::StartConnectWait
+ 13  0x0000ebcc  -> 0x0000891d  BtBleCommonServiceClient::StopConnectWait
+ 14  0x0000ebd0  -> 0x00008b01  BtBleCommonServiceClient::RequestConnection
+ 15  0x0000ebd4  -> 0x00008d49  BtBleCommonServiceClient::RequestDisconnection
+ 16  0x0000ebd8  -> 0x00008f2d  BtBleCommonServiceClient::RequestCancelConnection
+ 17  0x0000ebdc  -> 0x00009111  BtBleCommonServiceClient::GetPairedDeviceInfo
+ 18  0x0000ebe0  -> 0x0000722d  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x5e4
+ 19  0x0000ebe4  -> 0x00007345  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x6fc
+ 20  0x0000ebe8  -> 0x00009541  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x28f8
+ 21  0x0000ebec  -> 0xfffffffc  .fini+0xffff482c
+ 22  0x0000ebf0  <null / end of table>
+ 23  0x0000ebf4  -> 0x00009579  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x2930
+ 24  0x0000ebf8  -> 0x000095ad  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x2964
+ 25  0x0000ebfc  -> 0x000095e9  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x29a0
+ 26  0x0000ec00  <null / end of table>
+ 27  0x0000ec04  <null / end of table>
+ 28  0x0000ec08  -> 0x00009621  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x29d8
+ 29  0x0000ec0c  -> 0x00009689  _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv@@Base+0x2a40

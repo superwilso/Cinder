@@ -68,9 +68,11 @@ fn is_playlist_file(path: &Path) -> bool {
 /// A playlist name that is longer than this is truncated for the FILE name only; the full name
 /// still goes in the `#PLAYLIST:` directive, so nothing the user typed is lost on screen.
 const MAX_STEM: usize = 48;
-/// Guard against a stray file (or a corrupt one) taking the whole boot: the reference library is
-/// 3,945 tracks, and no hand-made playlist is that long.
-const MAX_TRACKS: usize = 4096;
+/// Guard against a stray file (or a corrupt one) taking the whole boot. A MusicBee playlist of
+/// 7,000 songs was asked for (PLAN_2026-09-14 E4), and 4,096 cut it short without a word; a
+/// 10,000-line file reads in a few milliseconds on the host
+/// (`a_ten_thousand_line_playlist_is_read_whole`).
+const MAX_TRACKS: usize = 20_000;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Entry {
@@ -1047,5 +1049,45 @@ mod tests {
         assert_eq!(id_for("Night Bus"), id_for("Night Bus"));
         assert_ne!(id_for("Night Bus"), id_for("Night Bus 2"));
         assert!(id_for("anything") < 0);
+    }
+
+    /// The playlist as Cinder writes it (`contracts/cinder-playlist.m3u8`; Flint's `read_player`
+    /// and `without_stamp` are held to the same file): name, stamp, cover, label, both volumes.
+    #[test]
+    fn the_shared_playlist_reads_as_flint_expects() {
+        let file =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/cinder-playlist.m3u8");
+        let list = parse_file(&file).unwrap();
+        assert_eq!(
+            (list.name.as_str(), list.edited, list.cover.as_deref()),
+            (
+                "Late Night On The Bus",
+                Some(1790000000),
+                Some("/contents/Art/late-night.jpg")
+            )
+        );
+        assert_eq!(
+            uris(&list),
+            [
+                "/contents/MUSIC/Wunderhorse - Cub/06 - Wunderhorse - Teal.flac",
+                "/contents_ext/MUSIC/Nick Drake/01 Pink Moon.flac"
+            ]
+        );
+        assert_eq!(list.entries[0].label, "Wunderhorse - Teal");
+    }
+
+    #[test]
+    fn a_ten_thousand_line_playlist_is_read_whole() {
+        let dir = Dir::new("big");
+        let file = dir.0.join("big.m3u8");
+        let body: String = (0..10_000)
+            .map(|i| format!("#EXTINF:-1,Artist {i} - Song {i}\n/contents/MUSIC/Artist {i}/{i:05} Song.flac\n"))
+            .collect();
+        fs::write(&file, format!("#EXTM3U\n{body}")).unwrap();
+        let t = std::time::Instant::now();
+        let list = parse_file(&file).unwrap();
+        eprintln!("10,000 lines read in {:?}", t.elapsed());
+        assert_eq!(list.entries.len(), 10_000);
+        assert_eq!(list.entries[9_999].label, "Artist 9999 - Song 9999");
     }
 }

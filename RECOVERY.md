@@ -186,6 +186,12 @@ storage; no `cinder-clock` → the clock cannot be set; no `cinder-fm` → the r
 meter and its one-second scan. Push each file in `installer/build.rs`'s `FILES`, then
 `tools/flash.sh cinder-home/dist/stable/cinder_home_install.upg`.
 
+Then put back what was made on the player: playlists, likes, ratings and play counts, settings,
+palettes and the play log. Flint copies these to the PC every time its window reads the player, so
+the newest copy is from the last time Flint saw it: `flint restore E:\` lists the copies, and
+`flint restore E:\ "<name>" --apply` puts one back (it copies the player as it is first). Restart
+the player to read them.
+
 ### Getting a stubborn looping device into MediaTek mode (hard-won notes)
 - **Detach usbipd first.** If the device is bound to WSL it's invisible to Windows/wbrt:
   `usbipd detach --busid <X>` and `usbipd unbind --busid <X>`; close any `--auto-attach` window.

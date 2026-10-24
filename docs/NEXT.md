@@ -116,7 +116,9 @@ real install and update through the new window pages.
 **D. Walkman One's last two.**
 
 1. **The RMT-NWS20 remote (`REM`):** a Bluetooth setting; the remote is an ordinary peer. Needs the
-   remote to test. Start (10-23 notes): `libBtBleCommonService.so` exports only
+   remote to test. **Slots recovered 10-23** (`analysis/G_bt_nfc/RE_findings.md`, last section): StartScan 9/10,
+   RequestConnection 14 (`const vector<uint8_t>&`, the proven shape), GetPairedDeviceInfo 17; listener
+   registration is slot 18, `AddListener(listener*, const std::string&)`. Left: the listener's vtable order. Start (10-23 notes): `libBtBleCommonService.so` exports only
    `BtBleCommonServiceClientFactory::CreateInstance`; the client's methods each log their own name
    (`BtBleCommonServiceClient::StartScan`, `RequestConnection`, `GetPairedDeviceInfo`, …) and the
    listener's (`OnNotifyScanResult(addr, rssi, adv)`), so the vtable slots can be recovered by
@@ -144,7 +146,7 @@ within each group.
 | ~~Skin transparency (`region.txt`)~~ | **Done 10-23**: the `[Normal]` polygons, pixel-exact at the skin's own size, black behind | — |
 | Skin dropdown | Tap the Winamp chip again (cycles) | A list screen, if cycling is not enough |
 | Swap prev/next; ignore keys when the screen is off | The Hold switch covers the second. The first depends on which way the player's own ⏮ ⏭ read on its side, so it waits for a look at the player | Decide with the player in hand |
-| Visualiser "Winamp mode" bands, sensitivity | Cinder's own visualiser settings | Band set as a row in Visualiser |
+| ~~Visualiser "Winamp mode" bands, sensitivity~~ | **Covered (checked 10-23)**: the Winamp view draws the levels Visualiser's Range (sensitivity), Response and Bands rows shape, in Winamp's own 19 or 75 columns | — |
 | Export Sony's bookmarks | Cinder's own audiobook positions | Sony keeps ten lists as `/cache/bookmark01.json`…`bookmark10.json` (Wampy copies them; Sony's player names `BookmarkModel` and `kJsonReadError`). Their layout is not in any string: first `adb pull /cache/bookmark01.json` from a player that has one (read-only), then show them as playlists |
 | User font | Bundled + Sony fonts | — |
 | Low-latency USB-DAC (llusbdac) | `cinder-llusbdac` repo **ready locally 10-23** (`/home/sony/cinder-llusbdac`): pinned build from Sony's NW-A57 kernel (BBDMP5) + upstream eeb31d5 + GCC 4.9.3; vermagic matches the player's modules | Owner: create the public repo and push (the auto-mode classifier refused to). Then the installer component and a USB DAC row; first insmod with the owner present |
@@ -217,14 +219,15 @@ About half a day of code plus the Mac session.
    `cinder_advanced.conf`. Device check in `TODO_device.md`.
 8. **G1.7 contract fixtures, the rest:** ~~the palette corpus~~ (**done 10-23**:
    `contracts/palettes/` + `verdicts.tsv`, Flint's checker agrees word for word) and
-   `flint-shared.tsv` (**done 10-23**, Flint's writer and Cinder's reader). Left: playlist forms
-   and a SensMe chunk. A `#TZ/UTC` log is Flint-only (Cinder writes `#TZ/UNKNOWN`), so it is a Flint
+   `flint-shared.tsv` (**done 10-23**, Flint's writer and Cinder's reader). `cinder-playlist.m3u8` (**done 10-23**, Cinder's
+   playlist file as Flint reads it). Nothing left: a SensMe chunk has
+   no reader in Cinder (Sony's scanner reads it, and the 09-17 device proofs are its check). A `#TZ/UTC` log is Flint-only (Cinder writes `#TZ/UNKNOWN`), so it is a Flint
    test, not a contract.
-9. **Tests for `cinder-audio`** (`SHORTCOMINGS.md` A2): effect, volume, power and codec shims have
-   host self-tests (10-22). Left: player, tuner, analyzer, storage (vtable calls; grow
-   `fake_pst.cpp` a service at a time).
+9. ~~**Tests for `cinder-audio`**~~ (`SHORTCOMINGS.md` A2): **done 10-23**, every shipping shim
+   has a host self-test (player, tuner, analyzer and storage added; each checked by breaking it).
 10. ~~**2038 (goal 10):** an i64 audit of Cinder's own timestamps.~~ **Done 10-23**: saved data was already i64; the Home app's clock (`now_ms`, 32-bit, wrapped after 24.8 days awake) and the mono shim's are now 64-bit, and `build.sh` fails on a new 64→32 narrowing in `main.cpp`.
-11. A host benchmark with a 10,000-line playlist; discovering an **unpaired** Bluetooth device; a
+11. ~~A host benchmark with a 10,000-line playlist~~ (**done 10-23**: the reader stopped at 4,096;
+    now 20,000, and 10,000 lines read in 2.5 ms on the host). Discovering an **unpaired** Bluetooth device; a
     Windows installer smoke test per release (Install → Update → Uninstall → Install).
 12. **Bluetooth still drops and loses its volume** (owner, 10-23). Connections still have problems
     with the volume and with disconnects. No details captured yet. Next time it happens: switch on
@@ -243,13 +246,16 @@ About half a day of code plus the Mac session.
 1. After decision 1: adopt music already on the player by content key (G3.2).
 2. ~~E7 the album unit~~ (**done 10-23**: the folder holding the audio, discs kept with it); ~~E9 refused scrobbles to `.scrobbler.refused.log`~~ (**done 10-23**); both uncommitted in Flint;
    ~~E10~~ (fixed 10-05); ~~E11 one WinHTTP session for the palette shop~~ (**done 10-23**, run on Windows).
-3. Features in the 10-01 order: G1.1 backup of the player's state, G1.2 health card, G3.1 library
-   lint, G1.3 device-aware transfer, G2.1 per-headphone profiles, G1.4 LRCLIB lyrics, G2.2 resume.
+3. Features in the 10-01 order: ~~G1.1 backup of the player's state~~ (**done 10-23**, uncommitted: every read,
+   `flint backup` / `flint restore`; RECOVERY.md has the step), ~~G1.2 health card~~ (**done 10-23**:
+   read from the files already on the drive, plus one Cinder log line for `/data` free; parser fixtures
+   are format strings until a real `cinderhome.log` replaces them), ~~G3.1 library
+   lint~~ (**done 10-23**: in Check and `flint lint`; "several years in one album" left out until it is
+   shown to split an album), G1.3 device-aware transfer, G2.1 per-headphone profiles, G1.4 LRCLIB lyrics, G2.2 resume.
 4. R6 / Flint 0.3: Setup, convert-on-transfer, Copying, the palette preview, SensMe reasons, the
    SensMe MP3 path.
 5. ~~**The same song on two albums, stored once**~~ (**built 10-23**, uncommitted: Flint suggests
-   pairs by audio, the owner ticks them, `flint shared`; first path kept. Left: a swap option for
-   which copy Sony's player shows; removing an album leaves its entry out at the next sync.)
+   pairs by audio, the owner ticks them, `flint shared`; first path kept, **Swap** / `--keep-other` for the other (10-23). Left: removing an album leaves its entry out at the next sync.)
    *Original note:* (owner idea, 10-23). A track that appears on two
    albums (the album and a best-of, a single and its album) is often the same recording. You
    select the two, or Flint suggests pairs by matching decoded audio. Flint then copies one file

@@ -1670,3 +1670,37 @@ Cinder uses this for Receiver ▸ "Use Sony's receiver": save the old value to
 Cinder boot restores the value and, if `GetCurrentFuncMode` reads 2, runs `EnterFuncMode(MediaPlay)`.
 Unverified on hardware — checklist 21.10.
 
+
+## The RMT-NWS20 remote: `BtBleCommonServiceClient`, 2026-10-23 (offline)
+
+For NEXT.md stage D1. Full dump: `vtable_BtBleCommonServiceClient.txt`
+(`dump_vtable.py libBtBleCommonService.so _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv`).
+The library exports only the two factories; every method below is named by its own trace tag.
+
+| Slot | Method | Shape (DecompileAt.java, Thumb entry = slot address − 1) |
+|---|---|---|
+| 3 | GetConnectionStatus | `(this)` |
+| 4 | GetBleType | `(this)` |
+| 5 | GetConnectedBleServiceType | |
+| 6 | GetConnectInformation | |
+| 7 | StartAdvertise | `(this, int*, u16*, u16*)` |
+| 8 | StopAdvertise | |
+| 9 | StartScan | `(this)`: scan for everything |
+| 10 | StartScan | `(this, const vector<T>&)`, T 24 bytes: a filter list |
+| 11 | StopScan | `(this)` |
+| 12 / 13 | StartConnectWait / StopConnectWait | |
+| 14 | **RequestConnection** | `(this, const vector<uint8_t>&)`, op 0xb, each byte marshalled: the shape proven on `BtTransmitterServiceClient` 07-30 |
+| 15 / 16 | RequestDisconnection / RequestCancelConnection | |
+| 17 | GetPairedDeviceInfo | `(this, vector<T>&)` out, T 24 bytes, cleared then filled |
+| 18 | **AddListener** | `(this, Listener*, const std::string& name)`, read by hand (`arm-linux-gnueabihf-objdump -M force-thumb --start-address=0x722c`; Ghidra's blob split misreads it as an advert parser). Wraps the listener in a 52-byte `ServiceListenerProxyBase` (listener at +0x24, a copy of the name at +0x28) and calls `ServiceClientBase::AddListener`. Returns 1 for a null listener, 4 with no service, else the base call's result |
+| 19 | RemoveListener, by position | Unread |
+
+The 24-byte T is the same in slots 10 and 17, which fits a device record of two libc++ containers
+(`vector<uint8_t>` address + `std::string` name, 12 bytes each on ARM32). Unconfirmed.
+
+Results are pushed, as with the classic client: `BtBleCommonServiceListener::OnNotifyScanResult`,
+`OnNotifyConnectionStatus`, `OnNotifyConnectInformation`, `OnNotifyConnectedServiceType`. So the
+remote needs the same thing pairing needs, a Sony listener vtable; registration is slot 18 above.
+Left offline: the listener's own vtable order (its four `On*` methods, from the proxy's forwarders,
+as the PlayEventListener's was mapped). Then, with the remote in hand: scan, match the advert name, `RequestConnection`,
+and open the uinput device `BtBleRemoteService` creates alongside event0/event1.

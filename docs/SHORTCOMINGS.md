@@ -98,6 +98,18 @@ already been bitten by, and it is the one part of the tree with no automated che
 > test was checked by breaking the shim and watching it fail. Left: `player_shim`, `tuner_shim`,
 > `analyzer_shim`, `storage_shim`, which call through recovered vtables and need fake objects in
 > the `harness/fake_pst.cpp` style; `sound_settings_shim` is probe-only.
+>
+> **2026-10-23 — all eight shipping shims under test; A2 closed.** `storageshim`, `analyzershim`,
+> `tunershim` and `playershim` self-tests join the four above (`cinder-home/tools/`, picked up by
+> `selftests.sh`). The dlopen shims get a fake loader; the analyzer's listener and the tuner's two
+> clients are called by vtable SLOT NUMBER, so a reordered virtual fails on the host; the tuner
+> runs against a fake Si4708 behind `/proc/regmon` (fopencookie) that pins RE_fm_tuner.md's
+> register rules (BAND/SPACE never written, every register put back) along with seek, scan and
+> Walkman One's power-up; the player pins Pause-before-Play, the non-null ◁ option, ClosePlayer
+> before Disconnect, seek round a pause, repeat-one only when on, and the node id carried to
+> +0xc on an edit in place. Each test was checked against two to nine deliberate breakages of its
+> shim. What a host test cannot reach: Sony's real behaviour behind those slots, which stays the
+> device's to prove.
 
 ### A3. Shell is load-bearing, and 5,288 lines of it are unlinted
 

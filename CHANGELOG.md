@@ -16,6 +16,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **The PC can see the player's system space.** Entering USB storage logs `/data`'s free space to
+  `cinderhome.log`, where Flint's health card reads it. *Device-unverified.*
+
+### Fixed
+
+- **Long playlists are read whole.** A playlist in `cinder_playlists` stopped at 4,096 songs without
+  a word, so a 7,000-song MusicBee playlist lost its end. The limit is now 20,000; a 10,000-line
+  file reads in 2.5 ms on the PC. *Device-unverified.*
+
 ## [0.3.20] — 2026-10-23
 
 ### Added
