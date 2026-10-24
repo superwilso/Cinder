@@ -12338,7 +12338,9 @@ static void reorder_hold_tick() {
         }
         return;
     }
-    if (g_touch_start_x < 0 || g_touch_start_y < 0 || !g_touch_saw_pos) return;
+    // Not g_touch_saw_pos: every SYN_REPORT clears it, so between frames — where this tick runs —
+    // it was always false and no hold ever fired (found on the player 10-24, hold_play_next).
+    if (g_touch_start_x < 0 || g_touch_start_y < 0) return;
     const int dx = touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x);
     const int dy = touch_ui_y(g_touch_cur_y) - touch_ui_y(g_touch_start_y);
     if ((dx < 0 ? -dx : dx) > REORDER_HOLD_SLOP || (dy < 0 ? -dy : dy) > REORDER_HOLD_SLOP) {

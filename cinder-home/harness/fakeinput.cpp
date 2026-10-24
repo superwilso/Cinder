@@ -144,14 +144,20 @@ void cinder_harness_key_at(long long at_ms, int code, int value) {
 // A tap: contact down at (x, y), then lift. Coordinates are UI coordinates — the panel's reported
 // range makes raw and UI the same thing here on purpose.
 void cinder_harness_tap_at(long long at_ms, int x, int y) {
+    // The lift is a separate frame, a couple of ticks later: a down and an up inside one frame is
+    // not a tap the app can see, since it reads the whole node once per frame.
+    cinder_harness_press_at(at_ms, x, y, 100);
+}
+
+// A still finger: one down frame, then nothing until the lift `hold_ms` later — what the panel
+// sends for a long press, and the case where only a tick (not an event) can notice the hold.
+void cinder_harness_press_at(long long at_ms, int x, int y, long long hold_ms) {
     queue(at_ms, 1, EV_ABS, ABS_MT_POSITION_X, x);
     queue(at_ms, 1, EV_ABS, ABS_MT_POSITION_Y, y);
     queue(at_ms, 1, EV_KEY, BTN_TOUCH, 1);
     queue(at_ms, 1, EV_SYN, 0, 0);
-    // The lift is a separate frame, a couple of ticks later: a down and an up inside one frame is
-    // not a tap the app can see, since it reads the whole node once per frame.
-    queue(at_ms + 100, 1, EV_KEY, BTN_TOUCH, 0);
-    queue(at_ms + 100, 1, EV_SYN, 0, 0);
+    queue(at_ms + hold_ms, 1, EV_KEY, BTN_TOUCH, 0);
+    queue(at_ms + hold_ms, 1, EV_SYN, 0, 0);
 }
 
 // A swipe, delivered as `steps` intermediate frames so the app sees travel rather than teleporting.

@@ -34,6 +34,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **A long press never fired.** The hold check also asked whether the current touch frame carried
+  a position, which every frame's end clears, so it never passed between frames, where the check
+  runs. Hold to play next (`hold_play_next`) played the song on the lift instead, and Up Next's
+  hold-to-lift never worked by holding. A harness scenario holds a still finger. *Device-verified
+  10-24*: a held song shows "Playing next" and stays queued; a held Up Next row lifts.
 - **Uninstalling could leave the player with no Home app.** The backup of Sony's launch config
   could hold Cinder's own (the owner's player carried one from 2026-09-22), so the uninstaller
   "restored" Cinder's launcher and then deleted it. The installer, the uninstaller and the boot

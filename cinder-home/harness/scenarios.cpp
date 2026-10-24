@@ -2773,6 +2773,24 @@ static void s_resume_seek_failure_is_ignored_without_preview(void) {
 }
 
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
+// ── a long press on a still finger ───────────────────────────────────────────────────────────
+// 2026-10-24 on the player: a held song row played on the lift instead of queueing. The hold tick
+// also required "this SYN frame carried a position", which every SYN_REPORT clears, so between
+// frames — where the tick runs — no hold ever fired, for Up Next's lift as well as Play next.
+static void s_still_finger_is_a_hold(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_press_at(20000, 240, 400, 600);
+    cinder_harness_tap_at(22000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("cinder_reorder_begin_hold", 20000, 20700), 1,
+             "a finger held still for 600 ms is offered as a hold");
+    check_eq(cinder_harness_count_between("cinder_reorder_begin_hold", 21000, 25000), 0,
+             "…and a 100 ms tap is not");
+}
+
 static const Scenario kScenarios[] = {
     {"zappin-restore-zero", s_zappin_restore_zero_checkpoint, "restore an exact zero bookmark after preview"},
     {"zappin-restore-different-uri", s_zappin_restore_different_uri_checkpoint, "restore a bookmark belonging to another URI"},
@@ -2935,6 +2953,7 @@ static const Scenario kScenarios[] = {
      "ordinary queue edits preserve a paused transport state"},
     {"book-no-preview-poll", s_bookmark_selection_does_not_arm_preview_handoff,
      "ordinary book selection restores its bookmark without preview polling"},
+    {"still-finger-hold", s_still_finger_is_a_hold, "a finger held still is a long press, a tap is not"},
     {nullptr, nullptr, nullptr},
 };
 

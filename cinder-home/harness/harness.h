@@ -144,6 +144,7 @@ int  cinder_harness_fs_resolve(const char* path, const char* mode, char* out, in
 void cinder_harness_input_enable(void);
 void cinder_harness_key_at(long long at_ms, int code, int value);   // raw evdev code, 1 press/0 release
 void cinder_harness_tap_at(long long at_ms, int x, int y);
+void cinder_harness_press_at(long long at_ms, int x, int y, long long hold_ms);   // a still finger
 void cinder_harness_swipe_at(long long at_ms, int x0, int y0, int x1, int y1, long long dur_ms);
 
 // ── the fake radio (fake_pst.cpp), as a test fixture ─────────────────────────────────────────

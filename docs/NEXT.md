@@ -1,7 +1,7 @@
 # Next — the one list
 
 **Every open next step, to-do and device check across Cinder, Flint, cinder-themes and
-cinder-sony-analysis, as of 2026-10-22.** This file is the order, not the procedure. Device rows are
+cinder-sony-analysis, as of 2026-10-24.** This file is the order, not the procedure. Device rows are
 run from [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) (safety rules first) and recorded there;
 feature state lives in [`../cinder-home/STATUS.md`](../cinder-home/STATUS.md). When something here is
 done, delete its line and record the result where its procedure lives. Earlier versions of this
@@ -11,8 +11,8 @@ file (battery research in full, Walkman One parity, the 0.3.17 release plan) are
 
 | | |
 |---|---|
-| Cinder | **v0.3.19** is the Latest release (10-20): the PolyForm Noncommercial licence, the installer writing the package Walkman One expects, Bluetooth AAC and SBC XQ as installer options, Simplified Chinese and installer language choice. 0.3.17 (audiobooks, presets, NC with Sony's NC earphones) and 0.3.18 (SD-card playlists) shipped before it. **v0.3.20-rc1** is the pre-release (10-23): everything since 0.3.19, including #30 (receiver AAC/LDAC), #31 (track previews), the guided installer and the Wampy-parity options. Most of it is host-tested only; the device rows below are what promotes it |
-| Flint | **v0.2.1** is the Latest release (09-28). **v0.2.3-rc3** is the pre-release (10-23; rc2's tag has no release, its Windows build failed on CRLF contract files) |
+| Cinder | **v0.3.19** is the Latest release (10-20): the PolyForm Noncommercial licence, the installer writing the package Walkman One expects, Bluetooth AAC and SBC XQ as installer options, Simplified Chinese and installer language choice. 0.3.17 (audiobooks, presets, NC with Sony's NC earphones) and 0.3.18 (SD-card playlists) shipped before it. **v0.3.20-rc1** is the pre-release (10-23): everything since 0.3.19, including #30 (receiver AAC/LDAC), #31 (track previews), the guided installer and the Wampy-parity options. Most of it is host-tested only; the device rows below are what promotes it. Since the rc (10-24): the move to `/system/vendor/cinder` (the owner's player already runs from it), Sony's Bookmark Lists, and eight fixes seen on the player |
+| Flint | **v0.2.1** is the Latest release (09-28). **v0.2.3-rc3** is the pre-release (10-23; rc2's tag has no release, its Windows build failed on CRLF contract files). Committed since (10-24): swap, backup/restore, the health card, the tag check, lyrics, and the window matching the command line (`window_parity` test) |
 | Open issues | None on GitHub. **Reported on Head-Fi, not on GitHub (10-12):** after two weeks unused, one user's library came back empty on internal and SD (0.3.9 and 0.3.16) and they went back to stock — worth an issue and a boot log |
 | Open PRs | **#29**, left open for the author's answer: its code is on `main` through #31. Device run for #31: End → Play, leaving FM mid-preview, a second preview |
 | Gates | The player and installer tests, the harness, the golden previews and text audit, `cargo fmt --check` (also in pre-push), all run by CI on every PR |
@@ -40,7 +40,7 @@ container, if a PR needs an ARM build to check.
 
 | # | Decision | Why it waits on you | Where |
 |---|---|---|---|
-| 1 | ~~**Flint F1, the rest**~~ | **Decided and built 10-23** (owner: ask in the plan): Flint sweeps only what it wrote; the rest is listed unticked (uncommitted in Flint) | Flint `docs/AUDIT_2026-10-01.md` Part F |
+| 1 | ~~**Flint F1, the rest**~~ | **Decided and built 10-23** (owner: ask in the plan): Flint sweeps only what it wrote; the rest is listed unticked | Flint `docs/AUDIT_2026-10-01.md` Part F |
 | 2 | **Promote Flint 0.2.3 to stable**, or leave 0.2.1 as the Latest | Its rc has been out since 10-18 | Flint's tag |
 | 3 | **The history rewrite.** Sony's extracted files are out of the tree but in public history | Rehearsed (122.7 → 35.2 MB, every release payload unchanged). A force-push that rewrites every clone; easier the fewer forks there are | [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md) |
 | 4 | **The cable escape** (11.4): keep, narrow to a PC data connection, or remove | Needs 11.3 (five quiet boots) first | `DEVICE_CHECKLIST.md` 11.3–11.4 |
@@ -159,7 +159,7 @@ within each group.
 | Skin dropdown | Tap the Winamp chip again (cycles) | A list screen, if cycling is not enough |
 | Swap prev/next; ignore keys when the screen is off | The Hold switch covers the second. The first depends on which way the player's own ⏮ ⏭ read on its side, so it waits for a look at the player | Decide with the player in hand |
 | ~~Visualiser "Winamp mode" bands, sensitivity~~ | **Covered (checked 10-23)**: the Winamp view draws the levels Visualiser's Range (sensitivity), Response and Bands rows shape, in Winamp's own 19 or 75 columns | — |
-| ~~Export Sony's bookmarks~~ | **Done 10-24**, opt-in (`sony_bookmarks` in `cinder_advanced.conf`): the non-empty `/cache/bookmarkNN.json` lists are read-only rows in Playlists, "Bookmark List N" as Sony names them. Fixtures are the owner's two files | Listed and opened on the owner's player 10-24 (both lists, covers, no edit bar). Left: play one |
+| ~~Export Sony's bookmarks~~ | **Done 10-24**, opt-in (`sony_bookmarks` in `cinder_advanced.conf`): the non-empty `/cache/bookmarkNN.json` lists are read-only rows in Playlists, "Bookmark List N" as Sony names them. Fixtures are the owner's two files | Listed, opened and played on the owner's player 10-24 (both lists, covers, no edit bar; Sony's files unchanged) |
 | User font | Bundled + Sony fonts | — |
 | Low-latency USB-DAC (llusbdac) | `cinder-llusbdac` repo **ready locally 10-23** (`/home/sony/cinder-llusbdac`): pinned build from Sony's NW-A57 kernel (BBDMP5) + upstream eeb31d5 + GCC 4.9.3; vermagic matches the player's modules | Owner: create the public repo and push (the auto-mode classifier refused to). Then the installer component and a USB DAC row; first insmod with the owner present |
 
@@ -247,7 +247,7 @@ About half a day of code plus the Mac session.
     then pull the snoop and `logcat`. Read it against the known traps: the retry mode that refuses
     connects (`BT connect jam`), the route flag trusting `GetBtStatus == 3`, and the BT volume being
     AVRCP steps that are separate from the jack's level.
-13. ~~**One file, two albums**~~ (**built 10-23**, uncommitted, device-unverified; Flint item 5):
+13. ~~**One file, two albums**~~ (**built 10-23**, device-unverified; Flint item 5):
     `cinder-ffi/src/shared.rs` reads `flint-shared.tsv` with the library and lists each entry under
     its own album as a copy of the kept file's row. Unlike the plan above, both rows share the kept
     file's object id, so plays, likes and ratings count to the one file, and Now Playing shows the
@@ -264,19 +264,19 @@ About half a day of code plus the Mac session.
 
 **Flint**
 
-1. ~~Adopt music already on the player by content key (G3.2)~~: **same path done 10-24** (uncommitted in Flint): a file where Flint would copy it, with the same audio and tags (`cache::same_file`), is kept and claimed in the manifest (`Plan::kept`). Left: a file under another path (Music Center's layout) is still copied; moving it into place is the next slice.
-2. ~~E7 the album unit~~ (**done 10-23**: the folder holding the audio, discs kept with it); ~~E9 refused scrobbles to `.scrobbler.refused.log`~~ (**done 10-23**); both uncommitted in Flint;
+1. ~~Adopt music already on the player by content key (G3.2)~~: **same path done 10-24**: a file where Flint would copy it, with the same audio and tags (`cache::same_file`), is kept and claimed in the manifest (`Plan::kept`). Left: a file under another path (Music Center's layout) is still copied; moving it into place is the next slice.
+2. ~~E7 the album unit~~ (**done 10-23**: the folder holding the audio, discs kept with it); ~~E9 refused scrobbles to `.scrobbler.refused.log`~~ (**done 10-23**);
    ~~E10~~ (fixed 10-05); ~~E11 one WinHTTP session for the palette shop~~ (**done 10-23**, run on Windows).
-3. Features in the 10-01 order: ~~G1.1 backup of the player's state~~ (**done 10-23**, uncommitted: every read,
+3. Features in the 10-01 order: ~~G1.1 backup of the player's state~~ (**done 10-23**: every read,
    `flint backup` / `flint restore`; RECOVERY.md has the step), ~~G1.2 health card~~ (**done 10-23**:
    read from the files already on the drive, plus one Cinder log line for `/data` free; parser fixtures
    are format strings until a real `cinderhome.log` replaces them), ~~G3.1 library
    lint~~ (**done 10-23**: in Check and `flint lint`; "several years in one album" left out until it is
-   shown to split an album), G1.3 device-aware transfer (**flagging done 10-24**, uncommitted: Check lists FLACs over 24 bits; converting them on the copy is left, with R6's convert-on-transfer), ~~G2.1 per-headphone profiles~~ (dropped 10-18 by the owner: Presets, loaded by hand), ~~G1.4 LRCLIB lyrics~~ (**command line done 10-24**, uncommitted: `flint lyrics <library> --apply` writes `Song.lrc` beside each track LRCLIB has synced lyrics for, never replacing one or fetching over synced lyrics in the tags; checked live against lrclib.net on a scratch library. Left: a button in the window, and where it goes is the owner's call, since Sync has one accented action and Check promises to change nothing), ~~G2.2 resume~~ (audiobook positions, 0.3.17).
+   shown to split an album), G1.3 device-aware transfer (**flagging done 10-24**: Check lists FLACs over 24 bits; converting them on the copy is left, with R6's convert-on-transfer), ~~G2.1 per-headphone profiles~~ (dropped 10-18 by the owner: Presets, loaded by hand), ~~G1.4 LRCLIB lyrics~~ (**done 10-24**: `flint lyrics <library> --apply` writes `Song.lrc` beside each track LRCLIB has synced lyrics for, never replacing one or fetching over synced lyrics in the tags; checked live against lrclib.net on a scratch library. In the window: SensMe ▸ Fetch lyrics), ~~G2.2 resume~~ (audiobook positions, 0.3.17).
 4. R6 / Flint 0.3: Setup, convert-on-transfer, Copying, the palette preview, SensMe reasons, the
    SensMe MP3 path.
-5. ~~**The same song on two albums, stored once**~~ (**built 10-23**, uncommitted: Flint suggests
-   pairs by audio, the owner ticks them, `flint shared`; first path kept, **Swap** / `--keep-other` for the other (10-23). Removing an album ends its entry at the next sync (tested 10-24), and a kept album that fits on no volume gives the song back to the other album (fixed 10-24, uncommitted).)
+5. ~~**The same song on two albums, stored once**~~ (**built 10-23**: Flint suggests
+   pairs by audio, the owner ticks them, `flint shared`; first path kept, **Swap** / `--keep-other` for the other (10-23). Removing an album ends its entry at the next sync (tested 10-24), and a kept album that fits on no volume gives the song back to the other album (fixed 10-24).)
    *Original note:* (owner idea, 10-23). A track that appears on two
    albums (the album and a best-of, a single and its album) is often the same recording. You
    select the two, or Flint suggests pairs by matching decoded audio. Flint then copies one file
@@ -286,7 +286,7 @@ About half a day of code plus the Mac session.
    cover); what happens when one album is removed from the sync; and Sony's own player, which
    will show only the stored copy.
 
-6. ~~**Likes sync options**~~ (**built 10-23**, uncommitted): per-run direction (both / to the
+6. ~~**Likes sync options**~~ (**built 10-23**): per-run direction (both / to the
    player / to Last.fm), an add-only switch, and each removal ticked so one can be left alone.
    Conflicts still keep the like.
 
