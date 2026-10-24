@@ -653,6 +653,7 @@ void start_pump_ticker();   // full worker defined just before main(), after the
 // FAST foreground bring-up: open the framebuffer ONLY, so we can paint immediately and the
 // appmgr Foreground handshake completes promptly. No DB, no IPC here (those can be slow/block).
 bool gadget_in_dac_mode();   // defined with the USB-DAC block below
+static void llusbdac_publish();   // ditto
 static int bt_status();      // defined with the Bluetooth block below
 static bool bt_radio_up(int st);
 static void apply_pump_interval();  // defined with poll_now_playing — audio-pump rate for the current state
@@ -795,6 +796,7 @@ void render_up() {
     // is to toggle all the way through DAC and back — measured 2026-07-29, and it stranded the
     // device with no USB. Pure property read, no Sony service, safe on the boot path.
     cinder_set_usb_dac(gadget_in_dac_mode() ? 1 : 0);
+    llusbdac_publish();
     // Boot ALWAYS at DAY backlight, even if night theme is persisted — the night dim is NOT resumed
     // across boots. Otherwise a daytime boot into persisted night could come up at ~3% backlight and
     // you couldn't see the screen to turn it back up. The night dim is a deliberate per-session action
@@ -4140,7 +4142,7 @@ const char kLockName[]    = "cinder";
 //     But the USB gadget does not come back afterwards: measured 2026-09-04, after a resume the
 //     musb OTG state machine sits in `a_idle` instead of `b_peripheral` and the host never sees
 //     the device again, despite VBUS and charger-detect both being fine. Until that is fixed a
-//     suspend costs a reboot to undo, so stage 2 is OPT-IN via /contents/cinder_ram_suspend.
+//     suspend costs a reboot to undo. Stage 2 was opt-in until 2026-10-24; now `no_ram_suspend` turns it off.
 //
 // Note stage 1 buys nothing while plugged in: the cable holds the USB0 clock on, and that alone
 // blocks deep idle (`dpidle_block_mask[CG_PERI0]=0x400`). It is an off-cable win, which is the
@@ -4192,7 +4194,7 @@ bool file_exists(const char* path) {
 // Idle seconds before suspending, or 0 for disabled. Latched once decided: deliberately not
 // hot-reloadable, because a half-written config file should not be able to change it mid-boot.
 //
-// ON BY DEFAULT since 2026-09-28 (stage 1 only — stage 2 stays behind `ram_suspend`). Absent file =
+// ON BY DEFAULT since 2026-09-28 (stage 2 since 2026-10-24, `no_ram_suspend` to turn it off). Absent file =
 // kDefaultThresholdS. A file holding 0 turns it off; a positive number is the threshold; anything
 // unparseable falls back to the default and says so. The escape hatch (`no_suspend`) is still
 // checked every tick. What earned the default: stage 1 holds a wakelock, so it can never reach the
@@ -4459,13 +4461,10 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
     // (analysis/RE_power_stock_vs_cinder.md section 3). The file is read each time, so deleting
     // it stops it.
     static int ram_dwell = 0;
-    // Dev channel: on unless `no_ram_suspend` (checklist 33.2 passed on the owner's player
-    // 2026-10-10). Stable stays opt-in until that has had some days of use.
-#ifdef CINDER_DEV
+    // On by default on both channels since 2026-10-24 (owner's decision), `no_ram_suspend` turns it
+    // off. USB after a resume (checklist 33.2) is still partial; resume_as_device and
+    // `cinder-msc usb-resume` are the fix in progress.
     const bool ram_on = !adv_on("no_ram_suspend");
-#else
-    const bool ram_on = adv_on("ram_suspend");
-#endif
     if (!ram_idle || !ram_on) { ram_dwell = 0; return; }
     if (++ram_dwell < kRamDwellS) return;
     ram_dwell = 0;
@@ -7493,6 +7492,19 @@ static void uac_poll_status() {
 // crash mid-toggle, a stock-side change — left Settings reporting the opposite of the hardware,
 // with no way to correct it except toggling all the way through. Measured 2026-07-29: the gadget
 // sat in `uac` while the UI read MASS STORAGE, and the only route back out was DAC-then-off.
+// llusbdac (the `llusbdac` component): tell the USB-DAC screen whether the module is installed and
+// whether it is already in the kernel, where it stays until the restart.
+static void llusbdac_publish() {
+    bool loaded = false;
+    if (FILE* m = std::fopen("/proc/modules", "r")) {
+        char line[256];
+        while (!loaded && std::fgets(line, sizeof line, m)) loaded = std::strncmp(line, "llusbdac ", 9) == 0;
+        std::fclose(m);
+    }
+    cinder_set_usb_dac_low_latency(
+        ::access("/system/vendor/cinder/lib/modules/llusbdac.ko", R_OK) == 0 ? 1 : 0, loaded ? 1 : 0);
+}
+
 bool gadget_in_dac_mode() {
     FILE* f = ::popen("/system/bin/getprop sys.sony.config 2>/dev/null", "r");
     if (!f) return false;
@@ -8453,6 +8465,7 @@ static void ldac_stop() {
 
 void apply_usb_dac() {
     bool on = cinder_get_usb_dac() != 0;
+    const bool low_latency = on && cinder_get_usb_dac_low_latency() != 0;
 
     // RELEASE THE RENDERER BEFORE ASKING FOR THE DAC.
     //
@@ -8572,7 +8585,18 @@ void apply_usb_dac() {
     // LDAC, otherwise the jack.
 
     if (rc == 0) {
-        if (on) {
+        if (on && low_latency) {
+            // LOW LATENCY: llusbdac takes the gadget's audio function and plays to the jack itself,
+            // so neither Sony's renderer nor the LDAC bridge is started — the host's stream never
+            // reaches hw:4,0 once the module is in.
+            int lr = std::system("/system/vendor/cinder/bin/cinder-msc llusbdac");
+            char lm[96];
+            std::snprintf(lm, sizeof lm, "usb-dac: low latency — cinder-msc llusbdac rc=%d", lr);
+            clog_(lm);
+            g_uac_playing = false;
+            g_uac_route = -1;
+            llusbdac_publish();
+        } else if (on) {
             if (cinder_get_bt_route()) {
                 // Headphones connected: bridge the capture to them. The bridge owns the capture PCM
                 // for the whole session, so Sony's own renderer must NOT be started as well — two
@@ -12750,6 +12774,12 @@ void input_pump() {
                 if (kc < 0 || kc >= keymap_size()) continue;
                 int btn = g_keymap[kc];
                 if (btn < 0) continue;
+                // Wampy's "swap prev/next" (`swap_prev_next`), for a hand that holds the player
+                // the other way up. The side keys only: headphones' own buttons keep their meaning.
+                // Read at the press, not at startup, because /contents can be unreadable then.
+                if ((kc == 105 || kc == 106) && (btn == CINDER_BTN_NEXT || btn == CINDER_BTN_PREV)
+                        && adv_on("swap_prev_next"))
+                    btn = btn == CINDER_BTN_NEXT ? CINDER_BTN_PREV : CINDER_BTN_NEXT;
                 // PAUSE and STOP only ever pause. On the play/pause button they would toggle, and a
                 // headset that sends PAUSE to a player that is already paused would start it.
                 if ((kc == 201 || kc == 166) && btn == CINDER_BTN_PLAY
@@ -14349,9 +14379,21 @@ void* render_driver(void*) {
                 // takes, so the UI, the reconnect ladder and the route all hear about it.
                 //   * Never in USB-DAC mode: the bridge to LDAC is audio this test cannot see.
                 //   * Never while a connect the user asked for is still pending.
-                //   * It does not come back on by itself. That is the price, and why it is opt-in.
+                //   * IT COMES BACK WHEN THE PLAYER IS USED (owner, 2026-10-24): the screen on or any
+                //     button after an idle-off switches the radio on again, and the reconnect
+                //     ladder brings the headphones back 10–15 s later. So it sleeps rather than
+                //     turning off, which is what makes it fit to be on by default.
                 {
                     static int bt_idle_secs = 0;
+                    static long long bt_slept_at = 0;   // the idle-off fired; 0 = the user's state
+                    if (bt_slept_at && cinder_get_bt_on() != 0) {
+                        bt_slept_at = 0;                // switched on some other way meanwhile
+                    } else if (bt_slept_at && (g_screen_on || g_last_input_ms > bt_slept_at)) {
+                        bt_slept_at = 0;
+                        clog_("bt: the player is in use again -> radio on (Turn off when idle)");
+                        cinder_set_bt_on(1);
+                        run_guarded("bt: idle wake", 8, apply_bt_toggle);
+                    }
                     // Music on the jack with no link counts too (cinder_bt_radio_unused, bt_edge.h).
                     const bool bt_unused = cinder_bt_radio_unused(audible, g_bt_link_last,
                                                                   src.receiver || g_amb_bt_alive);
@@ -14366,6 +14408,7 @@ void* render_driver(void*) {
                                       : "bt: idle 10 min with the screen off -> radio off (Turn off when idle)");
                         cinder_set_bt_on(0);
                         run_guarded("bt: idle off", 8, apply_bt_toggle);
+                        bt_slept_at = now_ms();
                     }
                 }
 

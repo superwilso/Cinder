@@ -307,6 +307,8 @@ pub struct FontSet {
     mono_regular: Font,
     mono_bold: Font,
     fallbacks: RefCell<Vec<Slot>>,
+    /// The user's own font (`set_user_font`), drawn for every Sans weight. None = the bundled one.
+    user_sans: RefCell<Option<&'static Font>>,
     /// Times a lookup has gone past both bundled families into the device chain, and which
     /// characters did it. Diagnostic only (see `chain_walks`/`chain_chars`); the regression test
     /// asserts the count is zero for UI chrome and prints the set when it is not.
@@ -336,6 +338,7 @@ impl FontSet {
             mono_regular: f(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
             mono_bold: f(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf")),
             fallbacks: RefCell::new((0..FALLBACK_FONTS.len()).map(|_| Slot::Untried).collect()),
+            user_sans: RefCell::new(None),
             chain_walks: std::cell::Cell::new(0),
             chain_chars: RefCell::new(std::collections::BTreeSet::new()),
             unresolved: RefCell::new(std::collections::BTreeSet::new()),
@@ -530,7 +533,22 @@ impl FontSet {
         (m, rc)
     }
 
+    /// Use `bytes` (a TTF/OTF) for all Sans text, Wampy's user font. False if it is not a font.
+    /// One weight: bold text draws in it too. Characters it lacks resolve as before.
+    pub fn set_user_font(&self, bytes: Vec<u8>) -> bool {
+        let Ok(font) = Font::from_bytes(bytes, FontSettings::default()) else {
+            return false;
+        };
+        // Leak: loaded once per start, alive until exit, like the fallbacks.
+        *self.user_sans.borrow_mut() = Some(&*Box::leak(Box::new(font)));
+        self.glyph_cache.borrow_mut().clear();
+        true
+    }
+
     fn pick(&self, fam: Family, w: Weight) -> &Font {
+        if let (Family::Sans, Some(f)) = (fam, *self.user_sans.borrow()) {
+            return f;
+        }
         match fam {
             Family::Sans => match w {
                 Weight::Light | Weight::Regular => &self.sans_regular,
@@ -565,6 +583,29 @@ pub fn probe_glyph(fonts: &FontSet, ch: char) -> u8 {
 #[cfg(test)]
 mod localization_tests {
     use super::*;
+    #[test]
+    fn a_user_font_takes_over_sans_and_junk_is_refused() {
+        let fonts = FontSet::load();
+        assert!(!fonts.set_user_font(b"not a font".to_vec()));
+        let st = |fam| TextStyle {
+            fam,
+            weight: Weight::Bold,
+            size: 20.0,
+            color: Rgb888::new(0, 0, 0),
+            tracking: 0.0,
+        };
+        let mono = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf").to_vec();
+        assert!(fonts.set_user_font(mono));
+        let w = |fam| measure(&fonts, "iiiWWW", &st(fam));
+        assert_eq!(w(Family::Sans), {
+            // The Mono family's Regular is the same file, and a monospace font: equal widths.
+            let m = TextStyle {
+                weight: Weight::Regular,
+                ..st(Family::Mono)
+            };
+            measure(&fonts, "iiiWWW", &m)
+        });
+    }
     #[test]
     fn cjk_subset_is_scoped_to_simplified_chinese_ui() {
         assert!(!is_chinese_ui_subset_char('中'));

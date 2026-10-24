@@ -25,6 +25,15 @@ use crate::Canvas;
 /// The ON/OFF switch in the header, as drawn (`toggle` at 424,56 34×18 plus its ON/OFF label).
 const TOGGLE: (i32, i32, i32, i32) = (424, 56, 34, 18);
 
+/// The Low latency switch, drawn only when the `llusbdac` component is installed.
+const LL_TOGGLE: (i32, i32, i32, i32) = (424, 112, 34, 18);
+
+/// True if `(x, y)` is on the Low latency row (the whole row, it is the only thing on it).
+pub fn hit_low_latency(x: i32, y: i32) -> bool {
+    let _ = x;
+    (LL_TOGGLE.1 - 22..LL_TOGGLE.1 + 40).contains(&y)
+}
+
 /// True if `(x, y)` is on the USB-DAC switch.
 ///
 /// This screen used to toggle on a tap *anywhere*, which meant a stray touch while reading the
@@ -51,9 +60,31 @@ pub fn render(
     dsee: bool,
     fmt: Option<(u32, u32, u32)>,
     negotiated: Option<&str>,
+    low_latency: Option<bool>,
 ) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "USB-DAC", None);
+    // llusbdac (the `llusbdac` component): `None` = not installed, and the screen is as before.
+    if let Some(ll) = low_latency {
+        text::draw(
+            c,
+            f,
+            24.0,
+            128.0,
+            crate::i18n::text("Low latency"),
+            &sty(Family::Sans, Weight::SemiBold, 17.0, t.ink, 0.0),
+        );
+        text::draw(
+            c,
+            f,
+            24.0,
+            150.0,
+            crate::i18n::text("About 50 ms, jack only. Stays on until the player restarts."),
+            &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0),
+        );
+        let (lx, ly, lw, lh) = LL_TOGGLE;
+        toggle(c, t, lx, ly, lw, lh, 12, ll);
+    }
     let onoff = if on {
         crate::i18n::text("ON")
     } else {
@@ -95,7 +126,7 @@ pub fn render(
         // output. `negotiated` comes from GetSoundStatus and is None until its enumerators are tied
         // to a real headphone, so until then the honest label is the transport, not the codec.
         let out_name = negotiated.unwrap_or(crate::i18n::text("BLUETOOTH"));
-        let path = if ldac {
+        let path = if ldac && low_latency != Some(true) {
             format!("PC → NW-A55 → {}", out_name)
         } else {
             "PC → NW-A55 → 3.5MM".to_string()
@@ -115,7 +146,7 @@ pub fn render(
         let (bx, by, bw, bh) = (50, 352, 380, 112);
         fill_rect(c, bx, by, bw, bh, t.panel);
         stroke_rect(c, bx, by, bw, bh, t.line, 1);
-        let out = if ldac {
+        let out = if ldac && low_latency != Some(true) {
             crate::ui_format!("OUTPUT : {}", out_name)
         } else {
             crate::i18n::text("OUTPUT : 3.5MM UNBALANCED").to_string()
@@ -161,7 +192,7 @@ pub fn render(
         // The link stays up and the USB audio goes out over it (stock tears Bluetooth down on
         // entering DAC mode). The line that said so was a comparison with stock, and the handoff
         // (2h) takes it out: the screen says what is happening, not what another player does.
-        if ldac {
+        if ldac && low_latency != Some(true) {
             let dev = bt_device.unwrap_or(crate::i18n::text("Bluetooth"));
             center(
                 c,
@@ -171,7 +202,7 @@ pub fn render(
                 &crate::ui_format!("Playing to {} — {} requested.", dev, codec),
                 &sty(Family::Sans, Weight::SemiBold, 15.0, t.acc, 0.0),
             );
-        } else {
+        } else if low_latency != Some(true) {
             center(
                 c,
                 f,

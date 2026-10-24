@@ -26,6 +26,7 @@ mod bot;
 mod catalogue;
 mod console;
 mod device;
+mod llusbdac;
 mod payload;
 mod release;
 mod sony_tables;

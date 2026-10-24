@@ -1009,3 +1009,14 @@ start of Sony's services, which is a restart of the player.
 | 40.2 | **Bookmark Lists** — **Listing and opening PASS 2026-10-24** (adb, flag on for the test and removed after) | Add `sony_bookmarks` to `cinder_advanced.conf`, reboot; Playlists ▸ Bookmark List 1 ▸ Play | The lists Sony's player made appear, open with covers and no edit bar, and play | A list missing: send `/cache/bookmark01.json` |
 | 40.3 | **"1 track"** | A playlist or album with one song | Its row reads "1 track"; the playlist page's Play reads "1 TRACK · IN ORDER" | "1 tracks" |
 | 40.4 | **Whole chip labels** — **Layout PASS 2026-10-24** (adb, 120 %): START ON reads Library · Now Playing · Menu · Last screen; Style is two lines of three, every name whole. Tapping a style not run (it would change the owner's setting) | Menu; Settings ▸ Display; tap each style chip | No "…" in any chip; each chip picks its own style | A chip picking its neighbour: the hit test and the drawing disagree |
+
+## 41 — 2026-10-24 — Low-latency USB DAC, skins list, swap prev/next, title drag, user font, Bluetooth wake
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 41.1 | **Low-latency USB DAC** — **with the owner present: it loads a kernel module** | Install with "Low-latency USB DAC" ticked. Settings ▸ USB-DAC: Low latency on, then the switch on. Play from a PC, then restart the player | Install log `llusbdac: installed`; `cinderhome.log` `usb-dac: low latency — cinder-msc llusbdac rc=0`; the PC finds a sound card named LLUSBDAC; sound at the jack; after the restart the switch is off again | A freeze or restart: hold Power, untick the option and Update. `rc=1` = send the `cinder-msc: llusbdac:` line (`finit_module` errno) |
+| 41.2 | **Skins list** | Two `.wsz` at the top of the drive. Display ▸ Style ▸ Winamp, then Winamp again; tap the second skin. The same with Cassette and two tapes | The list names both, the one in use marked; the tap loads it and goes back; it stays after a restart | |
+| 41.3 | **Swap prev/next** | Add `swap_prev_next` to `/contents/cinder_advanced.conf`, press the side ⏭ | It goes to the previous track; without the line, the next | |
+| 41.4 | **Drag the Winamp title** | Winamp view with a long title; drag along the title, then press it without moving | The title follows the finger and scrolls on from there; the still press opens Track information | |
+| 41.5 | **Your own font** | Copy a Latin TTF under 2 MB to the top of the drive as `cinder_font.ttf`, restart | Log `cinder_font.ttf: in use for the UI's text`; the Library and Settings text is in it; Chinese or other scripts still draw | Log says "not used" = not a font or over 2 MB |
+| 41.6 | **Bluetooth sleeps and wakes** | Bluetooth on, headphones off, screen off for 10 minutes; then press any button | Log `radio off (Turn off when idle)` then `the player is in use again -> radio on`; turn the headphones on and they connect | |

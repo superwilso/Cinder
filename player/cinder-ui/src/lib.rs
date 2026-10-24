@@ -56,6 +56,7 @@ pub mod settings;
 pub mod shelf;
 pub mod shuffle;
 pub mod skin;
+pub mod skins;
 pub mod sound;
 pub mod soundscape;
 pub mod style;

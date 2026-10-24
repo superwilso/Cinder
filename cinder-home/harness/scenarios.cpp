@@ -1529,8 +1529,8 @@ static void s_suspend_unplug_goes_back(void) {
     check(std::strncmp(st, "mem", 3) == 0, "…and goes back in once the port has let go");
 }
 
-// Stage 2 (suspend to RAM) is opt-in and has Sony's interlocks: the wakelock is released only
-// with the file present, off the cable, with nothing audible. Three runs, one difference each.
+// Stage 2 (suspend to RAM) is on by default since 2026-10-24 and has Sony's interlocks: the wakelock
+// is released only off the cable, with nothing audible, and not with `no_ram_suspend`.
 static bool ram_unlocked(void) {
     char wu[16] = {0};
     cinder_harness_fs_read("/sys/power/wake_unlock", wu, sizeof wu);
@@ -1538,41 +1538,39 @@ static bool ram_unlocked(void) {
 }
 static void s_ram_suspend_opt_in(void) {
     suspend_fixture();
-    cinder_harness_fs_write("/contents/cinder_ram_suspend", "");
     cinder_harness_fs_write("/sys/module/icx_pm_helper/parameters/icx_bid2", "0\n");
     cinder_harness_run();
-    check(ram_unlocked(), "file present, idle, off the cable: the wakelock is released");
+    check(ram_unlocked(), "idle, off the cable: the wakelock is released");
     check_eq(cinder_harness_count("system:/system/vendor/cinder/bin/cinder-power usbid3"), 1,
              "…after telling the kernel to resume the USB port as a device, once");
 }
-// The same switch as a line in the one settings file, and a longer key that must not match it.
+// A longer key and a comment in the one settings file must not turn it off.
 static void s_ram_suspend_conf(void) {
     suspend_fixture();
-    cinder_harness_fs_write("/contents/cinder_advanced.conf", "# switches\nram_suspend_x\nram_suspend = on\n");
+    cinder_harness_fs_write("/contents/cinder_advanced.conf", "# no_ram_suspend\nno_ram_suspend_x\n");
     cinder_harness_run();
-    check(ram_unlocked(), "ram_suspend = on in cinder_advanced.conf: the wakelock is released");
+    check(ram_unlocked(), "a comment and a longer key: stage 2 still runs");
 }
 static void s_ram_suspend_conf_off(void) {
     suspend_fixture();
-    cinder_harness_fs_write("/contents/cinder_advanced.conf", "ram_suspend_x\nram_suspend=off\n");
+    cinder_harness_fs_write("/contents/cinder_advanced.conf", "no_ram_suspend\n");
     cinder_harness_run();
-    check(!ram_unlocked(), "ram_suspend=off, and ram_suspend_x is another key: stage 2 does not run");
+    check(!ram_unlocked(), "no_ram_suspend in cinder_advanced.conf: stage 2 does not run");
 }
 static void s_ram_suspend_default_off(void) {
     suspend_fixture();
+    cinder_harness_fs_write("/contents/cinder_no_ram_suspend", "");
     cinder_harness_run();
-    check(!ram_unlocked(), "no file: the wakelock is never released");
+    check(!ram_unlocked(), "the old empty file still turns it off");
 }
 static void s_ram_suspend_not_on_cable(void) {
     suspend_fixture();
-    cinder_harness_fs_write("/contents/cinder_ram_suspend", "");
     cinder_harness_fs_write("/sys/class/power_supply/usb/online", "1\n");
     cinder_harness_run();
     check(!ram_unlocked(), "on the cable: the wakelock is kept");
 }
 static void s_ram_suspend_not_while_playing(void) {
     suspend_fixture();
-    cinder_harness_fs_write("/contents/cinder_ram_suspend", "");
     cinder_harness_script("cinder_audio_is_playing", 1);
     cinder_harness_run();
     check(!ram_unlocked(), "music playing: stage 1 may run, the wakelock is kept");
@@ -2833,10 +2831,10 @@ static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
     {"library-touched",   s_library_touched_not_changed, "a scan that changes no row does not rebuild the library"},
     {"suspend-default",   s_suspend_by_default,      "stage 1 early suspend runs by default, under a wakelock"},
-    {"ram-suspend",       s_ram_suspend_opt_in,      "stage 2: file present, idle, off the cable -> wakelock released"},
-    {"ram-suspend-conf",  s_ram_suspend_conf,        "stage 2 from a line in cinder_advanced.conf"},
-    {"ram-suspend-conf-off", s_ram_suspend_conf_off,  "an off value and a longer key do not switch it on"},
-    {"ram-suspend-off",   s_ram_suspend_default_off, "stage 2 never runs without the file"},
+    {"ram-suspend",       s_ram_suspend_opt_in,      "stage 2 by default: idle, off the cable -> wakelock released"},
+    {"ram-suspend-conf",  s_ram_suspend_conf,        "a comment and a longer key do not switch it off"},
+    {"ram-suspend-conf-off", s_ram_suspend_conf_off,  "no_ram_suspend in cinder_advanced.conf switches it off"},
+    {"ram-suspend-off",   s_ram_suspend_default_off, "the old empty no_ram_suspend file switches it off"},
     {"ram-suspend-cable", s_ram_suspend_not_on_cable, "stage 2 never runs on the cable"},
     {"ram-suspend-playing", s_ram_suspend_not_while_playing, "stage 2 never runs while music plays"},
     {"suspend-off-file",  s_suspend_off_by_file,     "0 in cinder_suspend_s turns stage 1 off"},

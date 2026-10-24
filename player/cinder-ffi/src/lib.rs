@@ -631,6 +631,8 @@ struct Render {
     /// The Winamp style's skin (`wsz.rs`), read the first time that style draws.
     skin: Option<cinder_ui::skin::Skin>,
     skin_tried: bool,
+    /// The user font (`USER_FONT`) has been looked for, once the drive was readable.
+    font_tried: bool,
     /// The Cassette style's tape (`tape_load.rs`), read the first time that style draws, and
     /// again when the playing folder's `cassette.txt` names another.
     tape: Option<cinder_ui::tape::Tape>,
@@ -870,6 +872,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         skin: None,
         tape: None,
         skin_tried: false,
+        font_tried: false,
         tape_tried: false,
         tape_pref: String::new(),
         skin_pref: String::new(),
@@ -2337,7 +2340,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 48] = [
+const SCREEN_NAMES: [&str; 49] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2388,6 +2391,7 @@ const SCREEN_NAMES: [&str; 48] = [
     "Language",
     "Zappin",
     "VolCurve",
+    "Skins",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2442,6 +2446,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Books => 44,
         S::Language => 45,
         S::Zappin => 46,
+        S::Skins => 48,
     }
 }
 
@@ -2790,6 +2795,25 @@ pub extern "C" fn cinder_render_tick() {
         );
     }
     load_grid_covers(r);
+    // Wampy's user font: a TTF/OTF at the top of the drive replaces Cinder's Sans. Looked for once
+    // the drive is readable (it is not for the first seconds of a boot; the launcher's log there is
+    // the sign), and only up to USER_FONT_MAX: fontdue parses every outline at load, and a CJK
+    // font's worth of them is an out-of-memory kill, which here is a restart.
+    if !r.font_tried && std::path::Path::new("/contents/cinderhome.log").exists() {
+        r.font_tried = true;
+        if let Ok(b) = std::fs::read(USER_FONT) {
+            let ok = b.len() <= USER_FONT_MAX && r.fonts.set_user_font(b);
+            eprintln!(
+                "cinder-ffi: {USER_FONT}: {}",
+                if ok {
+                    "in use for the UI's text"
+                } else {
+                    "not used (not a font, or over 2 MB)"
+                }
+            );
+            r.dirty |= ok;
+        }
+    }
     // The Winamp style's skin, read the first time that style is chosen (one zip off the drive).
     if !r.skin_tried && r.app.style() == cinder_ui::style::Style::Winamp {
         r.skin_tried = true;
@@ -5335,43 +5359,24 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::DacEqChanged => 48,
         Action::VolCurveChanged => 60,
         Action::Stop => 61,
-        Action::NextSkin if r.app.style() == cinder_ui::style::Style::Cassette => {
-            let names = tape_load::names_in(tape_load::ROOT);
-            let cur = r.tape.as_ref().map(|t| t.name.clone()).unwrap_or_default();
-            match wsz::next_name(&names, &cur).cloned() {
-                None => r
-                    .app
-                    .notify("No tape: copy a tape folder to cinder_cassette/tape"),
-                Some(n) => {
-                    r.tape = tape_load::load(tape_load::ROOT, &n, None);
-                    r.tape_tried = true;
-                    r.app.set_tape_loaded(r.tape.is_some());
-                    let i = names.iter().position(|x| *x == n).unwrap_or(0) + 1;
-                    r.app.notify_raw(&format!("{n} ({i}/{})", names.len()));
-                    r.tape_pref = n;
-                    save_settings(r);
-                }
-            }
+        Action::NextSkin => {
+            // The one after the skin on screen, so the first tap moves even with no choice saved.
+            let (names, cur) = skin_names_now(r);
+            let next = wsz::next_name(&names, &cur).cloned();
+            pick_skin(r, &names, next);
+            return None;
+        }
+        // Display ▸ Style ▸ the Winamp or Cassette chip again: the list to pick from.
+        Action::ListSkins => {
+            let (names, cur) = skin_names_now(r);
+            r.app.set_skin_list(names, &cur);
             r.dirty = true;
             return None;
         }
-        Action::NextSkin => {
-            // The one after the skin on screen, so the first tap moves even with no choice saved.
-            let names = wsz::names_in("/contents");
-            let cur = r.skin.as_ref().map(|s| s.name.clone()).unwrap_or_default();
-            match wsz::next_name(&names, &cur).cloned() {
-                None => r.app.notify("No skin: copy a .wsz to the top of the drive"),
-                Some(n) => {
-                    r.skin = wsz::find_in("/contents", &n);
-                    r.skin_tried = true;
-                    r.app.set_winamp_skin(r.skin.is_some());
-                    let i = names.iter().position(|x| *x == n).unwrap_or(0) + 1;
-                    r.app.notify_raw(&format!("{n} ({i}/{})", names.len()));
-                    r.skin_pref = n;
-                    save_settings(r);
-                }
-            }
-            r.dirty = true;
+        Action::PickSkin(i) => {
+            let (names, _) = skin_names_now(r);
+            let want = r.app.skin_name(*i).map(str::to_string);
+            pick_skin(r, &names, want);
             return None;
         }
         Action::RxChanged => 49,
@@ -6642,6 +6647,24 @@ pub extern "C" fn cinder_set_usb_dac_format(
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app
             .set_usb_dac_format(rate as u32, bits as u32, chans as u32);
+    }
+}
+
+/// llusbdac (the `llusbdac` component): `avail` = the module is installed, `loaded` = it is in the
+/// kernel (it then stays until the restart).
+#[no_mangle]
+pub extern "C" fn cinder_set_usb_dac_low_latency(avail: libc::c_int, loaded: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_usb_dac_low_latency(avail != 0, loaded != 0);
+    }
+}
+
+/// 1 if engaging USB-DAC should load llusbdac.
+#[no_mangle]
+pub extern "C" fn cinder_get_usb_dac_low_latency() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.usb_dac_low_latency() as libc::c_int,
+        None => 0,
     }
 }
 
@@ -9391,6 +9414,50 @@ pub extern "C" fn cinder_scrub_hit(x: libc::c_int, y: libc::c_int) -> libc::c_in
     1
 }
 
+/// The skins on the drive for the style in use (tapes for Cassette, `.wsz` for Winamp), and the
+/// name of the one loaded.
+fn skin_names_now(r: &Render) -> (Vec<String>, String) {
+    if r.app.style() == cinder_ui::style::Style::Cassette {
+        let cur = r.tape.as_ref().map(|t| t.name.clone()).unwrap_or_default();
+        (tape_load::names_in(tape_load::ROOT), cur)
+    } else {
+        let cur = r.skin.as_ref().map(|s| s.name.clone()).unwrap_or_default();
+        (wsz::names_in("/contents"), cur)
+    }
+}
+
+/// Load skin (or tape) `name`, one of `names`, say which it is, and remember it.
+fn pick_skin(r: &mut Render, names: &[String], name: Option<String>) {
+    let tapes = r.app.style() == cinder_ui::style::Style::Cassette;
+    match name {
+        None if tapes => r
+            .app
+            .notify("No tape: copy a tape folder to cinder_cassette/tape"),
+        None => r.app.notify("No skin: copy a .wsz to the top of the drive"),
+        Some(n) => {
+            if tapes {
+                r.tape = tape_load::load(tape_load::ROOT, &n, None);
+                r.tape_tried = true;
+                r.app.set_tape_loaded(r.tape.is_some());
+                r.tape_pref = n.clone();
+            } else {
+                r.skin = wsz::find_in("/contents", &n);
+                r.skin_tried = true;
+                r.app.set_winamp_skin(r.skin.is_some());
+                r.skin_pref = n.clone();
+            }
+            let i = names.iter().position(|x| *x == n).unwrap_or(0) + 1;
+            r.app.notify_raw(&format!("{n} ({i}/{})", names.len()));
+            save_settings(r);
+        }
+    }
+    r.dirty = true;
+}
+
+/// Wampy's user font, and the largest one Cinder will load (see where it is read).
+const USER_FONT: &str = "/contents/cinder_font.ttf";
+const USER_FONT_MAX: usize = 2 * 1024 * 1024;
+
 /// Park the first shell-visible action from a slider drag. One slot is enough: the moves are
 /// idempotent (each carries the slider's current value, not a delta), so if the shell is late and a
 /// second arrives first, applying only the newest is not merely acceptable — it is what you want.
@@ -10382,6 +10449,7 @@ mod tests {
             S::Books,
             S::Language,
             S::Zappin,
+            S::Skins,
             S::VolCurve,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
@@ -11974,6 +12042,7 @@ mod tests {
             skin: None,
             tape: None,
             skin_tried: false,
+            font_tried: false,
             tape_tried: false,
             tape_pref: String::new(),
             skin_pref: String::new(),

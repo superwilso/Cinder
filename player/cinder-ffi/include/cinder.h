@@ -786,6 +786,9 @@ int  cinder_get_profile_output(void);
    (from Sony's stream_info_t, the three words GetStatus fills in). rate 0 = not streaming, which
    clears the panel back to its generic line. Sets state only, raises no action. */
 void cinder_set_usb_dac_format(unsigned rate, unsigned bits, unsigned chans);
+/* llusbdac: avail = module installed, loaded = in the kernel. get: 1 = engage loads it. */
+void cinder_set_usb_dac_low_latency(int avail, int loaded);
+int cinder_get_usb_dac_low_latency(void);
 /* Publish the codec A2DP actually negotiated (raw BtSoundCodec word from GetSoundStatus; 0 = not
    known). The UI shows a neutral label until the enumerators are tied to a real headphone. */
 void cinder_set_bt_negotiated_codec(int raw);

@@ -183,6 +183,19 @@ pub fn write_payload(
     } else {
         Vec::new()
     };
+    // The low-latency USB DAC module, the same way (llusbdac.rs).
+    use crate::llusbdac as ll;
+    let ll_fetch = ll::needed(comps) && !ll::on_drive(target);
+    let module = if ll_fetch && !dry {
+        Some(ll::fetch().map_err(|e| {
+            io::Error::other(format!(
+                "could not get the low-latency USB DAC module from GitHub: {e}. Check the \
+                 connection, or untick \"Low-latency USB DAC\" and install again"
+            ))
+        })?)
+    } else {
+        None
+    };
 
     for (name, owner, bytes) in crate::payload::PAYLOAD {
         if !staged(comps, owner, w1) {
@@ -201,6 +214,12 @@ pub fn write_payload(
     for (name, bytes) in &tables {
         write_verified(&target.join(name), bytes)?;
         progress(name, bytes.len());
+    }
+    if let Some(bytes) = &module {
+        write_verified(&target.join(ll::NAME), bytes)?;
+        progress(ll::NAME, bytes.len());
+    } else if ll_fetch && dry {
+        progress(ll::NAME, 0);
     }
     let conf = crate::catalogue::conf_text(comps, channel);
     if !dry {

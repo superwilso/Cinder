@@ -44,7 +44,7 @@ pub const FOLLOWS: [(u8, &str, &str); 3] = [
     (
         crate::nav::FOLLOW_MONO,
         "Mono",
-        "Saved with the sound, and different on A and B",
+        "Saved with the sound, per A and B",
     ),
     (
         crate::nav::FOLLOW_AMP,
@@ -202,7 +202,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Presets) {
                 let sub = if n >= MAX {
                     crate::ui_format!("All {} are in use \u{b7} delete one to save another", MAX)
                 } else {
-                    crate::ui_format!("Keeps what {} sounds like now, under a name", p.live)
+                    crate::ui_format!("Saves how {} sounds now, under a name", p.live)
                 };
                 kit::row(
                     c,

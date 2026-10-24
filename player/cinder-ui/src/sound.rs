@@ -592,10 +592,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
         // `analysis/RE_mono_audio.md`. Same rule as the Bluetooth line below it — a control that
         // silently does nothing to what you are hearing is the defect this screen has had cleaned
         // out of it twice.
-        (
-            crate::i18n::text("Mono — not reachable on this output; USB-DAC to Bluetooth only"),
-            true,
-        )
+        (crate::i18n::text("Mono: USB-DAC to Bluetooth only"), true)
     } else if s.mono {
         (
             crate::i18n::text("Mono — both ears carry the same signal"),
@@ -926,7 +923,7 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         // so the row names the one that is actually in the path.
         ROW_EQ if s.tone_control => t(
             crate::i18n::text("Equalizer"),
-            crate::i18n::text("Tone Control is in the path instead (Advanced)"),
+            crate::i18n::text("Using Tone Control instead (Advanced)"),
             fx_over,
             RowTrail::Open(crate::i18n::text("TONE").into()),
         ),
@@ -990,7 +987,7 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         ),
         _ => RowText {
             title: crate::i18n::text("Advanced").into(),
-            sub: crate::i18n::text("Surround, DC Phase, Vinyl, Tone Control, DAC EQ").into(),
+            sub: crate::i18n::text("Surround, DC Phase, Vinyl, Tone, DAC EQ").into(),
             trail: RowTrail::Open(String::new()),
             dim: false,
         },

@@ -158,7 +158,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
     );
     let jsub = if d.jack {
-        "The jack's equalizer \u{b7} the 10-band stays for Bluetooth"
+        "Jack EQ \u{b7} Bluetooth keeps the 10-band"
     } else {
         crate::i18n::text("Off: the 10-band runs on the jack too, on the processor")
     };

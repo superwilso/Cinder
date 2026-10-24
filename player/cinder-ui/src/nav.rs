@@ -93,6 +93,9 @@ pub enum Screen {
     Palette,
     /// Settings ▸ Language — the installed languages, to pick one. See `language.rs`.
     Language,
+    /// Display ▸ Style ▸ the Winamp or Cassette chip again: the skins (or tapes) on the drive, to
+    /// pick one. See `skins.rs`.
+    Skins,
     /// Settings ▸ Device — the hardware's vital signs: battery (level, voltage, health, charger
     /// state) plus die temperatures, CPU clock and governor, memory, storage and uptime. Its own
     /// screen because the Settings row could show exactly one fact, and because everything here is
@@ -558,6 +561,10 @@ pub enum Action {
     /// Display ▸ Style: the Winamp chip tapped while Winamp is already the style. The shell loads
     /// the next `.wsz` at the top of the drive, says which, and remembers it (`wsz=`).
     NextSkin,
+    /// The Skins screen opened: the shell lists the skins (or tapes) with `set_skin_list`.
+    ListSkins,
+    /// Load the skin (or tape) at this index of `skin_names`.
+    PickSkin(usize),
     /// The Winamp skin's ■: pause, and back to 0:00.
     Stop,
     /// BT Receiver switched (or left, which switches it off). The shell reads `rx_on()` and runs
@@ -1030,6 +1037,15 @@ enum Scrub {
     /// The Winamp skin's volume and balance sliders (`winamp.rs`). Live, like the balance.
     WaVolume,
     WaBalance,
+    /// The Winamp skin's scrolling title, dragged by hand: where the finger went down (panel and
+    /// skin x), the shift then, and whether it has moved — a press that never moves is a tap.
+    WaTitle {
+        x0: i32,
+        y0: i32,
+        lx0: i32,
+        shift0: i32,
+        moved: bool,
+    },
     /// Soundscapes ▸ one of the two level sliders (0 = on its own, 1 = with music). Live, like the
     /// balance: you set a background level by hearing it against the foreground.
     AmbientLevel(usize),
@@ -1064,6 +1080,10 @@ pub struct App {
     palette_sort: usize,
     palette_scroll_px: i32,
     language_scroll_px: i32,
+    /// The Skins screen: the names on the drive, the one in use, and the scroll.
+    skin_names: Vec<String>,
+    skin_cur: String,
+    skins_scroll_px: i32,
     /// Help & controls' scroll offset; reset each time it is opened from the Menu.
     help_scroll_px: i32,
     /// Settings was opened since the folder was last read. The shell rescans on its next frame, so
@@ -1273,6 +1293,11 @@ pub struct App {
     /// Showing a fabricated hardware fact is worse than showing none, so the line stayed generic
     /// until the format could cross the FFI boundary. This is that.
     usb_dac_fmt: Option<(u32, u32, u32)>,
+    /// llusbdac: installed (the shell found the module), asked for, and loaded (it then stays until
+    /// the restart, so the switch locks on).
+    usb_dac_ll_avail: bool,
+    usb_dac_ll: bool,
+    usb_dac_ll_loaded: bool,
     /// The raw `BtSoundCodec` word A2DP actually negotiated, or 0 for "not known". Everything else
     /// on screen is the user's *preference*; A2DP negotiates, so a sink that cannot do LDAC lands on
     /// SBC while the preference still says LDAC. The enumerators are not mapped yet, so this is
@@ -1347,6 +1372,8 @@ pub struct App {
     /// The shell has a cassette tape loaded (`tape.rs`), so the Cassette style turns on its side.
     tape_loaded: bool,
     wa_remaining: bool,
+    /// Characters the scrolling title has been dragged by (`winamp::View::title_shift`).
+    wa_title_shift: i32,
     wa_playlist: bool,
     /// The queue index of the playlist's first row once it has been scrolled; None follows the
     /// playing track.
@@ -1815,6 +1842,9 @@ impl Default for App {
             palette_sort: 0,
             palette_scroll_px: 0,
             language_scroll_px: 0,
+            skin_names: Vec::new(),
+            skin_cur: String::new(),
+            skins_scroll_px: 0,
             help_scroll_px: 0,
             palettes_stale: false,
             locked: true,
@@ -1856,6 +1886,7 @@ impl Default for App {
             winamp_skin: false,
             tape_loaded: false,
             wa_remaining: false,
+            wa_title_shift: 0,
             wa_playlist: false,
             wa_pl_first: None,
             wa_vis: 0,
@@ -1907,6 +1938,9 @@ impl Default for App {
             ambient_route: crate::soundscape::Route::Off,
             ambient_sel: 0,
             usb_dac_fmt: None,
+            usb_dac_ll_avail: false,
+            usb_dac_ll: false,
+            usb_dac_ll_loaded: false,
             bt_codec_negotiated: 0,
             bt_fine: 0, // OFF: it rides on the EQ, so it is a thing you opt into
             // NOT persisted, and deliberately: a trim is an attenuation the user cannot see in any
@@ -4903,6 +4937,15 @@ impl App {
                 }
                 vec![]
             }
+            Screen::Skins => {
+                match crate::language::row_at(y, self.skins_scroll_px, self.skin_names.len()) {
+                    Some(i) => {
+                        self.pop();
+                        vec![Action::PickSkin(i)]
+                    }
+                    None => vec![],
+                }
+            }
             Screen::Language => {
                 // Stay on the page, like the palette picker: it repaints in the language just
                 // picked, which is the proof it took.
@@ -4955,7 +4998,10 @@ impl App {
                         crate::style::Style::Winamp | crate::style::Style::Cassette
                     );
                     if skinned && self.style == style {
-                        return vec![Action::NextSkin];
+                        self.skin_names.clear();
+                        self.skins_scroll_px = 0;
+                        self.push(Screen::Skins);
+                        return vec![Action::ListSkins];
                     }
                     self.style = style;
                     return vec![];
@@ -5507,6 +5553,15 @@ impl App {
                     self.usb_dac_on = !self.usb_dac_on;
                     self.route_changed();
                     return vec![Action::UsbDacToggle(self.usb_dac_on)];
+                }
+                // Chosen before DAC mode starts, never during it, and locked once loaded.
+                if self.usb_dac_ll_avail
+                    && !self.usb_dac_on
+                    && !self.usb_dac_ll_loaded
+                    && crate::usbdac::hit_low_latency(x, y)
+                {
+                    self.usb_dac_ll = !self.usb_dac_ll;
+                    return vec![];
                 }
                 vec![]
             }
@@ -6912,6 +6967,10 @@ impl App {
                 let max = crate::language::max_scroll(self.languages.len());
                 self.language_scroll_px = (self.language_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::Skins => {
+                let max = crate::language::max_scroll(self.skin_names.len());
+                self.skins_scroll_px = (self.skins_scroll_px + dy_px).clamp(0, max);
+            }
             Screen::Palette => {
                 let max = crate::palette_list::max_scroll(
                     self.palettes.len() + 1,
@@ -7205,6 +7264,13 @@ impl App {
                     Some(Ctl::Seek) => Scrub::Progress,
                     Some(Ctl::Volume) => Scrub::WaVolume,
                     Some(Ctl::Balance) => Scrub::WaBalance,
+                    Some(Ctl::Title) => Scrub::WaTitle {
+                        x0: x,
+                        y0: y,
+                        lx0: lx,
+                        shift0: self.wa_title_shift,
+                        moved: false,
+                    },
                     _ => return false,
                 };
                 self.scrub_permille = self.rail_permille(x, y);
@@ -7340,6 +7406,26 @@ impl App {
                 vec![]
             }
             Scrub::WaVolume => self.wa_volume_to(crate::winamp::to_land(x, y).0),
+            Scrub::WaTitle {
+                x0,
+                y0,
+                lx0,
+                shift0,
+                moved,
+            } => {
+                // One character per cell of the skin's font (5 px); dragging left reads on.
+                let lx = crate::winamp::to_land(x, y).0;
+                let moved = moved || (lx - lx0).abs() >= 5;
+                self.wa_title_shift = shift0 + (lx0 - lx) / 5;
+                self.scrub = Scrub::WaTitle {
+                    x0,
+                    y0,
+                    lx0,
+                    shift0,
+                    moved,
+                };
+                vec![]
+            }
             Scrub::WaBalance => {
                 let want = crate::winamp::balance_at(crate::winamp::to_land(x, y).0);
                 if want == self.snd_balance {
@@ -7398,6 +7484,17 @@ impl App {
                 vec![Action::VolCurveChanged]
             }
             Scrub::AmbientLevel(_) => vec![Action::AmbientChanged],
+            // A press on the title that never moved is the tap it always was: Track information.
+            Scrub::WaTitle {
+                x0,
+                y0,
+                moved: false,
+                ..
+            } => {
+                self.scrub = Scrub::None;
+                return self.winamp_tap(x0, y0);
+            }
+            Scrub::WaTitle { .. } => vec![],
             Scrub::None => vec![],
         };
         self.scrub = Scrub::None;
@@ -9663,6 +9760,7 @@ impl App {
                         playlist: self.wa_playlist,
                         vis: self.wa_vis,
                         style: self.wa_style,
+                        title_shift: self.wa_title_shift,
                     };
                     crate::winamp::render(c, &theme, fonts, &np2, skin, &view);
                 } else {
@@ -10392,6 +10490,15 @@ impl App {
                 };
                 crate::display::render(c, &theme, fonts, self.display_sel, &view)
             }
+            Screen::Skins => crate::skins::render(
+                c,
+                &theme,
+                fonts,
+                self.style == crate::style::Style::Cassette,
+                &self.skin_names,
+                &self.skin_cur,
+                self.skins_scroll_px,
+            ),
             Screen::Language => crate::language::render(
                 c,
                 &theme,
@@ -10477,6 +10584,8 @@ impl App {
                     self.snd_dsee,
                     self.usb_dac_fmt,
                     self.negotiated_codec_name(),
+                    self.usb_dac_ll_avail
+                        .then_some(self.usb_dac_ll || self.usb_dac_ll_loaded),
                 )
             }
             Screen::Receiver => {
@@ -12857,6 +12966,28 @@ impl App {
         self.route_changed();
     }
 
+    /// The Skins screen's list, from the shell: the names on the drive and the one in use.
+    pub fn set_skin_list(&mut self, names: Vec<String>, current: &str) {
+        self.skin_names = names;
+        self.skin_cur = current.to_string();
+    }
+
+    /// The name at `i` of the Skins list, for the shell to load.
+    pub fn skin_name(&self, i: usize) -> Option<&str> {
+        self.skin_names.get(i).map(String::as_str)
+    }
+
+    /// llusbdac as the shell sees it: the module is installed, and whether it is loaded.
+    pub fn set_usb_dac_low_latency(&mut self, avail: bool, loaded: bool) {
+        self.usb_dac_ll_avail = avail;
+        self.usb_dac_ll_loaded = loaded;
+    }
+
+    /// Should engaging USB-DAC load llusbdac? Read by the shell on `UsbDacToggle(true)`.
+    pub fn usb_dac_low_latency(&self) -> bool {
+        self.usb_dac_ll_avail && (self.usb_dac_ll || self.usb_dac_ll_loaded)
+    }
+
     /// The host's stream format, straight from Sony's `stream_info_t` via the engine. A rate of 0
     /// means "not streaming" and clears the panel back to its generic line, which is what should
     /// happen when the PC stops.
@@ -13101,6 +13232,7 @@ fn screen_title(s: Screen) -> &'static str {
         Screen::Display => crate::i18n::text("Display"),
         Screen::Palette => crate::i18n::text("Palette"),
         Screen::Language => crate::i18n::text("Language"),
+        Screen::Skins => crate::i18n::text("Skins"),
         Screen::Eq => crate::i18n::text("Equalizer"),
         s => MENU
             .iter()
@@ -16957,6 +17089,7 @@ mod tests {
             Screen::VolCurve,
             Screen::Presets,
             Screen::Nc,
+            Screen::Skins,
             Screen::Bluetooth,
             Screen::BtCodec,
             Screen::Pairing,
@@ -18981,6 +19114,30 @@ mod tests {
     }
 
     #[test]
+    fn low_latency_is_chosen_before_dac_mode_and_locks_once_loaded() {
+        let row = (240, 128);
+        let mut a = open_from_menu(Screen::UsbDac);
+        a.tap(row.0, row.1);
+        assert!(
+            !a.usb_dac_low_latency(),
+            "no module installed: the row is not there"
+        );
+        a.set_usb_dac_low_latency(true, false);
+        a.tap(row.0, row.1);
+        assert!(a.usb_dac_low_latency());
+        a.tap(441, 65); // DAC on
+        a.tap(row.0, row.1);
+        assert!(
+            a.usb_dac_low_latency(),
+            "the row does nothing while DAC mode is on"
+        );
+        a.tap(441, 65); // DAC off
+        a.set_usb_dac_low_latency(true, true);
+        a.tap(row.0, row.1);
+        assert!(a.usb_dac_low_latency(), "loaded stays on until the restart");
+    }
+
+    #[test]
     fn settings_usb_mode_enters_mass_storage() {
         let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
@@ -19586,6 +19743,18 @@ mod tests {
         assert!(a.scrub_begin(sx, sy));
         assert!(a.scrub_is_rail());
         assert!(matches!(a.scrub_end().as_slice(), [Action::Seek(_)]));
+        // The title drags by hand (landscape x is the panel's y), and a press that never moves
+        // is still the tap: Track information.
+        let (tx, ty) = centre(Ctl::Title, false);
+        assert!(a.scrub_begin(tx, ty));
+        a.scrub_move(tx, ty - 20);
+        assert_eq!(a.wa_title_shift, 4, "20 px left = four characters on");
+        assert_eq!(a.scrub_end(), vec![]);
+        assert_eq!(a.current(), Screen::NowPlaying, "a drag opens nothing");
+        assert!(a.scrub_begin(tx, ty));
+        a.scrub_end();
+        assert_eq!(a.current(), Screen::TrackInfo);
+        a.go(Screen::NowPlaying);
         // The balance is live, like Sound's.
         let (bx, by) = centre(Ctl::Balance, false);
         assert!(a.scrub_begin(bx, by));
@@ -19645,9 +19814,15 @@ mod tests {
         assert_eq!(a.style(), Style::ALL[Style::COUNT - 1]);
         assert_eq!(
             tap(&mut a, Style::COUNT - 1),
-            vec![Action::NextSkin],
-            "Winamp again is the next skin"
+            vec![Action::ListSkins],
+            "Winamp again lists the skins"
         );
+        assert_eq!(a.current(), Screen::Skins);
+        a.set_skin_list(vec!["a.wsz".into(), "b.wsz".into()], "a.wsz");
+        let row1 = crate::language::TOP + crate::kit::ROW_H * 3 / 2;
+        assert_eq!(a.tap(240, row1), vec![Action::PickSkin(1)]);
+        assert_eq!(a.skin_name(1), Some("b.wsz"));
+        assert_eq!(a.current(), Screen::Display, "picking goes back");
         assert_eq!(a.style(), Style::Winamp);
         assert_eq!(tap(&mut a, 1), vec![], "any other chip only picks");
         tap(&mut a, Style::COUNT - 1);

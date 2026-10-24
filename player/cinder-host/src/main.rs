@@ -1925,6 +1925,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     true,
                     Some((44100, 32, 2)),
                     None,
+                    None,
                 )
             }),
             // Library views (the header's view button). Last in the set so the glyph cache order —

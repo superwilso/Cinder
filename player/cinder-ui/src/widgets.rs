@@ -89,6 +89,32 @@ pub fn draw_fit(
     text::draw(c, f, x, baseline, &s, st)
 }
 
+/// `s` from `x` to `right`, wrapped onto a second line `line_h` below when it does not fit on one
+/// (the second cut with "…" if it still runs over). For text with room under it; returns the lines
+/// drawn so the caller can move what follows down.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_wrap2(
+    c: &mut Canvas,
+    f: &FontSet,
+    x: f32,
+    baseline: f32,
+    s: &str,
+    st: &TextStyle,
+    right: f32,
+    line_h: f32,
+) -> i32 {
+    let w = (right - x).max(0.0);
+    let lines = crate::track_info::wrap(f, s, st, w);
+    if lines.len() <= 1 {
+        draw_fit(c, f, x, baseline, s, st, right);
+        return 1;
+    }
+    text::draw(c, f, x, baseline, lines[0].trim_end(), st);
+    let rest = lines[1..].concat();
+    draw_fit(c, f, x, baseline + text::scaled(line_h), &rest, st, right);
+    2
+}
+
 /// Draw text horizontally centred on `cx`.
 ///
 /// Fitted to the panel first: centred text wider than the screen overflows BOTH edges at once, and

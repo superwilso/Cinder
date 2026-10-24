@@ -417,7 +417,7 @@ fn bullet(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, head: &str, sub: &str)
         &sty(Family::Sans, Weight::SemiBold, 17.0, t.ink, 0.0),
         458.0,
     );
-    crate::widgets::draw_fit(
+    crate::widgets::draw_wrap2(
         c,
         f,
         54.0,
@@ -425,6 +425,7 @@ fn bullet(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, head: &str, sub: &str)
         sub,
         &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0),
         458.0,
+        17.0,
     );
 }
 

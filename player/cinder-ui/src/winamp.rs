@@ -214,6 +214,8 @@ pub struct View<'a> {
     pub vis: u8,
     /// The analyzer's look: `ANALYZER_STYLES[style]`.
     pub style: u8,
+    /// Characters the user dragged the scrolling title by (Wampy's wish: scroll it by hand).
+    pub title_shift: i32,
 }
 
 /// The analyzer's looks, Winamp's preferences, in the order the clutter bar's V steps through
@@ -240,6 +242,7 @@ impl Default for View<'_> {
             playlist: false,
             vis: 0,
             style: 0,
+            title_shift: 0,
         }
     }
 }
@@ -288,14 +291,15 @@ fn number_before<'a>(s: &'a str, unit: &str) -> &'a str {
 }
 
 /// A title too long for the display scrolls, one character a second. The clock is the playing
-/// time, so it moves only while the song does and costs no frames of its own.
-fn marquee(s: &str, elapsed: &str, room: usize) -> String {
+/// time, so it moves only while the song does and costs no frames of its own. `shift` is how far a
+/// drag has moved it by hand; it scrolls on from there.
+fn marquee(s: &str, elapsed: &str, room: usize, shift: i32) -> String {
     if s.chars().count() <= room {
         return s.to_string();
     }
     let (m, sec) = mmss(elapsed);
     let looped: Vec<char> = s.chars().chain("  ***  ".chars()).collect();
-    let at = (m * 60 + sec) as usize % looped.len();
+    let at = ((m * 60 + sec) as i64 + shift as i64).rem_euclid(looped.len() as i64) as usize;
     looped.iter().cycle().skip(at).take(room).collect()
 }
 
@@ -436,14 +440,14 @@ fn window(
         if let Some(font) = &skin.text {
             let full = format!("{} - {}", np.artist, np.title);
             if full.is_ascii() {
-                let line = marquee(&full, np.elapsed, 31);
+                let line = marquee(&full, np.elapsed, 31, v.title_shift);
                 text(c, dim, font, &line, 31, None, |i| {
                     kr((111 + 5 * i, 27, 5, 6))
                 });
             } else {
                 // The skin's font has Latin capitals only: anything else in Cinder's own, in the
                 // playlist's text colour, as Wampy does.
-                let line = marquee(&full, np.elapsed, 26);
+                let line = marquee(&full, np.elapsed, 26, v.title_shift);
                 let st = sty(skin.pl_colors[0], dim, 15.0);
                 text_land(
                     c,
@@ -643,9 +647,15 @@ mod tests {
         assert_eq!(number_before("FLAC · 24bit / 96.0 kHz", "kHz"), "96");
         assert_eq!(number_before("MP3 · 320 kbps / 44.1 kHz", "kbps"), "320");
         assert_eq!(number_before("FLAC", "kbps"), "");
-        assert_eq!(marquee("SHORT", "0:09", 31), "SHORT");
-        assert_eq!(marquee("ABCDEF", "0:00", 4), "ABCD");
-        assert_eq!(marquee("ABCDEF", "0:02", 4), "CDEF");
+        assert_eq!(marquee("SHORT", "0:09", 31, 0), "SHORT");
+        assert_eq!(marquee("ABCDEF", "0:00", 4, 0), "ABCD");
+        assert_eq!(marquee("ABCDEF", "0:02", 4, 0), "CDEF");
+        assert_eq!(
+            marquee("ABCDEF", "0:00", 4, 2),
+            "CDEF",
+            "a drag moves it by hand"
+        );
+        assert_eq!(marquee("ABCDEF", "0:02", 4, -2), "ABCD", "and back");
     }
 
     #[test]

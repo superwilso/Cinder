@@ -124,7 +124,7 @@ pub const MORE_SUB: &str = "Library · power saving · system";
 /// The pull-down panel row's second line: where the gesture starts and what it opens.
 pub const QUICK_SUB: &str = "Swipe down from the top of the screen";
 /// The Bluetooth auto off row's second line: when it acts.
-pub const BT_IDLE_OFF_SUB: &str = "After 10 min unused with the screen off";
+pub const BT_IDLE_OFF_SUB: &str = "Sleeps after 10 min idle, wakes on use";
 
 /// The released version, in ONE place. `tools/release.sh` rewrites this line when it bumps the
 /// tag, the same way it rewrites `installer/Cargo.toml` — so what the player shows on its own

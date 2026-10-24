@@ -371,7 +371,7 @@ pub fn hit_codec(x: i32, y: i32, on: bool, codec_is_ldac: bool, aac: bool) -> Bt
 fn codec_strip(bt: &Bt) -> String {
     let want = codec_name(bt.codec_sel, bt.xq);
     if !bt.on {
-        return "BLUETOOTH IS OFF \u{b7} TURN IT ON TO CHANGE THESE".into();
+        return "BLUETOOTH IS OFF \u{b7} TURN IT ON FIRST".into();
     }
     let Some(name) = bt.connected else {
         return "NOTHING CONNECTED \u{b7} THESE APPLY TO THE NEXT LINK".into();
@@ -671,7 +671,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         46.0,
         458.0,
         780.0,
-        crate::i18n::text("NFC · TOUCH DEVICE TO REAR PANEL"),
+        crate::i18n::text("NFC · TOUCH THE REAR PANEL"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
         "RECEIVER MODE \u{203a}",
         &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08),

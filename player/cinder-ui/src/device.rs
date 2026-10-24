@@ -259,7 +259,7 @@ pub fn content_height(v: &DeviceView) -> i32 {
 }
 
 /// Room left below the footer for the small print.
-const FOOTER_H: i32 = 96;
+const FOOTER_H: i32 = 136; // room for both notes wrapped at a large text size
 
 /// How far this screen can scroll. 0 means it all fits.
 pub fn max_scroll_px(v: &DeviceView) -> i32 {
@@ -530,18 +530,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
     let foot_w = (kit::RIGHT - kit::LEFT) as f32;
     let x = kit::LEFT as f32;
     y += 26;
-    text::draw(
+    // Wrapped, not cut: at a large text size these run past the edge (`--cut 120`).
+    let wrap = |c: &mut Canvas, y: i32, s: &str| {
+        let n = crate::widgets::draw_wrap2(c, f, x, y as f32, s, &foot, x + foot_w, 18.0);
+        y + (n - 1) * text::scaled(18.0).ceil() as i32
+    };
+    y = wrap(
         c,
-        f,
-        x,
-        y as f32,
-        &crate::widgets::fit(
-            f,
-            crate::i18n::text("NO FUEL GAUGE — NO CURRENT, NO CYCLE COUNT."),
-            &foot,
-            foot_w,
-        ),
-        &foot,
+        y,
+        crate::i18n::text("NO FUEL GAUGE — NO CURRENT, NO CYCLE COUNT."),
     );
     if !v.charger_raw.is_empty() {
         y += 22;
@@ -557,18 +554,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
     }
     if v.care {
         y += 22;
-        text::draw(
+        wrap(
             c,
-            f,
-            x,
-            y as f32,
-            &crate::widgets::fit(
-                f,
-                crate::i18n::text("CARE ON: 100% HERE IS ~4.09 V, NOT 4.2 V."),
-                &foot,
-                foot_w,
-            ),
-            &foot,
+            y,
+            crate::i18n::text("CARE ON: 100% HERE IS ~4.09 V, NOT 4.2 V."),
         );
     }
     c.clear_clip();

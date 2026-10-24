@@ -1002,6 +1002,11 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
     helper's `curve` verified writing a byte-identical table 10-23), **CUE sheets** (playback:
     titles and ◁/▷ inside the file, and the album page lists the CUE tracks), **Cassette, Clock and Winamp
     (`.wsz` skins)** Now Playing styles, and the **guided installer** (window pages checked from screenshots).
+- **More parity, 2026-10-24 — code done, device-gated** (`docs/DEVICE_CHECKLIST.md` §41): the
+  **low-latency USB DAC** (`llusbdac`, waiting on cinder-llusbdac's first release for its pinned
+  hash), a **skins and tapes list**, **swap ⏮/⏭** (`swap_prev_next`), **dragging the Winamp title**,
+  a **user font** (`cinder_font.ttf`), and **Bluetooth auto off that wakes** with the player.
+  **Suspend to RAM is now on by default**; USB after a resume (33.2) is still partial.
 
 - **Library views — built and host-tested, not yet on the panel.** *(2026-09-29)* The Library
   header's view button switches each tab between List, **Grid** (Albums, Artists, Playlists: 96 px

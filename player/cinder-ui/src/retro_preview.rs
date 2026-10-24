@@ -244,7 +244,7 @@ pub fn render(
         186.0,
         208.0,
         if title.is_empty() {
-            crate::i18n::text("Start an album or playlist first")
+            crate::i18n::text("Start an album or playlist")
         } else {
             title
         },

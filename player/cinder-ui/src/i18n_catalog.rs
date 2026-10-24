@@ -128,6 +128,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "ARTISTS" => Some("歌手"),
         "AUDIO STOPPED — RESTART" => Some("音频已停止，请重启"),
         "AUTO" => Some("自动"),
+        "About 50 ms, jack only. Stays on until the player restarts." => Some("约 50 毫秒，仅耳机插孔。在播放器重启前一直开启。"),
         "Accent" => Some("强调色"),
         "Active" => Some("活力"),
         "Adapts the rate to the link" => Some("根据连接质量调整码率"),
@@ -141,7 +142,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Added {}" => Some("已添加 {}"),
         "Adjust bands" => Some("调整频段"),
         "Advanced" => Some("高级设置"),
-        "After 10 min unused with the screen off" => Some("熄屏且闲置十分钟后关闭"),
         "Album" => Some("专辑"),
         "Album added to Up Next — {}" => Some("专辑已加入待播队列：{}"),
         "Album artist" => Some("专辑歌手"),
@@ -173,7 +173,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "BASS" => Some("低音"),
         "BATTERY" => Some("电池"),
         "BLUETOOTH" => Some("蓝牙"),
-        "BLUETOOTH IS OFF · TURN IT ON TO CHANGE THESE" => Some("蓝牙已关闭，开启后可修改"),
+        "BLUETOOTH IS OFF · TURN IT ON FIRST" => Some("蓝牙已关闭，请先开启"),
         "BOTH CHANNELS" => Some("左右声道"),
         "BOTTOM STRIP" => Some("底部播放栏"),
         "BRIGHTNESS" => Some("亮度"),
@@ -356,7 +356,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "FIXED POSITION" => Some("固定位置"),
         "FM Radio" => Some("收音机"),
         "FM radio" => Some("FM 收音机"),
-        "FM, USB-DAC AND THE RECEIVER GIVE BANDS ONLY" => Some("FM、USB-DAC 和接收模式仅显示频段"),
+        "FM, USB-DAC AND RECEIVER: BANDS ONLY" => Some("FM、USB-DAC 和接收模式仅显示频段"),
         "FORGET" => Some("取消配对"),
         "FORMAT" => Some("格式"),
         "FOUND · {}" => Some("已发现 · {}"),
@@ -433,7 +433,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "June" => Some("六月"),
         "Keep it as a playlist" => Some("保存为播放列表"),
         "Keeps what {} sounds like now, as Preset {}" => Some("将 {} 的当前声音保存为预设 {}"),
-        "Keeps what {} sounds like now, under a name" => Some("将 {} 的当前声音以名称保存"),
         "Kernel" => Some("内核"),
         "LAST PLAYED" => Some("上次播放"),
         "LDAC bitrate and sample rate are set on your phone." => Some("LDAC 码率和频率由手机设置。"),
@@ -470,6 +469,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Locks the screen; buttons work" => Some("锁定屏幕，实体按键仍可用"),
         "Log full (4 MB). " => Some("日志已满（4 MB）。"),
         "Lounge" => Some("休闲"),
+        "Low latency" => Some("低延迟"),
         "Lyrics" => Some("歌词"),
         "MASS STORAGE" => Some("大容量存储"),
         "MEMORY" => Some("内存"),
@@ -499,7 +499,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Monday" => Some("星期一"),
         "Mono" => Some("单声道"),
         "Mono — both ears carry the same signal" => Some("单声道：左右耳播放相同信号"),
-        "Mono — not reachable on this output; USB-DAC to Bluetooth only" => Some("此输出不支持单声道；仅限 USB-DAC 至蓝牙"),
+        "Mono: USB-DAC to Bluetooth only" => Some("单声道：仅限 USB-DAC 至蓝牙"),
         "Month" => Some("月"),
         "More effects" => Some("更多音效"),
         "More settings" => Some("更多设置"),
@@ -518,7 +518,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "NEXT FROM {}" => Some("接下来来自 {}"),
         "NEXT PREVIEW" => Some("下一段"),
         "NEXT UP" => Some("接下来播放"),
-        "NFC · TOUCH DEVICE TO REAR PANEL" => Some("NFC · 将设备贴近背面"),
+        "NFC · TOUCH THE REAR PANEL" => Some("NFC · 将设备贴近背面"),
         "NIGHT" => Some("夜间"),
         "NO AERIAL — PLUG IN WIRED HEADPHONES" => Some("未检测到天线，请插入有线耳机"),
         "NO EFFECTS" => Some("无音效"),
@@ -635,7 +635,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "PASSKEY" => Some("配对码"),
         "PAUSE" => Some("暂停"),
         "PEAK" => Some("峰值"),
-        "PIN AND CONFIRM PROMPTS APPEAR HERE WHEN A DEVICE ASKS" => Some("设备请求输入或确认配对码时，会在此显示"),
+        "PIN AND CONFIRM PROMPTS APPEAR HERE" => Some("配对码请求会在此显示"),
         "PINNED · {}/{}" => Some("已保存书签 · {}/{}"),
         "PLAY" => Some("播放"),
         "PLAY NEXT" => Some("下一首"),
@@ -658,7 +658,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "PROCESSOR" => Some("处理器"),
         "PROFILES" => Some("声音配置"),
         "PULSE" => Some("脉冲"),
-        "PUT THE DEVICE IN PAIRING MODE FIRST" => Some("请先让目标设备进入配对模式"),
+        "PUT THE DEVICE IN PAIRING MODE" => Some("请让目标设备进入配对模式"),
         "Pair or connect from your phone or PC now." => Some("请在手机或电脑上发起配对或连接。"),
         "Palette" => Some("配色方案"),
         "Palette · accent · volume display" => Some("配色 · 强调色 · 音量显示"),
@@ -846,10 +846,11 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Saved to Playlists · 1 song" => Some("已保存到播放列表 · 1 首曲目"),
         "Saved to Playlists · {n} songs" => Some("已保存到播放列表 · {n} 首曲目"),
         "Saved to Playlists · {songs}" => Some("已保存到播放列表 · {songs}"),
-        "Saved with the sound, and different on A and B" => Some("随声音预设保存，A 和 B 可分别设置"),
+        "Saved with the sound, per A and B" => Some("随声音预设保存，A 和 B 可分别设置"),
         "Saved — off in ClearAudio+ mode" => Some("已保存；ClearAudio+ 模式下停用"),
         "Saved — off in Direct mode" => Some("已保存；直通模式下停用"),
         "Saved; applies when receiver is on." => Some("已保存，开启接收模式后生效。"),
+        "Saves how {} sounds now, under a name" => Some("将 {} 的当前声音以名称保存"),
         "Scan for new devices" => Some("搜索新设备"),
         "Scope" => Some("示波器"),
         "Screen on / off" => Some("点亮／关闭屏幕"),
@@ -886,9 +887,11 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Shuffled by album" => Some("按专辑随机"),
         "Shuffled by artist" => Some("按歌手随机"),
         "Size" => Some("大小"),
+        "Skins" => Some("样式"),
         "Skipped a 32-bit FLAC: this player can't decode above 24-bit" => Some("已跳过 32 位 FLAC：此设备最高支持 24 位"),
         "Sleep timer" => Some("睡眠定时"),
         "Sleep timer & battery care" => Some("睡眠定时与电池保养"),
+        "Sleeps after 10 min idle, wakes on use" => Some("闲置 10 分钟后关闭，使用时重新开启"),
         "Slot {} cleared" => Some("已清空书签 {}"),
         "Slot {} replaced — {}" => Some("已替换书签 {}：{}"),
         "Smart playlist" => Some("智能播放列表"),
@@ -917,7 +920,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Spectrogram" => Some("声谱图"),
         "Splits each Bluetooth step, via the EQ" => Some("通过均衡器细分蓝牙音量"),
         "Standard" => Some("标准"),
-        "Start an album or playlist first" => Some("请选择曲目以开始"),
+        "Start an album or playlist" => Some("请选择曲目以开始"),
         "Start playing on the other device." => Some("请在另一台设备上开始播放。"),
         "Start position" => Some("起点位置"),
         "Stereo field" => Some("立体声场"),
@@ -934,7 +937,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Sunday" => Some("星期日"),
         "Surface Noise" => Some("表面噪声"),
         "Surround · DC phase · vinyl · advanced" => Some("环绕声 · 直流相位 · 黑胶 · 高级设置"),
-        "Surround, DC Phase, Vinyl, Tone Control, DAC EQ" => Some("环绕声、直流相位、黑胶、音调控制、DAC 均衡器"),
+        "Surround, DC Phase, Vinyl, Tone, DAC EQ" => Some("环绕声、直流相位、黑胶、音调、DAC 均衡器"),
         "Swipe" => Some("滑动"),
         "Swipe down from the top of the screen" => Some("从屏幕顶部向下滑动"),
         "Swipe ←" => Some("向左滑动"),
@@ -979,6 +982,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Tap the filter row above to change it." => Some("点按上方筛选栏进行修改。"),
         "Tap the title" => Some("点按标题"),
         "Tap to start listening." => Some("点按开始聆听。"),
+        "Tapes" => Some("卡带"),
         "The 3.5 mm output" => Some("3.5 mm 耳机输出"),
         "The Shelf" => Some("书签架"),
         "The Walkman restarts into Sony's player with its receiver open. Restart again to come back to Cinder." => Some("重启进入 Sony 播放器并开启接收模式。再次重启可返回 Cinder。"),
@@ -997,7 +1001,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Title" => Some("标题"),
         "Title, artist or album" => Some("标题、歌手或专辑"),
         "Tone Control" => Some("音调控制"),
-        "Tone Control is in the path instead (Advanced)" => Some("正在使用音调控制替代（高级设置）"),
         "Tone Control is off — switch it on in Advanced" => Some("音调控制已关闭，请在高级设置中开启"),
         "Tonearm resonance, surface noise" => Some("唱臂共振、唱片表面噪声"),
         "Top left of every screen" => Some("各界面左上角"),
@@ -1055,6 +1058,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Use this curve" => Some("使用此曲线"),
         "Used everywhere, USB-DAC to LDAC included." => Some("适用于各输出，包括 USB-DAC 至 LDAC。"),
         "Used while connected" => Some("连接时使用"),
+        "Using Tone Control instead (Advanced)" => Some("正在使用音调控制替代（高级设置）"),
         "VEIL" => Some("遮罩"),
         "VINYL" => Some("黑胶"),
         "VOL + / −" => Some("音量 + / −"),
@@ -1335,12 +1339,6 @@ macro_rules! ui_format {
             _ => format!("Keeps what {} sounds like now, as Preset {}" $(, $($args)*)?),
         }
     };
-    ("Keeps what {} sounds like now, under a name" $(, $($args:tt)*)?) => {
-        match $crate::i18n::current() {
-            $crate::i18n::Language::SimplifiedChinese => format!("将 {} 的当前声音以名称保存" $(, $($args)*)?),
-            _ => format!("Keeps what {} sounds like now, under a name" $(, $($args)*)?),
-        }
-    };
     ("LIVE: {} · PROFILE {live_letter}" $(, $($args:tt)*)?) => {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("当前：{} · 声音配置 {live_letter}" $(, $($args)*)?),
@@ -1567,6 +1565,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("已保存到播放列表 · {songs}" $(, $($args)*)?),
             _ => format!("Saved to Playlists · {songs}" $(, $($args)*)?),
+        }
+    };
+    ("Saves how {} sounds now, under a name" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("将 {} 的当前声音以名称保存" $(, $($args)*)?),
+            _ => format!("Saves how {} sounds now, under a name" $(, $($args)*)?),
         }
     };
     ("Shuffle {g}" $(, $($args:tt)*)?) => {

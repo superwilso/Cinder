@@ -401,7 +401,7 @@ pub fn render(
     let sub = if scanning {
         crate::ui_format!("SEARCHING… {} FOUND", found.len())
     } else if found.is_empty() {
-        crate::i18n::text("PUT THE DEVICE IN PAIRING MODE FIRST").to_string()
+        crate::i18n::text("PUT THE DEVICE IN PAIRING MODE").to_string()
     } else {
         crate::ui_format!("{} FOUND · SCAN AGAIN TO REFRESH", found.len())
     };
@@ -587,7 +587,7 @@ pub fn render(
     // link state (already linked → disconnect, bonded → connect, unknown → pair then connect). The
     // line was never revisited, so this screen went on telling the user a working feature was
     // broken, while the Bluetooth screen one push away advertised the same feature as available
-    // ("NFC · TOUCH DEVICE TO REAR PANEL"). Two screens, one feature, opposite claims.
+    // ("NFC · TOUCH THE REAR PANEL"). Two screens, one feature, opposite claims.
     //
     // A caption that says a feature does not work is not a harmless leftover: it is the reason
     // nobody tries it. Found by the 2026-09-06 UI audit.
@@ -597,7 +597,7 @@ pub fn render(
         f,
         22.0,
         760.0,
-        crate::i18n::text("PIN AND CONFIRM PROMPTS APPEAR HERE WHEN A DEVICE ASKS"),
+        crate::i18n::text("PIN AND CONFIRM PROMPTS APPEAR HERE"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1),
         458.0,
     );

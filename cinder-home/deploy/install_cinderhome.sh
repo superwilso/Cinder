@@ -118,6 +118,7 @@ WANT_PRELOAD="$(comp_bool CINDER_PRELOAD 0)"
 WANT_BT_AAC="$(comp_bool CINDER_BT_AAC 0)"
 WANT_ATRAC="$(comp_bool CINDER_ATRAC 0)"
 WANT_FMREC="$(comp_bool CINDER_FMREC 0)"
+WANT_LLUSBDAC="$(comp_bool CINDER_LLUSBDAC 0)"
 WANT_BT_SBC_XQ="$(comp_bool CINDER_BT_SBC_XQ 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
@@ -128,7 +129,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC"
+echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC"
 
 # ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
 # Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
@@ -815,6 +816,29 @@ if [ "$WANT_FMREC" = 1 ]; then
     fi
 fi
 [ "$FMREC_IN" = 0 ] && "$BB" rm -f "$FMREC_LIB" 2>/dev/null
+
+# 1g7) Low-latency USB DAC: the `llusbdac` component. The PC installer downloads cinder-llusbdac's
+#      release to the top of the drive; this copies it in only if it is that exact file (the same
+#      SHA-256 installer/src/llusbdac.rs pins), because cinder-msc loads it into the kernel.
+LLUSBDAC_SHA256=""
+LLUSBDAC_KO=$VENDOR/lib/modules/llusbdac.ko
+LLUSBDAC_IN=0
+if [ "$WANT_LLUSBDAC" = 1 ]; then
+    if [ -z "$LLUSBDAC_SHA256" ] || [ "$(vt_sha /contents/llusbdac.ko)" != "$LLUSBDAC_SHA256" ]; then
+        echo "WARN: llusbdac selected but /contents/llusbdac.ko is missing or not the released file — not installed."
+    else
+        "$BB" mkdir -p "$VENDOR/lib/modules" 2>/dev/null
+        "$BB" chmod 755 "$VENDOR/lib/modules" 2>/dev/null
+        if btaac_put /contents/llusbdac.ko "$LLUSBDAC_KO"; then
+            LLUSBDAC_IN=1
+            echo "llusbdac: installed (Settings ▸ USB-DAC ▸ Low latency)"
+        else
+            echo "WARN: llusbdac — the module did not copy whole; not installed."
+        fi
+    fi
+fi
+[ "$LLUSBDAC_IN" = 0 ] && "$BB" rm -f "$LLUSBDAC_KO" 2>/dev/null
+"$BB" rm -f /contents/llusbdac.ko 2>/dev/null
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
 #    the .appcfg (otherwise the stock launch config is lost with no .real to restore).

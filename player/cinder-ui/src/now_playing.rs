@@ -589,7 +589,7 @@ pub(crate) fn viz_absent_text(np: &NowPlaying) -> (&'static str, &'static str) {
     if np.viz_levels.is_some() && crate::viz::needs_samples(kind) {
         (
             crate::i18n::text("Needs library playback"),
-            crate::i18n::text("FM, USB-DAC AND THE RECEIVER GIVE BANDS ONLY"),
+            crate::i18n::text("FM, USB-DAC AND RECEIVER: BANDS ONLY"),
         )
     } else if np.viz_levels.is_some() {
         (

@@ -5,20 +5,23 @@ What is planned for Cinder and Flint, and where help is welcome. Feature state l
 [`../CHANGELOG.md`](../CHANGELOG.md). To help with anything here, open an issue saying which item
 you are taking, or report a result there.
 
+## Built, waiting for a test on a player
+
+Each has a row in [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §41:
+
+- **Low-latency USB DAC**, an installer option that fetches
+  [cinder-llusbdac](https://github.com/superwilso/cinder-llusbdac) (zhangboyang's llusbdac, built
+  for the NW-A50 kernel), and a Low latency switch on the USB-DAC screen.
+- **Bluetooth that sleeps and wakes:** the radio switches off after ten idle minutes and back on
+  when the player is used (screen on or any button).
+- **From Wampy:** a list of Winamp skins and cassette tapes to pick from, swapping ⏮ and ⏭,
+  dragging a long Winamp title, and your own font from the drive.
+
 ## Being built next
 
-1. **Low-latency USB DAC.** An installer component that fetches
-   [cinder-llusbdac](https://github.com/superwilso/cinder-llusbdac) (zhangboyang's llusbdac, built
-   from upstream source for the NW-A50 kernel) and a USB DAC setting to switch it on.
-2. **USB after a resume.** Suspend to RAM when paused off the cable becomes the default; USB has to
-   come back reliably after a resume first (DEVICE_CHECKLIST 33.2).
-3. **Bluetooth that sleeps and wakes.** The radio switches off while it carries nothing, and comes
-   back when the player is used (screen on or any button); the headphones reconnect 10–15 s
-   later. A third choice beside on and off, and the default.
-4. **Long text at large sizes.** At 120 % about 20 hint lines are cut off with "…"; they will wrap
-   to a second line where the row has room (`cargo run -p cinder-host -- --cut 120` lists them).
-5. **From Wampy:** a list screen for Winamp skins, an option to swap previous and next, dragging a
-   long title to scroll it, and a font of your own loaded from the drive.
+1. **USB after a resume.** Suspend to RAM is now the default; USB has to come back reliably after a
+   resume (DEVICE_CHECKLIST 33.2). The port reset Sony's own firmware does is in
+   `cinder-msc usb-resume` and needs a run on a player.
 
 Later: the rest of the redesign ([`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md) Part F:
 the Library view bar, Search scopes, the sideways page swipe, saved views, the installer window),

@@ -9,9 +9,7 @@
 # below still work as cinder_suspend_s, cinder_cpufloor.conf and cinder_mediastore.conf.)
 
 # ── Power ────────────────────────────────────────────────────────────────────────────────────
-# Sleep fully (suspend to RAM) when paused, screen off, off the cable, for a minute.
-#ram_suspend
-# The same deep sleep is on by default in dev builds; this turns it off there.
+# Cinder sleeps fully (suspend to RAM) when paused, screen off and off the cable. This turns that off.
 #no_ram_suspend
 # Never enter the light sleep Cinder uses behind a dark screen.
 #no_suspend
@@ -30,6 +28,8 @@
 #no_scrobble
 # Hold a song (instead of swiping it left) to play it next.
 #hold_play_next
+# Swap the side ⏮ and ⏭ buttons (Wampy's "swap prev/next").
+#swap_prev_next
 # Show Sony's own Bookmark Lists (made on Sony's player) in Playlists, to play. Never changed.
 #sony_bookmarks
 

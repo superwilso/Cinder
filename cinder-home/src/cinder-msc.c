@@ -36,6 +36,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <time.h>
+#include <sys/syscall.h>
 
 #define LUN0 "/sys/class/android_usb/android0/f_mass_storage/lun/file"
 #define LUN1 "/sys/class/android_usb/android0/f_mass_storage/lun1/file"
@@ -571,6 +572,26 @@ static int usb_resume(void)
     return ok ? 0 : 1;
 }
 
+/* The low-latency USB DAC: load llusbdac (cinder-llusbdac, GPLv2, the `llusbdac` component). A fixed
+ * path on /system, put there only after its SHA-256 matched the release; nothing caller-supplied.
+ * Upstream's rule: once loaded it stays until the restart, so a second call is a no-op. */
+#define LLUSBDAC_KO "/system/vendor/cinder/lib/modules/llusbdac.ko"
+static int llusbdac_load(void)
+{
+    char line[256];
+    FILE *m = fopen("/proc/modules", "r");
+    while (m && fgets(line, sizeof line, m))
+        if (strncmp(line, "llusbdac ", 9) == 0) { fclose(m); return 0; }
+    if (m) fclose(m);
+    int fd = open(LLUSBDAC_KO, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) { fprintf(stderr, "cinder-msc: llusbdac: %s not installed\n", LLUSBDAC_KO); return 1; }
+    long r = syscall(SYS_finit_module, fd, "", 0);
+    int e = errno;
+    close(fd);
+    fprintf(stderr, "cinder-msc: llusbdac: finit_module rc=%ld errno=%d\n", r, r ? e : 0);
+    return r == 0 ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
@@ -603,5 +624,6 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "dac-off") == 0) return dac_off();
     if (strcmp(argv[1], "usb-rescue") == 0) return usb_rescue();
     if (strcmp(argv[1], "usb-resume") == 0) return usb_resume();
+    if (strcmp(argv[1], "llusbdac") == 0) return llusbdac_load();
     return 2;
 }

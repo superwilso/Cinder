@@ -13,7 +13,7 @@
 use crate::kit::{self, Row, Trail};
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::widgets::{fit, sty};
+use crate::widgets::sty;
 use crate::Canvas;
 
 const NOTE: [&str; 2] = [
@@ -136,17 +136,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, n: &Nc) {
         t.dim,
         0.0,
     );
-    let w = (kit::RIGHT - kit::LEFT) as f32;
-    for (i, line) in NOTE.iter().enumerate() {
-        let s = fit(f, line, &st, w);
-        text::draw(
+    // Wrapped, not cut, at a large text size: nothing sits under the note.
+    let mut y = (bottom + 28) as f32;
+    for line in NOTE {
+        let n = crate::widgets::draw_wrap2(
             c,
             f,
             kit::LEFT as f32,
-            (bottom + 28 + 22 * i as i32) as f32,
-            &s,
+            y,
+            crate::i18n::text(line),
             &st,
+            kit::RIGHT as f32,
+            20.0,
         );
+        y += n as f32 * text::scaled(20.0) + 2.0;
     }
 }
 

@@ -31,6 +31,36 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   two lists, with their covers and no edit bar); playing one is not yet tried.
 - **The PC can see the player's system space.** Entering USB storage logs `/data`'s free space to
   `cinderhome.log`, where Flint's health card reads it. *Device-unverified.*
+- **Low-latency USB DAC**, an installer option (`llusbdac`, off by default, experimental). The
+  installer downloads zhangboyang's llusbdac, built for this player by
+  [cinder-llusbdac](https://github.com/superwilso/cinder-llusbdac), and checks its SHA-256 on the
+  PC and again on the player. Settings ▸ USB-DAC then has a Low latency switch: chosen before DAC
+  mode starts, it loads the module (`cinder-msc llusbdac`), which plays to the jack with about
+  50 ms of delay and stays until the player restarts. Host-tested; *device-unverified*, and the
+  first load is to be done with the owner present (DEVICE_CHECKLIST §41.1).
+- **Pick a Winamp skin or a cassette tape from a list.** Tapping the Winamp or Cassette chip again
+  in Settings ▸ Display opens the skins (or tapes) on the drive; tapping one loads it. Winamp's own
+  ⧉ button still steps to the next. *Device-unverified* (§41.2).
+- **Swap the side ⏮ and ⏭ buttons** (`swap_prev_next` in `cinder_advanced.conf`), Wampy's option.
+  Headphones' own buttons keep their meaning. *Device-unverified* (§41.3).
+- **Drag the Winamp title to read it.** A long title in the Winamp view moves under the finger and
+  scrolls on from there; a press that does not move still opens Track information. *Device-unverified*
+  (§41.4).
+- **Your own font.** A `cinder_font.ttf` (up to 2 MB) at the top of the drive replaces Cinder's text
+  font, in every weight; characters it lacks come from the bundled fonts as before. The size limit is
+  there because a large font (a CJK one) runs the player out of memory. *Device-unverified* (§41.5).
+
+### Changed
+
+- **Suspend to RAM is on by default**, on stable builds too (`no_ram_suspend` turns it off). USB
+  after a resume (DEVICE_CHECKLIST 33.2) is still partial; `cinder-msc usb-resume` now does Sony's
+  own port reset and has not yet been run on a player.
+- **Bluetooth auto off wakes up again.** After ten idle minutes the radio still switches off, and
+  now switches back on when the player is used (the screen on or any button); the headphones
+  reconnect 10–15 s later. *Device-unverified* (§41.6).
+- **Hints fit at large text sizes.** At 120 % about 20 second lines were cut with "…": notes with
+  room under them (the welcome pages, Noise cancelling, Device) now wrap to a second line, and
+  the rest are worded shorter. `cargo run -p cinder-host -- --cut 120` lists none but song titles.
 
 ### Fixed
 
