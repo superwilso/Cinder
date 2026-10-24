@@ -297,8 +297,9 @@ About half a day of code plus the Mac session.
 * **Noise cancelling:** shipped in 0.3.17 for Sony's NC earphones. Left: the ambient filter
   Walkman One deleted, and whether the DAC EQ and the linear amp interact with NC.
 * **What each effect costs on its own** (section 4 E): DSEE HX, the normalizer, Vinyl, Clear Bass.
-* Whether Sony's receiver keeps `SetAAC`/`SetLDAC` across a restart (asked on #30): if it does,
-  "SBC only" in Cinder carries into Sony's own receiver.
+* ~~Whether Sony's receiver keeps `SetAAC`/`SetLDAC` across a restart~~ (asked on #30): **no**
+  (10-24, owner's W1 player): with SBC only set in Cinder, Use Sony's receiver, and the iPhone
+  connected there with AAC. Cinder's choice holds only in Cinder's receiver.
 * What Sony's six-band waits for (`no desired value, skip`) on stock — 16.5 / 17.6.
 * DSEE AI (2B.3) and the SensMe channel id → name table (14.2).
 * Two 10 Hz pollers in Sony's services (KeyService `select()`, DisplayService's LED thread): 20 of
