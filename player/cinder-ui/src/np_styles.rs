@@ -497,8 +497,18 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
         let (x, _) = centre(l, Hit::Toolbar(i as u8));
         let col = if quiet && i == 0 { t.acc } else { t.dim };
         let st = s(Family::Mono, Weight::Regular, 11.0, col, 0.16);
-        widgets::center(c, f, x, 782.0, &widgets::fit(f, word, &st, 112.0), &st);
+        toolbar_word(c, f, x, 782.0, word, &st);
     }
+}
+
+/// A toolbar word centred on its slot, fitted to the slot, then moved in from the glass rather than
+/// cut: `widgets::center` keeps a run symmetric about its anchor, and the end slots' anchors are
+/// 60 px from the edge, which cut "SETTINGS" to "SETTIN…" at 120 %.
+fn toolbar_word(c: &mut Canvas, f: &FontSet, cx: f32, baseline: f32, word: &str, st: &TextStyle) {
+    let word = widgets::fit(f, word, st, 112.0);
+    let w = text::measure(f, &word, st);
+    let x0 = (cx - w / 2.0).clamp(22.0, (crate::canvas::W as f32 - 22.0 - w).max(22.0));
+    text::draw(c, f, x0, baseline, &word, st);
 }
 
 // ── Terminal ──────────────────────────────────────────────────────────────────────────────────
@@ -1007,7 +1017,7 @@ fn cassette_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     for (i, label) in ["LIBRARY", "QUEUE", "BT", "SETTINGS"].iter().enumerate() {
         let (x, y) = centre(l, Hit::Toolbar(i as u8));
         let col = if quiet && i == 0 { t.acc } else { t.dim };
-        widgets::center(
+        toolbar_word(
             c,
             f,
             x,

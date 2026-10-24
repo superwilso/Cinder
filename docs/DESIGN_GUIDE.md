@@ -274,6 +274,7 @@ through [cinder-themes](https://github.com/superwilso/cinder-themes).
    cd player
    cargo test --release                        # includes the style contract and the overflow audit
    cargo run --release -p cinder-host -- --audit
+   cargo run --release -p cinder-host -- --cut 120  # labels cut with "…" at a larger text size
    cargo run --release -p cinder-host -- --bless   # after looking at the new PNGs in player/out/
    ```
 

@@ -372,6 +372,22 @@ pub fn chips_in(
     sel: Option<usize>,
     cols: usize,
 ) -> i32 {
+    // A row with a label too wide for its chip steps down to the caption size, all of it, before
+    // anything is cut: at the owner's 120 % the Menu's START ON chips read "Now Pla…".
+    let probe = sty(
+        Family::Sans,
+        Weight::SemiBold,
+        crate::scale::SECONDARY,
+        t.ink,
+        0.0,
+    );
+    let size = if labels.iter().enumerate().any(|(i, l)| {
+        text::measure(f, crate::i18n::text(l), &probe) > (chip_span(i, cols).1 - 16) as f32
+    }) {
+        crate::scale::CAPTION
+    } else {
+        crate::scale::SECONDARY
+    };
     for (i, l) in labels.iter().enumerate() {
         let l = crate::i18n::text(l);
         let (x, w) = chip_span(i, cols);
@@ -384,7 +400,7 @@ pub fn chips_in(
         let st = sty(
             Family::Sans,
             Weight::SemiBold,
-            crate::scale::SECONDARY,
+            size,
             if on { t.acc_ink } else { t.ink },
             0.0,
         );
@@ -456,6 +472,20 @@ mod tests {
             assert_eq!(chip_at(n, 100, 240, 99), None, "above the band");
             assert_eq!(chip_at(n, 100, 240, 100 + CHIP_H), None, "below the band");
         }
+    }
+
+    /// At the owner's 120 % the Menu's START ON chips read "Now Pla…" and "Last scr…": a row too
+    /// wide steps down a size, every chip together, before anything is cut.
+    #[test]
+    fn a_wide_chip_row_steps_down_before_it_is_cut() {
+        let _scale = crate::text::scale_guard();
+        crate::text::set_scale_pct(120);
+        let _language = crate::i18n::enter(crate::i18n::Language::English);
+        let f = FontSet::load();
+        let mut c = Canvas::new();
+        c.track_text();
+        chips(&mut c, &Theme::day(), &f, 600, &crate::menu::HOMES, Some(1));
+        assert_eq!(c.text_runs(), crate::menu::HOMES);
     }
 
     /// The chip under the middle of each drawn chip is that chip.

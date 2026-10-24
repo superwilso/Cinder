@@ -142,7 +142,7 @@ pub fn render_targets(
                 f,
                 26.0,
                 (cy + 17) as f32,
-                &crate::ui_format!("{} tracks", target.tracks),
+                &crate::library::n_tracks(target.tracks),
                 &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0),
             );
             crate::icons::chevron(c, 452.0, cy as f32, 13.0, t.faint);

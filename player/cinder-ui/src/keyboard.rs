@@ -211,6 +211,7 @@ pub fn render(
     placeholder: &str,
     page: u8,
     shift: bool,
+    searching: bool,
 ) {
     c.fill(t.bg);
     let y0 = crate::chrome::header(c, t, f, title, None);
@@ -246,6 +247,9 @@ pub fn render(
         (TEXT_Y + TEXT_H + 26) as f32,
         if shift {
             crate::i18n::text("CAPS — NEXT LETTER IS A CAPITAL")
+        } else if searching {
+            // A search filters as you type and Back keeps it: there is nothing to save or cancel.
+            crate::i18n::text("TAP DONE OR BACK TO SEE THE RESULTS")
         } else {
             crate::i18n::text("TAP DONE TO SAVE · BACK TO CANCEL")
         },

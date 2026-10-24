@@ -511,8 +511,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Music Center. Tag your files, then rescan." => Some("Music Center 写入标签，然后重新扫描。"),
         "Music and files are unavailable until you're done." => Some("传输期间，音乐和本机文件暂不可用。"),
         "Music free" => Some("音乐可用空间"),
+        "NAME IT, ADD TRACKS" => Some("先命名，再添加曲目"),
         "NAME IT, THEN ADD THIS TRACK" => Some("先命名，再添加此曲目"),
-        "NAME IT, THEN ADD TRACKS" => Some("先命名，再添加曲目"),
         "NEW PLAYLIST" => Some("新建列表"),
         "NEXT" => Some("下一首"),
         "NEXT FROM {}" => Some("接下来来自 {}"),
@@ -529,6 +529,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "NO SKIN: COPY A .WSZ TO THE TOP OF THE DRIVE" => Some("无主题：请将 .wsz 复制到存储根目录"),
         "NO TAPE" => Some("无卡带"),
         "NORMAL" => Some("标准"),
+        "NORMALIZER" => Some("响度均衡"),
         "NOT CHARGING" => Some("未充电"),
         "NOTHING CONNECTED · THESE APPLY TO THE NEXT LINK" => Some("未连接设备，设置将用于下次连接"),
         "NOTHING PLAYING" => Some("尚未播放"),
@@ -730,8 +731,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "RADIAL" => Some("放射"),
         "RAM" => Some("运行内存"),
         "RANDOM" => Some("随机"),
-        "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE" => Some("专辑顺序随机，专辑内顺序播放"),
-        "RANDOM ARTIST · SHUFFLED WITHIN ARTIST" => Some("歌手顺序随机，歌手内随机播放"),
+        "RANDOM ALBUMS · TRACKS IN ORDER" => Some("专辑顺序随机，专辑内顺序播放"),
+        "RANDOM ARTIST · SONGS SHUFFLED" => Some("歌手顺序随机，歌手内随机播放"),
         "RANDOM PLAYLIST · SHUFFLED" => Some("列表随机选择，列表内随机播放"),
         "RATING" => Some("评分"),
         "RAW" => Some("原始"),
@@ -945,6 +946,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Synced, {n} {unit}" => Some("同步歌词，{n} {unit}"),
         "TAP" => Some("点按"),
         "TAP AGAIN" => Some("再次点按"),
+        "TAP DONE OR BACK TO SEE THE RESULTS" => Some("点按完成或返回以查看结果"),
         "TAP DONE TO SAVE · BACK TO CANCEL" => Some("点按完成以保存，返回以取消"),
         "TAP REPEAT" => Some("点按循环按钮"),
         "TAP THE BOOKMARK" => Some("点按书签图标"),
@@ -1151,13 +1153,17 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "{} OF {}" => Some("{}／{}"),
         "{} OF {} TRACKS AVAILABLE" => Some("{}／{} 首曲目可用"),
         "{} PLAYLISTS" => Some("{} 个播放列表"),
+        "{} TRACK · IN ORDER" => Some("{} 首曲目 · 顺序播放"),
         "{} TRACKS" => Some("{} 首曲目"),
         "{} TRACKS · IN ORDER" => Some("{} 首曲目 · 顺序播放"),
         "{} TRACKS · RANDOM ORDER" => Some("{} 首曲目 · 随机顺序"),
+        "{} album" => Some("{} 张专辑"),
+        "{} albums" => Some("{} 张专辑"),
         "{} albums · {} tracks" => Some("{} 张专辑 · {} 首曲目"),
         "{} deleted" => Some("已删除 {}"),
         "{} matching" => Some("{} 首匹配"),
         "{} on {}" => Some("{} 已应用到 {}"),
+        "{} track" => Some("{} 首曲目"),
         "{} tracks" => Some("{} 首曲目"),
         "{} tracks · {}" => Some("{} 首曲目 · {}"),
         "{} uses {}" => Some("{} 使用 {}"),
@@ -1808,6 +1814,12 @@ macro_rules! ui_format {
             _ => format!("{} PLAYLISTS" $(, $($args)*)?),
         }
     };
+    ("{} TRACK · IN ORDER" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("{} 首曲目 · 顺序播放" $(, $($args)*)?),
+            _ => format!("{} TRACK · IN ORDER" $(, $($args)*)?),
+        }
+    };
     ("{} TRACKS" $(, $($args:tt)*)?) => {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("{} 首曲目" $(, $($args)*)?),
@@ -1824,6 +1836,18 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("{} 首曲目 · 随机顺序" $(, $($args)*)?),
             _ => format!("{} TRACKS · RANDOM ORDER" $(, $($args)*)?),
+        }
+    };
+    ("{} album" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("{} 张专辑" $(, $($args)*)?),
+            _ => format!("{} album" $(, $($args)*)?),
+        }
+    };
+    ("{} albums" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("{} 张专辑" $(, $($args)*)?),
+            _ => format!("{} albums" $(, $($args)*)?),
         }
     };
     ("{} albums · {} tracks" $(, $($args:tt)*)?) => {
@@ -1848,6 +1872,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("{} 已应用到 {}" $(, $($args)*)?),
             _ => format!("{} on {}" $(, $($args)*)?),
+        }
+    };
+    ("{} track" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("{} 首曲目" $(, $($args)*)?),
+            _ => format!("{} track" $(, $($args)*)?),
         }
     };
     ("{} tracks" $(, $($args:tt)*)?) => {

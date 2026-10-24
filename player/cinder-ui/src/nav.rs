@@ -3877,7 +3877,7 @@ impl App {
                 let on: Vec<&str> = if self.snd_clear {
                     let mut v = vec!["ClearAudio+"];
                     if self.snd_norm {
-                        v.push(crate::i18n::text("Normaliser"));
+                        v.push(crate::i18n::text("Normalizer"));
                     }
                     v
                 } else {
@@ -3886,7 +3886,7 @@ impl App {
                         (crate::i18n::text("Vinyl"), self.snd_vinyl),
                         ("VPT", self.snd_vpt),
                         (crate::i18n::text("DC Phase"), self.snd_dc),
-                        (crate::i18n::text("Normaliser"), self.snd_norm),
+                        (crate::i18n::text("Normalizer"), self.snd_norm),
                     ]
                     .iter()
                     .filter(|(_, en)| *en)
@@ -6182,6 +6182,22 @@ impl App {
     /// headphones.
     fn playing_object_id(&self) -> Option<i64> {
         self.context.get(self.context_idx).map(|s| s.object_id)
+    }
+
+    /// The album page's row marked as playing: the one PLAYING. It was the last row tapped there,
+    /// or row 0 on arrival, so every album opened read as playing its first track (seen on the
+    /// player 2026-10-24). A CUE album is one file, and which of its tracks is under the playhead
+    /// is the shell's to know: there, the row tapped stands in.
+    fn album_playing_row(&self, al: &crate::model::AlbumRow) -> Option<usize> {
+        let id = self.playing_object_id()?;
+        if al.cue.is_empty() {
+            al.track_list.iter().position(|s| s.object_id == id)
+        } else {
+            al.track_list
+                .iter()
+                .any(|s| s.object_id == id)
+                .then_some(self.album_track_idx)
+        }
     }
 
     /// Open "Add to playlist" for one track.
@@ -9757,12 +9773,13 @@ impl App {
             Screen::Album => {
                 let flat = self.lib.albums_flat();
                 if let Some(al) = flat.get(self.album_view) {
+                    let playing = self.album_playing_row(al);
                     crate::library::album_view(
                         c,
                         &theme,
                         fonts,
                         al,
-                        self.album_track_idx,
+                        playing,
                         self.album_scroll_px,
                         self.album_cover.as_ref(),
                         self.swipe_row,
@@ -9796,7 +9813,8 @@ impl App {
                     &self.lib,
                     pl,
                     self.playlist_scroll_px,
-                    self.playlist_track_idx,
+                    self.playing_object_id()
+                        .and_then(|id| pl.track_list.iter().position(|s| s.object_id == id)),
                     self.swipe_row,
                     self.sbar_active(),
                     self.playlist_remove_arm,
@@ -10536,6 +10554,10 @@ impl App {
                     placeholder,
                     self.kb_page,
                     self.kb_shift,
+                    matches!(
+                        self.kb_purpose,
+                        KbPurpose::TrackSearch | KbPurpose::LibrarySearch
+                    ),
                 )
             }
             Screen::PlaylistEdit => match self.pl_edit.as_ref() {
@@ -13545,7 +13567,7 @@ mod tests {
         app.snd_clear = true;
         assert_eq!(app.menu_subtitles().sound, "ClearAudio+");
         app.snd_norm = true;
-        assert_eq!(app.menu_subtitles().sound, "ClearAudio+ · Normaliser");
+        assert_eq!(app.menu_subtitles().sound, "ClearAudio+ · Normalizer");
         // Source Direct bypasses everything, so it is the whole answer.
         app.adv_source_direct = true;
         assert_eq!(app.menu_subtitles().sound, "Source Direct");
@@ -15271,6 +15293,30 @@ mod tests {
         assert_eq!(
             a.press(Button::Select),
             vec![Action::PlayIndexAt(70, 562_000)]
+        );
+    }
+
+    /// The album page marks the row that is playing, and none on an album that is not playing.
+    #[test]
+    fn the_album_page_marks_the_track_that_is_playing() {
+        let song = |id: i64| SongRow {
+            object_id: id,
+            ..Default::default()
+        };
+        let mut a = unlocked();
+        let album = AlbumRow {
+            track_list: (1..=4).map(song).collect(),
+            ..Default::default()
+        };
+        assert_eq!(a.album_playing_row(&album), None, "nothing playing");
+        a.context = vec![song(9), song(3)];
+        a.context_idx = 1;
+        assert_eq!(a.album_playing_row(&album), Some(2));
+        a.context_idx = 0;
+        assert_eq!(
+            a.album_playing_row(&album),
+            None,
+            "another album's song is playing"
         );
     }
 
@@ -19590,25 +19636,25 @@ mod tests {
         use crate::style::Style;
         let mut a = unlocked();
         a.stack = vec![Screen::NowPlaying, Screen::Display];
-        let y = crate::display::row_top(crate::display::ROW_STYLE) + crate::kit::ROW_H / 2;
-        let chip = |i: usize| {
-            let (x, w) = crate::kit::chip_span(i, Style::COUNT);
-            x + w / 2
+        let chip = crate::display::style_chip_centre;
+        let tap = |a: &mut App, i: usize| {
+            let (x, y) = chip(i);
+            a.tap(x, y)
         };
-        a.tap(chip(Style::COUNT - 1), y);
+        tap(&mut a, Style::COUNT - 1);
         assert_eq!(a.style(), Style::ALL[Style::COUNT - 1]);
         assert_eq!(
-            a.tap(chip(Style::COUNT - 1), y),
+            tap(&mut a, Style::COUNT - 1),
             vec![Action::NextSkin],
             "Winamp again is the next skin"
         );
         assert_eq!(a.style(), Style::Winamp);
-        assert_eq!(a.tap(chip(1), y), vec![], "any other chip only picks");
-        a.tap(chip(Style::COUNT - 1), y);
+        assert_eq!(tap(&mut a, 1), vec![], "any other chip only picks");
+        tap(&mut a, Style::COUNT - 1);
         a.display_sel = crate::display::ROW_STYLE;
         a.display_activate();
         assert_eq!(a.style(), Style::Cinder, "Select wraps round");
-        a.tap(chip(1), y);
+        tap(&mut a, 1);
         assert_eq!(a.style(), Style::Nocturne);
         let saved = a.style_token();
         let mut b = unlocked();

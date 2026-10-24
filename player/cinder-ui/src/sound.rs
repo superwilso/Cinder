@@ -828,6 +828,11 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
     if s.dcphase_on {
         parts.push(crate::i18n::text("DC PHASE").into());
     }
+    // A stage in the chain like the others (Walkman One's runs it before the EQ); the strip left
+    // it out and read NO EFFECTS with it on.
+    if s.normalizer {
+        parts.push(crate::i18n::text("NORMALIZER").into());
+    }
     let mid = if parts.is_empty() {
         crate::i18n::text("NO EFFECTS").to_string()
     } else {
@@ -1424,7 +1429,7 @@ mod tests {
     #[test]
     fn a_live_chain_names_every_stage() {
         let (p, w) = signal_path(&loud(), 0);
-        assert_eq!(p, "SIGNAL PATH (A): SOURCE → EQ (Rock) → DSEE HX → VINYL → VPT·CLUB → DC PHASE → AMP → 3.5MM");
+        assert_eq!(p, "SIGNAL PATH (A): SOURCE → EQ (Rock) → DSEE HX → VINYL → VPT·CLUB → DC PHASE → NORMALIZER → AMP → 3.5MM");
         assert!(
             w.is_none(),
             "nothing is overriding, so nothing to warn about"
@@ -1598,6 +1603,7 @@ mod tests {
     }
 
     /// With no effects at all the middle reads NO EFFECTS — not empty, and not a dangling arrow.
+    /// The normalizer is one of them: with it on, the strip names it.
     #[test]
     fn an_empty_chain_reads_direct() {
         let quiet = Sound {
@@ -1607,12 +1613,22 @@ mod tests {
             vpt_on: false,
             dcphase: "Off",
             dcphase_on: false,
+            normalizer: false,
             ..loud()
         };
         let (p, _) = signal_path(&quiet, 0);
         assert_eq!(
             p,
             "SIGNAL PATH (A): SOURCE → EQ (Rock) → NO EFFECTS → AMP → 3.5MM"
+        );
+        let level = Sound {
+            normalizer: true,
+            ..quiet
+        };
+        let (p, _) = signal_path(&level, 0);
+        assert_eq!(
+            p,
+            "SIGNAL PATH (A): SOURCE → EQ (Rock) → NORMALIZER → AMP → 3.5MM"
         );
     }
 

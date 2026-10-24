@@ -24,6 +24,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   name, Wampy's own files stay, and the folder goes only if nothing is left in it. The uninstaller
   clears both. Host-tested (`tools/test_migrate.sh`, in CI); *device-unverified* (DEVICE_CHECKLIST
   §39.11).
+- **Sony's Bookmark Lists in Playlists**, opt-in (`sony_bookmarks` in `cinder_advanced.conf`).
+  The lists made with Sony's own player show as playlists named as Sony names them, to play; they
+  are read, never changed, so they are as they were if Sony's player comes back. Host-tested with
+  the files from the owner's player; *device-verified* 10-24 for listing and opening (the owner's
+  two lists, with their covers and no edit bar); playing one is not yet tried.
 - **The PC can see the player's system space.** Entering USB storage logs `/data`'s free space to
   `cinderhome.log`, where Flint's health card reads it. *Device-unverified.*
 
@@ -34,6 +39,43 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   "restored" Cinder's launcher and then deleted it. The installer, the uninstaller and the boot
   guard now refuse a backup that names Cinder's launcher and write Sony's four lines instead,
   which are the same on stock 1.02 and Walkman One 3.02. Host-tested; *device-unverified*.
+- **A playlist's page showed a gradient where its cover goes.** The page draws its cover at
+  64 px, a size the cover cache does not keep (it holds the list's 48 px and the grid's 96 px), so
+  every playlist page fell back to the gradient, and tapping the cover to change it showed
+  nothing changing. It now scales the cover it has. Host-tested; seen on the player 10-24.
+- **Settings ▸ Device said "Needs the battery helper" on a player that has it.** For about two
+  seconds after every battery reading, the CHARGER row lost the helper's reading and asked for a
+  reinstall; the next refresh put READY back. The quick reading now keeps the helper's last one.
+  Seen on the player 10-24, and gone on the next build (CHARGING held through eight seconds of
+  battery ticks).
+- **Settings ▸ Storage cut the card's numbers off.** Internal storage and the card shared one
+  value, which ran out of room ("3.4 / 56 GB, SD 108…" at 120 %). The card is now the row's second
+  line. Host-tested; seen on the player 10-24.
+- **Every album page showed its first track as playing.** The accent row and the playing bars
+  were on the last row tapped, which is row 1 when a page opens, so an album that was not playing
+  looked as if it were; a playlist's page did the same with its accent row. Both now follow the
+  song that is playing. Host-tested; seen on the player 10-24.
+- **Chip labels were cut short.** Display's six Style chips sat in one line, which cut every name
+  but "Clock" ("Noct…", "Wina…"); they are now two lines of three. And at larger text sizes the
+  Menu's START ON chips read "Now Pla…" and "Last scr…": a line of chips too wide for its labels
+  now steps down a size, all together, before any label is cut. The Albums and Artists shuffle
+  bands' second lines were cut too ("TRACKS IN SEQUEN…"); they now read "RANDOM ALBUMS · TRACKS IN
+  ORDER" and "RANDOM ARTIST · SONGS SHUFFLED", whole at every text size. Also whole at 120 % now,
+  found by rendering every preview at that size: the NEW PLAYLIST tile ("NAME IT, ADD TRACKS"),
+  Nocturne's, Clock's and Cassette's SETTINGS, a playlist row's REMOVE?, and Track information's
+  + PLAYLIST. `cargo run -p cinder-host -- --cut 120` lists what is still cut. Host-tested; the
+  chips seen fixed on the player 10-24 (layout only; no style was tapped).
+- **Sound's signal path left out the Dynamic Normalizer.** With it on, the strip read "SOURCE →
+  NO EFFECTS → DAC EQ"; it now names NORMALIZER with the other stages, and the Menu's Sound line
+  spells it as the Sound screen does ("Normalizer", not "Normaliser"). Host-tested; the old strip
+  was seen on the player 10-24.
+- **The search keyboard said "TAP DONE TO SAVE · BACK TO CANCEL".** A search filters as you type
+  and Back keeps what was typed, so neither half was true; both searches now say "TAP DONE OR BACK
+  TO SEE THE RESULTS". Host-tested; the old line was seen on the player 10-24.
+- **"1 tracks".** A count of one read as a plural on album, artist and playlist rows, the
+  playlist page's Play button and the artist page; in Chinese the artist and playlist counts got
+  an English "s" ("2 曲目s") or stayed English ("3 albums"). Host-tested; seen on the player
+  10-24 before the fix.
 - **Long playlists are read whole.** A playlist in `cinder_playlists` stopped at 4,096 songs without
   a word, so a 7,000-song MusicBee playlist lost its end. The limit is now 20,000; a 10,000-line
   file reads in 2.5 ms on the PC. *Device-unverified.*

@@ -282,7 +282,8 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_AUTO_OFF => Trail::Value(v.auto_off),
         ROW_BT_IDLE_OFF => Trail::Switch(v.bt_idle_off),
         // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
-        ROW_STORAGE => Trail::Value(v.storage),
+        // The card's half goes on the sub line (`storage_parts`).
+        ROW_STORAGE => Trail::Value(storage_parts(v.storage).0),
         // Device: chevron into the hardware's vital signs. The value carries the two numbers people
         // open it for, so the row usually answers the question without being opened at all.
         ROW_BATTERY => Trail::Open(v.device),
@@ -335,6 +336,13 @@ fn title(r: usize) -> &'static str {
     }
 }
 
+/// The Storage row's value and sub line: internal storage, and the card (`"…, SD 108 / 119 GB"`,
+/// as the shell's `report_storage` writes it). On one line the card's numbers ran past the row and
+/// were cut to "SD 108…" at 120 % (seen on the player 2026-10-24).
+fn storage_parts(s: &str) -> (&str, &str) {
+    s.split_once(", ").unwrap_or((s, ""))
+}
+
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v: &SettingsView) {
     c.fill(t.bg);
     let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Settings"), None);
@@ -362,11 +370,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                 continue;
             }
             let sub = match r {
-                ROW_DISPLAY => DISPLAY_SUB,
-                ROW_MORE => MORE_SUB,
-                ROW_QUICK => QUICK_SUB,
-                ROW_SHUFFLE => SHUFFLE_SUB,
-                ROW_BT_IDLE_OFF => BT_IDLE_OFF_SUB,
+                ROW_DISPLAY => crate::i18n::text(DISPLAY_SUB),
+                ROW_MORE => crate::i18n::text(MORE_SUB),
+                ROW_QUICK => crate::i18n::text(QUICK_SUB),
+                ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
+                ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
+                ROW_STORAGE => storage_parts(v.storage).1,
                 _ => "",
             };
             let language_title = language_title(v.languages);
@@ -375,7 +384,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
             } else {
                 title(r)
             })
-            .sub(crate::i18n::text(sub))
+            .sub(sub)
             .trail(trail(r, v))
             .sel(sel == r);
             y = if r == ROW_LANGUAGE {
@@ -450,6 +459,31 @@ mod tests {
             .buf
             .iter()
             .any(|pixel| *pixel != crate::canvas::to_u32(theme.bg)));
+    }
+
+    /// The card's usage reads whole: it was one value with internal storage and was cut to
+    /// "SD 108…" at 120 % (the player, 2026-10-24). Now it is the row's sub line.
+    #[test]
+    fn the_cards_storage_is_not_cut_off() {
+        let _scale = crate::text::scale_guard();
+        crate::text::set_scale_pct(120);
+        let _language = crate::i18n::enter(crate::i18n::Language::English);
+        let fonts = FontSet::load();
+        let mut canvas = Canvas::new();
+        canvas.track_text();
+        let mut v = view();
+        v.storage = "3.4 / 56 GB, SD 108 / 119 GB";
+        render(
+            &mut canvas,
+            &Theme::day(),
+            &fonts,
+            0,
+            max_scroll_px(true, true),
+            &v,
+        );
+        let runs = canvas.text_runs();
+        assert!(runs.iter().any(|r| r == "3.4 / 56 GB"), "{runs:?}");
+        assert!(runs.iter().any(|r| r == "SD 108 / 119 GB"), "{runs:?}");
     }
 
     /// Scrolling must never repaint the header. The rows move UP as you scroll, and without a clip

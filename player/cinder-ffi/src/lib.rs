@@ -3746,7 +3746,7 @@ fn shuffle_tracks(
             rng.shuffle(&mut v);
             (!v.is_empty()).then_some((v, pre))
         }
-        // "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE" — shuffle the albums, keep each album's
+        // "RANDOM ALBUMS · TRACKS IN ORDER" — shuffle the albums, keep each album's
         // tracks in their disc/track order.
         S::ByAlbum => {
             let tracks: Vec<cinder_db::Track> = db
@@ -3769,7 +3769,7 @@ fn shuffle_tracks(
             let v: Vec<cinder_db::Track> = albums.into_iter().flatten().collect();
             (!v.is_empty()).then_some((v, pre))
         }
-        // "RANDOM ARTIST · SHUFFLED WITHIN ARTIST" — one artist, their tracks shuffled.
+        // "RANDOM ARTIST · SONGS SHUFFLED" — one artist, their tracks shuffled.
         S::ByArtist => {
             let tracks = db.tracks(cinder_db::Sort::Artist).ok()?;
             let mut by_artist: std::collections::BTreeMap<String, Vec<cinder_db::Track>> =
@@ -3981,7 +3981,7 @@ fn user_playlist_rows(
                 tracks: list.entries.len() as u32,
                 art: list.name.clone(),
                 track_list,
-                user: true,
+                user: !list.read_only,
                 smart: false,
                 rules: String::new(),
                 edited: list.edited.is_some(),
@@ -4019,6 +4019,43 @@ fn add_track_to_playlist(r: &mut Render, playlist_id: i64, object_id: i64) {
         Ok(false) => eprintln!("cinder-ffi: playlist add: already there (or full)"),
         Err(e) => eprintln!("cinder-ffi: playlist add: {e}"),
     }
+}
+
+/// The playlist files, and Sony's bookmark lists when `sony_bookmarks` is switched on in
+/// `cinder_advanced.conf` (read-only rows; `playlists::sony_bookmarks`).
+fn open_playlists() -> playlists::Store {
+    let mut store = playlists::Store::open(playlists::DIR);
+    if adv_on("sony_bookmarks") {
+        store
+            .lists
+            .extend(playlists::sony_bookmarks(playlists::BOOKMARK_DIR));
+    }
+    store
+}
+
+/// A switch in `/contents/cinder_advanced.conf` (or its old form, an empty `/contents/cinder_<key>`),
+/// read the way the shell's `adv_on` reads it: `key` or `key=on|1|yes` is on, the last line wins.
+fn adv_on(key: &str) -> bool {
+    std::path::Path::new(&format!("/contents/cinder_{key}")).exists()
+        || std::fs::read_to_string("/contents/cinder_advanced.conf")
+            .is_ok_and(|text| adv_on_in(&text, key))
+}
+
+fn adv_on_in(text: &str, key: &str) -> bool {
+    let mut on = false;
+    for line in text.lines() {
+        let Some(rest) = line.trim_start().strip_prefix(key) else {
+            continue;
+        };
+        let rest = rest.trim();
+        if rest.is_empty() {
+            on = true;
+        } else if let Some(v) = rest.strip_prefix('=') {
+            let v = v.trim_start();
+            on = v.starts_with("on") || v.starts_with('1') || v.starts_with("yes");
+        }
+    }
+    on
 }
 
 /// Re-merge Sony's playlists with ours and hand the result to the UI. Called after every edit.
@@ -7431,7 +7468,7 @@ pub extern "C" fn cinder_set_w1_chain(on: libc::c_int) {
 /// many playlists Cinder now has, or -1 before the library is open.
 #[no_mangle]
 pub extern "C" fn cinder_playlists_reload() -> libc::c_int {
-    let store = playlists::Store::open(playlists::DIR);
+    let store = open_playlists();
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else {
         return -1;
@@ -9150,7 +9187,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
         lib.artists.len()
     );
     let t_phase = std::time::Instant::now();
-    let plists = playlists::Store::open(playlists::DIR);
+    let plists = open_playlists();
     let ms_plists = t_phase.elapsed().as_millis();
     eprintln!("cinder-ffi: playlists: {} of your own", plists.lists.len());
     // Liked list lives beside the user's music on both internal storage and SD card:
@@ -10072,6 +10109,37 @@ mod tests {
     fn global_render() -> std::sync::MutexGuard<'static, ()> {
         static GLOBAL_RENDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
         GLOBAL_RENDER.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `cinder_advanced.conf` is read as the shell reads it (main.cpp `adv_on`).
+    #[test]
+    fn advanced_switches_read_like_the_shell() {
+        let on = |text: &str| super::adv_on_in(text, "sony_bookmarks");
+        assert!(on("sony_bookmarks\n"));
+        assert!(on("  sony_bookmarks = on\r\n"));
+        assert!(on("sony_bookmarks=1"));
+        assert!(!on("#sony_bookmarks\n"));
+        assert!(!on("sony_bookmarks=off"));
+        assert!(!on("sony_bookmarks_extra\n"));
+        assert!(
+            !on("sony_bookmarks\nsony_bookmarks=no\n"),
+            "the last line wins"
+        );
+    }
+
+    /// A bookmark list's row draws no edit bar.
+    #[test]
+    fn a_read_only_list_is_not_a_users_row() {
+        let store = super::playlists::Store {
+            lists: vec![super::playlists::Playlist {
+                id: -5,
+                name: "Bookmark List 1".into(),
+                read_only: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(!super::user_playlist_rows(&store, None)[0].user);
     }
 
     /// Tapping an album, playlist or channel plays it in order: shuffle goes off, and only a
@@ -11372,7 +11440,7 @@ mod tests {
         }
     }
 
-    /// "TRACKS IN SEQUENCE": ByAlbum may reorder albums but must never split one up or reorder
+    /// "TRACKS IN ORDER": ByAlbum may reorder albums but must never split one up or reorder
     /// the tracks inside it.
     #[test]
     fn shuffle_by_album_keeps_albums_intact_and_in_sequence() {

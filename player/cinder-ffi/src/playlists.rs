@@ -103,6 +103,9 @@ pub struct Playlist {
     /// for a file the player has never changed (one a PC tool wrote, or wrote back). It is what
     /// the Playlists tab's EDITED tag reads, and what tells Flint a list has changes to take.
     pub edited: Option<i64>,
+    /// One of Sony's own bookmark lists ([`sony_bookmarks`]): shown and played, never written.
+    /// Every edit below refuses it, and its row draws no edit bar.
+    pub read_only: bool,
 }
 
 #[derive(Debug, Default)]
@@ -167,8 +170,10 @@ impl Store {
         self.lists.iter().find(|p| p.id == id)
     }
 
+    /// The list an EDIT may write: every caller of this changes the file, so a read-only list is
+    /// not found here, and [`Store::get`] still finds it to play.
     fn index_of(&self, id: i64) -> Option<usize> {
-        self.lists.iter().position(|p| p.id == id)
+        self.lists.iter().position(|p| p.id == id && !p.read_only)
     }
 
     /// Create an empty playlist and write it. Returns its id.
@@ -187,6 +192,7 @@ impl Store {
             entries: Vec::new(),
             cover: None,
             edited: None,
+            read_only: false,
         };
         write_file(&mut list)?;
         let id = list.id;
@@ -595,6 +601,7 @@ fn parse_file(path: &Path) -> Option<Playlist> {
         entries,
         cover,
         edited,
+        read_only: false,
     })
 }
 
@@ -632,6 +639,109 @@ fn write_file(list: &mut Playlist) -> std::io::Result<()> {
     // A half-written playlist would be a list of tracks with the tail missing rather than an
     // obvious failure.
     crate::write_atomic(&list.file, body)
+}
+
+/// Where Sony's player keeps its ten bookmark lists, `bookmark01.json` … `bookmark10.json`. Owned
+/// by uid 100, the user Cinder runs as, so they are read directly.
+pub const BOOKMARK_DIR: &str = "/cache";
+
+/// Sony's bookmark lists that have anything in them, as read-only playlists named the way Sony's
+/// own player names them ("Bookmark List 1"). Nothing here writes: a list made on stock stays
+/// Sony's, and appears again on stock exactly as it was.
+///
+/// The file, as Sony's player writes it (copied from the owner's player, 2026-10-24):
+/// `{"children": [{"id": 805334073, "uri": "/data/mnt/external/MUSIC/….flac"}], "id": 0}`. The
+/// `id` is an object id from the database Sony's scan built, which a rescan re-issues, so only the
+/// path is kept, spelt the way the library spells it (`/contents_ext/…`).
+pub fn sony_bookmarks(dir: impl AsRef<Path>) -> Vec<Playlist> {
+    (1..=10)
+        .filter_map(|n| {
+            let file = dir.as_ref().join(format!("bookmark{n:02}.json"));
+            let text = fs::read_to_string(&file).ok()?;
+            let entries: Vec<Entry> = bookmark_uris(&text)
+                .into_iter()
+                .take(MAX_TRACKS)
+                .map(|uri| Entry {
+                    uri: crate::shared::canonical(&uri),
+                    label: String::new(),
+                })
+                .collect();
+            (!entries.is_empty()).then(|| Playlist {
+                // \x1e cannot be in a file stem, so no `.m3u8` can take this id.
+                id: id_for(&format!("\u{1e}sony-bookmark{n:02}")),
+                name: format!("Bookmark List {n}"),
+                file,
+                entries,
+                cover: None,
+                edited: None,
+                read_only: true,
+            })
+        })
+        .collect()
+}
+
+/// Every `"uri"` string in one bookmark file, in order. Not a JSON parser: the file is Sony's,
+/// one shape, and a string value is all that is read from it.
+fn bookmark_uris(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("\"uri\"") {
+        rest = rest[i + 5..].trim_start();
+        let Some(value) = rest.strip_prefix(':').map(str::trim_start) else {
+            continue;
+        };
+        let Some(value) = value.strip_prefix('"') else {
+            continue;
+        };
+        let Some((uri, tail)) = json_string(value) else {
+            break;
+        };
+        if !uri.is_empty() {
+            out.push(uri);
+        }
+        rest = tail;
+    }
+    out
+}
+
+/// One JSON string body, from just after its opening quote: the text, and what follows the
+/// closing quote. None when it never closes.
+fn json_string(s: &str) -> Option<(String, &str)> {
+    let mut out = String::new();
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((out, &s[i + 1..])),
+            '\\' => match chars.next()?.1 {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'r' => out.push('\r'),
+                'b' => out.push('\u{8}'),
+                'f' => out.push('\u{c}'),
+                'u' => {
+                    let hex = |chars: &mut std::str::CharIndices| -> Option<u32> {
+                        let h: String = (0..4).filter_map(|_| chars.next().map(|c| c.1)).collect();
+                        u32::from_str_radix(&h, 16).ok()
+                    };
+                    let hi = hex(&mut chars)?;
+                    let code = if (0xd800..0xdc00).contains(&hi) {
+                        // A surrogate pair: the low half follows as its own \uXXXX.
+                        let lo = chars
+                            .next()
+                            .zip(chars.next())
+                            .and_then(|_| hex(&mut chars))?;
+                        0x10000 + ((hi - 0xd800) << 10) + (lo.wrapping_sub(0xdc00) & 0x3ff)
+                    } else {
+                        hi
+                    };
+                    out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+                }
+                other => out.push(other), // \" \\ \/
+            },
+            c => out.push(c),
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1089,5 +1199,67 @@ mod tests {
         eprintln!("10,000 lines read in {:?}", t.elapsed());
         assert_eq!(list.entries.len(), 10_000);
         assert_eq!(list.entries[9_999].label, "Artist 9999 - Song 9999");
+    }
+
+    // Sony's bookmark files, byte for byte as they came off the owner's player (2026-10-24).
+    const BOOKMARK01: &str = "{\n \"children\" : \n [\n  {\n   \"id\" : 805334073,\n   \"uri\" : \"/data/mnt/external/MUSIC/Bowery Electric - Beat/02 - Bowery Electric - Empty Words.flac\"\n  }\n ],\n \"id\" : 0\n}";
+    const BOOKMARK02: &str = "{\n \"children\" : \n [\n  {\n   \"id\" : 805334371,\n   \"uri\" : \"/data/mnt/external/MUSIC/Nina Simone - Pastel Blues/07 - Nina Simone - Ain't No Use.flac\"\n  }\n ],\n \"id\" : 0\n}";
+    const BOOKMARK_EMPTY: &str = "{\n \"children\" : [],\n \"id\" : 0\n}";
+
+    #[test]
+    fn sony_bookmark_lists_are_read_and_never_written() {
+        let dir = Dir::new("bookmarks");
+        fs::write(dir.0.join("bookmark01.json"), BOOKMARK01).unwrap();
+        fs::write(dir.0.join("bookmark02.json"), BOOKMARK02).unwrap();
+        for n in 3..=10 {
+            fs::write(dir.0.join(format!("bookmark{n:02}.json")), BOOKMARK_EMPTY).unwrap();
+        }
+        let lists = sony_bookmarks(&dir.0);
+        let names: Vec<&str> = lists.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Bookmark List 1", "Bookmark List 2"],
+            "empty lists are left out"
+        );
+        assert_eq!(
+            uris(&lists[1]),
+            ["/contents_ext/MUSIC/Nina Simone - Pastel Blues/07 - Nina Simone - Ain't No Use.flac"]
+        );
+        assert!(lists[0].id < 0 && lists[0].id != lists[1].id);
+
+        let mut store = Store::open(&dir.0);
+        store.lists.extend(lists);
+        let id = store.lists[0].id;
+        assert!(store.get(id).is_some(), "found to play");
+        assert!(!store.add(id, "/contents/MUSIC/a.flac", "a").unwrap());
+        assert_eq!(
+            store
+                .add_many(id, &[("/x.flac".into(), "x".into())])
+                .unwrap(),
+            0
+        );
+        assert!(!store.remove_at(id, 0).unwrap());
+        assert!(!store.set_cover(id, Some("/x.jpg")).unwrap());
+        store.rename(id, "Mine").unwrap();
+        store.delete(id).unwrap();
+        assert_eq!(
+            store.get(id).map(|l| l.name.as_str()),
+            Some("Bookmark List 1")
+        );
+        assert_eq!(
+            fs::read_to_string(dir.0.join("bookmark01.json")).unwrap(),
+            BOOKMARK01
+        );
+    }
+
+    #[test]
+    fn bookmark_strings_unescape() {
+        let text = r#"{"children":[{"id":1,"uri":"/data/mnt/internal/MUSIC/A \"B\"\\C\/D \u00e9\ud83c\udfb5.flac"},{"uri" : ""}]}"#;
+        assert_eq!(
+            bookmark_uris(text),
+            ["/data/mnt/internal/MUSIC/A \"B\"\\C/D é🎵.flac"]
+        );
+        assert!(bookmark_uris(r#"{"uri":"never closes"#).is_empty());
+        assert!(sony_bookmarks("/nonexistent-cinder-dir").is_empty());
     }
 }

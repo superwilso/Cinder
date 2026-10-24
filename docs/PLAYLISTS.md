@@ -130,6 +130,12 @@ gradient: a cover is decoration, and a missing one must never be why a list does
 Sony's playlists show the same page **without** the edit bar: the flag is `PlaylistRow::user`, and
 a row that offered controls which silently did nothing would be worse than not offering them.
 
+**Sony's Bookmark Lists** (the ten lists Sony's own player keeps in `/cache/bookmark01.json` …
+`bookmark10.json`) show the same way, when `sony_bookmarks` is on in `cinder_advanced.conf`: each
+non-empty one is a row named as Sony names it ("Bookmark List 1"), to play, and none is ever
+written (`playlists::sony_bookmarks`; every edit refuses a `read_only` list). The file holds an
+object id from Sony's database and the path; only the path is kept, since a rescan re-issues ids.
+
 ## The keyboard
 
 `player/cinder-ui/src/keyboard.rs` — the device's first text input. There is no d-pad and no

@@ -6,6 +6,7 @@
 //!   VOLUME   Full | Minimal
 //!   TEXT     Size (slider)   Visualiser ›
 //!   STYLE    Cinder | Nocturne | Terminal   (how Now Playing is laid out: `style.rs`)
+//!            Cassette | Clock | Winamp
 //!
 //! These five rows were the top of the Settings list, where they shared one scrolling column with
 //! Restart and Reset. The handoff's point 4 is that settings you change weekly and settings you
@@ -71,7 +72,14 @@ pub fn row_top(r: usize) -> i32 {
 
 /// The row under `y`, if any.
 pub fn row_at(y: i32) -> Option<usize> {
-    (0..ROWS).find(|&r| (row_top(r)..row_top(r) + kit::ROW_H).contains(&y))
+    let h = |r| {
+        if r == ROW_STYLE {
+            style_row_h()
+        } else {
+            kit::ROW_H
+        }
+    };
+    (0..ROWS).find(|&r| (row_top(r)..row_top(r) + h(r)).contains(&y))
 }
 
 /// Top of the volume chips, centred in their row.
@@ -88,9 +96,36 @@ fn style_chips_top() -> i32 {
     row_top(ROW_STYLE) + (kit::ROW_H - kit::CHIP_H) / 2
 }
 
+/// The styles sit three to a line: six across cut every name but "Clock" at any text size.
+const STYLE_COLS: usize = 3;
+
+/// Top of the style chips' line `line`.
+fn style_line_top(line: usize) -> i32 {
+    style_chips_top() + line as i32 * (kit::CHIP_H + kit::CHIP_GAP)
+}
+
+/// The Style row's height: one row, plus a line of chips for every line after the first. The last
+/// row on the page, so nothing under it moves.
+fn style_row_h() -> i32 {
+    let lines = crate::style::Style::COUNT.div_ceil(STYLE_COLS) as i32;
+    kit::ROW_H + (lines - 1) * (kit::CHIP_H + kit::CHIP_GAP)
+}
+
+/// The centre of style chip `i`, for tests that tap it.
+#[cfg(test)]
+pub(crate) fn style_chip_centre(i: usize) -> (i32, i32) {
+    let (x, w) = kit::chip_span(i % STYLE_COLS, STYLE_COLS);
+    (x + w / 2, style_line_top(i / STYLE_COLS) + kit::CHIP_H / 2)
+}
+
 /// Which style chip is under `(x, y)`, as an index into `Style::ALL`.
 pub fn style_chip_at(x: i32, y: i32) -> Option<usize> {
-    kit::chip_at(crate::style::Style::COUNT, style_chips_top(), x, y)
+    let n = crate::style::Style::COUNT;
+    (0..n.div_ceil(STYLE_COLS)).find_map(|line| {
+        kit::chip_at(STYLE_COLS, style_line_top(line), x, y)
+            .map(|i| line * STYLE_COLS + i)
+            .filter(|&i| i < n)
+    })
 }
 
 // ── Accent swatches ────────────────────────────────────────────────────────────────────────────
@@ -274,13 +309,18 @@ fn draw_row(
         }
         ROW_SIZE => size_row(c, t, f, y, sel),
         ROW_STYLE => {
+            let h = style_row_h();
             if sel {
-                fill_rect(c, 0, y, W as i32, kit::ROW_H, t.row_sel);
+                fill_rect(c, 0, y, W as i32, h, t.row_sel);
             }
             let names: Vec<&str> = crate::style::Style::ALL.iter().map(|s| s.name()).collect();
-            kit::chips(c, t, f, style_chips_top(), &names, Some(v.style.index()));
-            crate::widgets::hline(c, y + kit::ROW_H - 1, t.line);
-            y + kit::ROW_H
+            for (line, chunk) in names.chunks(STYLE_COLS).enumerate() {
+                let on = v.style.index().checked_sub(line * STYLE_COLS);
+                let on = on.filter(|&i| i < chunk.len());
+                kit::chips_in(c, t, f, style_line_top(line), chunk, on, STYLE_COLS);
+            }
+            crate::widgets::hline(c, y + h - 1, t.line);
+            y + h
         }
         _ => kit::row(
             c,
@@ -377,13 +417,17 @@ mod tests {
     #[test]
     fn the_style_chips_are_inside_their_row_and_pick_themselves() {
         let top = row_top(ROW_STYLE);
-        assert!(style_chips_top() >= top && style_chips_top() + kit::CHIP_H <= top + kit::ROW_H);
-        let y = style_chips_top() + kit::CHIP_H / 2;
         let n = crate::style::Style::COUNT;
+        let last = style_line_top((n - 1) / STYLE_COLS);
+        assert!(style_chips_top() >= top && last + kit::CHIP_H <= top + style_row_h());
+        assert!(
+            top + style_row_h() <= crate::canvas::H as i32,
+            "the page does not scroll"
+        );
         let picks: Vec<usize> = (0..n)
             .filter_map(|i| {
-                let (x, w) = kit::chip_span(i, n);
-                style_chip_at(x + w / 2, y)
+                let (x, y) = style_chip_centre(i);
+                style_chip_at(x, y)
             })
             .collect();
         assert_eq!(picks, (0..n).collect::<Vec<_>>());

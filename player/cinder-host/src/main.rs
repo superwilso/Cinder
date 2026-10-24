@@ -7,6 +7,8 @@
 //! cargo run -p cinder-host -- --palette FILE.palette
 //!                                       check a palette the way the player will, then draw every
 //!                                       preview in it -> out/palette_<id>/
+//! cargo run -p cinder-host -- --cut 120 every preview at that text size: list the text cut short
+//!                                       with "…" (a report; song names are expected in it)
 //! ```
 //!
 //! `golden.txt` holds one pixel hash per preview and `cargo test -p cinder-host` checks it, so a
@@ -23,6 +25,13 @@ use cinder_ui::{
     bluetooth, clockset, eq, fm, library, lock, menu, now_playing, pairing, receiver, settings,
     shelf, sound, up_next, usbdac, Canvas, FontSet, Library, H, W,
 };
+
+/// The text size every preview returns to after one drawn at its own size: 100, or `--cut`'s.
+static BASE_PCT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+fn base_scale() {
+    cinder_ui::text::set_scale_pct(BASE_PCT.load(std::sync::atomic::Ordering::Relaxed));
+}
 
 /// Paired devices for the Bluetooth preview — the list is the body of that screen now.
 fn preview_paired() -> Vec<cinder_ui::pairing::PairedDevice> {
@@ -99,6 +108,7 @@ fn r4_playlists(lib: &Library) -> Library {
 }
 
 fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
+    base_scale();
     let _language = cinder_ui::i18n::enter(opts.language);
     let mut save = |c: &Canvas, name: &str| out(name, c);
     let fonts = FontSet::load();
@@ -664,9 +674,18 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             (
                 "playlist_page",
                 &|c: &mut Canvas| match lib.playlists.first() {
-                    Some(pl) => {
-                        library::playlist_view(c, &theme, &fonts, &lib, pl, 0, 0, None, false, None)
-                    }
+                    Some(pl) => library::playlist_view(
+                        c,
+                        &theme,
+                        &fonts,
+                        &lib,
+                        pl,
+                        0,
+                        Some(0),
+                        None,
+                        false,
+                        None,
+                    ),
                     None => {}
                 },
             ),
@@ -700,7 +719,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         &lib,
                         &mine,
                         0,
-                        1,
+                        Some(1),
                         None,
                         false,
                         Some(1),
@@ -749,6 +768,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     "Playlist name",
                     0,
                     true,
+                    false,
                 );
             }),
             ("keyboard_symbols", &|c: &mut Canvas| {
@@ -760,6 +780,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     "2 a.m. mix #3",
                     "Playlist name",
                     1,
+                    false,
                     false,
                 );
             }),
@@ -1095,7 +1116,18 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // The album page with its rating in the header's right slot (handoff 5h).
             ("album_rated", &|c: &mut Canvas| {
                 if let Some(al) = lib.albums_flat().first() {
-                    library::album_view(c, &theme, &fonts, al, 1, 0, None, None, false, Some(4));
+                    library::album_view(
+                        c,
+                        &theme,
+                        &fonts,
+                        al,
+                        Some(1),
+                        0,
+                        None,
+                        None,
+                        false,
+                        Some(4),
+                    );
                 }
             }),
             // The artist page once things have been rated and played: albums newest first with
@@ -1149,7 +1181,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     &l,
                     &l.playlists[0],
                     0,
-                    0,
+                    Some(0),
                     None,
                     false,
                     None,
@@ -2897,7 +2929,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             app.render(&mut c, &fonts, &np);
             save(&c, &format!("uiscale_{pct}_settings_bottom"));
         }
-        cinder_ui::text::set_scale_pct(100);
+        base_scale();
     }
 
     // The palette picker (handoff 5j): the palettes that ship in cinder-ui/palettes, plus one file
@@ -2934,7 +2966,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             app.render(&mut c, &fonts, &np);
             save(&c, &format!("palette_picker_{pct}"));
         }
-        cinder_ui::text::set_scale_pct(100);
+        base_scale();
     }
 
     // Visualiser TYPES: render Now Playing with each viz kind (mid-animation) so they can be diffed.
@@ -3196,7 +3228,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         app.render(&mut c, &fonts, &np);
         save(&c, &format!("language_picker_{pct}"));
     }
-    cinder_ui::text::set_scale_pct(100);
+    base_scale();
 
     // The language picker is a fixed bilingual label even in English mode. Exercise the real
     // Settings route: unfold More settings, scroll to the end, and render with no Sony font path.
@@ -3420,7 +3452,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             15_000,
             true,
         );
-        cinder_ui::text::set_scale_pct(100);
+        base_scale();
         {
             let _zh = cinder_ui::i18n::enter(cinder_ui::i18n::Language::SimplifiedChinese);
             render_state(
@@ -3514,7 +3546,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             &th(false, amber),
             &fonts,
             &album,
-            1,
+            Some(1),
             0,
             None,
             None,
@@ -3795,8 +3827,41 @@ fn audit() -> Vec<String> {
     bad
 }
 
+/// `--cut PCT`: every preview at that text size, and the text in it cut short with "…". A report
+/// rather than a gate: a long song name is meant to be cut; UI copy that is cut at the size people
+/// use is what to look for. Found 10-24 at 120 %: "SETTIN…", "REMOV…", "NAME IT, THEN ADD TRAC…".
+fn cut_text(pct: u32) -> Vec<String> {
+    BASE_PCT.store(pct, std::sync::atomic::Ordering::Relaxed);
+    cinder_ui::canvas::audit_new_canvases(true);
+    let mut cut = Vec::new();
+    render_all(
+        &mut |name, c| {
+            for run in c.text_runs().iter().filter(|r| r.ends_with('\u{2026}')) {
+                cut.push(format!("{name}: {run:?}"));
+            }
+        },
+        &Opts {
+            language: cinder_ui::i18n::Language::English,
+            golden: true,
+            palette: None,
+        },
+    );
+    cinder_ui::canvas::audit_new_canvases(false);
+    BASE_PCT.store(100, std::sync::atomic::Ordering::Relaxed);
+    cut
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
+        Some("--cut") => {
+            let pct = std::env::args()
+                .nth(2)
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(120);
+            let cut = cut_text(pct);
+            println!("{}", cut.join("\n"));
+            eprintln!("{} run(s) cut at {pct} %", cut.len());
+        }
         Some("--audit") => {
             let bad = audit();
             if bad.is_empty() {
@@ -3902,7 +3967,7 @@ fn main() {
             }
         }
         Some(other) => {
-            eprintln!("unknown argument {other:?}\nusage: cinder-host [--check | --bless | --audit | --palette FILE]");
+            eprintln!("unknown argument {other:?}\nusage: cinder-host [--check | --bless | --audit | --cut PCT | --palette FILE]");
             std::process::exit(2);
         }
     }

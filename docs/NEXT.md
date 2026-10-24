@@ -95,6 +95,14 @@ factory image, `bc41b677…`, checked 10-22).
    lookups, `phases/phase1.sh` cloning Wampy's repos, and CLAUDE.md Part E's "install Walkman One
    and Wampy as the baseline". Detection of either stays, so a player that has them still installs.
 
+6. **What is left of Wampy on the owner's player** (looked at over adb 10-24, nothing changed):
+   `/system/vendor/unknown321/rollback/` (the owner's hand backups, root-only); `/contents/wampy/`
+   (Wampy's `config.ini`, EQ, fonts, skins and log; Cinder reads none of it); and in the boot
+   image, `init.scrobbler.rc` from unknown321/scrobbler (09-21), which starts
+   `/system/vendor/unknown321/bin/scrobbler` on every boot. That file left with the rest, so the
+   start fails and nothing runs. Cinder never writes the boot image; a firmware flash (Sony's or Walkman One's)
+   replaces it. All three are the owner's to remove or keep.
+
 **B. A guided installer.** **Code done 10-23** (both points below; groups are Languages, Library,
 Radio, Sound, Bluetooth, Device). Screenshots rendered 10-23 (`docs/SCREENSHOTS.md`). Left: a
 real install and update through the new window pages.
@@ -111,7 +119,7 @@ real install and update through the new window pages.
 |---|---|---|
 | ~~ATRAC on any region~~ | **Done 10-22** (`atrac`, `src/cinder-atrac.c`): verified on the owner's player by hand-install; the `.UPG` install path is not yet run. Test files: genuine `.aa3`/`.oma` from samples.ffmpeg.org `A-codecs/ATRAC3+/` (ffmpeg-muxed OMA is refused by Sony's parser, `omg_oma_init() error = 0x7`) | — |
 | ~~FM recording~~ | **Code done 10-23** (`fmrec`, `src/cinder-fmrec.c`, `src/fmrec.h`): the REC button and BT OUT recording are in; the jack path was verified by hand-install 10-22 (7.9 s WAV). Left: DEVICE_CHECKLIST §39.2–39.3 through the installer | — |
-| ~~CUE sheets~~ | **Code done 10-23** (`cinder-ffi/src/cue.rs`, `cinder_cue_skip`, `AlbumRow::cue`): Now Playing names the CUE track, ◁/▷ seek between them, the album page lists them and plays from one (`PlayIndexAt`, the audiobook seek). Scrobbled per CUE track. Left: the Songs tab still lists the file once. Listing its CUE tracks there needs the queue to carry a start position per entry, or playing the Songs list plays the file once per CUE track, each from the top | — |
+| ~~CUE sheets~~ | **Code done 10-23** (`cinder-ffi/src/cue.rs`, `cinder_cue_skip`, `AlbumRow::cue`): Now Playing names the CUE track, ◁/▷ seek between them, the album page lists them and plays from one (`PlayIndexAt`, the audiobook seek). Scrobbled per CUE track. Left: the Songs tab still lists the file once. Listing its CUE tracks there needs the queue to carry a start position per entry, or playing the Songs list plays the file once per CUE track, each from the top. Parked 10-24: it touches Songs, Shuffle all and SensMe's row indices, and goes past Wampy, which only names the CUE track while it plays (Cinder does that) | — |
 | ~~Per-song sound~~ | **Code done 10-23**, by album (Track information ▸ ALBUM SOUND; `album_sound=` in the settings file). Host-tested; device-unverified | — |
 | ~~Volume curve editor~~ | **Code done 10-23** (Sound ▸ Advanced ▸ Volume curve; `cinder-voltable curve`, `src/vol_curve.h`, `tools/test_volcurve.sh`). A remap of Sony's own rows; the conf reads `curve,stock,P0,…`. Host-tested; device-unverified | — |
 | Low-latency USB-DAC | llusbdac is GPL (zhangboyang's, not Wampy's): its own repo, built from upstream source, fetched by the installer like Sony's tables | 2–3 days + device |
@@ -151,7 +159,7 @@ within each group.
 | Skin dropdown | Tap the Winamp chip again (cycles) | A list screen, if cycling is not enough |
 | Swap prev/next; ignore keys when the screen is off | The Hold switch covers the second. The first depends on which way the player's own ⏮ ⏭ read on its side, so it waits for a look at the player | Decide with the player in hand |
 | ~~Visualiser "Winamp mode" bands, sensitivity~~ | **Covered (checked 10-23)**: the Winamp view draws the levels Visualiser's Range (sensitivity), Response and Bands rows shape, in Winamp's own 19 or 75 columns | — |
-| Export Sony's bookmarks | Cinder's own audiobook positions | Sony keeps ten lists as `/cache/bookmark01.json`…`bookmark10.json` (Wampy copies them; Sony's player names `BookmarkModel` and `kJsonReadError`). Their layout is not in any string: first `adb pull /cache/bookmark01.json` from a player that has one (read-only), then show them as playlists |
+| ~~Export Sony's bookmarks~~ | **Done 10-24**, opt-in (`sony_bookmarks` in `cinder_advanced.conf`): the non-empty `/cache/bookmarkNN.json` lists are read-only rows in Playlists, "Bookmark List N" as Sony names them. Fixtures are the owner's two files | Listed and opened on the owner's player 10-24 (both lists, covers, no edit bar). Left: play one |
 | User font | Bundled + Sony fonts | — |
 | Low-latency USB-DAC (llusbdac) | `cinder-llusbdac` repo **ready locally 10-23** (`/home/sony/cinder-llusbdac`): pinned build from Sony's NW-A57 kernel (BBDMP5) + upstream eeb31d5 + GCC 4.9.3; vermagic matches the player's modules | Owner: create the public repo and push (the auto-mode classifier refused to). Then the installer component and a USB DAC row; first insmod with the owner present |
 
@@ -245,9 +253,18 @@ About half a day of code plus the Mac session.
     file's object id, so plays, likes and ratings count to the one file, and Now Playing shows the
     kept album's tags.
 
+14. **Long copy at the owner's 120 %** (found 10-24 with `cargo run -p cinder-host -- --cut 120`,
+    which lists every run cut with "…"). Button labels and chips are fixed; about 20 hint and
+    second lines are still cut, among them Sound ▸ Advanced's "Surround, DC Phase, Vinyl, Tone
+    Control, DAC…", DAC EQ's "the 10-band stays for…", Bluetooth pairing's "PIN AND CONFIRM
+    PROMPTS APPEAR HERE WHEN A DEV…", the receiver's two sentences and "EXPERIMENTAL · TESTED WITH
+    WINDOWS AND …", Device's "NO FUEL GAUGE — NO CURRENT, NO CYCLE CO…" and "CARE ON: 100% HERE IS
+    ~4.09 V, NOT 4.2 …". **Owner's call:** shorter wording (each needs its Chinese too), a second
+    line where the row has room, or a size down as the chips do.
+
 **Flint**
 
-1. After decision 1: adopt music already on the player by content key (G3.2).
+1. ~~Adopt music already on the player by content key (G3.2)~~: **same path done 10-24** (uncommitted in Flint): a file where Flint would copy it, with the same audio and tags (`cache::same_file`), is kept and claimed in the manifest (`Plan::kept`). Left: a file under another path (Music Center's layout) is still copied; moving it into place is the next slice.
 2. ~~E7 the album unit~~ (**done 10-23**: the folder holding the audio, discs kept with it); ~~E9 refused scrobbles to `.scrobbler.refused.log`~~ (**done 10-23**); both uncommitted in Flint;
    ~~E10~~ (fixed 10-05); ~~E11 one WinHTTP session for the palette shop~~ (**done 10-23**, run on Windows).
 3. Features in the 10-01 order: ~~G1.1 backup of the player's state~~ (**done 10-23**, uncommitted: every read,
@@ -255,11 +272,11 @@ About half a day of code plus the Mac session.
    read from the files already on the drive, plus one Cinder log line for `/data` free; parser fixtures
    are format strings until a real `cinderhome.log` replaces them), ~~G3.1 library
    lint~~ (**done 10-23**: in Check and `flint lint`; "several years in one album" left out until it is
-   shown to split an album), G1.3 device-aware transfer, G2.1 per-headphone profiles, G1.4 LRCLIB lyrics, G2.2 resume.
+   shown to split an album), G1.3 device-aware transfer (**flagging done 10-24**, uncommitted: Check lists FLACs over 24 bits; converting them on the copy is left, with R6's convert-on-transfer), ~~G2.1 per-headphone profiles~~ (dropped 10-18 by the owner: Presets, loaded by hand), ~~G1.4 LRCLIB lyrics~~ (**command line done 10-24**, uncommitted: `flint lyrics <library> --apply` writes `Song.lrc` beside each track LRCLIB has synced lyrics for, never replacing one or fetching over synced lyrics in the tags; checked live against lrclib.net on a scratch library. Left: a button in the window, and where it goes is the owner's call, since Sync has one accented action and Check promises to change nothing), ~~G2.2 resume~~ (audiobook positions, 0.3.17).
 4. R6 / Flint 0.3: Setup, convert-on-transfer, Copying, the palette preview, SensMe reasons, the
    SensMe MP3 path.
 5. ~~**The same song on two albums, stored once**~~ (**built 10-23**, uncommitted: Flint suggests
-   pairs by audio, the owner ticks them, `flint shared`; first path kept, **Swap** / `--keep-other` for the other (10-23). Left: removing an album leaves its entry out at the next sync.)
+   pairs by audio, the owner ticks them, `flint shared`; first path kept, **Swap** / `--keep-other` for the other (10-23). Removing an album ends its entry at the next sync (tested 10-24), and a kept album that fits on no volume gives the song back to the other album (fixed 10-24, uncommitted).)
    *Original note:* (owner idea, 10-23). A track that appears on two
    albums (the album and a best-of, a single and its album) is often the same recording. You
    select the two, or Flint suggests pairs by matching decoded audio. Flint then copies one file

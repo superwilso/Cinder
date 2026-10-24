@@ -12885,7 +12885,10 @@ static void read_charger(int* state, int* fault, char* raw, size_t rawsz) {
 static bool battery_charging();
 
 // Gather and push the full readout. `with_charger` gates the fork; when false the charger fields
-// go through as "unknown", which the screen renders as a dash rather than as a wrong reading.
+// are the helper's last reading ("unknown" before the first one, which the screen renders as a
+// dash rather than as a wrong reading). Sending "unknown" on every sysfs-only push turned the
+// open Device screen's CHARGER row into "Needs the battery helper" for two seconds after each
+// battery tick, on a player that has the helper (seen 2026-10-24).
 static void push_battery_detail(int pct, bool with_charger) {
     char status[32], health[32];
     read_sysfs_text("/sys/class/power_supply/battery/status", status, sizeof status);
@@ -12893,9 +12896,12 @@ static void push_battery_detail(int pct, bool with_charger) {
     int uv = read_sysfs_int("/sys/class/power_supply/battery/voltage_now");
     // voltage_now is in MICROvolts here (4091473 = 4.091 V). The UI wants millivolts.
     const int mv = (uv == BATT_UNKNOWN) ? BATT_UNKNOWN : uv / 1000;
-    int cstate = -1, cfault = -1;
-    char raw[64] = {0};
-    if (with_charger) read_charger(&cstate, &cfault, raw, sizeof raw);
+    static int last_cstate = -1, last_cfault = -1;
+    static char last_raw[64] = {0};
+    if (with_charger) read_charger(&last_cstate, &last_cfault, last_raw, sizeof last_raw);
+    int cstate = last_cstate, cfault = last_cfault;
+    char raw[64];
+    std::memcpy(raw, last_raw, sizeof raw);
     // NOTHING PLUGGED IN IS NOT A FAULT. With no VBUS the bq24262 puts a non-zero code in the
     // STATUS register's fault field, and the screen rendered it as `FAULT 2` on a healthy player
     // (reported 2026-09-18, with the cable out). The code is not decoded and will not be guessed

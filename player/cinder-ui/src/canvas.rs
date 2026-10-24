@@ -210,6 +210,12 @@ impl Canvas {
             .collect()
     }
 
+    /// Every text run drawn since `track_text`, in order, as drawn (a fitted one with its "…").
+    pub fn text_runs(&self) -> Vec<String> {
+        self.text_ink
+            .as_deref()
+            .map_or_else(Vec::new, |ink| ink.runs.clone())
+    }
     /// Every text run whose ink something drawn later covered, with how many pixels.
     pub fn text_hidden(&self) -> Vec<(String, u32)> {
         let Some(ink) = self.text_ink.as_deref() else {

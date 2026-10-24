@@ -103,6 +103,23 @@ pub(crate) fn playlist_thumb(
     if let Some(img) = lib.thumbs.get(&pl.cover_album_id).filter(|i| fits(i)) {
         return art::draw_image(c, t, x, y, img, op);
     }
+    // The playlist page's 64 px cover has no size of its own in the cache, so it drew the gradient
+    // always. The grid's 96 px cover scaled down, else the list's 48 px scaled up: a 48 doubled for
+    // the grid is too soft (`grid_cover`), a third up is not.
+    // ponytail: scaled every frame the page draws (64x64, microseconds); cache it if a bigger
+    // cover ever takes this path.
+    if size < GRID_TILE {
+        let src = lib
+            .playlist_thumbs
+            .get(&pl.id)
+            .or_else(|| lib.covers.get(&pl.cover_album_id))
+            .or_else(|| lib.thumbs.get(&pl.cover_album_id))
+            .filter(|i| i.w > 0 && i.w == i.h);
+        if let Some(img) = src {
+            let img = img.scaled_to(size as usize, size as usize);
+            return art::draw_image(c, t, x, y, &img, op);
+        }
+    }
     art::block_cached(c, t, x, y, size, size, &pl.art, op);
 }
 
@@ -1538,11 +1555,21 @@ const ART_STACK_OFFSET: i32 = 18;
 pub const ART_STACK_W: i32 = THUMB_PX + ART_STACK_OFFSET;
 
 /// "1 album" / "2 albums" — a count and a noun that disagree reads as a bug in everything near it.
-fn plural(n: u32, noun: &str) -> String {
+/// "1 track" / "12 tracks", in the UI's language.
+pub(crate) fn n_tracks(n: u32) -> String {
     if n == 1 {
-        format!("{n} {noun}")
+        crate::ui_format!("{} track", n)
     } else {
-        format!("{n} {noun}s")
+        crate::ui_format!("{} tracks", n)
+    }
+}
+
+/// "1 album" / "3 albums", in the UI's language.
+fn n_albums(n: u32) -> String {
+    if n == 1 {
+        crate::ui_format!("{} album", n)
+    } else {
+        crate::ui_format!("{} albums", n)
     }
 }
 
@@ -1693,7 +1720,7 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
                 f,
                 y,
                 crate::i18n::text("Shuffle by album"),
-                crate::i18n::text("RANDOM ALBUM ORDER · TRACKS IN SEQUENCE"),
+                crate::i18n::text("RANDOM ALBUMS · TRACKS IN ORDER"),
             );
         }
         Tab::Artists => {
@@ -1703,7 +1730,7 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
                 f,
                 y,
                 crate::i18n::text("Shuffle by artist"),
-                crate::i18n::text("RANDOM ARTIST · SHUFFLED WITHIN ARTIST"),
+                crate::i18n::text("RANDOM ARTIST · SONGS SHUFFLED"),
             );
         }
         Tab::Playlists => {
@@ -2236,9 +2263,9 @@ pub fn render(
                             &tst,
                         );
                         let sub = if al.year.is_empty() {
-                            crate::ui_format!("{} tracks", al.tracks)
+                            n_tracks(al.tracks)
                         } else {
-                            crate::ui_format!("{} · {} tracks", al.year, al.tracks)
+                            format!("{} · {}", al.year, n_tracks(al.tracks))
                         };
                         let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
                         text::draw(
@@ -2343,7 +2370,7 @@ pub fn render(
                             id,
                             art,
                             &ar.name,
-                            &plural(ar.albums, "album"),
+                            &n_albums(ar.albums),
                             idx == current,
                         );
                     }
@@ -2359,17 +2386,7 @@ pub fn render(
                 let now = idx == current;
                 let cy = y + rh / 2;
                 if view == LibView::Compact {
-                    compact_row(
-                        c,
-                        t,
-                        f,
-                        y,
-                        &ar.name,
-                        &plural(ar.albums, "album"),
-                        "",
-                        400.0,
-                        now,
-                    );
+                    compact_row(c, t, f, y, &ar.name, &n_albums(ar.albums), "", 400.0, now);
                     icons::shuffle(c, 434.0, cy as f32, 15.0, t.dim);
                     y += rh;
                     continue;
@@ -2391,8 +2408,7 @@ pub fn render(
                     &crate::widgets::fit(f, &ar.name, &tst, 402.0 - tx),
                     &tst,
                 );
-                let sub =
-                    crate::ui_format!("{} · {} tracks", plural(ar.albums, "album"), ar.tracks);
+                let sub = format!("{} · {}", n_albums(ar.albums), n_tracks(ar.tracks));
                 text::draw(
                     c,
                     f,
@@ -2445,7 +2461,7 @@ pub fn render(
                             pl.cover_album_id,
                             &pl.art,
                             &pl.name,
-                            &crate::ui_format!("{} tracks", pl.tracks),
+                            &n_tracks(pl.tracks),
                             idx == current,
                         );
                     }
@@ -2509,9 +2525,9 @@ pub fn render(
                 // "normal". The distinction still lands where it matters: the page draws the edit
                 // bar for `pl.user` and not otherwise, and a custom cover is Cinder-only.
                 let sub = if pl.smart {
-                    format!("{} tracks \u{b7} {}", pl.tracks, pl.rules)
+                    format!("{} \u{b7} {}", n_tracks(pl.tracks), pl.rules)
                 } else {
-                    crate::ui_format!("{} tracks", pl.tracks)
+                    n_tracks(pl.tracks)
                 };
                 let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
                 text::draw(
@@ -2542,7 +2558,8 @@ pub fn render(
 }
 
 /// Album drill-in: art + title/artist header, a shuffle row, then the pixel-scrolled track
-/// list. `track_idx` is the highlighted row, `scroll_px` the content offset in px.
+/// list. `track_idx` is the row playing, if one of this album's is; `scroll_px` the content
+/// offset in px.
 /// `cover` is the album's decoded art at exactly 96x96, or None to draw the gradient. The shell
 /// loads it from the art cache when the drill-in opens — one image, not a map, because only one
 /// album is ever open.
@@ -2551,7 +2568,7 @@ pub fn album_view(
     t: &Theme,
     f: &FontSet,
     album: &crate::model::AlbumRow,
-    track_idx: usize,
+    track_idx: Option<usize>,
     scroll_px: i32,
     cover: Option<&crate::art::Image>,
     swipe: Option<SwipeRow>,
@@ -2617,9 +2634,9 @@ pub fn album_view(
         album.cue.len() as u32
     };
     let meta = if album.year.is_empty() {
-        crate::ui_format!("{} TRACKS", n)
+        n_tracks(n).to_uppercase()
     } else {
-        crate::ui_format!("{} · {} TRACKS", album.year, n)
+        format!("{} · {}", album.year, n_tracks(n).to_uppercase())
     };
     let mst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
     text::draw(
@@ -2657,7 +2674,7 @@ pub fn album_view(
                 (s.title.as_str(), s.dur.as_str())
             }
         };
-        let now = idx == track_idx;
+        let now = Some(idx) == track_idx;
         let cy = y + rh / 2;
         let sw = swipe_for(swipe, y, rh);
         if let Some(dx) = sw {
@@ -2984,11 +3001,12 @@ pub fn artist_view(
     let nst = sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
     let name = crate::widgets::fit(f, page.name, &nst, W as f32 - 44.0);
     text::draw(c, f, 22.0, 104.0, &name, &nst);
-    let stats = crate::ui_format!(
-        "{} ALBUMS · {} TRACKS",
-        page.albums.len(),
-        page.tracks.len()
-    );
+    let stats = format!(
+        "{} · {}",
+        n_albums(page.albums.len() as u32),
+        n_tracks(page.tracks.len() as u32)
+    )
+    .to_uppercase();
     text::draw(
         c,
         f,
@@ -3137,9 +3155,9 @@ pub fn artist_view(
                     &tst,
                 );
                 let sub = if al.year.is_empty() {
-                    crate::ui_format!("{} tracks", al.tracks)
+                    n_tracks(al.tracks)
                 } else {
-                    crate::ui_format!("{} · {} tracks", al.year, al.tracks)
+                    format!("{} · {}", al.year, n_tracks(al.tracks))
                 };
                 // The album's rating (handoff 5m: "albums … with their ratings") on the second
                 // line, right-aligned before the chevron, so the name keeps the whole first line.
@@ -3341,7 +3359,11 @@ fn playlist_band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
         (cy + 14) as f32,
         &crate::widgets::fit(
             f,
-            &crate::ui_format!("{} TRACKS · IN ORDER", tracks),
+            &if tracks == 1 {
+                crate::ui_format!("{} TRACK · IN ORDER", tracks)
+            } else {
+                crate::ui_format!("{} TRACKS · IN ORDER", tracks)
+            },
             &sst,
             lw,
         ),
@@ -3419,7 +3441,7 @@ fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet, hide: i32) {
         f,
         80.0,
         (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
-        &crate::widgets::fit(f, crate::i18n::text("NAME IT, THEN ADD TRACKS"), &sst, lw),
+        &crate::widgets::fit(f, crate::i18n::text("NAME IT, ADD TRACKS"), &sst, lw),
         &sst,
     );
     // SMART: a playlist made of rules. The diamond is the mark smart rows carry in the list.
@@ -3510,7 +3532,8 @@ pub fn playlist_view(
     lib: &Library,
     pl: &crate::model::PlaylistRow,
     scroll_px: i32,
-    sel: usize,
+    // The row playing, if one of this playlist's is (as on the album page).
+    sel: Option<usize>,
     swipe: Option<SwipeRow>,
     sbar_active: bool,
     // `armed`: the row whose × is armed, if any (two-tap remove).
@@ -3571,11 +3594,11 @@ pub fn playlist_view(
     let stats = if pl.smart {
         format!(
             "{} \u{b7} {}",
-            plural(pl.tracks, "TRACK").to_uppercase(),
+            n_tracks(pl.tracks).to_uppercase(),
             pl.rules.to_uppercase()
         )
     } else if pl.track_list.len() as u32 == pl.tracks {
-        plural(pl.tracks, crate::i18n::text("TRACK")).to_uppercase()
+        n_tracks(pl.tracks).to_uppercase()
     } else {
         crate::ui_format!("{} OF {} TRACKS AVAILABLE", pl.track_list.len(), pl.tracks)
     };
@@ -3643,7 +3666,7 @@ pub fn playlist_view(
         if y >= LIST_BOTTOM {
             break;
         }
-        let now = i == sel;
+        let now = Some(i) == sel;
         let cy = y + PLAYLIST_TRACK_RH / 2;
         let sw = swipe_for(swipe, y, PLAYLIST_TRACK_RH);
         if let Some(dx) = sw {
@@ -3712,14 +3735,14 @@ pub fn playlist_view(
         );
         if pl.user {
             if armed == Some(i) {
-                crate::widgets::center(
-                    c,
-                    f,
-                    428.0,
-                    (cy + 4) as f32,
-                    crate::i18n::text("REMOVE?"),
-                    &sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.08),
-                );
+                // The word stays inside the × column it answers for (the tap target, 396..458):
+                // a size down, untracked, when it would not fit there ("REMOV…" at 120 %).
+                let word = crate::i18n::text("REMOVE?");
+                let mut st = sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.08);
+                if text::measure(f, word, &st) > 60.0 {
+                    st = sty(Family::Mono, Weight::Bold, 9.0, t.acc, 0.0);
+                }
+                crate::widgets::center(c, f, 428.0, (cy + 4) as f32, word, &st);
             } else {
                 icons::close(c, 428.0, cy as f32, 11.0, t.faint);
             }
@@ -3744,6 +3767,45 @@ pub fn playlist_view(
 
 #[cfg(test)]
 mod tests {
+    /// The playlist page's 64 px cover is drawn from the 48 px list thumbnail when that is all the
+    /// cache has, instead of the gradient it always was on the player (seen 10-24).
+    #[test]
+    fn the_playlist_page_cover_scales_the_art_it_has() {
+        let mut lib = Library::default();
+        lib.thumbs.insert(
+            5,
+            art::Image {
+                w: THUMB_PX as usize,
+                h: THUMB_PX as usize,
+                rgb: [200, 10, 10].repeat((THUMB_PX * THUMB_PX) as usize),
+            },
+        );
+        let pl = crate::model::PlaylistRow {
+            id: -1,
+            name: "Mix".into(),
+            art: "Mix".into(),
+            cover_album_id: 5,
+            ..Default::default()
+        };
+        let t = crate::theme::Theme::day();
+        let mut c = Canvas::new();
+        playlist_thumb(&mut c, &t, &lib, &pl, 22, 74, 64, 1.0);
+        let px = c.buf[106 * crate::canvas::W + 54];
+        assert_eq!(
+            px, 0x00c8_0a0a,
+            "the thumbnail's red, not a gradient: {px:06x}"
+        );
+    }
+
+    /// One of anything is singular (a Bookmark List of one song read "1 tracks"), and Chinese
+    /// gets no English "s" (it read "2 曲目s").
+    #[test]
+    fn counts_are_singular_for_one() {
+        assert_eq!(super::n_tracks(1), "1 track");
+        assert_eq!(super::n_tracks(12), "12 tracks");
+        assert_eq!(super::n_albums(1), "1 album");
+        assert_eq!(super::n_albums(3), "3 albums");
+    }
 
     /// EVERY list in this file says something when it is empty, and says the RIGHT thing.
     ///

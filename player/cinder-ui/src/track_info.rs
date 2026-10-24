@@ -317,31 +317,42 @@ fn action_band(c: &mut Canvas, t: &Theme, f: &FontSet, album_sound: Option<(u8, 
         None => center(c, f, (w / 2) as f32, y, add, &st),
         Some((album, song)) => {
             let third = w / 3;
+            let words: Vec<(String, bool)> = [
+                (album, "ALBUM \u{b7} OFF", "ALBUM \u{b7} P{}"),
+                (song, "SONG \u{b7} OFF", "SONG \u{b7} P{}"),
+            ]
+            .into_iter()
+            .map(|(n, off, on)| match n {
+                0 => (crate::i18n::text(off).to_string(), false),
+                _ => (crate::i18n::text(on).replace("{}", &n.to_string()), true),
+            })
+            .collect();
+            // An end third's word can only spread to the gutter, 58 px each side of its centre: a
+            // size down and tighter, all three together, when one would not fit ("+  PLAYLI…" at
+            // 120 %).
+            let add = crate::i18n::text("+  PLAYLIST");
+            let (size, track) = if [add, &words[0].0, &words[1].0]
+                .iter()
+                .any(|s| text::measure(f, s, &st) > (third / 2 - 22) as f32 * 2.0)
+            {
+                (11.0, 0.06)
+            } else {
+                (13.0, 0.14)
+            };
             center(
                 c,
                 f,
                 (third / 2) as f32,
                 y,
-                crate::i18n::text("+  PLAYLIST"),
-                &st,
+                add,
+                &sty(Family::Mono, Weight::Bold, size, t.acc, track),
             );
-            for (i, (n, off, on)) in [
-                (album, "ALBUM \u{b7} OFF", "ALBUM \u{b7} P{}"),
-                (song, "SONG \u{b7} OFF", "SONG \u{b7} P{}"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            for (i, (v, on)) in words.iter().enumerate() {
                 let x0 = third * (i as i32 + 1);
                 fill_rect(c, x0, BOTTOM + 12, 1, ACTION_H - 24, t.line);
-                let v = if n == 0 {
-                    crate::i18n::text(off).to_string()
-                } else {
-                    crate::i18n::text(on).replace("{}", &n.to_string())
-                };
-                let col = if n == 0 { t.dim } else { t.acc };
-                let st = sty(Family::Mono, Weight::Bold, 13.0, col, 0.14);
-                center(c, f, (x0 + third / 2) as f32, y, &v, &st);
+                let col = if *on { t.acc } else { t.dim };
+                let st = sty(Family::Mono, Weight::Bold, size, col, track);
+                center(c, f, (x0 + third / 2) as f32, y, v, &st);
             }
         }
     }

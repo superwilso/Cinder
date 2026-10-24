@@ -57,7 +57,6 @@ Windows-only drivers:
 | Phases 1–7 (firmware analysis, cross-compile) | **WSL2 (Ubuntu)** | Linux toolchain; loop-mount; qemu |
 | Reading/editing/decrypting `.UPG` (`upgtool`) | **WSL2** | Rockbox tool builds on Linux |
 | Installing a `.UPG` to the device | **Either** | `cinder-installer` sends the vendor SCSI command itself: SCSI pass-through on Windows (administrator), `SG_IO` on Linux (root). Sony's `SoftwareUpdateTool.exe` is no longer used or embedded |
-| Installing Walkman One / Wampy / scrobbler | **Native Windows** | Their installers are `.exe` |
 | Full eMMC backup/restore (`wbrt`) | **Native Windows** | Needs MediaTek USB VCOM driver (`VID_0E8D`) |
 | Low-level MediaTek access (`mtkclient`, SP Flash Tool) | **Native Windows** (or WSL2 + usbipd) | MTK preloader/BROM USB driver |
 | `adb`/`scsitool` device shell | **Either** (WSL2 needs usbipd-win for USB passthrough) | adb works in both; raw USB needs passthrough |
@@ -146,11 +145,11 @@ Install these on the Windows side so they're ready when the device arrives:
    as `VID_0E8D`. (`wbrt`'s README has the driver-cleanup steps if Windows grabs the wrong one.)
 2. **`wbrt`** (Walkman Backup/Restore Tool) — `github.com/unknown321/wbrt/releases`. **This is
    your brick insurance.** Full eMMC backup before any write.
-3. **Walkman One installer** — `mrwalkman.com` (NW-A50 series page). The recommended baseline FW.
-4. **Wampy installer `.exe`** — `github.com/unknown321/wampy/releases/latest`.
-5. **scrobbler installer** — `github.com/unknown321/scrobbler/releases` (for log-format reference).
-6. **(Optional) `mtkclient`** — `github.com/bkerler/mtkclient`, only if you later need
+3. **(Optional) `mtkclient`** — `github.com/bkerler/mtkclient`, only if you later need
    BROM/preloader-level eMMC access. Python-based; needs `usbdk` driver on Windows.
+
+Walkman One, Wampy and unknown321/scrobbler are not needed: Cinder installs on Sony's stock
+firmware with its own installer, and their sources are read for facts only (Part C).
 
 ---
 

@@ -78,7 +78,7 @@ pub fn read_all() -> Vec<(String, Vec<Entry>)> {
 }
 
 /// The path a track is known by, with Sony's second spelling of each mount folded onto the first.
-fn canonical(path: &str) -> String {
+pub(crate) fn canonical(path: &str) -> String {
     for (alias, root) in [
         ("/data/mnt/internal/", "/contents/"),
         ("/data/mnt/external/", "/contents_ext/"),

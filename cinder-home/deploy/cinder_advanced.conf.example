@@ -30,6 +30,8 @@
 #no_scrobble
 # Hold a song (instead of swiping it left) to play it next.
 #hold_play_next
+# Show Sony's own Bookmark Lists (made on Sony's player) in Playlists, to play. Never changed.
+#sony_bookmarks
 
 # ── Diagnostics (for bug reports; leave off) ─────────────────────────────────────────────────
 #no_fbsync
