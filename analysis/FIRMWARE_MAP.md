@@ -70,7 +70,7 @@ All are `/system/vendor/sony/bin/hagodaemon <Service>...`, one init service each
 | 3 | PowerService | root | part | `RE_power_stock_vs_cinder.md`, `RE_sony_idle_baseline.md` |
 | 4 | EventRouter | system | surface | one call, `SendEvent`, fanned out to listeners (`OnEvent`) |
 | 5 | TimerService | system + caps | surface | clock, time zone (`/usr/share/zoneinfo`, `/data/share/chrome/localtime`), alarms on `/dev/rtc0`; `SetClock`, `SetAlarmTimer`, `GetNearestAlarm` |
-| 6 | WMPortService, KeyService, ConfigurationService (W1), DisplayService | system + caps | surface | the two 10 Hz pollers live here (`docs/NEXT.md` section 5 item 7). WMPortService talks to a dock over `/dev/icx_cradle` and `/dev/ttyMT1` and republishes its keys through `uinput` |
+| 6 | WMPortService, KeyService, ConfigurationService (W1), DisplayService | system + caps | surface | the two 10 Hz pollers live here (`docs/ROADMAP.md`, Research). WMPortService talks to a dock over `/dev/icx_cradle` and `/dev/ttyMT1` and republishes its keys through `uinput` |
 | 7 | UpdateService | system | surface | |
 | 8 | UsbHostConnectionService, UsbDeviceConnectionService, UsbDeviceAudioPlayerService | system, nice -10 | part | `E_usbdac_ldac/`, `4f_usb_dac_routing.txt` |
 | 9 | MediaStoreService (W1), PlayerService (W1) | system | part | `H_mediastore/`, `G_player_ipc/`, `RE_playerservice_sound.md`, `RE_32bit_flac.md`, `RE_queue_edit.md` |

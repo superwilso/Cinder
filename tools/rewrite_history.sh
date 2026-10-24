@@ -14,8 +14,8 @@
 #     tools/verify_payload_manifest.sh still passes on every tag.
 #
 # It works on a fresh MIRROR of the remote in WORKDIR. It never touches this clone and it NEVER
-# PUSHES: at the end it prints the commands that would, and docs/HISTORY_REWRITE.md says what
-# pushing costs and the order to do things in.
+# PUSHES: at the end it prints the commands that would. Pushing replaces every commit id and
+# breaks every existing clone and fork.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -74,8 +74,8 @@ fi
 say "mirroring $REMOTE"
 git clone --quiet --mirror "$REMOTE" "$M"
 # A mirror brings GitHub's refs/pull/* with it, and GitHub refuses pushes to those. Drop them so
-# nothing rewritten here looks pushable. GitHub itself still holds the old commits behind them —
-# see "After pushing" in docs/HISTORY_REWRITE.md.
+# nothing rewritten here looks pushable. GitHub itself still holds the old commits behind them
+# until GitHub Support purges the cached views.
 git -C "$M" for-each-ref --format='delete %(refname)' refs/pull | git -C "$M" update-ref --stdin
 git -C "$M" gc --quiet --prune=now
 
@@ -108,7 +108,6 @@ args+=(--strip-blobs-with-ids "$WORK/strip-blobs.txt")
 # Text that must not survive in ANY commit — real Bluetooth addresses, above all. The expressions
 # file maps each real value to its documentation stand-in, so it holds the very values being
 # removed: it lives OUTSIDE the repository and is passed in, never committed.
-# docs/HISTORY_REWRITE.md "The order", step 4, generates it.
 if [ -n "${REDACT_FILE:-}" ]; then
     [ -r "$REDACT_FILE" ] || die "REDACT_FILE=$REDACT_FILE is not readable"
     case "$(cd "$(dirname "$REDACT_FILE")" && pwd)/" in "$ROOT"/*) die "REDACT_FILE must live outside the repository" ;; esac
@@ -229,7 +228,7 @@ Rewritten mirror:  $M
   filter log       $WORK/filter-repo.log
 
 NOTHING HAS BEEN PUSHED. Publishing this replaces every commit id in the repository and cannot be
-undone. Read docs/HISTORY_REWRITE.md first. main is protected: allow force pushes on its branch rule
+undone. main is protected: allow force pushes on its branch rule
 for the push, and turn that off again afterwards. The push itself is:
 
   gh workflow disable release     # re-pushed tags would otherwise re-run every release build

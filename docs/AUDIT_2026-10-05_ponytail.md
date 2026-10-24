@@ -228,7 +228,7 @@ The lazy answer was considered and refused for each of these.
 ## Part G — Ordered next list
 
 Smallest diff first; each stands alone. **Worked through the same day: see Part H.** What is left
-is in [`NEXT.md`](NEXT.md).
+is in [`ROADMAP.md`](ROADMAP.md).
 
 1. D3's one-line `sha256sum -c` in CI.
 2. C3 `ldac-bridge/`, C4 `cinder-device`, C5 the old `cinder-sim` binary — pure deletions, gated by `cargo test` and the syntax check.
@@ -263,7 +263,7 @@ same 55 actions.
 | **D5** | Cinder's release-notes renderer is gone. GitHub shows each asset's digest, the attestation proves provenance, and `SHA256SUMS` stays attached; the template is the body |
 | **D7** | cinder-themes' checker prints `id_for(NAME)`; `accept.yml` asks it. The Python copy had already drifted: `CON` became `con.palette`, which Flint would never download (it says `con-2`) |
 | **E1** | The rule is in `CONTRIBUTING.md` ▸ Style. Existing comments were left: a mass rewrite of `main.cpp` is churn with no gate to check it |
-| **E2** | `CLAUDE.md` drops the July history block and Part G's progress notes; `ROADMAP.md`, `PRODUCTION_READINESS.md`, `FLASH_NEXT.md`, `audit_notes.md` and `open-questions.md` deleted; [`NEXT.md`](NEXT.md) is the one next list and the others say so |
+| **E2** | `CLAUDE.md` drops the July history block and Part G's progress notes; `ROADMAP.md`, `PRODUCTION_READINESS.md`, `FLASH_NEXT.md`, `audit_notes.md` and `open-questions.md` deleted; [`ROADMAP.md`](ROADMAP.md) is the one next list and the others say so |
 | Found on the way | Balance writes go through the codec ioctl instead of a shell per step; Flint E8 (playlist lines relative to the playlist, a Windows-1252 `.m3u` read rather than failing the sync), E10 (CI ran every PR push twice) and E11 (`lastfm.conf` created owner-only) |
 
 **Considered again and kept**, each for a reason the first pass did not have:
@@ -272,7 +272,7 @@ same 55 actions.
   repository by branch, and every palette-rule change would need a commit in Flint before Cinder
   could use it. That coupling costs more than the ~500 lines it would save. The two agreed over
   200,000 random palettes in Flint's 10-01 audit (F3), but nothing pins that; G1.7's shared
-  fixtures (`NEXT.md` §3) are the cheaper guard.
+  fixtures (`ROADMAP.md` §3) are the cheaper guard.
 * **D4, folding `idle_probe.sh` into `btpower.sh`.** They are measuring instruments with results
   on record (`BATTERY_BT.md`, `RE_sony_idle_baseline.md`); merging changes the instrument mid-series
   and cannot be checked without the player. With the player, on the next power session.
@@ -281,6 +281,6 @@ same 55 actions.
   installer does not. RECOVERY.md now sends a reinstall to the installer instead of eight pushes.
 * **E3, the history rewrite.** Not a lazy-versus-not question: it is what takes Sony's files out of
   a public history, and running it is a force-push only the owner can make. It is decision 2 in
-  `NEXT.md`.
+  `ROADMAP.md`.
 * **`AUDIT_2026-07-26.md`** stays: code and `SECURITY.md` cite it as evidence, like the other audits.
 

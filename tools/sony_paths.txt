@@ -2,7 +2,7 @@
 # (analysis/ui_assets/) and Ghidra decompilations of Sony libraries. One list, read by both tools
 # that act on them, so the two can never cover different files:
 #   * `git filter-repo --paths-from-file` builds the separate repository that keeps these, with
-#     their history (docs/HISTORY_REWRITE.md, "Their own repository");
+#     their history;
 #   * tools/rewrite_history.sh takes them out of every commit here.
 # A trailing / means the whole directory. Blank lines and lines starting with # are ignored.
 analysis/ui_assets/hgrm_player/

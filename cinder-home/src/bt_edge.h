@@ -40,7 +40,7 @@ static inline int cinder_bt_should_pause(int prev, int now, int playing)
  * Silence is the obvious case. The one it missed until 2026-10-11 is music on the JACK with no
  * Bluetooth link: the radio is up for nobody, and on this SoC a powered connectivity domain
  * (SYS_CONN) vetoes deep idle for as long as the jack output is open. Measured off the cable, same
- * track: 0 deep idle entries in 181 s with the radio on, 291 with it off (docs/NEXT.md item 11).
+ * track: 0 deep idle entries in 181 s with the radio on, 291 with it off.
  *
  * `link` is the last observed link state: 1 linked, 0 not, -1 not seen yet this boot. Unknown is
  * not "unused": only a link read as down counts. `bt_audio` is anything that needs the radio with

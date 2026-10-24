@@ -20,7 +20,7 @@ The four documents that are always current live outside this directory:
 
 | Document | What it is |
 |---|---|
-| [`NEXT.md`](NEXT.md) | **What to do next, all of it, in one list:** the owner's decisions, the releases, offline work in order, the open device rows grouped by session, where the battery saving is left, and Walkman One on stock firmware. It replaces every other next-steps list. |
+| [`ROADMAP.md`](ROADMAP.md) | **What is planned, and where help is wanted:** what is being built next, testers with a Mac, device tests grouped by setup, open research, other models and translations. |
 | [`COMPARE_cinder_sony.md`](COMPARE_cinder_sony.md) | **Cinder against Sony's firmware, in pictures:** what Cinder replaces, the effect chain by firmware, what Clear Bass does at the jack, what the effects cost the processor, and what Bluetooth costs during jack playback. Measured 2026-10-11 on one Walkman One player. |
 | [`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md) | **The redesign ledger.** Every screen in the 2026-09 design handoff (Cinder, Flint, the installer) and every promised feature the handoff does not draw — the goals, Walkman One parity, the community's requests — each with a state and a phase. What landed first, and where the build departs from the mock on purpose. |
 | [`PLAN_audio_unification.md`](PLAN_audio_unification.md) | **Every audio source on every output.** Library, soundscape, FM, the Bluetooth receiver and USB-DAC against the jack and Bluetooth: what each gets (audible test, sleep timer, mono, DSP, visualiser, volume), what changed 2026-10-04 and what is left |
@@ -31,10 +31,9 @@ The four documents that are always current live outside this directory:
 | [`PLAN_pcm_visualiser.md`](PLAN_pcm_visualiser.md) | **The visualiser from the decoded audio.** PlayerService's PCM queue in `/dev/shm` is readable by cinder-home, so our own FFT can replace Sony's 12-band analyzer for library playback: the layout found, the safety rules (`pread`, never `mmap`), and the order. |
 | [`PLAN_now_playing_layouts.md`](PLAN_now_playing_layouts.md) | **Custom Now Playing screens, shared as files.** A bounded `.layout` format for Now Playing only (an exception to "skins only" that the owner has to accept), the checks the player applies, sharing through the community repo and Flint, and the order: Now Playing `LayoutMap` first. |
 | [`PLAN_community_2026-09-23.md`](PLAN_community_2026-09-23.md) | **What users reported and asked for** (GitHub #14/#16, the r/walkman thread): each bug with its root cause and state, the feature requests ranked, and the facts each reply needs. |
-| [`PLAN_2026-09-14.md`](PLAN_2026-09-14.md) | **The 2026-09-14 audit and forward plan** (its Part E order is superseded by `NEXT.md`). Every offline gate re-run against v0.3.4, what is open and in what order, the revised skins contract, and how the maintainer watch works. |
+| [`PLAN_2026-09-14.md`](PLAN_2026-09-14.md) | **The 2026-09-14 audit and forward plan** (its Part E order is superseded by `ROADMAP.md`). Every offline gate re-run against v0.3.4, what is open and in what order, the revised skins contract, and how the maintainer watch works. |
 | [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) | **The run sheet.** Every device-gated item in the project in one ordered list, safety rules first, with what a PASS looks like for each. If you have the player in your hand, this is the file. |
 | [`SHORTCOMINGS.md`](SHORTCOMINGS.md) | Standing reference: what is structurally weak about the project and its repository, with evidence per claim. Cited by section ID (A1, B1, D4…) from other documents. |
-| [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md) | **Open repository decision.** Taking Sony's files and superseded build output out of every commit — prepared and rehearsed, never pushed: what it removes, what it breaks, and the order to do it in — and the commands that first move Sony's files to a repository of their own. |
 | [`DEVICE_TESTS.md`](DEVICE_TESTS.md) | The backlog of things only ears or a hand can settle, ordered by payoff. |
 | [`DEVICE_SHELL_GOTCHAS.md`](DEVICE_SHELL_GOTCHAS.md) | The device's busybox is not your shell. Written after an install reported success while doing three things wrong. Read before writing anything that runs on the player. |
 
@@ -102,7 +101,7 @@ ones where they overlap; the header of each says what it covers.
 
 `ROADMAP.md` (2026-07-28 plan), `PRODUCTION_READINESS.md` (gap list), `FLASH_NEXT.md` (run sheet),
 `audit_notes.md` and `open-questions.md` were deleted on 2026-10-05: their open items are in
-[`NEXT.md`](NEXT.md), and git keeps the files.
+[`ROADMAP.md`](ROADMAP.md), and git keeps the files.
 
 ---
 

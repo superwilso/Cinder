@@ -19,7 +19,7 @@ analysis/ramdisk/
 # ui_assets: only UI_FEATURE_MAP.md — our own map of the stock UI — is tracked. What it was built
 # from (the QML, English labels and images extracted from Sony's player) is Sony's and stays out of
 # the repository; keep a local copy under artifacts/. Decompiler output from Sony's libraries too:
-# the RE notes are tracked, the listings they were read from are not. See docs/HISTORY_REWRITE.md.
+# the RE notes are tracked, the listings they were read from are not.
 analysis/ui_assets/*
 !analysis/ui_assets/UI_FEATURE_MAP.md
 analysis/**/decomp_*
@@ -106,4 +106,3 @@ __pycache__/
 
 # The design handoff (prototypes, chats, exports): local working material, not part of the product.
 design/
-TODO_device.md

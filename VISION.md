@@ -14,7 +14,7 @@ processes and Cinder drives them over their existing binder IPC. That's what kee
 VPT, Vinyl and every other Sony effect working.
 
 > Companion docs: [`cinder-home/STATUS.md`](cinder-home/STATUS.md) = the current feature matrix.
-> [`docs/NEXT.md`](docs/NEXT.md) = the near-term prioritized backlog.
+> [`docs/ROADMAP.md`](docs/ROADMAP.md) = what is planned next, and where help is wanted.
 > This file = the *why* and the long arc. Where they disagree, STATUS.md wins on current state.
 
 ---

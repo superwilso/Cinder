@@ -4,8 +4,8 @@
     python3 tools/make_compare_charts.py
 
 Static SVG, one fixed light surface, so the pictures read the same on a light or a dark GitHub
-page. Every number here is copied from docs/NEXT.md section 5 item 11 and
-analysis/RE_clear_bass.md section 6.6; change it there first. The two series colours are the
+page. Every number here is copied from the 2026-10-11 measurements in
+docs/COMPARE_cinder_sony.md and analysis/RE_clear_bass.md section 6.6; change it there first. The two series colours are the
 ones tools were checked with (colour-blind separation and contrast against the surface).
 """
 import os

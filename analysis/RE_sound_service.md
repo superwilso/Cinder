@@ -17,7 +17,7 @@ Addresses below are Ghidra's (file address + `0x10000`) in the stock library unl
    kernel's deep idle off, and for the ordinary music output it also selects the kernel's *ultra*
    deep-idle mode; the kernel's low-power PCM driver switches deep idle back on when the stream
    starts and off when it stops. So deep idle under a running stream is Sony's design, and it
-   explains the off-cable run of 2026-10-05 in `docs/NEXT.md` (294 entries in 181 s, pollers
+   explains the off-cable run of 2026-10-05 (294 entries in 181 s, pollers
    firing at a fifth of their rate).
 3. **With every effect off the chain is skipped whole**, including the integer-to-float
    conversion at each end (section 3). The 6 to 7 % of a core the service costs with source
@@ -155,8 +155,8 @@ day, and the MQA suspicion is dead for untagged files. So the levers are, in ord
 
 1. **The sound service's own 6 to 7 %.** Not the effects. Find it with a profile (section 7,
    step 1). If it is the MQA decoder, switch it off with `filter::master:set:` and measure again.
-2. **The decoder's 2.3 %** and PlayerService's 100 ms poll while a track plays (`docs/NEXT.md`
-   item 10). Not read yet: `libPlayerService.so` differs on Walkman One.
+2. **The decoder's 2.3 %** and PlayerService's 100 ms poll while a track plays.
+   Not read yet: `libPlayerService.so` differs on Walkman One.
 3. **16-bit against 32-bit output.** A 32-bit stream halves the longest period. Worth one
    off-cable comparison before changing anything.
 4. **The share of time actually asleep under a stream** is still unmeasured: the 2026-10-05 run

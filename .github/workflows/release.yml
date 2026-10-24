@@ -120,8 +120,8 @@ jobs:
           path: installer/cinder-installer-linux-x64
           if-no-files-found: error
 
-  # macOS: EXPERIMENTAL until a real Mac has installed and uninstalled with it (docs/NEXT.md,
-  # "finish an install from a Mac"). One universal binary, Apple silicon and Intel, unsigned.
+  # macOS: EXPERIMENTAL until a real Mac has installed and uninstalled with it (docs/ROADMAP.md,
+  # "Testers with a Mac"). One universal binary, Apple silicon and Intel, unsigned.
   build-macos:
     runs-on: macos-latest
     steps:

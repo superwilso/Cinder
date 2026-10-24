@@ -788,7 +788,7 @@ previews, and **not yet run on a device**. The library items are in
 
 ### Documentation
 
-- [`docs/NEXT.md`](docs/NEXT.md): **the one next-steps list** across all four repositories — the
+- `docs/NEXT.md` (now [`docs/ROADMAP.md`](docs/ROADMAP.md)): **the one next-steps list** across all four repositories — the
   owner's decisions, releases, offline work in order, the open device rows grouped by session, where
   the battery saving is left, and Walkman One on stock firmware. `cinder-home/ROADMAP.md`,
   `docs/PRODUCTION_READINESS.md`, `docs/FLASH_NEXT.md`, `docs/audit_notes.md` and

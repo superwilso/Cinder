@@ -1673,7 +1673,7 @@ Unverified on hardware — checklist 21.10.
 
 ## The RMT-NWS20 remote: `BtBleCommonServiceClient`, 2026-10-23 (offline)
 
-For NEXT.md stage D1. Full dump: `vtable_BtBleCommonServiceClient.txt`
+For the RMT-NWS20 remote (`docs/ROADMAP.md`). Full dump: `vtable_BtBleCommonServiceClient.txt`
 (`dump_vtable.py libBtBleCommonService.so _ZN3pst8services31BtBleCommonServiceClientFactory14CreateInstanceEv`).
 The library exports only the two factories; every method below is named by its own trace tag.
 

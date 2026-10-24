@@ -238,7 +238,7 @@ without a decay process**:
 reader cannot know which is current without reading all of them and comparing dates.
 
 > **2026-10-05:** `ROADMAP.md`, `PRODUCTION_READINESS.md`, `FLASH_NEXT.md`, `audit_notes.md` and
-> `open-questions.md` are deleted (git keeps them), and [`NEXT.md`](NEXT.md) is the one next-steps
+> `open-questions.md` are deleted (git keeps them), and [`ROADMAP.md`](ROADMAP.md) is the one next-steps
 > list, with feature state in `STATUS.md` and procedures in `DEVICE_CHECKLIST.md`.
 
 ### C2. The commit history carries none of the reasoning
@@ -384,7 +384,7 @@ rather than a to-do list.
 > 1.3 GB by whoever owns the repo. See `AUDIT_2026-09-01.md` §D1 for the three options.
 >
 > **2026-09-11 — and that 1.3 GB was a local `.git` full of unpacked objects.** A clone from GitHub
-> is about 124 MB. The rewrite is now prepared and rehearsed: [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md).
+> is about 124 MB. The rewrite is now prepared and rehearsed: `tools/rewrite_history.sh`.
 
 ### D6. Missing repository hygiene
 

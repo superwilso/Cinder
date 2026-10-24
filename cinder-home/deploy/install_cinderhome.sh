@@ -1452,7 +1452,7 @@ if [ "$ok" != 1 ]; then
     exit 0
 fi
 
-# 4b) Out of Wampy's folder (docs/NEXT.md A4). Until 2026-10-24 Cinder lived in
+# 4b) Out of Wampy's folder. Until 2026-10-24 Cinder lived in
 #     /system/vendor/unknown321, the folder Wampy's installer makes. Everything above went to
 #     $VENDOR and the .appcfg now names the launcher there, so the old copies are dead weight.
 #     Only after that, and only Cinder's own files, by name: on a player that has Wampy, Wampy's

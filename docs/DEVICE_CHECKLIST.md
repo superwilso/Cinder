@@ -4,8 +4,8 @@
 consolidated from the places it was scattered: the old roadmap's P0 table, `STATUS.md`'s running
 "device-unverified" notes, `docs/DEVICE_TESTS.md` (the ear tests), the old `ldac-bridge/TEST.md`,
 `docs/BATTERY_BT.md` and the audits. Where a detailed procedure already exists this file links to it
-rather than restating it. **The order to run the open rows in, by setup, is
-[`NEXT.md`](NEXT.md) §4.**
+rather than restating it. **The open rows grouped by setup are in
+[`ROADMAP.md`](ROADMAP.md), Device tests.**
 
 **Written 2026-08-24, after a working day of off-device work that produced fourteen fixes across two
 PRs and touched nothing on hardware.** That is the point: the list below is what that work owes.
@@ -249,11 +249,10 @@ names the exact evidence that would settle it.
 | 5.4 | **DSEE HX / AI is not another high gain** | Play a **lossy** file (MP3/AAC — on lossless there is nothing above the cutoff to restore), then `/tmp/pv --dseemeter` | Top three bands move on, bottom three do not, and the third pass returns. A null result is the same evidence high gain was cut on — measure before claiming it works. Supersedes 2B.3 |
 | 5.5 | **A battery number, at last** | `tools/battery_track.sh start 60`, then **unplug** and use it for hours; `tools/battery_track.sh report` | Any discharge interval at all. Every sample ever recorded is `Charging`/`Full` on the cable, which is why 2C.4 still says no saving is claimed |
 
-Repository decision, not a device test: **the history rewrite** in
-[`HISTORY_REWRITE.md`](HISTORY_REWRITE.md). It takes Sony's files and the superseded `dist/` build
+Repository decision, not a device test: **the history rewrite** (`tools/rewrite_history.sh`). It takes Sony's files and the superseded `dist/` build
 output out of every commit, has been rehearsed on a scratch mirror, and force-pushes, which cannot
 be undone — so it waits for the owner. Sony's files can move to a repository of their own first
-(rehearsed; commands in the same document). Until then `.githooks/pre-push` still warns when a
+(rehearsed; `tools/sony_paths.txt` lists them). Until then `.githooks/pre-push` still warns when a
 non-release push carries `dist/stable`.
 
 ---
@@ -729,7 +728,7 @@ branch.)
 
 **2026-10-18: rows 26.4, 26.6 (the profile half), 26.8 (the per-output half) and 26.9 are retired.**
 Profiles per output were replaced by Sound ▸ Presets with A/B as a compare (owner's call); the
-new rows are in `NEXT.md` section 4 A. 26.2 still stands as "A and B are whole sounds".
+new rows are in `ROADMAP.md`, Device tests. 26.2 still stands as "A and B are whole sounds".
 
 **Nothing in this section has run on a player.** It was built host-only, with no device attached.
 Host-tested: the profile data model and every route edge (734 Rust tests in the player workspace), the settings round

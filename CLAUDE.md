@@ -13,7 +13,7 @@
 >
 > **The live documents, in order of what you probably want:**
 > - **The redesign (2026-09-27 handoff):** [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) — every screen and every promised feature with a state and a phase; spec in [`docs/SPEC_redesign_2026-09.md`](docs/SPEC_redesign_2026-09.md); new screens draw with `player/cinder-ui/src/kit.rs`.
-> - **What to do next:** [`docs/NEXT.md`](docs/NEXT.md) — the one list: the owner's decisions, releases, offline work in order, the open device rows by session, battery, and Walkman One on stock.
+> - **What is planned, and where help is wanted:** [`docs/ROADMAP.md`](docs/ROADMAP.md).
 > - **What shipped, release by release:** [`CHANGELOG.md`](CHANGELOG.md).
 > - **Feature state (works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
 > - **Device run sheet:** [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — safety rules first.
@@ -24,7 +24,7 @@
 **Purpose:** A single onboarding document that takes you from a stock Windows PC to a
 working analysis environment, runs the existing host-side pipeline, and then adds the
 device-side procedure. *(v1.5: the device-side procedure has now been executed — see
-[`docs/NEXT.md`](docs/NEXT.md); the steps below remain the canonical how-to for reproducing it.)*
+[`docs/ROADMAP.md`](docs/ROADMAP.md); the steps below remain the canonical how-to for reproducing it.)*
 
 **Relationship to existing repo:** The repo already has a 7-phase host-side pipeline
 (`Makefile`, `phases/phase1`–`phase7`, `CLAUDE.md`, `docs/`). This document does **not**
@@ -370,7 +370,7 @@ passthrough. Keep `wbrt` and SP Flash Tool on the Windows side.
 
 All ten steps of the original route (environment → reading → host pipeline → backup → baseline →
 shell → the USB-DAC investigation → NVP → first code on device) were done by July 2026; the first
-code on device became the Cinder Home app. The live plan is [`docs/NEXT.md`](docs/NEXT.md).
+code on device became the Cinder Home app. The live plan is [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 

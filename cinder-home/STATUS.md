@@ -377,7 +377,7 @@
 > subsystem, including the three Cinder defects that comparison found, why Cinder's volume is correct
 > as-is, and the full evidenced answer on FM-over-Bluetooth with a 3.5 mm cable as the antenna.
 >
-> **What to do next, all of it:** [`../docs/NEXT.md`](../docs/NEXT.md) — decisions, offline work,
+> **What to do next, all of it:** [`../docs/ROADMAP.md`](../docs/ROADMAP.md) — decisions, offline work,
 > device sessions and battery, in one ordered list.
 >
 > **Everything that needs the device in one ordered run sheet:**
@@ -432,7 +432,7 @@
 > shrinks the bisect surface if the flash misbehaves. A full reinstall needs **three** pushes, not
 > one (STEP 2).
 >
-> Forward plan + priorities: [`../docs/NEXT.md`](../docs/NEXT.md). Full audit incl. known doc drift:
+> Forward plan + priorities: [`../docs/ROADMAP.md`](../docs/ROADMAP.md). Full audit incl. known doc drift:
 > [`../docs/AUDIT_2026-07-26.md`](../docs/AUDIT_2026-07-26.md).
 
 > ## ⚠️ READ FIRST — a flash hung the device and required a wbrt restore (2026-06-26)
@@ -458,7 +458,7 @@ This is the hand-off after the autonomous integration session. It tells you **wh
 **how to safely diagnose**, **how to flash/verify**, **how to tune the keymap**, and **what
 still needs the device**. Read "⚠️ READ FIRST" then "STEP 1: safe diagnosis" before flashing.
 
-> **What's left & in what order: [`../docs/NEXT.md`](../docs/NEXT.md)** (this file is current state;
+> **What's left & in what order: [`../docs/ROADMAP.md`](../docs/ROADMAP.md)** (this file is current state;
 > that one is the forward plan).
 
 ---
