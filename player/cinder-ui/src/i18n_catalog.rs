@@ -753,6 +753,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Receiver mode" => Some("接收模式"),
         "Recent" => Some("最近"),
         "Reconnect from your phone to apply." => Some("请在手机上重新连接以应用设置。"),
+        "Reconnecting headphones to restore volume" => Some("正在重新连接耳机以恢复音量"),
         "Record the radio's traffic for a bug report" => Some("记录蓝牙通信，供故障反馈使用"),
         "Recording · switch off to save it to the drive" => Some("正在记录；关闭后保存到存储器"),
         "Reinstall with the battery component on" => Some("重新安装时启用电池组件"),

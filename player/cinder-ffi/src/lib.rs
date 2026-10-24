@@ -7071,6 +7071,10 @@ pub extern "C" fn cinder_set_bt_volume(level: libc::c_int) {
     let level = level.clamp(0, cinder_ui::overlay::BT_VOL_MAX as libc::c_int);
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_bt_volume(level as u8);
+        // Persisted: this is the sink's own report, the only true reading of its level. Unsaved, the
+        // next boot walked the headphones back to a level they had left long ago (43 vs 40,
+        // 2026-10-24).
+        save_settings(r);
     }
 }
 

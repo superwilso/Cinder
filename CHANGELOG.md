@@ -34,6 +34,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Bluetooth volume that stops reaching the headphones fixes itself.** Rarely, right after a
+  boot, the volume buttons moved the bar but not the headphones until they were disconnected and
+  reconnected. Cinder now notices two presses in a row the headphones never answer, says
+  "Reconnecting headphones to restore volume", reconnects them once, and plays on if music was
+  playing. Only headphones that have answered before are ever reconnected, so ones that never
+  report their volume are left alone. The Bluetooth level is also saved when the headphones report
+  it, so the next connect returns them to their real level. Host-tested
+  (`tools/btvolwatch_selftest.cpp`); *device-unverified* against the fault, which has not been
+  reproduced.
+
 - **A long press never fired.** The hold check also asked whether the current touch frame carried
   a position, which every frame's end clears, so it never passed between frames, where the check
   runs. Hold to play next (`hold_play_next`) played the song on the lift instead, and Up Next's

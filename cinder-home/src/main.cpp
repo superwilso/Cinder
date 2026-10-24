@@ -56,6 +56,7 @@
 #include "bt_edge.h"
 #include "bt_poll.h"   // how often to ask the radio anything (host-tested)
 #include "bt_switch.h" // radio-vs-switch reconcile (host-tested)
+#include "bt_vol_watch.h" // volume steps the sink never answers (host-tested)
 #include "db_sig.h"   // has the library database moved? (host-tested)
 #include "jack_edge.h"
 #include "fmrec.h"    // FM recording: the WAV writer both radio readers share (host-tested)
@@ -4752,11 +4753,33 @@ static void bt_vol_listener_start() {
 // loop on this value rather than on any return code.
 static int g_bt_vol_seen = -1;
 
+// ── VOLUME THAT NEVER ARRIVES: the post-boot fault, noticed and repaired ─────────────────────────
+// Rarely, right after a boot, the rocker moves the bar and not the headphones; a disconnect and
+// reconnect fixes it (owner, 2026-10-24). src/bt_vol_watch.h decides when steps have gone unanswered
+// for long enough; bt_volw_tick hangs up and the reconnect ladder redials.
+//
+// Two guards it cannot see live here. A sink is only ever repaired if it has ANSWERED a step on some
+// earlier link — remembered by address in BT_VOLW_ANSWERS_PATH, because the fault is at boot, before
+// this session has heard from it — so headphones that never send volume reports are never hung up
+// on. And it repairs at most once per boot: a link that comes back just as deaf gets left alone.
+static const char* const BT_VOLW_ANSWERS_PATH = "/data/cinder/bt_vol_answers";
+static cinder_bt_volw g_bt_volw;
+static bool g_bt_volw_marked = false;          // this link's address is already in the file
+static bool g_bt_volw_repaired = false;        // once per boot
+static bool g_bt_volw_redial = false;          // the ladder's next first wait is short
+static long long g_bt_volw_resume_until = 0;   // play again if the link is back before this
+
+// Defined after g_bt_connected_addr, below.
+static bool bt_volw_answered_before();
+static void bt_volw_note_answer();
+
 // Apply whatever the sink last reported. Render-thread only. Returns true if the UI changed.
 static bool bt_vol_drain_notify() {
     int v = g_bt_vol_notify;
     if (v < 0) return false;
     g_bt_vol_notify = -1;
+    cinder_bt_volw_report(&g_bt_volw);
+    bt_volw_note_answer();
     if (v > 127) v = 127;
     // 0..127 -> 0..CINDER_BT_VOL_MAX (an identity map now the two are both 127), rounded rather
     // than truncated so the top of the sink's scale
@@ -4840,6 +4863,8 @@ static void bt_apply_enhanced_mode(const char* why) {
 
 static void apply_bt_volume(bool up) {
     enum { VIDX_SetVolumeDown = 16, VIDX_SetVolumeUp = 17 };
+    cinder_bt_volw_step(&g_bt_volw, now_ms(),
+                        cinder_bt_volw_can_move(cinder_get_bt_volume(), CINDER_BT_VOL_MAX, up));
     try {
         void* x = bt_xmit();
         if (!x) { clog_("bt-vol: BtTransmitterServiceClient unavailable"); return; }
@@ -5170,6 +5195,36 @@ static bool g_bt_have_name = false;
 // I am already listening to?" cannot be answered from the name alone — two headphones can share a
 // model name, and the name is what the sink chose to advertise, not an identity.
 static std::vector<unsigned char> g_bt_connected_addr;
+
+// The volume repair's memory of which sinks answer (see BT_VOLW_ANSWERS_PATH).
+static std::string bt_volw_addr_hex() {
+    std::string h;
+    char b[3];
+    for (unsigned char c : g_bt_connected_addr) { std::snprintf(b, sizeof b, "%02X", c); h += b; }
+    return h;
+}
+
+static bool bt_volw_answered_before() {
+    const std::string h = bt_volw_addr_hex();
+    if (h.empty()) return false;
+    char line[64];
+    bool found = false;
+    if (FILE* f = std::fopen(BT_VOLW_ANSWERS_PATH, "r")) {
+        while (!found && std::fgets(line, sizeof line, f)) found = h == std::string(line, std::strcspn(line, "\n"));
+        std::fclose(f);
+    }
+    return found;
+}
+
+static void bt_volw_note_answer() {
+    if (g_bt_volw_marked) return;
+    g_bt_volw_marked = true;
+    if (bt_volw_answered_before() || g_bt_connected_addr.empty()) return;
+    if (FILE* f = std::fopen(BT_VOLW_ANSWERS_PATH, "a")) {
+        std::fprintf(f, "%s\n", bt_volw_addr_hex().c_str());
+        std::fclose(f);
+    }
+}
 
 // Auto-reconnect state. Declared here, beside the link state it reasons about, because the
 // Disconnect path below runs before the reconnect logic further down. See bt_reconnect_tick.
@@ -5546,6 +5601,32 @@ static void bt_connect_when_free(const std::vector<unsigned char>& addr) {
     g_bt_user_pending = true;
 }
 
+// Per frame while a volume step waits for its answer.
+static void bt_volw_tick() {
+    enum { VIDX_GetAvrcpConnectionStatus = 4, VIDX_RequestDisconnection = 8 };
+    const int r = cinder_bt_volw_tick(&g_bt_volw, now_ms());
+    if (r == CINDER_BT_VOLW_NOTHING || !cinder_get_bt_route()) return;   // gone: nothing to repair
+    void* x = bt_xmit();
+    if (!x) return;
+    typedef int (*fn0)(void*);
+    // Evidence for the next time this happens: healthy reads AvSrc=5 Avrcp=2.
+    char m[128];
+    std::snprintf(m, sizeof m, "bt-vol: a step got no answer from the sink (%d in a row; AvSrc=%d Avrcp=%d)",
+                  g_bt_volw.misses, bt_avsrc_status(), ((fn0)bt_slot(x, VIDX_GetAvrcpConnectionStatus))(x));
+    clog_(m);
+    if (r != CINDER_BT_VOLW_REPAIR || g_bt_volw_repaired || !bt_volw_answered_before()) return;
+    g_bt_volw_repaired = true;
+    g_bt_volw_redial = true;
+    // The hang-up pauses playback like any drop; the connect edge plays it again.
+    g_bt_volw_resume_until = g_playing ? now_ms() + 60000 : 0;
+    clog_("bt-vol: volume is not reaching the headphones — reconnecting them (once this boot)");
+    cinder_toast_key("Reconnecting headphones to restore volume");
+    // Not apply_bt_disconnect: that is the USER hanging up, and parks the ladder this needs.
+    std::snprintf(m, sizeof m, "bt-vol: RequestDisconnection() rc=%d", ((fn0)bt_slot(x, VIDX_RequestDisconnection))(x));
+    clog_(m);
+    g_bt_peer_fast_until = now_ms() + BT_PEER_FAST_FOR_MS;
+}
+
 // Runs from the 1 Hz housekeeping. Cheap: the common paths are two boolean tests.
 static void bt_reconnect_tick() {
     if (g_rx_active) return;   // the radio is a receiver right now; headphones wait
@@ -5585,7 +5666,9 @@ static void bt_reconnect_tick() {
         // a headphone's own power-on page land without us paging at all.
         bt_service_retry(false, false);
         bt_connect_wait(true);
-        g_bt_reconnect_wait_s = BT_RECONNECT_FIRST_S;
+        // A volume repair hung up on purpose and wants the same headphones straight back.
+        g_bt_reconnect_wait_s = g_bt_volw_redial ? BT_RECONNECT_SOON_S : BT_RECONNECT_FIRST_S;
+        g_bt_volw_redial = false;
         g_bt_reconnect_at = now + (long)g_bt_reconnect_wait_s * 1000;
         g_bt_reconnect_tries = 0;
         char m[128];
@@ -6845,6 +6928,16 @@ void refresh_bt_route() {
     // Subscribe to the sink's own volume reports. Done on CONNECT because that is when there is a
     // sink to report — and it is the only channel that ever says what the sink's level really is.
     if (on) run_guarded("bt: volume listener", 6, bt_vol_listener_start);
+    if (on) {
+        cinder_bt_volw_link(&g_bt_volw);
+        g_bt_volw_marked = false;
+        if (g_bt_volw_resume_until && now_ms() < g_bt_volw_resume_until) {
+            clog_("bt-vol: headphones are back after the volume repair — playing again");
+            set_transport(true);
+            run_guarded("bt: resume after volume repair", 6, []() { cinder_audio_play(); });
+        }
+        g_bt_volw_resume_until = 0;
+    }
     if (on) {
         // BLUETOOTH: walk the sink back to the level Bluetooth was last left at. Read the target
         // NOW, before the sink's own first report lands and overwrites the persisted value with
@@ -13757,6 +13850,7 @@ void* render_driver(void*) {
             // The guard still wraps every call that actually walks, which is where it matters:
             // a step issues Sony IPC and that is what can hang.
             if (g_bt_vol_walk_target >= 0) run_guarded("loop: BT volume walk", 6, bt_vol_walk_tick);
+            if (g_bt_volw.pending_at) run_guarded("loop: BT volume watch", 6, bt_volw_tick);
             // The USB host started or changed its stream. Start() can only succeed once a format
             // exists, so this — not the moment the user flipped the switch — is when the DAC's
             // render path actually opens.

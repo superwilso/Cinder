@@ -247,6 +247,13 @@ About half a day of code plus the Mac session.
     then pull the snoop and `logcat`. Read it against the known traps: the retry mode that refuses
     connects (`BT connect jam`), the route flag trusting `GetBtStatus == 3`, and the BT volume being
     AVRCP steps that are separate from the jack's level.
+    **10-24, the volume half:** the owner places it right after a boot, rare, cured by a disconnect
+    and reconnect. Not reproduced in 3 boots with the CMF Buds. Built a repair (device-unverified
+    against the fault itself): two volume steps in a row the sink never answers → hang up once per
+    boot and redial in 2 s, playing again if it was playing (`src/bt_vol_watch.h`). Every unanswered
+    step logs `bt-vol: a step got no answer from the sink (… AvSrc=… Avrcp=…)`; healthy is 5 and 2.
+    **Next time it happens:** pull those lines from `/contents/cinderhome.log`. They say whether
+    the volume channel (AVRCP) was down while audio (AvSrc) was up, which is the boot-race guess.
 13. ~~**One file, two albums**~~ (**built 10-23**, device-unverified; Flint item 5):
     `cinder-ffi/src/shared.rs` reads `flint-shared.tsv` with the library and lists each entry under
     its own album as a copy of the kept file's row. Unlike the plan above, both rows share the kept
