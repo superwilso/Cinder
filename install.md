@@ -875,9 +875,9 @@ sleep 2
 
 # 4. Atomic swap
 adb shell 'mount -o remount,rw /system && \
-           cp /data/local/tmp/cinder-home.new /system/vendor/unknown321/bin/cinder-home.tmp && \
-           cmp /data/local/tmp/cinder-home.new /system/vendor/unknown321/bin/cinder-home.tmp && \
-           mv /system/vendor/unknown321/bin/cinder-home.tmp /system/vendor/unknown321/bin/cinder-home && \
+           cp /data/local/tmp/cinder-home.new /system/vendor/cinder/bin/cinder-home.tmp && \
+           cmp /data/local/tmp/cinder-home.new /system/vendor/cinder/bin/cinder-home.tmp && \
+           mv /system/vendor/cinder/bin/cinder-home.tmp /system/vendor/cinder/bin/cinder-home && \
            sync && mount -o remount,ro /system'
 
 # 5. Disarm no-respawn + reboot
@@ -926,7 +926,7 @@ adb shell getprop | grep -iE 'usb|sony'                 # gadget mode, platform 
 adb push cinder-home/dist/dev/cinder-probe /tmp/ && adb shell 'chmod 755 /tmp/cinder-probe'   # diagnostic binary
 # /tmp is tmpfs and EXECUTABLE; /contents is mounted noexec, so a probe pushed there will not run.
 adb shell 'LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/lib:/usr/lib \
-  /system/vendor/unknown321/bin/cinder-probe --discover'   # PlayStatus offset map; NOT /contents (noexec)
+  /system/vendor/cinder/bin/cinder-probe --discover'   # PlayStatus offset map; NOT /contents (noexec)
 ```
 
 ---

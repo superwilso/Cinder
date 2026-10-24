@@ -36,7 +36,7 @@ analyzer=0
 #     adb push cinder-home/dist/dev/cinder-probe /data/local/tmp/
 #     # start music playing on the device, then:
 #     adb shell 'cd /data/local/tmp && \
-#       LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib \
+#       LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/cinder/lib:/system/lib:/usr/lib:/lib \
 #       ./cinder-probe --analyzer'
 #
 # A PASS prints "frames flowed" plus the raw band values. If you see "started but NO frames", try

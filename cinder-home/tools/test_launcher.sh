@@ -16,10 +16,10 @@ build_launcher() {   # $1 = sandbox root
         -e "s#/xbin/busybox dmesg#cat $R/proc/klog#" \
         -e "s#|| dmesg 2>/dev/null#|| true#" \
         -e "s#/system/vendor/sony/bin/HgrmMediaPlayerApp#$R/stock#g" \
-        -e "s#/system/vendor/unknown321/bin/cinder-home#$R/cinder#g" \
-        -e "s#/system/vendor/unknown321/bin/cinder-voltable#$R/voltable#g" \
+        -e "s#/system/vendor/cinder/bin/cinder-home#$R/cinder#g" \
+        -e "s#/system/vendor/cinder/bin/cinder-voltable#$R/voltable#g" \
         -e "s#/system/usr/share/audio_dac#$R/audio_dac#g" \
-        -e "s#/system/vendor/unknown321/usr/share/cinder/audio_dac#$R/cinder_dac#g" \
+        -e "s#/system/vendor/cinder/audio_dac#$R/cinder_dac#g" \
         -e "s#^sleep 3\$#sleep 0#" -e "s#    sleep 3\$#    sleep 0#" \
         -e "s#^    sleep 1\$#    sleep 0#" \
         -e "s#^sync\$#true#" -e "s#; sync#; true#g" \

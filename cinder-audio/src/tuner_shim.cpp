@@ -105,7 +105,7 @@ namespace regmon {
 
 const char* const TARGET = "/proc/regmon/Si4708icx/target";
 const char* const VALUE  = "/proc/regmon/Si4708icx/value";
-const char* const HELPER = "/system/vendor/unknown321/bin/cinder-fm";
+const char* const HELPER = "/system/vendor/cinder/bin/cinder-fm";
 
 enum {  // Si470x register map, as the driver names it in `target`
     R_DEVICEID = 0x00, R_POWERCFG = 0x02, R_CHANNEL = 0x03, R_SYSCONFIG1 = 0x04,

@@ -476,7 +476,7 @@ easy path:
 # needs an octal mode, not +x.
 adb push cinder-home/dist/stable/cinder-probe /tmp/cinder-probe
 adb shell 'chmod 755 /tmp/cinder-probe && \
-  LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib \
+  LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/cinder/lib:/system/lib \
   /tmp/cinder-probe'
 ```
 
@@ -1561,7 +1561,7 @@ Both are built from this one source tree; the only differences:
   and the (channel-agnostic) install/uninstall `.UPG`s.
 
 **Dev iteration loop** (after the first dev flash brings up adb): push-and-run, no `.UPG` reflash —
-`adb push dist/dev/cinder-home /system/vendor/unknown321/bin/cinder-home` (remount rw first) then
+`adb push dist/dev/cinder-home /system/vendor/cinder/bin/cinder-home` (remount rw first) then
 relaunch. The exact `setprop` mechanism is confirmed on that first flash; if adb doesn't appear,
 adjust the one `std::system(...)` line in `src/main.cpp` (`#ifdef CINDER_DEV`).
 

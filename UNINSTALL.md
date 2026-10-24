@@ -54,7 +54,9 @@ to stock inside Cinder (fires once, next boot returns to Cinder).
 
 ## 3. Real uninstall over adb
 
-The whole install is one repointed `.appcfg` plus files under `/system/vendor/unknown321/bin`.
+The whole install is one repointed `.appcfg` plus the folder `/system/vendor/cinder` (an install
+from before 2026-10-24 that was never updated has its files in Wampy's `/system/vendor/unknown321`
+instead).
 Restoring the `.appcfg` *is* the uninstall.
 
 This needs the **dev** channel, which is the only one that enables adb.
@@ -67,7 +69,13 @@ adb shell 'cat /system/vendor/sony/bin/HgrmMediaPlayerApp.appcfg.real'
 ```
 
 Expect four lines with `command: HgrmMediaPlayerApp`. If that comes back empty, **stop** — use
-method 1 or 4 instead.
+method 1 or 4 instead. If it says `command: …/cinderhome-launch.sh`, the backup is Cinder's own
+launch config (installs before 2026-10-24 could leave one); method 1 and 4 write Sony's four lines
+in that case, and so can you:
+
+```bash
+adb shell 'printf "name: HgrmMediaPlayerApp\ncommand: HgrmMediaPlayerApp\ntype: Home\nhidden: false\n" > /system/vendor/sony/bin/HgrmMediaPlayerApp.appcfg.real'
+```
 
 Then:
 
@@ -78,19 +86,11 @@ adb shell 'mount -o remount,rw /system'
 adb shell 'cat /system/vendor/sony/bin/HgrmMediaPlayerApp.appcfg.real > /system/vendor/sony/bin/HgrmMediaPlayerApp.appcfg; sync'
 adb shell 'cat /system/vendor/sony/bin/HgrmMediaPlayerApp.appcfg'   # confirm: command: HgrmMediaPlayerApp
 
-# remove the binaries and helpers
-adb shell 'rm -f /system/vendor/unknown321/bin/cinder-home \
-                 /system/vendor/unknown321/bin/cinderhome-launch.sh \
-                 /system/vendor/unknown321/bin/cinder-probe \
-                 /system/vendor/unknown321/bin/cinder-umount \
-                 /system/vendor/unknown321/bin/cinder-gpunode \
-                 /system/vendor/unknown321/bin/cinder-power \
-                 /system/vendor/unknown321/bin/cinder-msc \
-                 /system/vendor/unknown321/bin/cinder-clock \
-                 /system/vendor/unknown321/bin/cinder-fm \
-                 /system/vendor/unknown321/bin/cinder-voltable \
-                 /system/vendor/unknown321/bin/cinder-battery \
-                 /system/vendor/unknown321/bin/ldac-run.sh'
+# Sony's hagodaemon and boot script back, if the `preload` option was installed
+adb shell 'sh /system/vendor/cinder/bin/cinder-preload.sh remove'
+
+# remove the binaries, helpers and libraries
+adb shell '/xbin/busybox rm -rf /system/vendor/cinder'
 
 # state, flags, logs, art cache
 adb shell 'rm -rf /data/cinder'
@@ -109,7 +109,7 @@ Leave `HgrmMediaPlayerApp.appcfg.real` in place — harmless, and it's your back
 binaries; they patch files that are *not* part of the Cinder install and survive an uninstall:
 
 ```bash
-adb shell '/system/vendor/unknown321/bin/cinder-signature.sh stock'
+adb shell '/system/vendor/cinder/bin/cinder-signature.sh stock'
 adb shell 'echo region > /contents/cinder_voltable.conf'
 ```
 

@@ -64,20 +64,20 @@ Source vs receiver is told apart with libBtMw's exported `btmwAvBothIsSrc`.
 
 | path | what |
 |---|---|
-| `/system/vendor/unknown321/lib/preload/BtCommonService.so` | this library; Cinder's hagodaemon wrapper preloads any `preload/<Service>.so` into that service |
+| `/system/vendor/cinder/lib/preload/BtCommonService.so` | this library; Cinder's hagodaemon wrapper preloads any `preload/<Service>.so` into that service |
 | `/data/cinder/bt_aac` | present = AAC on (read when the service starts) |
 | `/data/cinder/bt_sbc_xq` | present = SBC XQ on (read when the service starts) |
 | `/data/cinder/bt_aptxhd` | present = the shared slot stays aptX HD (read at each Bluetooth start; Cinder writes it) |
 | `/tmp/cinder_aac.log` | what the hooks did |
 | `/tmp/cinder_aac_status` | `AAC <rate>` from the moment a link is AAC, `AAC <rate> <bitrate>` while it streams; empty for any other codec |
 | `/tmp/cinder_aac_codecs` | what this boot offers, one a line: `aac`, `sbc-xq`, and after Bluetooth starts `slot aac` or `slot aptxhd` (Cinder reads it) |
-| `/system/vendor/unknown321/lib/libfdk-aac-enc.so` | the fdk-aac 2.x encoder, preferred over the firmware's |
+| `/system/vendor/cinder/lib/libfdk-aac-enc.so` | the fdk-aac 2.x encoder, preferred over the firmware's |
 
 ## Encoder: upstream fdk-aac 2.x preferred
 
 `build_fdk.sh` builds upstream fdk-aac 2.0.3's encoder (source fetched into `third_party/`, not
 committed) as `libfdk-aac-enc.so`, libc-only, for glibc 2.23. `aac_enc.c` loads it from
-`/system/vendor/unknown321/lib/` first and falls back to the firmware's `libFraunhoferAAC.so`.
+`/system/vendor/cinder/lib/` first and falls back to the firmware's `libFraunhoferAAC.so`.
 The upstream build accepts `AACENC_PEAK_BITRATE`, so no frame exceeds the average: the bitrate
 can use 90% of the packet room instead of 70% (XM4, 882-byte payload: ~268 kbit/s, was ~188).
 

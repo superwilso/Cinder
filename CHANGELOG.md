@@ -18,11 +18,22 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Cinder has a folder of its own.** It lived in `/system/vendor/unknown321`, the folder Wampy's
+  installer makes; it now installs to `/system/vendor/cinder`. An Update moves an older install
+  across: once the Home app points at the new launcher, Cinder's files leave Wampy's folder by
+  name, Wampy's own files stay, and the folder goes only if nothing is left in it. The uninstaller
+  clears both. Host-tested (`tools/test_migrate.sh`, in CI); *device-unverified* (DEVICE_CHECKLIST
+  §39.11).
 - **The PC can see the player's system space.** Entering USB storage logs `/data`'s free space to
   `cinderhome.log`, where Flint's health card reads it. *Device-unverified.*
 
 ### Fixed
 
+- **Uninstalling could leave the player with no Home app.** The backup of Sony's launch config
+  could hold Cinder's own (the owner's player carried one from 2026-09-22), so the uninstaller
+  "restored" Cinder's launcher and then deleted it. The installer, the uninstaller and the boot
+  guard now refuse a backup that names Cinder's launcher and write Sony's four lines instead,
+  which are the same on stock 1.02 and Walkman One 3.02. Host-tested; *device-unverified*.
 - **Long playlists are read whole.** A playlist in `cinder_playlists` stopped at 4,096 songs without
   a word, so a 7,000-song MusicBee playlist lost its end. The limit is now 20,000; a 10,000-line
   file reads in 2.5 ms on the PC. *Device-unverified.*

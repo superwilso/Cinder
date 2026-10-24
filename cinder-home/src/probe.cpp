@@ -11,7 +11,7 @@
 // /data and /contents are noexec; toolbox chmod needs octal):
 //   adb push cinder-home/dist/dev/cinder-probe /tmp/cinder-probe
 //   adb shell 'chmod 755 /tmp/cinder-probe && \
-//     LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib \
+//     LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/cinder/lib:/system/lib \
 //     /tmp/cinder-probe'
 // Watch the printed trace: the LAST line before it stops is the call that hangs.
 #include "cinder.h"
@@ -7332,7 +7332,7 @@ static int fm_regmon() {
                   cinder_tuner_hw());
     clog_(m);
     if (!cinder_tuner_hw()) {
-        clog_("fm-regmon: no register path — run /system/vendor/unknown321/bin/cinder-fm first");
+        clog_("fm-regmon: no register path — run /system/vendor/cinder/bin/cinder-fm first");
         return 1;
     }
 

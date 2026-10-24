@@ -17,7 +17,11 @@ echo "busybox: $BB"
 
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
-BIN=/system/vendor/unknown321/bin
+VENDOR=/system/vendor/cinder
+OLD=/system/vendor/unknown321   # Wampy's folder, where Cinder lived until 2026-10-24
+BIN=$VENDOR/bin
+# An install from before then, never updated: its helpers are the ones that know how to undo it.
+[ ! -f "$BIN/cinder-home" ] && [ -f "$OLD/bin/cinder-home" ] && BIN=$OLD/bin
 SIG=$BIN/cinder-signature.sh
 CHAIN=$BIN/cinder-chain.sh
 
@@ -59,10 +63,33 @@ fi
 "$BB" rm -f /data/.cinder_premount 2>/dev/null
 
 # Restore the stock .appcfg ATOMICALLY + verified. NEVER leave a truncated .appcfg (soft-brick).
+# A backup that names Cinder's launcher is no backup (install_cinderhome.sh step 2): restoring the
+# owner's, from 2026-09-22, and then deleting the launcher below would leave appmgr no Home app.
+# Then it is Sony's own four lines, the same on stock 1.02 and Walkman One 3.02.
+stock_appcfg() {
+    "$BB" cat <<'STOCK_EOF'
+name: HgrmMediaPlayerApp
+command: HgrmMediaPlayerApp
+type: Home
+hidden: false
+STOCK_EOF
+}
+good_backup() {
+    [ -s "$1" ] && "$BB" grep -q '^type: Home' "$1" && "$BB" grep -q '^command: ' "$1" \
+        && ! "$BB" grep -q cinderhome-launch "$1"
+}
 restored=0
-if [ -f "$APPCFG.real" ]; then
-    "$BB" cat "$APPCFG.real" > "$APPCFG.tmp" 2>/dev/null
-    if [ -s "$APPCFG.tmp" ] && "$BB" grep -q '^type: Home' "$APPCFG.tmp"; then
+if good_backup "$APPCFG" && [ ! -f "$APPCFG.real" ]; then
+    echo "the .appcfg is Sony's already and there is no backup - nothing to restore."
+    restored=1
+else
+    if good_backup "$APPCFG.real"; then
+        "$BB" cat "$APPCFG.real" > "$APPCFG.tmp" 2>/dev/null
+    else
+        echo "the .appcfg.real backup is missing or names Cinder's launcher - writing Sony's own"
+        stock_appcfg > "$APPCFG.tmp"
+    fi
+    if good_backup "$APPCFG.tmp"; then
         # Stock is 0755. Under this script's umask 077 the temp file is 0600 root:root, and appmgr
         # (uid 100) must READ the .appcfg — moved in as-is, the "restored" stock app never launches.
         "$BB" chmod 0755 "$APPCFG.tmp"
@@ -74,8 +101,6 @@ if [ -f "$APPCFG.real" ]; then
         "$BB" rm -f "$APPCFG.tmp" 2>/dev/null
         echo "ERROR: restore verify failed — leaving the install intact (device still boots)."
     fi
-else
-    echo "no $APPCFG.real backup found — nothing to restore (already stock?)."
 fi
 
 # ALWAYS set the escape flag: if the .appcfg still points at our launcher (restore didn't run),
@@ -136,27 +161,28 @@ if [ "$restored" = 1 ]; then
         echo "preload: not installed, nothing to remove"
     fi
 
-    # 1d. The `bt-aac` component (install_cinderhome.sh 1g4): the Bluetooth service's library, its
-    #     encoder and their switches. Nothing loads them once the wrapper is gone; removed anyway.
-    "$BB" rm -f /system/vendor/unknown321/lib/preload/BtCommonService.so \
-        /system/vendor/unknown321/lib/libfdk-aac-enc.so /data/cinder/bt_aac /data/cinder/bt_sbc_xq /data/cinder/bt_aptxhd 2>/dev/null
-    # 1e. The `atrac` component (install_cinderhome.sh 1g5).
-    "$BB" rm -f /system/vendor/unknown321/lib/preload/MediaStoreService.so 2>/dev/null
-    # 1f. The `fmrec` component (install_cinderhome.sh 1g6).
-    "$BB" rm -f /system/vendor/unknown321/lib/preload/AudioInPlayerService.so 2>/dev/null
+    # 1d. The switches of `bt-aac` (install_cinderhome.sh 1g4); its libraries go with the folder.
+    "$BB" rm -f /data/cinder/bt_aac /data/cinder/bt_sbc_xq /data/cinder/bt_aptxhd 2>/dev/null
 
-    # 2. Now the binaries. EVERY file install_cinderhome.sh puts in $BIN is listed here; the three
-    #    that used to be missing (cinder-battery, cinder-voltable, cinder-signature.sh) meant two
-    #    setuid-root helpers survived a "full uninstall" — exactly what the comment below forbids.
-    "$BB" rm -f "$BIN/cinderhome-launch.sh" "$BIN/cinder-home" 2>/dev/null
-    # setuid-root helpers must not outlive the app they exist for.
-    "$BB" rm -f "$BIN/cinder-umount" "$BIN/cinder-gpunode" "$BIN/cinder-power" "$BIN/cinder-msc" \
-        "$BIN/cinder-clock" "$BIN/cinder-fm" "$BIN/cinder-voltable" "$BIN/cinder-battery" \
-        "$BIN/cinder-probe" 2>/dev/null
-    "$BB" rm -f "$SIG" "$CHAIN" "$BIN/cinder-preload.sh" 2>/dev/null
-    # The volume tables an install copied in for `wm1a`/`w1` (install_cinderhome.sh 1f3b). Sony's
-    # own /system/usr/share/audio_dac is never touched.
-    "$BB" rm -rf /system/vendor/unknown321/usr/share/cinder 2>/dev/null
+    # 2. Now the files. Cinder's own folder is all Cinder's, so all of it: the binaries, the
+    #    setuid-root helpers (which must not outlive the app they exist for), the libraries of
+    #    1g3-1g6 and the volume tables of 1f3b. Sony's own /system/usr/share/audio_dac is never
+    #    touched.
+    "$BB" rm -rf "$VENDOR" 2>/dev/null
+    # An install from before 2026-10-24 sits in Wampy's folder: Cinder's files by name, then the
+    # folders only if that left them empty, so Wampy's own files stay.
+    for f in cinder-home cinderhome-launch.sh cinder-umount cinder-gpunode cinder-power cinder-msc \
+             cinder-clock cinder-fm cinder-voltable cinder-battery cinder-probe cinder-signature.sh \
+             cinder-chain.sh cinder-preload.sh launch-probe.sh; do
+        "$BB" rm -f "$OLD/bin/$f" 2>/dev/null
+    done
+    "$BB" rm -f "$OLD/lib/libcinder_mono.so" "$OLD/lib/libfdk-aac-enc.so" \
+        "$OLD/lib/preload/BtCommonService.so" "$OLD/lib/preload/MediaStoreService.so" \
+        "$OLD/lib/preload/AudioInPlayerService.so" "$OLD/HgrmMediaPlayerApp.appcfg.real" 2>/dev/null
+    "$BB" rm -rf "$OLD/usr/share/cinder" 2>/dev/null
+    for d in lib/preload lib bin usr/share usr ""; do
+        "$BB" rmdir "$OLD/$d" 2>/dev/null
+    done
     "$BB" rm -rf /data/cinder 2>/dev/null
     "$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot /contents/cinder_gpu_on /contents/cinderhome_clear /contents/cinderhome_cable_off 2>/dev/null
     # The volume curve is applied by the LAUNCHER on every boot, so removing the launcher already

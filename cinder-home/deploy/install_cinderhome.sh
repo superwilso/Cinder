@@ -43,7 +43,7 @@ BB=/xbin/busybox
 [ -x "$BB" ] || BB=busybox      # last resort: whatever is on PATH (may be the flaky one)
 echo "busybox: $BB ($("$BB" 2>&1 | head -1 2>/dev/null))"
 
-VENDOR=/system/vendor/unknown321
+VENDOR=/system/vendor/cinder
 BIN=$VENDOR/bin
 SRC=/contents/cinder-home
 SRC_UMOUNT=/contents/cinder-umount
@@ -326,8 +326,11 @@ if [ ! -f "$APPCFG" ]; then
     sync; cleanup_mounts; exit 0
 fi
 
-# ensure the install dir exists (Wampy provides it; create if missing)
-[ -d "$BIN" ] || "$BB" mkdir -p "$BIN"
+# Cinder's own folder (Wampy's /system/vendor/unknown321 until 2026-10-24; step 4b moves an old
+# install out of it). 755 on both levels, explicitly: this runs with umask 077, so mkdir -p makes
+# them 0700 and appmgr (uid 100) could not exec the launcher — no Home app at all.
+"$BB" mkdir -p "$BIN" 2>/dev/null
+"$BB" chmod 755 "$VENDOR" "$BIN" 2>/dev/null
 
 # 1) install the cinder-home binary ATOMICALLY (write temp -> verify -> mv). A truncated binary
 #    must never become the live one. (busybox cp is flaky -> use cat>.)
@@ -513,7 +516,7 @@ fi
 #       Every install looks, whatever curve is chosen, so the curve can be changed later over USB
 #       without a reinstall; a table installed earlier stays when no candidate is found.
 #       VT_DIR must match CINDER_DIR in src/cinder-voltable.c and the launcher's check below.
-VT_DIR=/system/vendor/unknown321/usr/share/cinder/audio_dac
+VT_DIR=/system/vendor/cinder/audio_dac
 vt_sha() { "$BB" sha256sum "$1" 2>/dev/null | "$BB" cut -d' ' -f1; }
 vt_take() {  # vt_take <name> <sha256> <candidate>... — install the first candidate that IS Sony's <name>
     vt_name="$1"; vt_want="$2"; shift 2
@@ -644,8 +647,8 @@ fi
 #      Wampy's hooks keep working. No Wampy library here = no preload = nothing installed.
 #      Wampy's file is COPIED aside before the shim is renamed over the path, so a failure at any
 #      step leaves Wampy's library where Wampy put it. Non-fatal throughout.
-MONO_PATH=$VENDOR/lib/libsound_service_fw.so
-MONO_WAMPY=$VENDOR/lib/libsound_service_fw.wampy.so
+MONO_PATH=/system/vendor/unknown321/lib/libsound_service_fw.so   # Wampy's library, in Wampy's folder
+MONO_WAMPY=/system/vendor/unknown321/lib/libsound_service_fw.wampy.so
 is_mono_shim() { "$BB" grep -q libcinder_mono.so "$1" 2>/dev/null; }
 mono_restore() {   # give Wampy its library back, if the shim holds its place
     [ -f "$MONO_PATH" ] && is_mono_shim "$MONO_PATH" || return 0
@@ -815,14 +818,40 @@ fi
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
 #    the .appcfg (otherwise the stock launch config is lost with no .real to restore).
-if [ ! -f "$APPCFG.real" ]; then
-    "$BB" cat "$APPCFG" > "$APPCFG.real" && "$BB" chmod 0644 "$APPCFG.real"
-    if [ ! -s "$APPCFG.real" ]; then
+#    A backup that names Cinder's launcher is no backup: the owner's player carried one from
+#    2026-09-22, and restoring it after the uninstaller deleted the launcher leaves appmgr no Home
+#    app to start. So the backup must name something else, and when neither file does, it is
+#    Sony's own four lines, which are the same on stock 1.02 and Walkman One 3.02.
+# >>> stock-appcfg — tools/test_migrate.sh runs these lines as they are
+stock_appcfg() {
+    "$BB" cat <<'STOCK_EOF'
+name: HgrmMediaPlayerApp
+command: HgrmMediaPlayerApp
+type: Home
+hidden: false
+STOCK_EOF
+}
+good_backup() {
+    [ -s "$1" ] && "$BB" grep -q '^type: Home' "$1" && "$BB" grep -q '^command: ' "$1" \
+        && ! "$BB" grep -q cinderhome-launch "$1"
+}
+if ! good_backup "$APPCFG.real"; then
+    if good_backup "$APPCFG"; then
+        "$BB" cat "$APPCFG" > "$APPCFG.real.tmp" 2>/dev/null
+    else
+        stock_appcfg > "$APPCFG.real.tmp"
+    fi
+    if good_backup "$APPCFG.real.tmp"; then
+        "$BB" chmod 0644 "$APPCFG.real.tmp"
+        "$BB" mv -f "$APPCFG.real.tmp" "$APPCFG.real"
+        echo "backed up Sony's .appcfg -> .appcfg.real"
+    else
+        "$BB" rm -f "$APPCFG.real.tmp" 2>/dev/null
         echo "ERROR: failed to back up $APPCFG -> .appcfg.real. ABORT (no .appcfg change)."
         sync; cleanup_mounts; exit 0
     fi
-    echo "backed up $APPCFG -> .appcfg.real"
 fi
+# <<< stock-appcfg
 
 # 3) write the launcher ATOMICALLY (temp -> verify -> mv). A truncated launcher would fail to
 #    exec cinder-home AND never run the counter -> no auto-revert. Quoted heredoc = verbatim.
@@ -883,8 +912,8 @@ MSC_ONCE=/contents/cinderhome_once
 # permanently. 4 gives real margin while still auto-reverting a build that truly never paints.
 MAXBAD=4
 REAL=/system/vendor/sony/bin/HgrmMediaPlayerApp           # untouched stock Qt app
-HOME_BIN=/system/vendor/unknown321/bin/cinder-home
-export LD_LIBRARY_PATH="/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib:$LD_LIBRARY_PATH"
+HOME_BIN=/system/vendor/cinder/bin/cinder-home
+export LD_LIBRARY_PATH="/system/vendor/sony/lib:/system/vendor/cinder/lib:/system/lib:/usr/lib:/lib:$LD_LIBRARY_PATH"
 
 # HAND SONY'S EQ BACK ON THE WAY TO STOCK (2026-10-04, DEVICE_CHECKLIST 27.5). Cinder puts its
 # ten-band EQ in the path and the sound service keeps that choice; Sony's player draws the six-band
@@ -1185,7 +1214,7 @@ RESPAWN_MAX_TOTAL=10      # absolute cap per boot, so a 31-s crash cycle cannot 
 # table the boot script loaded, which is exactly what the device does without any of this. Nothing here may stop a
 # boot — the audio path is already up by now either way.
 VOLTABLE_CONF=/contents/cinder_voltable.conf
-VOLTABLE_BIN=/system/vendor/unknown321/bin/cinder-voltable   # same dir as HOME_BIN above
+VOLTABLE_BIN=/system/vendor/cinder/bin/cinder-voltable   # same dir as HOME_BIN above
 # To cinderhome.log as well as logcat. Until 2026-09-13 these lines went to logcat only, and the
 # reference device failed to apply its chosen curve on every boot with nobody able to see why.
 # $LOGF is picked above and run_home APPENDS to it, so a line written here survives the launch.
@@ -1225,7 +1254,7 @@ if [ -x "$VOLTABLE_BIN" ] && [ -f "$VOLTABLE_CONF" ]; then
             # checks each candidate's content, so a file with the right NAME is not enough — its
             # rc 4 below means none of them held the right table. Look first, so the log says why.
             case "$vt" in wm1a) vt_tbl=ov_127x.tbl ;; *) vt_tbl=ov_1280.tbl ;; esac
-            if [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ] && [ ! -f "/system/vendor/unknown321/usr/share/cinder/audio_dac/$vt_tbl" ] && [ ! -f "/system/etc/.mod/gain/gain_l/$vt_tbl" ]; then
+            if [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ] && [ ! -f "/system/vendor/cinder/audio_dac/$vt_tbl" ] && [ ! -f "/system/etc/.mod/gain/gain_l/$vt_tbl" ]; then
                 vt_log "volume curve: '$vt' needs Sony's $vt_tbl, which this player's firmware does not include and no install has supplied — the boot script's table stays (put it at the top of the drive and install again)"
             elif "$VOLTABLE_BIN" "$vt" >/dev/null 2>&1; then
                 vt_log "volume curve: $vt applied"
@@ -1265,7 +1294,7 @@ fi
 #
 # Best-effort and quiet: a device without the helper, or a kernel that refuses the module, keeps
 # the audio-scan fallback. Nothing here may stop a boot.
-FM_BIN=/system/vendor/unknown321/bin/cinder-fm
+FM_BIN=/system/vendor/cinder/bin/cinder-fm
 if [ -x "$FM_BIN" ]; then
     if "$FM_BIN" >/dev/null 2>&1; then
         log "fm: tuner registers open"
@@ -1387,11 +1416,11 @@ echo "wrote launcher: $LAUNCH"
 #    the stock Home contract; matches the stock 4-line format exactly.
 "$BB" cat > "$APPCFG.tmp" <<'APPCFG_EOF'
 name: HgrmMediaPlayerApp
-command: /system/vendor/unknown321/bin/cinderhome-launch.sh
+command: /system/vendor/cinder/bin/cinderhome-launch.sh
 type: Home
 hidden: false
 APPCFG_EOF
-if ! "$BB" grep -q '^command: /system/vendor/unknown321/bin/cinderhome-launch.sh$' "$APPCFG.tmp" \
+if ! "$BB" grep -q '^command: /system/vendor/cinder/bin/cinderhome-launch.sh$' "$APPCFG.tmp" \
    || ! "$BB" grep -q '^type: Home$' "$APPCFG.tmp"; then
     echo "ERROR: new .appcfg failed verification — NOT activating (stock .appcfg untouched)."
     "$BB" rm -f "$APPCFG.tmp" 2>/dev/null; sync; cleanup_mounts; exit 0
@@ -1422,6 +1451,42 @@ if [ "$ok" != 1 ]; then
     echo "== install ABORTED safely; device will boot the stock UI. =="
     exit 0
 fi
+
+# 4b) Out of Wampy's folder (docs/NEXT.md A4). Until 2026-10-24 Cinder lived in
+#     /system/vendor/unknown321, the folder Wampy's installer makes. Everything above went to
+#     $VENDOR and the .appcfg now names the launcher there, so the old copies are dead weight.
+#     Only after that, and only Cinder's own files, by name: on a player that has Wampy, Wampy's
+#     files stay where they are, and the folder goes only once nothing is left in it. An old
+#     wrapper that is still in place (step 1g3 failed) skips a shim it cannot find.
+# >>> migrate — tools/test_migrate.sh runs these lines as they are
+OLD=/system/vendor/unknown321
+if [ -d "$OLD" ] && "$BB" grep -q "^command: $LAUNCH\$" "$APPCFG" 2>/dev/null; then
+    # Volume tables an older install took in (step 1f3b) come along: the drive may no longer have them.
+    for t in "$OLD"/usr/share/cinder/audio_dac/*.tbl; do
+        [ -f "$t" ] && [ ! -f "$VT_DIR/${t##*/}" ] || continue
+        "$BB" mkdir -p "$VT_DIR" 2>/dev/null
+        "$BB" chmod 755 "$VT_DIR" 2>/dev/null
+        "$BB" mv -f "$t" "$VT_DIR/" && echo "migrate: volume table ${t##*/} moved to $VT_DIR"
+    done
+    for f in cinder-home cinderhome-launch.sh cinder-umount cinder-gpunode cinder-power cinder-msc \
+             cinder-clock cinder-fm cinder-voltable cinder-battery cinder-probe cinder-signature.sh \
+             cinder-chain.sh cinder-preload.sh launch-probe.sh; do
+        "$BB" rm -f "$OLD/bin/$f" "$OLD/bin/$f.tmp" 2>/dev/null
+    done
+    "$BB" rm -f "$OLD/lib/libcinder_mono.so" "$OLD/lib/libfdk-aac-enc.so" \
+        "$OLD/lib/preload/BtCommonService.so" "$OLD/lib/preload/MediaStoreService.so" \
+        "$OLD/lib/preload/AudioInPlayerService.so" "$OLD/HgrmMediaPlayerApp.appcfg.real" 2>/dev/null
+    "$BB" rm -rf "$OLD/usr/share/cinder" 2>/dev/null
+    for d in lib/preload lib bin usr/share usr ""; do
+        "$BB" rmdir "$OLD/$d" 2>/dev/null
+    done
+    if [ -d "$OLD" ]; then
+        echo "migrate: Cinder's files are out of $OLD; left there: $("$BB" ls -A "$OLD" | "$BB" tr '\n' ' ')"
+    else
+        echo "migrate: Cinder's files are out of $OLD, and the folder is gone"
+    fi
+fi
+# <<< migrate
 
 # fresh install = enabled: clear any prior disable/bad-boot flags, on BOTH the current /data
 # location and the legacy /contents one (an upgrade from a pre-2026-07-26 build leaves those).

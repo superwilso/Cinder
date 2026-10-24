@@ -34,9 +34,9 @@ BB=/xbin/busybox
 
 SONYBIN=/system/vendor/sony/bin
 HAGO=$SONYBIN/hagodaemon
-LIBDIR=/system/vendor/unknown321/lib
+LIBDIR=/system/vendor/cinder/lib
 SHIM=$LIBDIR/libcinder_mono.so
-WAMPY=$LIBDIR/libsound_service_fw.so
+WAMPY=/system/vendor/unknown321/lib/libsound_service_fw.so   # Wampy's, in Wampy's folder
 BS=/system/bin/bootswitcher.sh
 GUARD=/system/bin/cinder-guard.sh
 BS_STOCK=7675f7d234b0abadf2909f2e9a274d51fe1d02620d776c4ac6d2ce865ecac358
@@ -161,6 +161,7 @@ install)
     put "$NEWGUARD" "$GUARD" 755 0:0 || { say "could not install the guard - nothing else installed"; exit 1; }
     hook_install || { say "without the guard in the boot script the wrapper is not installed"; exit 1; }
     "$BB" mkdir -p "$LIBDIR" 2>/dev/null
+    "$BB" chmod 755 "${LIBDIR%/lib}" "$LIBDIR" 2>/dev/null   # umask 077 would leave them 0700
     put "$NEWSHIM" "$SHIM" 755 0:0 || { say "could not install the shim - the wrapper is not installed"; exit 1; }
     if ! is_wrapper "$HAGO"; then
         if ! put "$HAGO" "$HAGO.real" 755 0:2000; then

@@ -78,7 +78,7 @@
  * in step with VT_DIR in install_cinderhome.sh and the launcher's check); W1_N/W1_L are Walkman
  * One's pristine gain-mode copies, which W1 never rewrites. */
 #define SONY_DIR "/system/usr/share/audio_dac/"
-#define CINDER_DIR "/system/vendor/unknown321/usr/share/cinder/audio_dac/"
+#define CINDER_DIR "/system/vendor/cinder/audio_dac/"
 #define W1_N "/system/etc/.mod/gain/gain_n/"
 #define W1_L "/system/etc/.mod/gain/gain_l/"
 

@@ -2459,7 +2459,7 @@ void apply_sound_fn() {
     // an Update that chose another curve turns the screen's switch off instead of leaving it lying.
     static bool vc_told = false;
     if (!vc_told) {
-        const bool helper = ::access("/system/vendor/unknown321/bin/cinder-voltable", X_OK) == 0;
+        const bool helper = ::access("/system/vendor/cinder/bin/cinder-voltable", X_OK) == 0;
         if (FILE* f = std::fopen("/contents/cinder_voltable.conf", "r")) {
             char w[16] = {0};
             if (!std::fgets(w, sizeof w, f)) w[0] = 0;
@@ -3344,7 +3344,7 @@ void power_action(bool restart) {
     // hold the log open. Two syncs cost nothing next to a shutdown.
     std::fflush(nullptr);
     ::sync();
-    std::snprintf(m, sizeof m, "/system/vendor/unknown321/bin/cinder-power %s", verb);
+    std::snprintf(m, sizeof m, "/system/vendor/cinder/bin/cinder-power %s", verb);
     int rc = std::system(m);
     // Reached only on failure — the helper does not return when reboot(2) succeeds.
     fails++;
@@ -3371,7 +3371,7 @@ bool cpu_tune(const char* verb) {
         if (adv_on("no_cpu_tune")) return false;
     }
     char cmd[96];
-    std::snprintf(cmd, sizeof cmd, "/system/vendor/unknown321/bin/cinder-power %s", verb);
+    std::snprintf(cmd, sizeof cmd, "/system/vendor/cinder/bin/cinder-power %s", verb);
     const int rc = std::system(cmd);
     if (rc == 0) return true;
     ++fails;
@@ -3413,7 +3413,7 @@ void apply_dac_eq() {
         if (!known) { std::memcpy(last, b, sizeof b); known = true; }
         return;
     }
-    static const char kHelper[] = "/system/vendor/unknown321/bin/cinder-voltable";
+    static const char kHelper[] = "/system/vendor/cinder/bin/cinder-voltable";
     if (::access(kHelper, X_OK) != 0) {
         if (missing_said++ == 0)
             clog_("dac eq: cinder-voltable is not installed — the DAC EQ cannot be applied "
@@ -3485,12 +3485,12 @@ void nc_tick() {
     const bool on = std::strcmp(mode, "off") != 0;
     if (on && !loaded && load_tries < 2) {
         ++load_tries;
-        static const char kHelper[] = "/system/vendor/unknown321/bin/cinder-voltable";
+        static const char kHelper[] = "/system/vendor/cinder/bin/cinder-voltable";
         static int rc = -1;
         rc = -1;
         if (::access(kHelper, X_OK) == 0)
             run_watchdog_only("nc: load the NC engine", 10, []() {
-                const int r = std::system("/system/vendor/unknown321/bin/cinder-voltable nc-load");
+                const int r = std::system("/system/vendor/cinder/bin/cinder-voltable nc-load");
                 rc = (r == -1) ? -1 : ((r >> 8) & 0xff);
             });
         loaded = rc == 0;
@@ -3558,7 +3558,7 @@ static void apply_clock() {
     long long epoch = cinder_get_clock_epoch();
     char cmd[128];
     std::snprintf(cmd, sizeof cmd,
-                  "/system/vendor/unknown321/bin/cinder-clock set %lld", epoch);
+                  "/system/vendor/cinder/bin/cinder-clock set %lld", epoch);
     int rc = std::system(cmd);
     // system() returns a wait status; the helper's own code is in the low byte of the exit status.
     int code = (rc == -1) ? -1 : ((rc >> 8) & 0xff);
@@ -4277,13 +4277,13 @@ void resume_as_device(bool on) {
     if (on) {
         const long own = read_node_long(kBid2);
         if (own < 0 || own > 4 || own == 3 || g_bid2_own >= 0) return;
-        if (std::system("/system/vendor/unknown321/bin/cinder-power usbid3") != 0) {
+        if (std::system("/system/vendor/cinder/bin/cinder-power usbid3") != 0) {
             clog_("suspend: could not set the USB board ID — USB will need a restart after this suspend");
             return;
         }
         g_bid2_own = own;
     } else if (g_bid2_own >= 0) {
-        std::snprintf(cmd, sizeof cmd, "/system/vendor/unknown321/bin/cinder-power usbid%ld", g_bid2_own);
+        std::snprintf(cmd, sizeof cmd, "/system/vendor/cinder/bin/cinder-power usbid%ld", g_bid2_own);
         if (std::system(cmd) == 0) g_bid2_own = -1;   // else: try again next tick
     }
 }
@@ -4330,7 +4330,7 @@ static void usb_after_resume_tick() {
     plugged_s = 0;
     clog_("usb: a cable is in after a resume from RAM -> cinder-msc usb-resume");
     run_watchdog_only("usb: resume", 20, []() {   // system()
-        (void)std::system("/system/vendor/unknown321/bin/cinder-msc usb-resume");
+        (void)std::system("/system/vendor/cinder/bin/cinder-msc usb-resume");
     });
 }
 
@@ -8429,8 +8429,8 @@ void apply_usb_dac() {
 
     run_guarded("usb-dac: SetUsbFunction", 6, on ? usb_fn_uac : usb_fn_msc);
 
-    int rc = std::system(on ? "/system/vendor/unknown321/bin/cinder-msc dac-on"
-                            : "/system/vendor/unknown321/bin/cinder-msc dac-off");
+    int rc = std::system(on ? "/system/vendor/cinder/bin/cinder-msc dac-on"
+                            : "/system/vendor/cinder/bin/cinder-msc dac-off");
     char m[128];
     std::snprintf(m, sizeof m, "usb-dac: %s -> cinder-msc dac-%s rc=%d%s",
                   on ? "engage" : "release", on ? "on" : "off", rc,
@@ -8468,7 +8468,7 @@ void apply_usb_dac() {
     // nothing visible to the host at all. That happened on 2026-08-11 and cost a power-cycle. The
     // rescue is a no-op when enable is already 1, and it deliberately goes through init's property
     // rather than the service that just wedged.
-    (void)std::system("/system/vendor/unknown321/bin/cinder-msc usb-rescue");
+    (void)std::system("/system/vendor/cinder/bin/cinder-msc usb-rescue");
     // WHERE THE DAC AUDIO GOES. Only ever decided when the gadget actually came up — arming any of
     // this for a UAC mode that never engaged is how the last round of this looked like it worked.
     //
@@ -8736,7 +8736,7 @@ static void rx_usb_restore() {
     });
 #else
     run_watchdog_only("rx: usb-rescue", 10, []() {   // system()
-        std::system("/system/vendor/unknown321/bin/cinder-msc usb-rescue");
+        std::system("/system/vendor/cinder/bin/cinder-msc usb-rescue");
     });
 #endif
 }
@@ -9575,7 +9575,7 @@ void enter_usb_msc() {
     //
     // Every previous fix here (trigger ordering, the enable-cycle, the exit remount) was aimed
     // downstream of that and could not have worked. As root it binds first time.
-    int rc = std::system("/system/vendor/unknown321/bin/cinder-msc on");
+    int rc = std::system("/system/vendor/cinder/bin/cinder-msc on");
     if (rc != 0) {
         char m[128];
         std::snprintf(m, sizeof m, "usb-msc: cinder-msc on FAILED rc=%d — not entering", rc);
@@ -9617,7 +9617,7 @@ void exit_usb_msc() {
     // helper does them in the one order that is safe — media released BEFORE the remount, so the
     // host and the kernel never hold the same vfat at once. It also falls back to mounting
     // /contents itself, because init's mount_msc1 is `oneshot` and will not re-run within a boot.
-    int rc = std::system("/system/vendor/unknown321/bin/cinder-msc off");
+    int rc = std::system("/system/vendor/cinder/bin/cinder-msc off");
     if (rc != 0) {
         char m[128];
         std::snprintf(m, sizeof m, "usb-msc: cinder-msc off rc=%d", rc);
@@ -9682,7 +9682,7 @@ void exit_usb_msc() {
 // to exit, no away-log to splice, and no gadget mode of ours to restore — the whole job is to undo
 // an unmount we did not perform.
 static void reclaim_contents() {
-    int rc = std::system("/system/vendor/unknown321/bin/cinder-msc off");
+    int rc = std::system("/system/vendor/cinder/bin/cinder-msc off");
     // Re-point the log FIRST, whatever the helper said. Our fds have been writing into an inode
     // with no directory entry for as long as the mount has been gone: the bytes went somewhere, but
     // nothing can read them back, so every line explaining this outage was lost while it mattered
@@ -10125,7 +10125,7 @@ static void fm_off_now() {
 //
 // One recording per reader: BT OUT moves the radio from one reader to the other, so switching it
 // ends the recording rather than leaving two half-files.
-static const char* const FMREC_LIB = "/system/vendor/unknown321/lib/preload/AudioInPlayerService.so";
+static const char* const FMREC_LIB = "/system/vendor/cinder/lib/preload/AudioInPlayerService.so";
 static const char* const FMREC_DIR = "/contents/MUSIC/FM Recordings";
 static bool g_fmrec_on = false;
 static long long g_fmrec_t0 = 0;
@@ -11059,7 +11059,7 @@ static void ambient_tick() {
 // system() owns a child.
 static const char kVolConf[] = "/contents/cinder_voltable.conf";
 static const char kVolPrev[] = "/contents/cinder_voltable.prev";
-static const char kVolHelper[] = "/system/vendor/unknown321/bin/cinder-voltable";
+static const char kVolHelper[] = "/system/vendor/cinder/bin/cinder-voltable";
 
 static void vol_read_word(const char* path, char* out, size_t n) {
     out[0] = 0;
@@ -12865,7 +12865,7 @@ static int read_sysfs_int(const char* path) {
 // Costs a fork, so the caller only asks while the Battery screen is open.
 static void read_charger(int* state, int* fault, char* raw, size_t rawsz) {
     *state = -1; *fault = -1; raw[0] = '\0';
-    FILE* p = ::popen("/system/vendor/unknown321/bin/cinder-battery 2>/dev/null", "r");
+    FILE* p = ::popen("/system/vendor/cinder/bin/cinder-battery 2>/dev/null", "r");
     if (!p) return;
     char line[128];
     size_t used = 0;
@@ -15085,7 +15085,7 @@ int main(int argc, char** argv) {
     // leaves /sys/class/android_usb/android0/enable at 0, and then nothing — not adb, not mass
     // storage, not USB-DAC — is on the host's bus until someone writes it back. A no-op when the
     // gadget is healthy, which is every normal boot.
-    (void)std::system("/system/vendor/unknown321/bin/cinder-msc usb-rescue");
+    (void)std::system("/system/vendor/cinder/bin/cinder-msc usb-rescue");
 
     CinderApp app;
 

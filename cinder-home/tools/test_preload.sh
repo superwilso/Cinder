@@ -32,7 +32,7 @@ cp "$HERE/deploy/cinder-guard.sh" "$T/guard"
 R=; P=; OUT=
 fresh() {   # a scratch player: Sony's hagodaemon, Sony's boot script, no Wampy
     R="$T/r$RANDOM$RANDOM"
-    mkdir -p "$R/system/vendor/sony/bin" "$R/system/vendor/unknown321" "$R/system/bin" "$R/xbin" "$R/db" "$R/data/cinder"
+    mkdir -p "$R/system/vendor/sony/bin" "$R/system/vendor/cinder" "$R/system/bin" "$R/xbin" "$R/db" "$R/data/cinder"
     cat > "$R/xbin/busybox" <<EOF
 #!/bin/sh
 cmd="\$1"; shift
@@ -53,7 +53,7 @@ EOF
 }
 H()  { echo "$R/system/vendor/sony/bin/hagodaemon"; }
 BS() { echo "$R/system/bin/bootswitcher.sh"; }
-SH() { echo "$R/system/vendor/unknown321/lib/libcinder_mono.so"; }
+SH() { echo "$R/system/vendor/cinder/lib/libcinder_mono.so"; }
 G()  { echo "$R/system/bin/cinder-guard.sh"; }
 run() { OUT="$(sh "$P" "$@" 2>&1)"; }
 same() { cmp -s "$1" "$2" && echo same || echo differs; }

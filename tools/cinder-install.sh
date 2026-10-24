@@ -73,11 +73,11 @@ done
 
 DIST="$REPO/cinder-home/dist/$CHANNEL"
 BIN="$DIST/cinder-home"
-INSTALL_PATH="/system/vendor/unknown321/bin/cinder-home"
+INSTALL_PATH="/system/vendor/cinder/bin/cinder-home"
 STAGE="/data/local/tmp/cinder-home.new"
 BACKUP="/data/cinder/cinder-home.last"
 NORESPAWN="/data/cinder/no_respawn"
-HELPERS_DIR="/system/vendor/unknown321/bin"
+HELPERS_DIR="/system/vendor/cinder/bin"
 
 # THE LAUNCHER. Until 2026-08-26 this script installed the binary and the setuid helpers and left
 # cinderhome-launch.sh alone, because only a full .UPG flash rewrites it. That was wrong, and the
@@ -95,7 +95,7 @@ HELPERS_DIR="/system/vendor/unknown321/bin"
 # the heredoc inside deploy/install_cinderhome.sh — and it is verified on the host before the
 # device is touched.
 LAUNCHER_SRC="$REPO/cinder-home/deploy/install_cinderhome.sh"
-LAUNCHER_PATH="/system/vendor/unknown321/bin/cinderhome-launch.sh"
+LAUNCHER_PATH="/system/vendor/cinder/bin/cinderhome-launch.sh"
 LAUNCHER_STAGE="/data/local/tmp/cinderhome-launch.sh.new"
 LAUNCHER_BACKUP="/data/cinder/cinderhome-launch.sh.last"
 
@@ -138,7 +138,7 @@ if [ "$MODE" = "status" ]; then
     info "running cinder-home:"
     # `ps | grep`, not pidof — this device has neither pidof nor pgrep, and `pidof` there prints
     # "pidof: not found" and exits non-zero, which reads as "not running" for any process at all.
-    adb shell 'p=$(ps 2>/dev/null | grep /system/vendor/unknown321/bin/cinder-home | grep -v grep | awk "{print \$2}" | head -1); [ -n "$p" ] && echo "    pid: $p — running" || echo "    not running"' 2>/dev/null
+    adb shell 'p=$(ps 2>/dev/null | grep /system/vendor/cinder/bin/cinder-home | grep -v grep | awk "{print \$2}" | head -1); [ -n "$p" ] && echo "    pid: $p — running" || echo "    not running"' 2>/dev/null
     info "installed binary:"
     # This device's toolbox `ls -la` prints `perms user group size date time name` — SEVEN fields,
     # with no link-count column and no owner/group split into more. The GNU layout these field
@@ -409,7 +409,9 @@ adb shell "[ -f $INSTALL_PATH ]" 2>/dev/null \
     || die "cinder-home is NOT installed at $INSTALL_PATH.
 This script can only UPDATE an existing install (adb only exists once the
 dev channel is running). For the one-time first install, put the device in
-MSC mode and run:  sudo tools/flash.sh install"
+MSC mode and run:  sudo tools/flash.sh install
+An install from before 2026-10-24 lives in /system/vendor/unknown321: install
+the .UPG once, and it moves itself to /system/vendor/cinder."
 
 # 2b. /data headroom. The staged binary and the rollback copy both land on /data (35 MB), and a
 # full /data makes the launcher's own state write fail, which is an escape to stock. The rollback
@@ -544,7 +546,7 @@ if adb wait-for-device >/dev/null 2>&1; then
     # `|| true`: adb is often back before the launcher has started the app, the grep then matches
     # nothing, and under `set -euo pipefail` that ended the script with rc=1 and no message after a
     # good install (2026-09-16). "Not seen yet" is the warning below, not a failure.
-    PID_BACK="$(adb shell 'ps 2>/dev/null | grep /system/vendor/unknown321/bin/cinder-home | grep -v grep | awk "{print \$2}" | head -1' 2>/dev/null | tr -d '\r' || true)"
+    PID_BACK="$(adb shell 'ps 2>/dev/null | grep /system/vendor/cinder/bin/cinder-home | grep -v grep | awk "{print \$2}" | head -1' 2>/dev/null | tr -d '\r' || true)"
     if [ -n "$PID_BACK" ]; then ok "cinder-home running (pid $PID_BACK)"
     else warn "cinder-home not seen yet — check: $0 --status"; fi
 else

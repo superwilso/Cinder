@@ -13,10 +13,10 @@
 set -eu
 cd "$(dirname "$0")"
 LIB=build/libcinder_aac.so
-DST=/system/vendor/unknown321/lib/preload/BtCommonService.so
+DST=/system/vendor/cinder/lib/preload/BtCommonService.so
 HAGO=/system/vendor/sony/bin/hagodaemon
 FDK=build/libfdk-aac-enc.so                       # optional: ./build_fdk.sh
-FDKDST=/system/vendor/unknown321/lib/libfdk-aac-enc.so
+FDKDST=/system/vendor/cinder/lib/libfdk-aac-enc.so
 
 dev() { adb shell "$1" | tr -d '\r'; }
 
@@ -31,7 +31,7 @@ esac
 WRAP=$1
 [ -s "$LIB" ] || { echo "build first: ./build.sh"; exit 1; }
 grep -aq cinder-hagowrap "$WRAP" || { echo "$WRAP is not a cinder-hagowrap build"; exit 1; }
-grep -aq unknown321/lib/preload/ "$WRAP" || { echo "$WRAP has no per-service preload rule (too old)"; exit 1; }
+grep -aq cinder/lib/preload/ "$WRAP" || { echo "$WRAP has no per-service preload rule (too old)"; exit 1; }
 [ "$(dev "[ -s $HAGO.real ] && echo y")" = y ] || { echo "no $HAGO.real: Cinder's preload component is not installed"; exit 1; }
 
 adb push "$LIB" /data/local/tmp/cinder_aac.so >/dev/null
@@ -40,9 +40,9 @@ if [ -s "$FDK" ]; then adb push "$FDK" /data/local/tmp/fdk.so >/dev/null; else e
 dev 'BB=/xbin/busybox; [ -x $BB ] || BB=/system/xbin/busybox
 put() { $BB cat "$1" > "$2.tmp" && $BB cmp -s "$1" "$2.tmp" && $BB chown $4 "$2.tmp" && $BB chmod $3 "$2.tmp" && $BB mv "$2.tmp" "$2" && echo "installed $2"; }
 mount -o remount,rw /system || exit 1
-$BB mkdir -p /system/vendor/unknown321/lib/preload
+$BB mkdir -p /system/vendor/cinder/lib/preload
 # adb shell makes folders 0700; the service runs as uid 100 and must see in.
-$BB chmod 755 /system/vendor/unknown321/lib/preload
+$BB chmod 755 /system/vendor/cinder/lib/preload
 put /data/local/tmp/cinder_aac.so '"$DST"' 644 0:0
 put /data/local/tmp/cinder-hagowrap.new '"$HAGO"' 755 0:2000
 [ -s /data/local/tmp/fdk.so ] && put /data/local/tmp/fdk.so '"$FDKDST"' 644 0:0

@@ -39,7 +39,7 @@ const char* aac_enc_lib;
 
 /* Cinder's build of upstream fdk-aac 2.x first (build_fdk.sh; it can cap single frames), then the
  * firmware's own older encoder. The bare name is for tests, which find it on LD_LIBRARY_PATH. */
-static const char* const libs[] = {"/system/vendor/unknown321/lib/libfdk-aac-enc.so",
+static const char* const libs[] = {"/system/vendor/cinder/lib/libfdk-aac-enc.so",
                                    "libfdk-aac-enc.so", "libFraunhoferAAC.so"};
 
 static int load(void)

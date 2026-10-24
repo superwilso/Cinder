@@ -22,7 +22,7 @@ chmod +x "$T/stub/mount" "$T/stub/sync"
 R=; GUARD=
 fresh() {   # fresh [nobusybox] — a new scratch player with Cinder installed and healthy
     R="$T/r$RANDOM$RANDOM"; mkdir -p "$R/db" "$R/data/cinder" "$R/system/vendor/sony/bin" \
-        "$R/system/vendor/unknown321" "$R/system/bin" "$R/xbin"
+        "$R/system/vendor/cinder" "$R/system/bin" "$R/xbin"
     if [ "${1:-}" != nobusybox ]; then
         printf '#!/bin/sh\ncmd="$1"; shift\nexec "$cmd" "$@"\n' > "$R/xbin/busybox"; chmod +x "$R/xbin/busybox"
     fi
@@ -30,10 +30,10 @@ fresh() {   # fresh [nobusybox] — a new scratch player with Cinder installed a
     sed -e "s#/db/cinder-guard#$R/db/cinder-guard#g" -e "s#/system/#$R/system/#g" \
         -e "s#/data/cinder#$R/data/cinder#g" -e "s#/xbin/busybox#$R/xbin/busybox#g" \
         "$HERE/deploy/cinder-guard.sh" > "$GUARD"
-    printf 'name: HgrmMediaPlayerApp\ncommand: /system/vendor/unknown321/bin/cinderhome-launch.sh\n' \
+    printf 'name: HgrmMediaPlayerApp\ncommand: /system/vendor/cinder/bin/cinderhome-launch.sh\n' \
         > "$R/system/vendor/sony/bin/HgrmMediaPlayerApp.appcfg"
     printf 'name: HgrmMediaPlayerApp\ncommand: HgrmMediaPlayerApp\n' \
-        > "$R/system/vendor/unknown321/HgrmMediaPlayerApp.appcfg.real"
+        > "$R/system/vendor/sony/bin/HgrmMediaPlayerApp.appcfg.real"
     echo 0 > "$R/data/cinder/bootcount"
     mkdir -p "$R/db/cinder-guard"; : > "$R/db/cinder-guard/backstop_on"
 }
@@ -95,9 +95,16 @@ check "…with the kept copy left, since nothing could compare the two" "$([ -e 
 
 echo "the Home app backstop"
 APP() { echo "$R/system/vendor/sony/bin/HgrmMediaPlayerApp.appcfg"; }
-fresh; rm "$R/system/vendor/unknown321/HgrmMediaPlayerApp.appcfg.real"; echo 4 > "$R/data/cinder/bootcount"
+fresh; echo 'command: HgrmMediaPlayerApp' > "$(APP)"; echo 4 > "$R/data/cinder/bootcount"
 boot; boot; boot; boot
-check "Cinder not installed: the .appcfg is never touched" "$(grep -c cinderhome-launch "$(APP)")" 1
+check "on Sony's app already: the .appcfg is never touched" "$(cat "$(APP)")" "command: HgrmMediaPlayerApp"
+
+fresh; rm "$(APP).real"; echo 2 > "$R/data/cinder/bootcount"; boot; boot; boot
+check "no backup: the third boot writes Sony's own .appcfg" "$(grep -c '^command: HgrmMediaPlayerApp$' "$(APP)")" 1
+check "…all four lines of it" "$(grep -c '^type: Home$' "$(APP)")" 1
+
+fresh; cp "$(APP)" "$(APP).real"; echo 2 > "$R/data/cinder/bootcount"; boot; boot; boot
+check "a backup that names the launcher is not used" "$(grep -c '^command: HgrmMediaPlayerApp$' "$(APP)")" 1
 
 fresh; echo 2 > "$R/data/cinder/bootcount"; boot; boot
 check "two unproven boots: still Cinder" "$(grep -c cinderhome-launch "$(APP)")" 1

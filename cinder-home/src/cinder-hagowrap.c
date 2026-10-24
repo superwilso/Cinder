@@ -41,10 +41,10 @@
 #define HAGO_REAL "/system/vendor/sony/bin/hagodaemon.real"
 #endif
 #ifndef HAGO_SHIM
-#define HAGO_SHIM "/system/vendor/unknown321/lib/libcinder_mono.so"
+#define HAGO_SHIM "/system/vendor/cinder/lib/libcinder_mono.so"
 #endif
 #ifndef HAGO_DIR
-#define HAGO_DIR "/system/vendor/unknown321/lib/preload"
+#define HAGO_DIR "/system/vendor/cinder/lib/preload"
 #endif
 #ifndef HAGO_OFF
 #define HAGO_OFF "/data/cinder/preload_off"

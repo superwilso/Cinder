@@ -84,9 +84,13 @@ factory image, `bc41b677…`, checked 10-22).
    `preload` in its place.
 3. ~~**Retire `w1tuning`.**~~ **Done 10-23** (a969f61). It writes Walkman One's own NVRAM images, and nothing it unlocks is
    audible. Keep reading Walkman One's settings only to detect it.
-4. **Move out of Wampy's folder:** `/system/vendor/unknown321/` to `/system/vendor/cinder/`, about
-   110 references including the launcher's path. Migration on Update, a device test, and the
-   uninstaller handles both paths.
+4. ~~**Move out of Wampy's folder:**~~ **Code done 10-24**: `/system/vendor/cinder/` (volume
+   tables in `audio_dac/` directly under it). Step 4b of the installer moves an old install once the
+   `.appcfg` names the new launcher; the uninstaller clears both folders; `tools/test_migrate.sh`
+   (CI). Found on the way: the owner's `.appcfg.real` named Cinder's launcher, so an uninstall would
+   have left no Home app; installer, uninstaller and guard now write Sony's four lines instead.
+   Left: DEVICE_CHECKLIST §39.11. Wampy's own paths stay where they are read: its scrobbler (Cinder
+   stands down for it) and its `libsound_service_fw.so` (the `mono` route, A2).
 5. ~~**Drop the Wampy-era hooks and tooling:**~~ **Done 10-23** (91eac2c). the `ldac-run.sh` hook, the `WAMPY_SS`/`.mod` volume
    lookups, `phases/phase1.sh` cloning Wampy's repos, and CLAUDE.md Part E's "install Walkman One
    and Wampy as the baseline". Detection of either stays, so a player that has them still installs.

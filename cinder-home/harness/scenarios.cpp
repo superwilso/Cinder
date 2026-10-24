@@ -817,7 +817,7 @@ static void s_auto_off_idle(void) {
     cinder_harness_set_budget_ms(3600000);
     cinder_harness_run();
 
-    const char* helper = "system:/system/vendor/unknown321/bin/cinder-power off";
+    const char* helper = "system:/system/vendor/cinder/bin/cinder-power off";
     long long at = cinder_harness_first_ms(helper);
     std::printf("  .... first power-off attempt at %lldms (1 min idle)\n", at);
     check_range(at, 60000, 66000, "powered off a minute after the last input");
@@ -835,7 +835,7 @@ static void s_auto_off_playing(void) {
     cinder_harness_script("cinder_audio_is_playing", 1);
     cinder_harness_set_budget_ms(300000);
     cinder_harness_run();
-    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-power off"), 0,
+    check_eq(cinder_harness_count("system:/system/vendor/cinder/bin/cinder-power off"), 0,
              "never powers off while the service says audio is playing");
 }
 
@@ -847,7 +847,7 @@ static void s_auto_off_charging(void) {
     cinder_harness_fs_write("/sys/class/power_supply/usb/online", "1\n");
     cinder_harness_set_budget_ms(300000);
     cinder_harness_run();
-    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-power off"), 0,
+    check_eq(cinder_harness_count("system:/system/vendor/cinder/bin/cinder-power off"), 0,
              "never powers off a device sitting on a charger");
 }
 
@@ -858,7 +858,7 @@ static void s_auto_off_charging(void) {
 // battery driver reports "Not charging" with no charger attached: the guard returned on its first
 // line for every discharge, and the player ran to the hardware cutoff with no warning and no clean
 // shutdown. The rule is now the charger-detect nodes, and these pin both directions of it.
-static const char* kPowerOff = "system:/system/vendor/unknown321/bin/cinder-power off";
+static const char* kPowerOff = "system:/system/vendor/cinder/bin/cinder-power off";
 
 static void low_battery(const char* pct, const char* status, const char* usb_online) {
     healthy_device();
@@ -1080,7 +1080,7 @@ static void s_boot_to_stock_hands_the_eq_back(void) {
     cinder_harness_set_budget_ms(25000);
     cinder_harness_run();
 
-    const char* restart = "system:/system/vendor/unknown321/bin/cinder-power restart";
+    const char* restart = "system:/system/vendor/cinder/bin/cinder-power restart";
     check(cinder_harness_count(restart) >= 1, "the restart helper ran");
     int n = cinder_harness_count("cinder_effects_set_tone_system");
     check(n >= 2, "the selector is sent at boot and again on the way out");
@@ -1148,9 +1148,9 @@ static void s_msc_cycle(void) {
     cinder_harness_set_budget_ms(200000);
     cinder_harness_run();
 
-    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc on"), 1,
+    check_eq(cinder_harness_count("system:/system/vendor/cinder/bin/cinder-msc on"), 1,
              "handed the volume over once when the cable went in");
-    long long off = cinder_harness_first_ms("system:/system/vendor/unknown321/bin/cinder-msc off");
+    long long off = cinder_harness_first_ms("system:/system/vendor/cinder/bin/cinder-msc off");
     std::printf("  .... released at %lldms (cable pulled at 120000ms)\n", off);
     check_range(off, 120000, 126000, "took it back when the cable came out");
     // ClosePlayer on the way in costs the service its sequence. The next play press must find one
@@ -1396,12 +1396,12 @@ static void s_contents_orphan(void) {
     cinder_harness_run();
 
     const long long off = cinder_harness_first_ms(
-        "system:/system/vendor/unknown321/bin/cinder-msc off");
-    const int offs = cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc off");
+        "system:/system/vendor/cinder/bin/cinder-msc off");
+    const int offs = cinder_harness_count("system:/system/vendor/cinder/bin/cinder-msc off");
     std::printf("  .... unmounted at 60000ms -> reclaimed at %lldms (%d attempt(s))\n", off, offs);
     check_range(off, 60000, 70000, "took /contents back within a few seconds of losing it");
     check_eq(offs, 1, "…once, because it worked — not once a second for the rest of the boot");
-    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc on"), 0,
+    check_eq(cinder_harness_count("system:/system/vendor/cinder/bin/cinder-msc on"), 0,
              "and never handed the volume OUT, which is not what happened");
     // The library was read from the volume that went away, so it has to be re-read from the one
     // that came back — otherwise the app is mounted but still showing an empty shelf.
@@ -1420,8 +1420,8 @@ static void s_contents_orphan_not_ours(void) {
     cinder_harness_set_budget_ms(120000);
     cinder_harness_run();
 
-    const int on  = cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc on");
-    const int off = cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc off");
+    const int on  = cinder_harness_count("system:/system/vendor/cinder/bin/cinder-msc on");
+    const int off = cinder_harness_count("system:/system/vendor/cinder/bin/cinder-msc off");
     std::printf("  .... %d handover(s), %d reclaim(s) over a 90s session\n", on, off);
     check_eq(on, 1, "handed the volume over when the cable went in");
     check_eq(off, 0, "and did NOT take it back underneath the user's own transfer");
@@ -1542,7 +1542,7 @@ static void s_ram_suspend_opt_in(void) {
     cinder_harness_fs_write("/sys/module/icx_pm_helper/parameters/icx_bid2", "0\n");
     cinder_harness_run();
     check(ram_unlocked(), "file present, idle, off the cable: the wakelock is released");
-    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-power usbid3"), 1,
+    check_eq(cinder_harness_count("system:/system/vendor/cinder/bin/cinder-power usbid3"), 1,
              "…after telling the kernel to resume the USB port as a device, once");
 }
 // The same switch as a line in the one settings file, and a longer key that must not match it.
@@ -1589,9 +1589,9 @@ static void s_suspend_off_by_file(void) {
 
 // The CPU helper: kernel-default scheduler slices once, max 1040 MHz while the screen is dark on
 // the jack, restored when Power lights it. The opt-out file stops sched and cap outright.
-static const char* kSched = "system:/system/vendor/unknown321/bin/cinder-power sched";
-static const char* kCap   = "system:/system/vendor/unknown321/bin/cinder-power cap";
-static const char* kUncap = "system:/system/vendor/unknown321/bin/cinder-power uncap";
+static const char* kSched = "system:/system/vendor/cinder/bin/cinder-power sched";
+static const char* kCap   = "system:/system/vendor/cinder/bin/cinder-power cap";
+static const char* kUncap = "system:/system/vendor/cinder/bin/cinder-power uncap";
 
 static void s_cpu_cap_follows_screen(void) {
     healthy_device();

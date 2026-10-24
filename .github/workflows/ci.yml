@@ -240,6 +240,11 @@ jobs:
       - name: Install mount lifecycle
         run: bash cinder-home/tools/test_install_mounts.sh
 
+      # Out of Wampy's folder (NEXT.md A4): Cinder's files leave /system/vendor/unknown321, Wampy's
+      # stay, and the .appcfg backup can never be one that names Cinder's own launcher.
+      - name: Install migration and the .appcfg backup
+        run: bash cinder-home/tools/test_migrate.sh
+
   # ── the dependency tree, which nothing looked at ───────────────────────────────────────────────
   # ~130 crates reach the binary that runs as the device's Home app, and until now no gate checked
   # any of them against the RustSec advisory database. The installer has no dependencies on Windows

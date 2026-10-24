@@ -496,10 +496,10 @@ curve.
 
 ```sh
 adb shell
-export LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib
-/system/vendor/unknown321/bin/cinder-probe --fx        # whole chain state + the three gates
-/system/vendor/unknown321/bin/cinder-probe --tone      # tone + 6-band units, ranges, preset curves
-/system/vendor/unknown321/bin/cinder-probe --inpath 2  # which tone system a given EqType selects
+export LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/cinder/lib:/system/lib:/usr/lib:/lib
+/system/vendor/cinder/bin/cinder-probe --fx        # whole chain state + the three gates
+/system/vendor/cinder/bin/cinder-probe --tone      # tone + 6-band units, ranges, preset curves
+/system/vendor/cinder/bin/cinder-probe --inpath 2  # which tone system a given EqType selects
 ```
 
 `--fx` first, always: ClearAudio+, Source Direct and `BtAudioSoundEffect` each make everything else
@@ -831,7 +831,7 @@ a message that points at the file.
 
 - **`/contents` is mounted `noexec`.** `install.md` and `docs/adb_setup.md` both tell you to run
   `adb shell '/contents/cinder-probe …'`; that returns `permission denied` no matter what the mode
-  bits say. Use `/system/vendor/unknown321/bin/cinder-probe`, or push to `/tmp` (tmpfs, exec, 32 MB)
+  bits say. Use `/system/vendor/cinder/bin/cinder-probe`, or push to `/tmp` (tmpfs, exec, 32 MB)
   for a build that is not installed yet.
 - **`LD_LIBRARY_PATH` is not optional** even from `/tmp`: without it the loader cannot find
   `libPlayerServiceClient.so`.

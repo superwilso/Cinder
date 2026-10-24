@@ -55,17 +55,17 @@ Note: while attached to WSL, Windows loses the device (MTP/adb there) until `usb
 
 ## 2. Fast iteration loop (no UPG reflash)
 
-The installed binary lives at `/system/vendor/unknown321/bin/cinder-home`; appmgr launches
-it via `/system/vendor/unknown321/bin/cinderhome-launch.sh` under the name
+The installed binary lives at `/system/vendor/cinder/bin/cinder-home`; appmgr launches
+it via `/system/vendor/cinder/bin/cinderhome-launch.sh` under the name
 `HgrmMediaPlayerApp`. To swap in a fresh build:
 
 ```bash
 bash cinder-home/build.sh dev
 adb push cinder-home/dist/dev/cinder-home /contents/cinder-home.new
 adb shell 'mount -o remount,rw /system &&
-           cp /contents/cinder-home.new /system/vendor/unknown321/bin/cinder-home.tmp &&
-           cmp /contents/cinder-home.new /system/vendor/unknown321/bin/cinder-home.tmp &&
-           mv /system/vendor/unknown321/bin/cinder-home.tmp /system/vendor/unknown321/bin/cinder-home &&
+           cp /contents/cinder-home.new /system/vendor/cinder/bin/cinder-home.tmp &&
+           cmp /contents/cinder-home.new /system/vendor/cinder/bin/cinder-home.tmp &&
+           mv /system/vendor/cinder/bin/cinder-home.tmp /system/vendor/cinder/bin/cinder-home &&
            sync && mount -o remount,ro /system && reboot'
 ```
 Atomic (temp → verify → mv), same pattern as the installer. **Reboot, don't kill**: the
@@ -99,7 +99,7 @@ adb shell ps | grep hagoromo                    # the service host processes
 # PlayStatus offset mapping (cinder-probe --discover) without a flash cycle:
 adb push cinder-home/dist/dev/cinder-probe /contents/
 adb shell 'LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/lib:/usr/lib \
-  /system/vendor/unknown321/bin/cinder-probe --discover'   # NOT /contents — that is noexec
+  /system/vendor/cinder/bin/cinder-probe --discover'   # NOT /contents — that is noexec
 ```
 
 Pulling `/db/MTPDB.dat` is the highest-value first step: it closes the album-art open
