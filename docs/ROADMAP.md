@@ -60,6 +60,12 @@ ones. Read its safety rules first. Grouped by what each needs:
 - **Noise cancelling:** the ambient filter Walkman One removed, and whether the DAC EQ and the
   linear amp interact with NC.
 - **DSEE AI**, and the SensMe channel id → name table.
+- **A backup tool of our own** (a possibility, not a commitment). wbrt is Windows-only and does no
+  checks on restore. A Cinder tool could run on Windows, Linux and macOS, write a header (model,
+  serial hash, per-region checksums), verify after backup, and refuse the wrong image. It would
+  build on the MIT `mediatek_flash_tool` and take nothing from wbrt. The first step is a read-only
+  dump on one A55 compared byte for byte with a wbrt backup. Plan, licences and open questions:
+  [`RESEARCH_other_repos_backup_2026-10.md`](RESEARCH_other_repos_backup_2026-10.md).
 
 **Other models** (ZX300, WM1A/Z, A40, A30): start from antiheroriot's ZX300 branch as a pull
 request.
