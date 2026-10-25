@@ -68,7 +68,7 @@ and refuses to restore the wrong image.
 - Download Agent: wbrt ships one taken from mtkclient (GPLv3); the flash tool's README uses an SP
   Flash Tool file. May Cinder redistribute either? Probably not, so the tool may need to fetch it
   or ask the user to supply it. Check each file's terms.
-- Driver: wbrt installs a WinUSB-style driver for VID_0E8D&PID_2000 using libwdi (LGPL). Whether a
+- Driver: wbrt installs a WinUSB-style driver for VID_0E8D&PID_2000 using libwdi (licence not checked). Whether a
   Cinder tool can reuse that or must ask the user to install a driver is open.
 - How does the A55 enter the preloader (key combination, cable state), and is that stable?
 - Does a read-only dump match wbrt's backup byte for byte? That is the acceptance test.
