@@ -22,8 +22,12 @@ use crate::widgets::{fill_rect, fit, hline, right, stroke_rect, sty};
 pub const SECTION_H: i32 = 34;
 /// The one-line state strip under a header.
 pub const STRIP_H: i32 = 40;
-/// Every list row in the kit. The same number `scale::SETTING_ROW_H` already names.
-pub const ROW_H: i32 = crate::scale::SETTING_ROW_H;
+/// Every list row in the kit. The same number `scale::SETTING_ROW_H()` already names.
+#[allow(non_snake_case)]
+pub fn ROW_H() -> i32 {
+    crate::scale::SETTING_ROW_H()
+}
+
 /// Chip height.
 pub const CHIP_H: i32 = 44;
 /// The switch.
@@ -180,7 +184,7 @@ impl<'a> Row<'a> {
     }
 }
 
-/// Draw `r` at `y`, `h` tall (normally [`ROW_H`]; a list that must fit the glass may pass less).
+/// Draw `r` at `y`, `h` tall (normally [`ROW_H()`]; a list that must fit the glass may pass less).
 /// Returns the y below it.
 pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i32 {
     if r.sel {

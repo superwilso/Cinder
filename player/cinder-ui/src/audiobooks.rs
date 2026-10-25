@@ -16,7 +16,11 @@ use crate::widgets::{hline, sty};
 use crate::{icons, Canvas};
 
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
-pub const ROW_H: i32 = crate::scale::TRACK_ROW_H;
+#[allow(non_snake_case)]
+pub fn ROW_H() -> i32 {
+    crate::scale::TRACK_ROW_H()
+}
+
 /// An author's heading is slimmer than a book row.
 pub const HEAD_H: i32 = 34;
 /// How far a book sits in under its author's heading.
@@ -33,7 +37,7 @@ impl Line {
     fn height(self) -> i32 {
         match self {
             Line::Author(_) => HEAD_H,
-            Line::Book(_) => ROW_H,
+            Line::Book(_) => ROW_H(),
         }
     }
 }
@@ -173,7 +177,7 @@ pub fn render(
                 let b = &lib.books[i];
                 let in_group = !b.author.is_empty();
                 let x = if in_group { INDENT } else { 0.0 };
-                let cy = y + ROW_H / 2;
+                let cy = y + ROW_H() / 2;
                 // A book part-way through is lit; one finished or not started is quiet.
                 let lit = b.in_progress();
                 icons::book(
@@ -207,7 +211,7 @@ pub fn render(
                     &crate::widgets::fit(f, &b.progress_label(), &ps, 380.0 - x),
                     &ps,
                 );
-                hline(c, y + ROW_H - 1, t.line);
+                hline(c, y + ROW_H() - 1, t.line);
             }
         }
         y += h;
@@ -236,9 +240,9 @@ mod tests {
     #[test]
     fn the_row_a_tap_lands_on_is_the_row_that_was_drawn_there() {
         let l = lib(20);
-        for scroll in [0, 7, ROW_H, ROW_H * 3 + 5] {
+        for scroll in [0, 7, ROW_H(), ROW_H() * 3 + 5] {
             for r in 0..l.books.len() {
-                let y = row_top(&l, r, scroll) + ROW_H / 2;
+                let y = row_top(&l, r, scroll) + ROW_H() / 2;
                 if (TOP..LIST_BOTTOM).contains(&y) {
                     assert_eq!(row_at(&l, y, scroll), Some(r), "row {r} at scroll {scroll}");
                 }
@@ -252,7 +256,7 @@ mod tests {
         );
         let short = lib(2);
         assert_eq!(
-            row_at(&short, row_top(&short, 1, 0) + ROW_H + 5, 0),
+            row_at(&short, row_top(&short, 1, 0) + ROW_H() + 5, 0),
             None,
             "past the last book"
         );
@@ -264,7 +268,7 @@ mod tests {
         let max = max_scroll_px(&l);
         assert!(max > 0);
         let last = l.books.len() - 1;
-        assert!(row_top(&l, last, max) + ROW_H <= LIST_BOTTOM);
+        assert!(row_top(&l, last, max) + ROW_H() <= LIST_BOTTOM);
         assert_eq!(max_scroll_px(&lib(2)), 0, "a short list does not scroll");
     }
 
@@ -324,11 +328,11 @@ mod tests {
         let l = grouped();
         assert_eq!(row_at(&l, TOP + HEAD_H / 2, 0), None);
         for r in 0..3 {
-            let y = row_top(&l, r, 0) + ROW_H / 2;
+            let y = row_top(&l, r, 0) + ROW_H() / 2;
             assert_eq!(row_at(&l, y, 0), Some(r));
         }
         assert_eq!(row_top(&l, 0, 0), TOP + HEAD_H);
-        assert_eq!(row_top(&l, 2, 0), TOP + HEAD_H + 2 * ROW_H + HEAD_H);
-        assert_eq!(content_h(&l), 2 * HEAD_H + 3 * ROW_H);
+        assert_eq!(row_top(&l, 2, 0), TOP + HEAD_H + 2 * ROW_H() + HEAD_H);
+        assert_eq!(content_h(&l), 2 * HEAD_H + 3 * ROW_H());
     }
 }

@@ -37,6 +37,9 @@ pub enum Button {
     Prev,
 }
 
+/// The text size Big view starts from (`App::set_big_view`).
+pub const BIG_TEXT_PCT: u32 = 130;
+
 /// The screens the navigator can be on (the route-stack entries).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Screen {
@@ -4045,6 +4048,11 @@ impl App {
                 self.set_ignore_the(!self.ignore_the);
                 vec![]
             }
+            crate::settings::ROW_BIG => {
+                let on = !crate::scale::large();
+                self.set_big_view(on);
+                vec![Action::UiScaleChanged]
+            }
             crate::settings::ROW_QUICK => {
                 self.set_quick_enabled(!self.quick_enabled);
                 vec![]
@@ -5061,7 +5069,7 @@ impl App {
                 let nc = crate::sound::nc_top(self.sound_scroll());
                 if self.nc_plug
                     && y >= crate::sound::TOP
-                    && (nc..nc + crate::sound::NC_H).contains(&y)
+                    && (nc..nc + crate::sound::NC_H()).contains(&y)
                 {
                     self.push(Screen::Nc);
                     return vec![];
@@ -7544,6 +7552,22 @@ impl App {
         crate::text::set_scale_pct(pct);
     }
 
+    /// Big view: rows and touch zones at `scale::LARGE_PCT`, and the text at least `BIG_TEXT_PCT`
+    /// (owner, 10-25: "around 130-140 looks good for text"). Off puts the text back to 100 % only
+    /// if it is still where Big view put it, so a size chosen on the slider is kept.
+    pub fn set_big_view(&mut self, on: bool) {
+        crate::scale::set_large(on);
+        let pct = crate::text::scale_pct();
+        if on && pct < BIG_TEXT_PCT {
+            crate::text::set_scale_pct(BIG_TEXT_PCT);
+        } else if !on && pct == BIG_TEXT_PCT {
+            crate::text::set_scale_pct(100);
+        }
+    }
+    pub fn big_view(&self) -> bool {
+        crate::scale::large()
+    }
+
     /// Jump straight to a screen for the host preview harness (no route history). Test/preview
     /// only — the app itself always arrives via `go`/`push` so Back stays meaningful.
     pub fn go_for_preview(&mut self, s: Screen) {
@@ -7937,7 +7961,7 @@ impl App {
                 crate::sensme::max_scroll_px(&self.lib, self.sensme_channel),
                 crate::sensme::list_top(self.sensme_channel),
                 if self.sensme_channel.is_none() {
-                    crate::sensme::GRID_BOTTOM
+                    crate::sensme::GRID_BOTTOM()
                 } else {
                     lb
                 },
@@ -8934,12 +8958,12 @@ impl App {
 
     /// Keep the album drill-in cursor's row fully inside its pixel-scrolled window.
     fn album_ensure_visible(&mut self) {
-        let row_top = self.album_track_idx as i32 * library::ALBUM_TRACK_RH;
+        let row_top = self.album_track_idx as i32 * library::ALBUM_TRACK_RH();
         let view = crate::canvas::H as i32 - 12 - library::album_tracks_top();
         if row_top < self.album_scroll_px {
             self.album_scroll_px = row_top;
-        } else if row_top + library::ALBUM_TRACK_RH > self.album_scroll_px + view {
-            self.album_scroll_px = row_top + library::ALBUM_TRACK_RH - view;
+        } else if row_top + library::ALBUM_TRACK_RH() > self.album_scroll_px + view {
+            self.album_scroll_px = row_top + library::ALBUM_TRACK_RH() - view;
         }
     }
 
@@ -8948,7 +8972,7 @@ impl App {
     /// `idx * row_h` — the album rows above it are not the same height.
     /// Keep the playlist cursor on screen when the transport buttons move it.
     fn playlist_ensure_visible(&mut self) {
-        let want = self.playlist_track_idx as i32 * library::PLAYLIST_TRACK_RH;
+        let want = self.playlist_track_idx as i32 * library::PLAYLIST_TRACK_RH();
         let Some((max, view)) = self.playlist_row().map(|p| {
             (
                 library::playlist_max_scroll_px(p),
@@ -8960,8 +8984,8 @@ impl App {
         let s = self.playlist_scroll_px;
         let s = if want < s {
             want
-        } else if want + library::PLAYLIST_TRACK_RH > s + view {
-            want + library::PLAYLIST_TRACK_RH - view
+        } else if want + library::PLAYLIST_TRACK_RH() > s + view {
+            want + library::PLAYLIST_TRACK_RH() - view
         } else {
             s
         };
@@ -8979,7 +9003,7 @@ impl App {
             return;
         };
         let view = library::artist_view_h().max(1);
-        let rh = library::ARTIST_TRACK_RH;
+        let rh = library::ARTIST_TRACK_RH();
         if row_top < self.artist_scroll_px {
             self.artist_scroll_px = row_top;
         } else if row_top + rh > self.artist_scroll_px + view {
@@ -10470,6 +10494,7 @@ impl App {
                 let db_label = self.database_label();
                 let view = crate::settings::SettingsView {
                     volume_limit: self.volume_limit,
+                    big_view: crate::scale::large(),
                     ignore_the: self.ignore_the,
                     quick: self.quick_enabled,
                     shuffle_by: self.shuffle_by.label(),
@@ -11860,12 +11885,22 @@ impl App {
         self.nc_model = model.min(crate::nc::MODELS.len() - 1);
     }
     /// The Sound list's scroll as `sound::` is given it: one row less while the Noise cancelling
-    /// row sits above the list (see `sound::NC_H`).
+    /// row sits above the list (see `sound::NC_H()`).
     fn sound_scroll(&self) -> i32 {
-        self.sound_scroll_px - if self.nc_plug { crate::sound::NC_H } else { 0 }
+        self.sound_scroll_px
+            - if self.nc_plug {
+                crate::sound::NC_H()
+            } else {
+                0
+            }
     }
     fn sound_max_scroll(&self) -> i32 {
-        crate::sound::max_scroll() + if self.nc_plug { crate::sound::NC_H } else { 0 }
+        crate::sound::max_scroll()
+            + if self.nc_plug {
+                crate::sound::NC_H()
+            } else {
+                0
+            }
     }
 
     /// The jack's EQ is the DAC's (see the field).
@@ -13356,7 +13391,7 @@ mod language_tests {
         assert_eq!(a.language(), Language::English);
         assert!(a.settings_activate().is_empty());
         assert_eq!(a.current(), Screen::Language, "the row opens the list");
-        let row = |i: i32| crate::language::TOP + i * crate::kit::ROW_H + crate::kit::ROW_H / 2;
+        let row = |i: i32| crate::language::TOP + i * crate::kit::ROW_H() + crate::kit::ROW_H() / 2;
         a.tap(240, row(1));
         assert_eq!(a.language(), Language::SimplifiedChinese);
         assert_eq!(a.current(), Screen::Language, "picking stays on the page");
@@ -13503,21 +13538,24 @@ mod tests {
         let mut a = unlocked();
         a.push_for_test(Screen::Soundscape);
         assert_eq!(
-            a.tap(40, ss::ROW_ALONE + 30),
+            a.tap(40, ss::ROW_ALONE() + 30),
             vec![],
             "the title is not the slider"
         );
-        assert_eq!(a.tap(376, ss::ROW_ALONE + 30), vec![Action::AmbientChanged]);
+        assert_eq!(
+            a.tap(376, ss::ROW_ALONE() + 30),
+            vec![Action::AmbientChanged]
+        );
         assert_eq!(a.ambient().1, 100);
-        assert!(a.scrub_begin(176, ss::ROW_MUSIC + 30));
+        assert!(a.scrub_begin(176, ss::ROW_MUSIC() + 30));
         assert_eq!(a.ambient().2, 0);
         assert_eq!(
-            a.scrub_move(177, ss::ROW_MUSIC + 30),
+            a.scrub_move(177, ss::ROW_MUSIC() + 30),
             vec![],
             "the same step: nothing to say"
         );
         assert_eq!(
-            a.scrub_move(276, ss::ROW_MUSIC + 30),
+            a.scrub_move(276, ss::ROW_MUSIC() + 30),
             vec![Action::AmbientChanged]
         );
         assert_eq!(a.ambient().2, 50);
@@ -14210,8 +14248,8 @@ mod tests {
     /// so inserting a header row moves the test with the screen instead of breaking it.
     fn picker_y(r: usize) -> i32 {
         crate::library::GENRE_TOP
-            + r as i32 * crate::library::GENRE_RH
-            + crate::library::GENRE_RH / 2
+            + r as i32 * crate::library::GENRE_RH()
+            + crate::library::GENRE_RH() / 2
     }
 
     /// The picker's rows and its hit test share their arithmetic, and the "All genres" row means
@@ -14776,7 +14814,7 @@ mod tests {
             .up_next_layout()
             .top_of(crate::up_next::Slot::Upcoming(a.context_idx + 1 + i))
             .unwrap();
-        crate::chrome::HEADER_BOTTOM + top + crate::up_next::RH / 2 - a.queue_scroll_px
+        crate::chrome::HEADER_BOTTOM + top + crate::up_next::RH() / 2 - a.queue_scroll_px
     }
 
     /// The whole point: drag a row by its handle and it lands where you dropped it.
@@ -14791,7 +14829,7 @@ mod tests {
         );
         assert_eq!(a.reorder_state().map(|d| (d.from, d.to)), Some((0, 0)));
         // Two rows down. `to` follows the row's CENTRE, so this is unambiguous.
-        a.reorder_track(2 * crate::up_next::RH);
+        a.reorder_track(2 * crate::up_next::RH());
         assert_eq!(a.reorder_state().map(|d| d.to), Some(2));
         assert_eq!(a.reorder_release(), vec![Action::QueueChanged]);
         assert!(a.reorder_state().is_none(), "the drag must end at release");
@@ -15120,7 +15158,7 @@ mod tests {
     fn the_playing_row_cannot_be_swiped_out() {
         let mut a = queued(3);
         let top = a.up_next_layout().current_top.unwrap();
-        let y = crate::chrome::HEADER_BOTTOM + top + crate::up_next::RH / 2 - a.queue_scroll_px;
+        let y = crate::chrome::HEADER_BOTTOM + top + crate::up_next::RH() / 2 - a.queue_scroll_px;
         assert!(!a.swipe_track(80, y));
         assert!(a.swipe(1, 240, y).is_empty());
         assert_eq!(upq(&a).len(), 3);
@@ -15451,7 +15489,7 @@ mod tests {
         });
         assert!(a.open_album_named("Kind of Blue"));
         let row =
-            |i: i32| crate::library::album_tracks_top() + i * crate::library::ALBUM_TRACK_RH + 10;
+            |i: i32| crate::library::album_tracks_top() + i * crate::library::ALBUM_TRACK_RH() + 10;
         assert_eq!(a.tap(240, row(1)), vec![Action::PlayIndexAt(70, 562_000)]);
         assert_eq!(
             a.tap(240, row(0)),
@@ -16258,7 +16296,7 @@ mod tests {
             + a.up_next_layout()
                 .top_of(crate::up_next::Slot::Upcoming(1))
                 .unwrap()
-            + crate::up_next::RH / 2;
+            + crate::up_next::RH() / 2;
         assert_ne!(
             a.up_next_layout().at(y_unscrolled, a.queue_scroll_px),
             Some(crate::up_next::Slot::Upcoming(1))
@@ -16309,7 +16347,7 @@ mod tests {
         use crate::display::{accent_hit, row_top, ROW_ACCENT};
         let mut a = unlocked();
         a.go(Screen::Display);
-        let y = row_top(ROW_ACCENT) + crate::kit::ROW_H / 2;
+        let y = row_top(ROW_ACCENT) + crate::kit::ROW_H() / 2;
         for want in 0..Accent::COUNT {
             // Sweep x to find a pixel that really is inside swatch `want`, then tap exactly there.
             let x = (0..crate::canvas::W as i32)
@@ -16362,7 +16400,7 @@ mod tests {
         a.settings_sel = crate::settings::ROW_BOOT_STOCK;
         assert!(a.settings_activate().is_empty(), "first tap only arms");
         assert!(a.boot_stock_armed);
-        let y = crate::settings::LIST_TOP + crate::kit::ROW_H / 2;
+        let y = crate::settings::LIST_TOP + crate::kit::ROW_H() / 2;
         assert_eq!(
             crate::settings::row_at(y, 0, false, false),
             Some(crate::settings::ROW_DISPLAY)
@@ -16412,7 +16450,7 @@ mod tests {
         a.go(Screen::Display);
         assert_eq!(a.volume_hud(), "full", "Full is the default");
         let top = crate::display::row_top(crate::display::ROW_VOLUME);
-        let y = top + crate::kit::ROW_H / 2;
+        let y = top + crate::kit::ROW_H() / 2;
         let x = (0..crate::canvas::W as i32)
             .rev()
             .find(|x| crate::display::volume_chip_at(*x, y) == Some(1))
@@ -16817,6 +16855,29 @@ mod tests {
     }
 
     #[test]
+    fn big_view_grows_rows_and_text_and_gives_back_a_size_it_set() {
+        let _g = crate::text::scale_guard();
+        let mut a = unlocked();
+        a.push_for_test(Screen::Settings);
+        let row = crate::settings::row_top_px(crate::settings::ROW_BIG) + crate::settings::LIST_TOP;
+        assert_eq!(a.tap(200, row + 20), vec![Action::UiScaleChanged]);
+        assert!(a.big_view());
+        assert_eq!(crate::text::scale_pct(), BIG_TEXT_PCT);
+        assert_eq!(crate::scale::TRACK_ROW_H(), 78);
+        assert!(crate::text::touch_scale() >= 1.25);
+        // A size picked on the slider while Big view is on is kept when it goes off.
+        crate::text::set_scale_pct(140);
+        a.set_big_view(false);
+        assert_eq!(crate::text::scale_pct(), 140);
+        assert_eq!(crate::scale::TRACK_ROW_H(), 62);
+        // The one Big view set is given back.
+        a.set_big_view(true);
+        crate::text::set_scale_pct(BIG_TEXT_PCT);
+        a.set_big_view(false);
+        assert_eq!(crate::text::scale_pct(), 100);
+    }
+
+    #[test]
     fn power_wakes_the_screen_over_a_dialog_usb_storage_and_the_intro() {
         let mut a = unlocked();
         a.confirm = Some(crate::confirm::Ask::Restart);
@@ -16955,16 +17016,16 @@ mod tests {
         assert_eq!(a.tap(240, quick::ROW_BT + 30), vec![Action::BtToggle(!bt)]);
         let night = a.night;
         assert_eq!(
-            a.tap(240, quick::ROW_NIGHT + 30),
+            a.tap(240, quick::ROW_NIGHT() + 30),
             vec![Action::ThemeChanged(!night)]
         );
-        let sleep_y = quick::BOTTOM - 26 - crate::kit::CHIP_H / 2;
+        let sleep_y = quick::BOTTOM() - 26 - crate::kit::CHIP_H / 2;
         assert_eq!(a.tap(chip(2, 6), sleep_y), vec![Action::SleepTimer(30)]);
         // The sixth chip is "Song": stop after this one. It cancels any countdown.
         assert_eq!(a.tap(chip(5, 6), sleep_y), vec![Action::SleepTimer(0)]);
         assert!(a.stop_after());
         assert!(a.quick_is_open(), "controls leave the panel open");
-        assert_eq!(a.tap(240, quick::BOTTOM + 100), Vec::<Action>::new());
+        assert_eq!(a.tap(240, quick::BOTTOM() + 100), Vec::<Action>::new());
         assert!(!a.quick_is_open(), "a tap on the screen behind closes it");
     }
 
@@ -17309,13 +17370,13 @@ mod tests {
         a.set_library(books_lib(4));
         a.push_for_test(Screen::Books);
         for i in 0..4 {
-            let y = crate::audiobooks::row_top(&a.lib, i, 0) + crate::audiobooks::ROW_H / 2;
+            let y = crate::audiobooks::row_top(&a.lib, i, 0) + crate::audiobooks::ROW_H() / 2;
             assert_eq!(a.tap(240, y), vec![Action::PlayBook(i)], "row {i}");
         }
         assert_eq!(
             a.tap(
                 240,
-                crate::audiobooks::row_top(&a.lib, 3, 0) + crate::audiobooks::ROW_H + 5
+                crate::audiobooks::row_top(&a.lib, 3, 0) + crate::audiobooks::ROW_H() + 5
             ),
             vec![]
         );
@@ -17328,8 +17389,8 @@ mod tests {
         let mut a = unlocked();
         a.set_library(books_lib(30));
         a.push_for_test(Screen::Books);
-        a.scroll_px(crate::audiobooks::ROW_H * 5);
-        let y = crate::audiobooks::TOP + crate::audiobooks::ROW_H / 2;
+        a.scroll_px(crate::audiobooks::ROW_H() * 5);
+        let y = crate::audiobooks::TOP + crate::audiobooks::ROW_H() / 2;
         assert_eq!(a.tap(240, y), vec![Action::PlayBook(5)]);
     }
 
@@ -17452,7 +17513,7 @@ mod tests {
     fn a_track_in_a_channel_plays_the_channel_from_there() {
         let mut a = at_sensme();
         a.sensme_enter(1); // Morning: tracks 1 and 2
-        let y = crate::sensme::row_top(1, a.sensme_channel, 0) + crate::sensme::ROW_H / 2;
+        let y = crate::sensme::row_top(1, a.sensme_channel, 0) + crate::sensme::ROW_H() / 2;
         assert_eq!(
             a.tap(240, y),
             vec![Action::PlaySensMe {
@@ -17497,7 +17558,7 @@ mod tests {
     #[test]
     fn the_grid_button_shuffles_all_or_follows_the_clock() {
         let mut a = at_sensme(); // channels: Active (0), Morning (8)
-        let button = crate::sensme::BUTTON_Y + crate::kit::BUTTON_H / 2;
+        let button = crate::sensme::BUTTON_Y() + crate::kit::BUTTON_H / 2;
         assert_eq!(
             a.tap(240, button),
             vec![Action::PlaySensMe {
@@ -17506,7 +17567,7 @@ mod tests {
                 shuffle: true
             }],
         );
-        a.tap(240, crate::sensme::FOLLOW_Y + crate::kit::ROW_H / 2);
+        a.tap(240, crate::sensme::FOLLOW_Y() + crate::kit::ROW_H() / 2);
         assert!(a.sensme_follow(), "the switch row turns following on");
         a.clock_hour = Some(8);
         assert_eq!(
@@ -18015,7 +18076,7 @@ mod tests {
         let mut a = own_and_sony();
         a.open_playlist(0);
         let row_y = library::playlist_content_top(a.playlist_row().unwrap())
-            + library::PLAYLIST_TRACK_RH / 2;
+            + library::PLAYLIST_TRACK_RH() / 2;
         let x = library::PLAYLIST_REMOVE_X + 20;
 
         assert!(a.tap(x, row_y).is_empty(), "the first tap only arms");
@@ -18056,7 +18117,8 @@ mod tests {
         a.open_playlist(0); // "Night Bus", 3 members
         let top = library::playlist_content_top(a.playlist_row().unwrap());
         for row in 0..3u32 {
-            let y = top + row as i32 * library::PLAYLIST_TRACK_RH + library::PLAYLIST_TRACK_RH / 2;
+            let y =
+                top + row as i32 * library::PLAYLIST_TRACK_RH() + library::PLAYLIST_TRACK_RH() / 2;
             assert_eq!(
                 a.tap(200, y),
                 vec![Action::PlayPlaylistAt(77, row)],
@@ -18102,8 +18164,8 @@ mod tests {
         a.open_playlist(0);
         a.queue_push_for_test();
         let y = library::playlist_content_top(a.playlist_row().unwrap())
-            + library::PLAYLIST_TRACK_RH
-            + library::PLAYLIST_TRACK_RH / 2;
+            + library::PLAYLIST_TRACK_RH()
+            + library::PLAYLIST_TRACK_RH() / 2;
         assert!(a.tap(200, y).is_empty(), "with a queue, the tap asks first");
         assert!(a.modal_open());
         let keep = (0..crate::canvas::H as i32)
@@ -18125,7 +18187,7 @@ mod tests {
         assert!(library::hit_playlist_action(pl, bx + bw / 2, by + bh / 2).is_none());
         // And the × column is just part of the row: tapping there plays the track.
         let row_y = library::playlist_content_top(a.playlist_row().unwrap())
-            + library::PLAYLIST_TRACK_RH / 2;
+            + library::PLAYLIST_TRACK_RH() / 2;
         // …and it plays the PLAYLIST from that row, not the track's album.
         assert_eq!(
             a.tap(library::PLAYLIST_REMOVE_X + 20, row_y),
@@ -18753,7 +18815,7 @@ mod tests {
 
         // A track row plays THE PLAYLIST from that row; the band's two halves play and shuffle it.
         let ty = library::playlist_content_top(a.playlist_row().unwrap())
-            + library::PLAYLIST_TRACK_RH / 2;
+            + library::PLAYLIST_TRACK_RH() / 2;
         assert_eq!(a.tap(200, ty), vec![Action::PlayPlaylistAt(78, 0)]);
         assert_eq!(
             a.current(),
@@ -18783,7 +18845,7 @@ mod tests {
         let mut a = two_playlists();
         a.open_playlist(0);
         let ty = library::playlist_content_top(a.playlist_row().unwrap())
-            + library::PLAYLIST_TRACK_RH / 2;
+            + library::PLAYLIST_TRACK_RH() / 2;
         assert_eq!(a.swipe(1, 240, ty), vec![Action::QueueChanged]);
         // Nothing was playing, so the queued track starts the list.
         assert_eq!(a.context().len(), 1);
@@ -19308,7 +19370,7 @@ mod tests {
 
         let was = a.battery_care();
         let y = crate::device::care_row_y(&a.device_view(), a.device_scroll_px).unwrap()
-            + crate::device::ROW_H / 2;
+            + crate::device::ROW_H() / 2;
         let acts = a.tap(240, y);
         assert_eq!(acts, vec![Action::BatteryCareChanged(!was)]);
         assert_eq!(a.battery_care(), !was);
@@ -19328,7 +19390,7 @@ mod tests {
         // one must do nothing — in particular it must not fall through to the toggle.
         let mut y = crate::chrome::HEADER_BOTTOM + 4;
         while y < crate::canvas::H as i32 {
-            if !(care_top..care_top + crate::device::ROW_H).contains(&y) {
+            if !(care_top..care_top + crate::device::ROW_H()).contains(&y) {
                 assert!(a.tap(240, y).is_empty(), "y={y} should be inert");
             }
             y += 9;
@@ -19351,12 +19413,12 @@ mod tests {
         let shifted = before - a.device_scroll_px;
         let was = a.battery_care();
         assert!(
-            a.tap(240, before + crate::device::ROW_H / 2).is_empty()
-                || shifted + crate::device::ROW_H > before,
+            a.tap(240, before + crate::device::ROW_H() / 2).is_empty()
+                || shifted + crate::device::ROW_H() > before,
             "the pre-scroll position must no longer be the switch"
         );
         a.set_battery_care(was);
-        let acts = a.tap(240, shifted + crate::device::ROW_H / 2);
+        let acts = a.tap(240, shifted + crate::device::ROW_H() / 2);
         assert_eq!(
             acts,
             vec![Action::BatteryCareChanged(!was)],
@@ -19872,7 +19934,7 @@ mod tests {
         );
         assert_eq!(a.current(), Screen::Skins);
         a.set_skin_list(vec!["a.wsz".into(), "b.wsz".into()], "a.wsz");
-        let row1 = crate::language::TOP + crate::kit::ROW_H * 3 / 2;
+        let row1 = crate::language::TOP + crate::kit::ROW_H() * 3 / 2;
         assert_eq!(a.tap(240, row1), vec![Action::PickSkin(1)]);
         assert_eq!(a.skin_name(1), Some("b.wsz"));
         assert_eq!(a.current(), Screen::Display, "picking goes back");
@@ -20096,7 +20158,7 @@ mod tests {
         a.queue_scroll_px = 0;
         let l = a.up_next_layout();
         let top = crate::chrome::HEADER_BOTTOM;
-        let y_of = |slot| top + l.top_of(slot).unwrap() + crate::up_next::RH / 2;
+        let y_of = |slot| top + l.top_of(slot).unwrap() + crate::up_next::RH() / 2;
         // A history row jumps WITHIN the context and re-arms the follow. PlayContextAt, not
         // PlayIndex: the row is a position in the sequence on screen, and resolving it to the
         // track's album instead is what threw away a "Shuffle all songs" order.
@@ -20155,7 +20217,7 @@ mod tests {
         a.queue_scroll_px = 0;
         let l = a.up_next_layout();
         let top = crate::chrome::HEADER_BOTTOM;
-        let y_of = |slot| top + l.top_of(slot).unwrap() + crate::up_next::RH / 2;
+        let y_of = |slot| top + l.top_of(slot).unwrap() + crate::up_next::RH() / 2;
 
         // Four rows down, well past the album any one of these tracks came from.
         let acts = a.tap(240, y_of(crate::up_next::Slot::Upcoming(4)));
@@ -20202,7 +20264,8 @@ mod tests {
         );
         let l = a.up_next_layout();
         let top = crate::chrome::HEADER_BOTTOM;
-        let y = top + l.top_of(crate::up_next::Slot::Upcoming(2)).unwrap() + crate::up_next::RH / 2;
+        let y =
+            top + l.top_of(crate::up_next::Slot::Upcoming(2)).unwrap() + crate::up_next::RH() / 2;
         // Shrink the context behind the layout's back, then tap the row that no longer exists.
         a.set_play_context(
             vec![SongRow {
@@ -20462,7 +20525,7 @@ mod tests {
             vec![Action::PlayIndex(first_id)]
         );
         // Tap the first track row → same first track by object id.
-        let row0 = library::album_tracks_top() + library::ALBUM_TRACK_RH / 2;
+        let row0 = library::album_tracks_top() + library::ALBUM_TRACK_RH() / 2;
         assert_eq!(a.tap(240, row0), vec![Action::PlayIndex(first_id)]);
         // A tap in the header art/title area, above the band, plays nothing.
         assert!(a.tap(240, by - 20).is_empty());
@@ -20484,7 +20547,7 @@ mod tests {
             a.push(Screen::Album);
             a
         };
-        let row0 = library::album_tracks_top() + library::ALBUM_TRACK_RH / 2;
+        let row0 = library::album_tracks_top() + library::ALBUM_TRACK_RH() / 2;
 
         let mut later = open_album();
         let want = later.lib.albums_flat()[0].track_list[0].object_id;
@@ -20617,7 +20680,7 @@ mod tests {
         let seed = || queued(3);
         // A y that lands on the first upcoming row, whatever the layout puts above it.
         let mut probe = seed();
-        let row_y = qrow_y(&probe, 0) - crate::up_next::RH / 2 + 4;
+        let row_y = qrow_y(&probe, 0) - crate::up_next::RH() / 2 + 4;
         let off_handle = crate::up_next::GRIP_X0 - 40;
         let on_handle = crate::up_next::GRIP_X0 + 4;
 
@@ -20701,7 +20764,7 @@ mod tests {
         let d = a.reorder_state().expect("a row is in hand");
         // One history row and no queue, so the first upcoming row is span index 1.
         assert_eq!(d.from, 1);
-        a.reorder_track(2 * crate::up_next::RH + 4);
+        a.reorder_track(2 * crate::up_next::RH() + 4);
         let acts = a.reorder_release();
         assert_eq!(
             acts,
@@ -21992,7 +22055,7 @@ mod tests {
         assert!(a.eq_on_dac());
         assert_eq!(a.eq_bands_for_dsp(), [0; 10]);
         a.go(Screen::Sound);
-        let y = crate::sound::row_top(crate::sound::ROW_EQ, 0) + crate::sound::ROW_H / 2;
+        let y = crate::sound::row_top(crate::sound::ROW_EQ, 0) + crate::sound::ROW_H() / 2;
         a.tap(240, y);
         assert_eq!(a.current(), Screen::DacEq);
         a.set_bt_route(true);
@@ -22009,7 +22072,7 @@ mod tests {
     fn the_presets_row_opens_presets() {
         let mut a = unlocked();
         a.go(Screen::Sound);
-        let y = crate::sound::row_top(crate::sound::ROW_PROFILE, 0) + crate::sound::ROW_H / 2;
+        let y = crate::sound::row_top(crate::sound::ROW_PROFILE, 0) + crate::sound::ROW_H() / 2;
         assert!(a.tap(240, y).is_empty());
         assert_eq!(a.current(), Screen::Presets);
     }
@@ -22033,7 +22096,7 @@ mod tests {
         a.tap(240, nc750);
         assert_eq!(a.nc_items(), Some(("ainc", "nw750n")));
         a.pop();
-        a.tap(240, presets + crate::sound::NC_H);
+        a.tap(240, presets + crate::sound::NC_H());
         assert_eq!(a.current(), Screen::Presets);
         a.pop();
         // Ambient is written as off where it cannot run.
@@ -23488,8 +23551,8 @@ mod palette_tests {
             + 2 * crate::kit::SECTION_H
             + crate::kit::CHIP_H
             + 8
-            + i as i32 * crate::kit::ROW_H
-            + crate::kit::ROW_H / 2
+            + i as i32 * crate::kit::ROW_H()
+            + crate::kit::ROW_H() / 2
     }
 
     /// Display ▸ Palette opens the picker; a tap on a row applies that palette at once and stays
@@ -23635,7 +23698,7 @@ mod palette_tests {
         assert_eq!(a.toast, "This palette sets its own accent");
         // A tap where the last swatch would be changes nothing either, and explains the same way.
         a.toast.clear();
-        let y = crate::display::row_top(ROW_ACCENT) + crate::kit::ROW_H / 2;
+        let y = crate::display::row_top(ROW_ACCENT) + crate::kit::ROW_H() / 2;
         let x = (0..crate::canvas::W as i32)
             .find(|&x| crate::display::accent_hit(x, y) == Some(Accent::COUNT - 1))
             .expect("the last swatch has a hit zone");
@@ -23950,7 +24013,7 @@ mod r4_tests {
         assert_eq!(a.current(), Screen::PlaylistEdit);
 
         // × on the second row: gone at once, and nothing has been written.
-        let y1 = pe::row_top(1, 0) + pe::RH / 2;
+        let y1 = pe::row_top(1, 0) + pe::RH() / 2;
         assert!(a.tap(pe::REMOVE_X0 + 20, y1).is_empty());
         assert_eq!(a.pl_edit.as_ref().unwrap().order, [0, 2, 3, 4, 5]);
         assert_eq!(
@@ -23960,13 +24023,13 @@ mod r4_tests {
         );
 
         // ≡ on the first row, dragged down two rows.
-        let y0 = pe::row_top(0, 0) + pe::RH / 2;
+        let y0 = pe::row_top(0, 0) + pe::RH() / 2;
         assert!(
             !a.reorder_begin(200, y0),
             "a drag that starts on the title scrolls"
         );
         assert!(a.reorder_begin(30, y0), "the handle lifts the row");
-        a.reorder_track(2 * pe::RH);
+        a.reorder_track(2 * pe::RH());
         assert!(
             a.reorder_release().is_empty(),
             "nothing for the shell until DONE"
@@ -23978,7 +24041,7 @@ mod r4_tests {
         assert_eq!(a.pl_edit.as_ref().unwrap().order, [0, 2, 3, 4, 5]);
         // Do the move again and save.
         assert!(a.reorder_begin(30, y0));
-        a.reorder_track(2 * pe::RH);
+        a.reorder_track(2 * pe::RH());
         a.reorder_release();
 
         assert_eq!(a.tap(EDIT.0, EDIT.1), vec![Action::PlaylistSaveEdit(id)]);
@@ -23996,7 +24059,7 @@ mod r4_tests {
         let (mut a, _) = on_own_playlist();
         let before = ids(&a);
         a.tap(EDIT.0, EDIT.1);
-        a.tap(pe::REMOVE_X0 + 20, pe::row_top(0, 0) + pe::RH / 2);
+        a.tap(pe::REMOVE_X0 + 20, pe::row_top(0, 0) + pe::RH() / 2);
         assert!(a.press(Button::Back).is_empty());
         assert_eq!(a.current(), Screen::Playlist);
         assert_eq!(ids(&a), before);
@@ -24156,7 +24219,7 @@ mod r4_tests {
         assert_eq!(a.playlist_row().unwrap().name, "Old");
 
         a.tap(EDIT.0, EDIT.1);
-        a.tap(200, ve::DELETE_Y + 20);
+        a.tap(200, ve::DELETE_Y() + 20);
         assert!(a.modal_open());
         let (x, y) = crate::confirm::confirm_button_centre(crate::confirm::Ask::DeleteView);
         a.tap(x, y);

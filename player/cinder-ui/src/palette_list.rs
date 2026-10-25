@@ -97,16 +97,16 @@ fn parts(entries: usize, skipped: usize) -> Vec<(Part, i32, i32)> {
     push(Part::Chips, kit::CHIP_H + 8);
     push(Part::Label(crate::i18n::text("PALETTES")), kit::SECTION_H);
     for i in 0..entries {
-        push(Part::Row(Item::Entry(i)), kit::ROW_H);
+        push(Part::Row(Item::Entry(i)), kit::ROW_H());
     }
     if skipped > 0 {
         push(Part::Label(crate::i18n::text("SKIPPED")), kit::SECTION_H);
         for i in 0..skipped {
-            push(Part::Row(Item::Skipped(i)), kit::ROW_H);
+            push(Part::Row(Item::Skipped(i)), kit::ROW_H());
         }
     }
     push(Part::Label(crate::i18n::text("ADD")), kit::SECTION_H);
-    push(Part::Row(Item::Add), kit::ROW_H);
+    push(Part::Row(Item::Add), kit::ROW_H());
     out
 }
 
@@ -171,14 +171,14 @@ pub fn render(
                     t,
                     f,
                     y,
-                    kit::ROW_H,
+                    kit::ROW_H(),
                     &Row::new(&e.name)
                         .sub(&e.sub)
                         .trail(Trail::Reserve(SWATCH_W))
                         .sel(e.active),
                 );
                 let x0 = kit::RIGHT - SWATCH_W;
-                let sy = y + (kit::ROW_H - CELL_H) / 2;
+                let sy = y + (kit::ROW_H() - CELL_H) / 2;
                 for (k, col) in e.cells.iter().enumerate() {
                     fill_rect(
                         c,
@@ -194,7 +194,7 @@ pub fn render(
             Part::Row(Item::Skipped(i)) => {
                 let s = &skipped[i];
                 // No value: the section label already says SKIPPED, and the reason needs the width.
-                kit::row(c, t, f, y, kit::ROW_H, &Row::new(&s.file).sub(&s.why));
+                kit::row(c, t, f, y, kit::ROW_H(), &Row::new(&s.file).sub(&s.why));
             }
             Part::Row(Item::Add) => {
                 kit::row(
@@ -202,7 +202,7 @@ pub fn render(
                     t,
                     f,
                     y,
-                    kit::ROW_H,
+                    kit::ROW_H(),
                     &Row::new(crate::i18n::text("Add a palette"))
                         .sub(crate::i18n::text("Copy .palette files to cinder_palettes/")),
                 );

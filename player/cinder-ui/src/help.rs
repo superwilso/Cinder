@@ -188,7 +188,7 @@ fn parts(pull_down: bool) -> Vec<(Part, i32, i32)> {
                 if line.sub.is_empty() {
                     LINE_H
                 } else {
-                    kit::ROW_H
+                    kit::ROW_H()
                 },
             );
         }

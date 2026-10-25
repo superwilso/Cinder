@@ -75,7 +75,11 @@ pub const UNKNOWN: i32 = i32::MIN;
 
 /// Row pitch, section-header height (the kit's), and where the list starts: under the header, the
 /// strip and the hero readout.
-pub const ROW_H: i32 = kit::ROW_H;
+#[allow(non_snake_case)]
+pub fn ROW_H() -> i32 {
+    kit::ROW_H()
+}
+
 pub const SECTION_H: i32 = kit::SECTION_H;
 const HERO_H: i32 = 118;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM + kit::STRIP_H + HERO_H;
@@ -243,7 +247,7 @@ pub fn items(v: &DeviceView) -> Vec<Item> {
 fn item_h(it: &Item) -> i32 {
     match it {
         Item::Section(_) => SECTION_H,
-        Item::Row { .. } | Item::Note { .. } => ROW_H,
+        Item::Row { .. } | Item::Note { .. } => ROW_H(),
     }
 }
 
@@ -283,7 +287,7 @@ pub fn care_row_y(v: &DeviceView, scroll: i32) -> Option<i32> {
 /// that cannot act.
 pub fn hit_care(v: &DeviceView, y: i32, scroll: i32) -> bool {
     match care_row_y(v, scroll) {
-        Some(top) => y >= top && y < top + ROW_H,
+        Some(top) => y >= top && y < top + ROW_H(),
         None => false,
     }
 }
@@ -505,12 +509,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
                 } else {
                     ""
                 };
-                kit::row(c, t, f, y, ROW_H, &Row::new(label).sub(sub).trail(trail));
+                kit::row(c, t, f, y, ROW_H(), &Row::new(label).sub(sub).trail(trail));
             }
             Item::Note { title, sub } => {
                 let mut quiet = *t;
                 quiet.ink = t.dim;
-                kit::row(c, &quiet, f, y, ROW_H, &Row::new(title).sub(sub));
+                kit::row(c, &quiet, f, y, ROW_H(), &Row::new(title).sub(sub));
             }
         }
         y += item_h(&it);
@@ -690,15 +694,15 @@ mod tests {
     fn the_care_row_hit_follows_the_scroll_it_is_drawn_at() {
         let v = sample();
         let top = care_row_y(&v, 0).expect("there is a care row");
-        assert!(hit_care(&v, top + ROW_H / 2, 0));
+        assert!(hit_care(&v, top + ROW_H() / 2, 0));
         assert!(!hit_care(&v, top - 1, 0));
-        assert!(!hit_care(&v, top + ROW_H, 0));
+        assert!(!hit_care(&v, top + ROW_H(), 0));
         // Scrolled, the target must move with the drawing by exactly the same amount — one layout
         // walked twice, not two layouts that happen to agree at rest.
         let s = 120;
         assert_eq!(care_row_y(&v, s), Some(top - s));
-        assert!(hit_care(&v, top - s + ROW_H / 2, s));
-        assert!(!hit_care(&v, top + ROW_H / 2, s));
+        assert!(hit_care(&v, top - s + ROW_H() / 2, s));
+        assert!(!hit_care(&v, top + ROW_H() / 2, s));
     }
 
     #[test]

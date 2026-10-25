@@ -20,13 +20,13 @@ pub fn row_at(y: i32, scroll: i32, n: usize) -> Option<usize> {
     if y < TOP {
         return None;
     }
-    let i = ((y - TOP + scroll) / kit::ROW_H) as usize;
+    let i = ((y - TOP + scroll) / kit::ROW_H()) as usize;
     (i < n).then_some(i)
 }
 
 /// How far a list of `n` scrolls; 0 while it fits.
 pub fn max_scroll(n: usize) -> i32 {
-    (TOP + n as i32 * kit::ROW_H + 8 - H as i32).max(0)
+    (TOP + n as i32 * kit::ROW_H() + 8 - H as i32).max(0)
 }
 
 pub fn render(
@@ -43,8 +43,8 @@ pub fn render(
         crate::chrome::header(c, t, f, &title, None);
         c.set_clip_y(TOP, H as i32);
         for (i, l) in languages.iter().enumerate() {
-            let y = TOP + i as i32 * kit::ROW_H - scroll;
-            if y + kit::ROW_H < TOP || y >= H as i32 {
+            let y = TOP + i as i32 * kit::ROW_H() - scroll;
+            if y + kit::ROW_H() < TOP || y >= H as i32 {
                 continue;
             }
             // The English name under it, for whoever installed the player for someone else.
@@ -58,7 +58,7 @@ pub fn render(
                 t,
                 f,
                 y,
-                kit::ROW_H,
+                kit::ROW_H(),
                 &Row::new(l.name()).sub(sub).sel(*l == current),
             );
         }
@@ -73,13 +73,13 @@ mod tests {
     #[test]
     fn rows_hit_where_they_are_drawn_and_long_lists_scroll() {
         assert_eq!(row_at(TOP - 1, 0, 2), None);
-        assert_eq!(row_at(TOP + kit::ROW_H / 2, 0, 2), Some(0));
-        assert_eq!(row_at(TOP + kit::ROW_H * 3 / 2, 0, 2), Some(1));
-        assert_eq!(row_at(TOP + kit::ROW_H * 5 / 2, 0, 2), None);
+        assert_eq!(row_at(TOP + kit::ROW_H() / 2, 0, 2), Some(0));
+        assert_eq!(row_at(TOP + kit::ROW_H() * 3 / 2, 0, 2), Some(1));
+        assert_eq!(row_at(TOP + kit::ROW_H() * 5 / 2, 0, 2), None);
         assert_eq!(max_scroll(2), 0, "two languages fit");
         let forty = max_scroll(40);
         assert!(forty > 0);
-        let last = H as i32 - 8 - kit::ROW_H / 2;
+        let last = H as i32 - 8 - kit::ROW_H() / 2;
         assert_eq!(
             row_at(last, forty, 40),
             Some(39),

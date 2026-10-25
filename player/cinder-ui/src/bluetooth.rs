@@ -144,20 +144,44 @@ const DISC: (i32, i32, i32, i32) = (348, 136, 104, 34); // x,y,w,h
 
 // ---- main screen: the paired list is the content ----
 const PAIRED_Y0: i32 = 212;
-const PAIRED_RH: i32 = crate::scale::TRACK_ROW_H;
+#[allow(non_snake_case)]
+fn PAIRED_RH() -> i32 {
+    crate::scale::TRACK_ROW_H()
+}
+
 /// Rows shown before the list is cut off. Five fills the space between the card and the footer
 /// without pushing either off; a longer pairing history is managed on the Devices screen, which is
 /// where forgetting lives anyway.
 pub const PAIRED_SHOWN: usize = 5;
 /// THIS DEVICE (handoff 2g): its section label, then "Sound quality ›" — the codec page.
 /// Straight under the list, with no gap.
-const THIS_DEVICE_Y: i32 = PAIRED_Y0 + PAIRED_SHOWN as i32 * PAIRED_RH;
-const ADV_Y: i32 = THIS_DEVICE_Y + crate::kit::SECTION_H;
-const ADV_H: i32 = crate::kit::ROW_H;
+#[allow(non_snake_case)]
+fn THIS_DEVICE_Y() -> i32 {
+    PAIRED_Y0 + PAIRED_SHOWN as i32 * PAIRED_RH()
+}
+
+#[allow(non_snake_case)]
+fn ADV_Y() -> i32 {
+    THIS_DEVICE_Y() + crate::kit::SECTION_H
+}
+
+#[allow(non_snake_case)]
+fn ADV_H() -> i32 {
+    crate::kit::ROW_H()
+}
+
 /// THIS DEVICE ▸ Debug log (`docs/PLAN_community_2026-09-23.md` B6): a switch that records the
 /// radio's HCI traffic, so a "won't connect" report can arrive with the evidence.
-const DEBUG_Y: i32 = ADV_Y + ADV_H;
-const DEBUG_H: i32 = crate::kit::ROW_H;
+#[allow(non_snake_case)]
+fn DEBUG_Y() -> i32 {
+    ADV_Y() + ADV_H()
+}
+
+#[allow(non_snake_case)]
+fn DEBUG_H() -> i32 {
+    crate::kit::ROW_H()
+}
+
 /// The PAIRED DEVICES label, whose right half is "PAIR NEW" (handoff 2g: a list's own action lives
 /// in its section label, as CLEAR does on Up Next). It sits straight under the connected card.
 const PAIRED_LABEL_Y: i32 = CARD_Y + CARD_H;
@@ -208,12 +232,12 @@ fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
     if ldac {
         push(Part::Label("LDAC"), SECTION_H);
         for k in 0..LDAC_ORDER.len() {
-            push(Part::Ldac(k), ROW_H);
+            push(Part::Ldac(k), ROW_H());
         }
     }
     push(Part::Label(crate::i18n::text("VOLUME CONTROL")), SECTION_H);
-    push(Part::Enhanced, ROW_H);
-    push(Part::Fine, ROW_H);
+    push(Part::Enhanced, ROW_H());
+    push(Part::Fine, ROW_H());
     out
 }
 
@@ -250,11 +274,11 @@ pub enum BtHit {
 /// Geometry accessors, so tests and any future caller ask the layout where a control is rather
 /// than repeating a pixel that silently rots when the screen moves.
 pub fn advanced_row() -> (i32, i32, i32, i32) {
-    (0, ADV_Y, crate::canvas::W as i32, ADV_H)
+    (0, ADV_Y(), crate::canvas::W as i32, ADV_H())
 }
 /// Vertical centre of the Debug log row.
 pub fn debug_row_y() -> i32 {
-    DEBUG_Y + DEBUG_H / 2
+    DEBUG_Y() + DEBUG_H() / 2
 }
 /// Centre of codec `id`'s chip on the Sound quality page.
 pub fn codec_chip(id: u8, aac: bool) -> (i32, i32) {
@@ -322,13 +346,13 @@ pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
         return BtHit::Disconnect;
     }
     let rows = paired.min(PAIRED_SHOWN) as i32;
-    if (PAIRED_Y0..PAIRED_Y0 + rows * PAIRED_RH).contains(&y) {
-        return BtHit::PairedRow(((y - PAIRED_Y0) / PAIRED_RH) as usize);
+    if (PAIRED_Y0..PAIRED_Y0 + rows * PAIRED_RH()).contains(&y) {
+        return BtHit::PairedRow(((y - PAIRED_Y0) / PAIRED_RH()) as usize);
     }
-    if (ADV_Y..ADV_Y + ADV_H).contains(&y) {
+    if (ADV_Y()..ADV_Y() + ADV_H()).contains(&y) {
         return BtHit::Advanced;
     }
-    if (DEBUG_Y..DEBUG_Y + DEBUG_H).contains(&y) {
+    if (DEBUG_Y()..DEBUG_Y() + DEBUG_H()).contains(&y) {
         return BtHit::DebugLog;
     }
     if crate::kit::section_action_hit(PAIRED_LABEL_Y, x, y) {
@@ -554,10 +578,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         );
     } else {
         for (i, d) in bt.paired.iter().take(PAIRED_SHOWN).enumerate() {
-            let y = PAIRED_Y0 + i as i32 * PAIRED_RH;
-            let cy = y + PAIRED_RH / 2;
+            let y = PAIRED_Y0 + i as i32 * PAIRED_RH();
+            let cy = y + PAIRED_RH() / 2;
             if d.connected {
-                fill_rect(c, 0, y, crate::canvas::W as i32, PAIRED_RH, t.row_sel);
+                fill_rect(c, 0, y, crate::canvas::W as i32, PAIRED_RH(), t.row_sel);
             }
             let icol = if d.connected { t.acc } else { t.dim };
             icons::bt(c, 38.0, cy as f32, 16.0, icol);
@@ -603,7 +627,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
                     0.1,
                 ),
             );
-            crate::widgets::hline(c, y + PAIRED_RH, t.line);
+            crate::widgets::hline(c, y + PAIRED_RH(), t.line);
         }
     }
 
@@ -615,7 +639,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         c,
         t,
         f,
-        THIS_DEVICE_Y,
+        THIS_DEVICE_Y(),
         crate::i18n::text("THIS DEVICE"),
         None,
     );
@@ -639,8 +663,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         c,
         t,
         f,
-        ADV_Y,
-        ADV_H,
+        ADV_Y(),
+        ADV_H(),
         &crate::kit::Row::new(crate::i18n::text("Sound quality"))
             .sub(&detail)
             .trail(crate::kit::Trail::Open(&value)),
@@ -654,8 +678,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         c,
         t,
         f,
-        DEBUG_Y,
-        DEBUG_H,
+        DEBUG_Y(),
+        DEBUG_H(),
         &crate::kit::Row::new(crate::i18n::text("Debug log"))
             .sub(dsub)
             .trail(crate::kit::Trail::Switch(bt.debug_log)),
@@ -826,9 +850,9 @@ mod tests {
             "the left half is the NFC hint"
         );
         assert!(
-            DEBUG_Y + DEBUG_H <= FOOTER_LINK_TOP,
+            DEBUG_Y() + DEBUG_H() <= FOOTER_LINK_TOP,
             "{} > {}",
-            DEBUG_Y + DEBUG_H,
+            DEBUG_Y() + DEBUG_H(),
             FOOTER_LINK_TOP
         );
     }

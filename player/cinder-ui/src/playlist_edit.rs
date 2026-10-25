@@ -29,7 +29,11 @@ use crate::widgets::{fill_rect, fit, hline, sty};
 use crate::Canvas;
 
 /// A track row: the Design Guide's 62 px track height.
-pub const RH: i32 = crate::scale::TRACK_ROW_H;
+#[allow(non_snake_case)]
+pub fn RH() -> i32 {
+    crate::scale::TRACK_ROW_H()
+}
+
 /// The strip naming the playlist.
 pub const STRIP_Y: i32 = crate::chrome::HEADER_BOTTOM;
 /// The "N TRACKS · UNDO" section label.
@@ -50,7 +54,7 @@ pub fn view_h() -> i32 {
 }
 
 pub fn content_h(n: usize) -> i32 {
-    n as i32 * RH
+    n as i32 * RH()
 }
 
 pub fn max_scroll(n: usize) -> i32 {
@@ -59,7 +63,7 @@ pub fn max_scroll(n: usize) -> i32 {
 
 /// Screen-y of row `i`'s top.
 pub fn row_top(i: usize, scroll_px: i32) -> i32 {
-    LIST_TOP + i as i32 * RH - scroll_px.max(0)
+    LIST_TOP + i as i32 * RH() - scroll_px.max(0)
 }
 
 /// The row under `y`, if any.
@@ -67,7 +71,7 @@ pub fn row_at(n: usize, scroll_px: i32, y: i32) -> Option<usize> {
     if !(LIST_TOP..LIST_BOTTOM).contains(&y) {
         return None;
     }
-    let i = ((y - LIST_TOP + scroll_px.max(0)) / RH) as usize;
+    let i = ((y - LIST_TOP + scroll_px.max(0)) / RH()) as usize;
     (i < n).then_some(i)
 }
 
@@ -95,8 +99,8 @@ pub fn slot_for(n: usize, float_top: i32, scroll_px: i32) -> usize {
     if n == 0 {
         return 0;
     }
-    let mid = float_top + RH / 2 - LIST_TOP + scroll_px.max(0);
-    (mid.div_euclid(RH)).clamp(0, n as i32 - 1) as usize
+    let mid = float_top + RH() / 2 - LIST_TOP + scroll_px.max(0);
+    (mid.div_euclid(RH())).clamp(0, n as i32 - 1) as usize
 }
 
 /// What the editor shows.
@@ -114,10 +118,10 @@ pub struct EditView<'a> {
 
 fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, s: &SongRow, lifted: bool) {
     if lifted {
-        fill_rect(c, 0, y, W as i32, RH, t.row_sel);
+        fill_rect(c, 0, y, W as i32, RH(), t.row_sel);
         hline(c, y, t.acc);
     }
-    let cy = y + RH / 2;
+    let cy = y + RH() / 2;
     icons::grip(
         c,
         34.0,
@@ -150,7 +154,7 @@ fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, s: &SongRow, lifted: bool
         12.0,
         t.faint,
     );
-    hline(c, y + RH - 1, if lifted { t.acc } else { t.line });
+    hline(c, y + RH() - 1, if lifted { t.acc } else { t.line });
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
@@ -209,7 +213,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
     let lifted = v.drag.filter(|d| d.from < n).map(|d| d.from);
     for (slot, &i) in order.iter().enumerate() {
         let y = row_top(slot, scroll);
-        if y + RH <= LIST_TOP || y >= LIST_BOTTOM || Some(i) == lifted {
+        if y + RH() <= LIST_TOP || y >= LIST_BOTTOM || Some(i) == lifted {
             continue;
         }
         row(c, t, f, y, v.rows[i], false);
@@ -227,7 +231,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
     // The lifted row floats under the finger, over everything, unclipped at the list's edges so it
     // never vanishes mid-gesture.
     if let (Some(d), Some(i)) = (v.drag, lifted) {
-        let y = d.float_top().clamp(LIST_TOP - RH / 2, LIST_BOTTOM - RH / 2);
+        let y = d
+            .float_top()
+            .clamp(LIST_TOP - RH() / 2, LIST_BOTTOM - RH() / 2);
         row(c, t, f, y, v.rows[i], true);
     }
 }
@@ -240,10 +246,10 @@ mod tests {
     #[test]
     fn rows_and_columns_hit_where_they_are_drawn() {
         let n = 30;
-        for scroll in [0, 17, RH, 5 * RH + 3, max_scroll(n)] {
+        for scroll in [0, 17, RH(), 5 * RH() + 3, max_scroll(n)] {
             for i in 0..n {
                 let top = row_top(i, scroll);
-                let mid = top + RH / 2;
+                let mid = top + RH() / 2;
                 if !(LIST_TOP..LIST_BOTTOM).contains(&mid) {
                     continue;
                 }
@@ -261,7 +267,11 @@ mod tests {
             "both columns are real targets"
         );
         assert_eq!(row_at(n, 0, LIST_TOP - 1), None);
-        assert_eq!(row_at(2, 0, LIST_TOP + 2 * RH), None, "below the last row");
+        assert_eq!(
+            row_at(2, 0, LIST_TOP + 2 * RH()),
+            None,
+            "below the last row"
+        );
     }
 
     /// The landing slot follows the lifted row's middle and never leaves the list.
@@ -270,7 +280,7 @@ mod tests {
         let n = 5;
         assert_eq!(slot_for(n, row_top(0, 0), 0), 0);
         assert_eq!(slot_for(n, row_top(3, 0), 0), 3);
-        assert_eq!(slot_for(n, row_top(3, 0) + RH / 2 + 1, 0), 4);
+        assert_eq!(slot_for(n, row_top(3, 0) + RH() / 2 + 1, 0), 4);
         assert_eq!(slot_for(n, LIST_TOP - 500, 0), 0);
         assert_eq!(slot_for(n, LIST_BOTTOM + 500, 0), n - 1);
         assert_eq!(slot_for(0, LIST_TOP, 0), 0);

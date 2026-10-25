@@ -188,16 +188,43 @@ pub fn reach_text(hook: bool) -> &'static str {
 // ── layout ─────────────────────────────────────────────────────────────────────────────────────
 pub const STRIP_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 pub const ROW_SWITCH: i32 = STRIP_TOP + kit::STRIP_H;
-const SOUND_LABEL: i32 = ROW_SWITCH + kit::ROW_H;
-pub const GRID_TOP: i32 = SOUND_LABEL + kit::SECTION_H;
+#[allow(non_snake_case)]
+fn SOUND_LABEL() -> i32 {
+    ROW_SWITCH + kit::ROW_H()
+}
+
+#[allow(non_snake_case)]
+pub fn GRID_TOP() -> i32 {
+    SOUND_LABEL() + kit::SECTION_H
+}
+
 pub const COLS: usize = 2;
 pub const GRID_ROWS: usize = SOUNDS.len().div_ceil(COLS);
 const GRID_PITCH: i32 = kit::CHIP_H + kit::CHIP_GAP;
-const GRID_BOTTOM: i32 = GRID_TOP + GRID_ROWS as i32 * GRID_PITCH - kit::CHIP_GAP;
-const LEVEL_LABEL: i32 = GRID_BOTTOM + 8;
-pub const ROW_ALONE: i32 = LEVEL_LABEL + kit::SECTION_H;
-pub const ROW_MUSIC: i32 = ROW_ALONE + kit::ROW_H;
-pub const NOTE_TOP: i32 = ROW_MUSIC + kit::ROW_H;
+#[allow(non_snake_case)]
+fn GRID_BOTTOM() -> i32 {
+    GRID_TOP() + GRID_ROWS as i32 * GRID_PITCH - kit::CHIP_GAP
+}
+
+#[allow(non_snake_case)]
+fn LEVEL_LABEL() -> i32 {
+    GRID_BOTTOM() + 8
+}
+
+#[allow(non_snake_case)]
+pub fn ROW_ALONE() -> i32 {
+    LEVEL_LABEL() + kit::SECTION_H
+}
+
+#[allow(non_snake_case)]
+pub fn ROW_MUSIC() -> i32 {
+    ROW_ALONE() + kit::ROW_H()
+}
+
+#[allow(non_snake_case)]
+pub fn NOTE_TOP() -> i32 {
+    ROW_MUSIC() + kit::ROW_H()
+}
 
 /// The cursor's stops for button navigation, top to bottom: the switch, each chip, the two levels.
 pub const SEL_SWITCH: usize = 0;
@@ -209,31 +236,31 @@ pub const SEL_COUNT: usize = SEL_MUSIC + 1;
 /// Top-left of chip `i` (in [`SOUNDS`] order) and its width.
 pub fn chip_rect(i: usize) -> (i32, i32, i32) {
     let (x, w) = kit::chip_span(i % COLS, COLS);
-    (x, GRID_TOP + (i / COLS) as i32 * GRID_PITCH, w)
+    (x, GRID_TOP() + (i / COLS) as i32 * GRID_PITCH, w)
 }
 
 /// Which chip is under `(x, y)`. Half the gap around each chip belongs to it, both ways.
 pub fn chip_at(x: i32, y: i32) -> Option<usize> {
-    if !(GRID_TOP - kit::CHIP_GAP / 2..GRID_BOTTOM + kit::CHIP_GAP / 2).contains(&y) {
+    if !(GRID_TOP() - kit::CHIP_GAP / 2..GRID_BOTTOM() + kit::CHIP_GAP / 2).contains(&y) {
         return None;
     }
     let row =
-        ((y - GRID_TOP + kit::CHIP_GAP / 2) / GRID_PITCH).clamp(0, GRID_ROWS as i32 - 1) as usize;
-    let chip_y = GRID_TOP + row as i32 * GRID_PITCH;
+        ((y - GRID_TOP() + kit::CHIP_GAP / 2) / GRID_PITCH).clamp(0, GRID_ROWS as i32 - 1) as usize;
+    let chip_y = GRID_TOP() + row as i32 * GRID_PITCH;
     let col = kit::chip_at(COLS, chip_y, x, chip_y + kit::CHIP_H / 2)?;
     let i = row * COLS + col;
     (i < SOUNDS.len()).then_some(i)
 }
 
 pub fn switch_hit(y: i32) -> bool {
-    (ROW_SWITCH..ROW_SWITCH + kit::ROW_H).contains(&y)
+    (ROW_SWITCH..ROW_SWITCH + kit::ROW_H()).contains(&y)
 }
 
 /// Which level row is under `y`: 0 = on its own, 1 = with music.
 pub fn level_row_at(y: i32) -> Option<usize> {
-    if (ROW_ALONE..ROW_ALONE + kit::ROW_H).contains(&y) {
+    if (ROW_ALONE()..ROW_ALONE() + kit::ROW_H()).contains(&y) {
         Some(0)
-    } else if (ROW_MUSIC..ROW_MUSIC + kit::ROW_H).contains(&y) {
+    } else if (ROW_MUSIC()..ROW_MUSIC() + kit::ROW_H()).contains(&y) {
         Some(1)
     } else {
         None
@@ -276,13 +303,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
         t,
         f,
         ROW_SWITCH,
-        kit::ROW_H,
+        kit::ROW_H(),
         &Row::new(crate::i18n::text("Soundscape"))
             .sub(sub)
             .trail(Trail::Switch(v.on))
             .sel(sel == SEL_SWITCH),
     );
-    kit::section_label(c, t, f, SOUND_LABEL, crate::i18n::text("SOUND"), None);
+    kit::section_label(c, t, f, SOUND_LABEL(), crate::i18n::text("SOUND"), None);
     for (i, (id, name)) in SOUNDS.iter().enumerate() {
         let (x, y, w) = chip_rect(i);
         let chosen = *id == v.sound;
@@ -317,12 +344,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
             &st,
         );
     }
-    kit::section_label(c, t, f, LEVEL_LABEL, crate::i18n::text("LEVEL"), None);
+    kit::section_label(c, t, f, LEVEL_LABEL(), crate::i18n::text("LEVEL"), None);
     level_row(
         c,
         t,
         f,
-        ROW_ALONE,
+        ROW_ALONE(),
         crate::i18n::text("On its own"),
         v.alone,
         sel == SEL_ALONE,
@@ -332,7 +359,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
         c,
         t,
         f,
-        ROW_MUSIC,
+        ROW_MUSIC(),
         crate::i18n::text("With music"),
         v.music,
         sel == SEL_MUSIC,
@@ -346,7 +373,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
         t.dim,
         0.0,
     );
-    let mut y = NOTE_TOP + 26;
+    let mut y = NOTE_TOP() + 26;
     for line in crate::track_info::wrap(f, reach_text(v.hook), &st, (kit::RIGHT - kit::LEFT) as f32)
         .iter()
         .take(3)
@@ -371,12 +398,12 @@ fn level_row(
         t,
         f,
         y,
-        kit::ROW_H,
+        kit::ROW_H(),
         &Row::new(title)
             .trail(Trail::Reserve(W as i32 - SLIDER_X0 + 6))
             .sel(sel),
     );
-    let cy = y + kit::ROW_H / 2;
+    let cy = y + kit::ROW_H() / 2;
     // Dimmed, not hidden, while switched off: the levels can be set before turning it on.
     let fg = if on { t.acc } else { t.faint };
     fill_rect(c, SLIDER_X0, cy - 1, SLIDER_W, 2, t.line);
@@ -397,7 +424,7 @@ fn level_row(
             0.04,
         ),
     );
-    hline(c, y + kit::ROW_H - 1, t.line);
+    hline(c, y + kit::ROW_H() - 1, t.line);
 }
 
 #[cfg(test)]
@@ -406,7 +433,7 @@ mod tests {
 
     #[test]
     fn the_page_fits_above_the_now_playing_bar() {
-        let note_bottom = NOTE_TOP + 26 + 2 * 21 + 6;
+        let note_bottom = NOTE_TOP() + 26 + 2 * 21 + 6;
         assert!(
             note_bottom <= crate::H as i32 - crate::chrome::NP_BAR_H,
             "Soundscapes runs to {note_bottom}"
@@ -440,17 +467,17 @@ mod tests {
             assert_eq!(chip_at(x + 2, y + 1), Some(i));
             assert_eq!(chip_at(x + w - 2, y + kit::CHIP_H - 2), Some(i));
         }
-        for y in GRID_TOP..GRID_BOTTOM {
+        for y in GRID_TOP()..GRID_BOTTOM() {
             assert!(chip_at(100, y).is_some(), "a dead strip at y {y}");
         }
         assert_eq!(
-            chip_at(100, GRID_TOP - kit::CHIP_GAP),
+            chip_at(100, GRID_TOP() - kit::CHIP_GAP),
             None,
             "the SOUND label is not a chip"
         );
-        assert!(!switch_hit(GRID_TOP));
+        assert!(!switch_hit(GRID_TOP()));
         assert_eq!(
-            level_row_at(GRID_BOTTOM + 2),
+            level_row_at(GRID_BOTTOM() + 2),
             None,
             "the LEVEL label is not a slider"
         );

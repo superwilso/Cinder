@@ -83,7 +83,11 @@ pub fn order(clear_bass: bool) -> Vec<usize> {
 /// Row pitch and list top — SINGLE SOURCE for the render below and `nav`'s hit test. The banner
 /// sits BELOW the rows so it cannot shift them: a row that moves when an unrelated toggle flips is
 /// how a hit test drifts out of step with what is drawn.
-pub const ROW_H: i32 = crate::scale::SETTING_ROW_H;
+#[allow(non_snake_case)]
+pub fn ROW_H() -> i32 {
+    crate::scale::SETTING_ROW_H()
+}
+
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
 /// The banner under the rows.
 const BANNER_H: i32 = 64;
@@ -93,19 +97,19 @@ pub fn row_at(y: i32, clear_bass: bool, scroll: i32) -> Option<usize> {
     if y < TOP {
         return None;
     }
-    let i = ((y - TOP + scroll) / ROW_H) as usize;
+    let i = ((y - TOP + scroll) / ROW_H()) as usize;
     order(clear_bass).get(i).copied()
 }
 
 /// Screen-y of row `r`'s top at scroll `scroll` (TOP when it is not drawn).
 pub fn row_top(r: usize, clear_bass: bool, scroll: i32) -> i32 {
     let i = order(clear_bass).iter().position(|&x| x == r).unwrap_or(0);
-    TOP + ROW_H * i as i32 - scroll
+    TOP + ROW_H() * i as i32 - scroll
 }
 
 /// How far the list scrolls.
 pub fn max_scroll(clear_bass: bool) -> i32 {
-    (TOP + ROW_H * order(clear_bass).len() as i32 + BANNER_H - crate::canvas::H as i32).max(0)
+    (TOP + ROW_H() * order(clear_bass).len() as i32 + BANNER_H - crate::canvas::H as i32).max(0)
 }
 
 /// DSEE HX Custom modes, catalogue order — the index IS the value handed to `SetDseeHxCustomMode`.
@@ -200,9 +204,9 @@ fn dim_row(
     label: &str,
     desc: &str,
 ) -> i32 {
-    let cy = y + ROW_H / 2;
+    let cy = y + ROW_H() / 2;
     if sel {
-        fill_rect(c, 0, y, crate::canvas::W as i32, ROW_H, t.row_sel);
+        fill_rect(c, 0, y, crate::canvas::W as i32, ROW_H(), t.row_sel);
     }
     text::draw(
         c,
@@ -226,7 +230,7 @@ fn dim_row(
         desc,
         &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0),
     );
-    hline(c, y + ROW_H, t.line);
+    hline(c, y + ROW_H(), t.line);
     cy
 }
 
@@ -435,8 +439,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize, 
     let rows = order(a.clear_bass.is_some());
     c.set_clip_y(TOP, crate::canvas::H as i32);
     for (i, &r) in rows.iter().enumerate() {
-        let y = y0 + ROW_H * i as i32 - scroll;
-        if y >= crate::canvas::H as i32 || y + ROW_H <= TOP {
+        let y = y0 + ROW_H() * i as i32 - scroll;
+        if y >= crate::canvas::H as i32 || y + ROW_H() <= TOP {
             continue;
         }
         let (title, desc, end) = spec(a, r);
@@ -450,7 +454,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize, 
 
     // ── the override banner ─────────────────────────────────────────────────────────────────
     // Below the rows, so nothing above it moves when it appears.
-    let by = y0 + ROW_H * rows.len() as i32 - scroll + 18;
+    let by = y0 + ROW_H() * rows.len() as i32 - scroll + 18;
     // Every line here goes through `fit`: the banner carries a control's NAME, so its width is not
     // something this file gets to assume, and at 140% UI scale the one-line version ran 156 px past
     // the margin — caught by tests/ui_overflow.rs, which is why it sweeps this screen with the
@@ -541,7 +545,7 @@ mod tests {
                     }
                     assert_eq!(row_at(top, cb, scroll), Some(r), "top edge of row {r}");
                     assert_eq!(
-                        row_at(top + ROW_H - 1, cb, scroll),
+                        row_at(top + ROW_H() - 1, cb, scroll),
                         Some(r),
                         "bottom of {r}"
                     );
@@ -550,7 +554,7 @@ mod tests {
             }
             let last = *order(cb).last().unwrap();
             assert!(
-                row_top(last, cb, max_scroll(cb)) + ROW_H + BANNER_H <= crate::canvas::H as i32,
+                row_top(last, cb, max_scroll(cb)) + ROW_H() + BANNER_H <= crate::canvas::H as i32,
                 "scrolled to the end, the last row and the banner are on the glass"
             );
         }

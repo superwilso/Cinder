@@ -63,7 +63,7 @@ pub fn row_top(r: usize) -> i32 {
             if i == r {
                 return y;
             }
-            y += kit::ROW_H;
+            y += kit::ROW_H();
             i += 1;
         }
     }
@@ -76,7 +76,7 @@ pub fn row_at(y: i32) -> Option<usize> {
         if r == ROW_STYLE {
             style_row_h()
         } else {
-            kit::ROW_H
+            kit::ROW_H()
         }
     };
     (0..ROWS).find(|&r| (row_top(r)..row_top(r) + h(r)).contains(&y))
@@ -84,7 +84,7 @@ pub fn row_at(y: i32) -> Option<usize> {
 
 /// Top of the volume chips, centred in their row.
 fn chips_top() -> i32 {
-    row_top(ROW_VOLUME) + (kit::ROW_H - kit::CHIP_H) / 2
+    row_top(ROW_VOLUME) + (kit::ROW_H() - kit::CHIP_H) / 2
 }
 
 /// Which volume HUD chip is under `(x, y)`.
@@ -93,7 +93,7 @@ pub fn volume_chip_at(x: i32, y: i32) -> Option<usize> {
 }
 
 fn style_chips_top() -> i32 {
-    row_top(ROW_STYLE) + (kit::ROW_H - kit::CHIP_H) / 2
+    row_top(ROW_STYLE) + (kit::ROW_H() - kit::CHIP_H) / 2
 }
 
 /// The styles sit three to a line: six across cut every name but "Clock" at any text size.
@@ -108,7 +108,7 @@ fn style_line_top(line: usize) -> i32 {
 /// row on the page, so nothing under it moves.
 fn style_row_h() -> i32 {
     let lines = crate::style::Style::COUNT.div_ceil(STYLE_COLS) as i32;
-    kit::ROW_H + (lines - 1) * (kit::CHIP_H + kit::CHIP_GAP)
+    kit::ROW_H() + (lines - 1) * (kit::CHIP_H + kit::CHIP_GAP)
 }
 
 /// The centre of style chip `i`, for tests that tap it.
@@ -140,7 +140,7 @@ fn swatch_x(i: usize) -> i32 {
 /// on each side counts as the swatch, so a near miss still lands on the colour it was aimed at.
 pub fn accent_hit(x: i32, y: i32) -> Option<usize> {
     let top = row_top(ROW_ACCENT);
-    if !(top..top + kit::ROW_H).contains(&y) {
+    if !(top..top + kit::ROW_H()).contains(&y) {
         return None;
     }
     (0..Accent::COUNT).find(|&i| {
@@ -224,14 +224,14 @@ fn draw_row(
                 t,
                 f,
                 y,
-                kit::ROW_H,
+                kit::ROW_H(),
                 &Row::new(crate::i18n::text("Palette"))
                     .trail(Trail::Open(&name))
                     .sel(sel),
             );
             let vx = kit::RIGHT - 20 - text::measure(f, &name, &vst) as i32 - 14;
             let x0 = vx - swatch_w;
-            let cy = y + kit::ROW_H / 2;
+            let cy = y + kit::ROW_H() / 2;
             for (i, col) in cells.iter().enumerate() {
                 fill_rect(c, x0 + i as i32 * 10, cy - 9, 10, 18, *col);
             }
@@ -245,7 +245,7 @@ fn draw_row(
                     t,
                     f,
                     y,
-                    kit::ROW_H,
+                    kit::ROW_H(),
                     &Row::new(crate::i18n::text("Accent"))
                         .sub(crate::i18n::text("Set by the palette"))
                         .trail(Trail::Value("—"))
@@ -262,13 +262,13 @@ fn draw_row(
                 t,
                 f,
                 y,
-                kit::ROW_H,
+                kit::ROW_H(),
                 &Row::new(crate::i18n::text("Accent"))
                     .sub(&name)
                     .trail(Trail::Reserve(swatches))
                     .sel(sel),
             );
-            let cy = y + kit::ROW_H / 2;
+            let cy = y + kit::ROW_H() / 2;
             for (i, a) in Accent::ALL.iter().enumerate() {
                 let sx = swatch_x(i);
                 let sy = cy - SW / 2;
@@ -286,7 +286,7 @@ fn draw_row(
             t,
             f,
             y,
-            kit::ROW_H,
+            kit::ROW_H(),
             &Row::new(crate::i18n::text("Night"))
                 .sub(crate::i18n::text("Dims everything after dark"))
                 .trail(Trail::Switch(v.night))
@@ -294,7 +294,7 @@ fn draw_row(
         ),
         ROW_VOLUME => {
             if sel {
-                fill_rect(c, 0, y, W as i32, kit::ROW_H, t.row_sel);
+                fill_rect(c, 0, y, W as i32, kit::ROW_H(), t.row_sel);
             }
             kit::chips(
                 c,
@@ -304,8 +304,8 @@ fn draw_row(
                 &VOLUME_HUDS,
                 Some(v.volume_hud as usize),
             );
-            crate::widgets::hline(c, y + kit::ROW_H - 1, t.line);
-            y + kit::ROW_H
+            crate::widgets::hline(c, y + kit::ROW_H() - 1, t.line);
+            y + kit::ROW_H()
         }
         ROW_SIZE => size_row(c, t, f, y, sel),
         ROW_STYLE => {
@@ -327,7 +327,7 @@ fn draw_row(
             t,
             f,
             y,
-            kit::ROW_H,
+            kit::ROW_H(),
             &Row::new(crate::i18n::text("Visualiser"))
                 .trail(Trail::Open(v.viz))
                 .sel(sel),
@@ -341,10 +341,10 @@ fn size_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool) -> i32 {
         t,
         f,
         y,
-        kit::ROW_H,
+        kit::ROW_H(),
         &Row::new(crate::i18n::text("Size")).sel(sel),
     );
-    let cy = y + kit::ROW_H / 2;
+    let cy = y + kit::ROW_H() / 2;
     let n = text::SCALE_STEPS.len() as i32;
     let idx = text::scale_idx() as i32;
     fill_rect(c, SLIDER_X0, cy - 1, SLIDER_W, 2, t.line);
@@ -383,7 +383,7 @@ mod tests {
     /// The page fits above the Now Playing bar without scrolling.
     #[test]
     fn the_page_fits_above_the_now_playing_bar() {
-        let bottom = row_top(ROWS - 1) + kit::ROW_H;
+        let bottom = row_top(ROWS - 1) + kit::ROW_H();
         assert!(
             bottom <= crate::H as i32 - crate::chrome::NP_BAR_H,
             "Display runs to {bottom}"
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn every_row_is_hittable_and_labels_are_not() {
         for r in 0..ROWS {
-            assert_eq!(row_at(row_top(r) + kit::ROW_H / 2), Some(r));
+            assert_eq!(row_at(row_top(r) + kit::ROW_H() / 2), Some(r));
         }
         assert_eq!(
             row_at(crate::chrome::HEADER_BOTTOM + 5),
@@ -406,7 +406,7 @@ mod tests {
     /// Every swatch is hittable at its centre and picks itself.
     #[test]
     fn swatches_pick_themselves() {
-        let cy = row_top(ROW_ACCENT) + kit::ROW_H / 2;
+        let cy = row_top(ROW_ACCENT) + kit::ROW_H() / 2;
         for i in 0..Accent::COUNT {
             assert_eq!(accent_hit(swatch_x(i) + SW / 2, cy), Some(i));
         }
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn the_volume_chips_are_inside_their_row() {
         let top = row_top(ROW_VOLUME);
-        assert!(chips_top() >= top && chips_top() + kit::CHIP_H <= top + kit::ROW_H);
+        assert!(chips_top() >= top && chips_top() + kit::CHIP_H <= top + kit::ROW_H());
         assert_eq!(volume_chip_at(60, chips_top() + 10), Some(0));
         assert_eq!(volume_chip_at(420, chips_top() + 10), Some(1));
     }

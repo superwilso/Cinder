@@ -104,7 +104,7 @@ const SECTION_H: i32 = kit::SECTION_H + kit::CHIP_H + 10;
 
 /// Top of section `i`'s label.
 pub fn section_top(i: usize) -> i32 {
-    NAME_Y + kit::ROW_H + i as i32 * SECTION_H
+    NAME_Y + kit::ROW_H() + i as i32 * SECTION_H
 }
 
 fn chips_top(i: usize) -> i32 {
@@ -112,14 +112,17 @@ fn chips_top(i: usize) -> i32 {
 }
 
 /// The Delete row, below the last section.
-pub const DELETE_Y: i32 = NAME_Y + kit::ROW_H + SECTIONS.len() as i32 * SECTION_H + 6;
+#[allow(non_snake_case)]
+pub fn DELETE_Y() -> i32 {
+    NAME_Y + kit::ROW_H() + SECTIONS.len() as i32 * SECTION_H + 6
+}
 
 pub fn hit_name(y: i32) -> bool {
-    (NAME_Y..NAME_Y + kit::ROW_H).contains(&y)
+    (NAME_Y..NAME_Y + kit::ROW_H()).contains(&y)
 }
 
 pub fn hit_delete(y: i32) -> bool {
-    (DELETE_Y..DELETE_Y + kit::ROW_H).contains(&y)
+    (DELETE_Y()..DELETE_Y() + kit::ROW_H()).contains(&y)
 }
 
 /// Which section's chip is under `(x, y)`.
@@ -163,7 +166,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ViewEditView) {
         t,
         f,
         NAME_Y,
-        kit::ROW_H,
+        kit::ROW_H(),
         &Row::new(crate::i18n::text("Name")).trail(Trail::Open(name)),
     );
     for (i, s) in SECTIONS.iter().enumerate() {
@@ -175,8 +178,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ViewEditView) {
             c,
             t,
             f,
-            DELETE_Y,
-            kit::ROW_H,
+            DELETE_Y(),
+            kit::ROW_H(),
             &Row::new(crate::i18n::text("Delete smart playlist"))
                 .sub(crate::i18n::text("The songs stay on the player")),
         );
@@ -191,9 +194,9 @@ mod tests {
     #[test]
     fn the_page_fits_and_every_chip_hits_itself() {
         assert!(
-            DELETE_Y + kit::ROW_H <= crate::canvas::H as i32 - 28,
+            DELETE_Y() + kit::ROW_H() <= crate::canvas::H as i32 - 28,
             "Delete ends at {}",
-            DELETE_Y + kit::ROW_H
+            DELETE_Y() + kit::ROW_H()
         );
         for (i, s) in SECTIONS.iter().enumerate() {
             let n = s.labels().len();

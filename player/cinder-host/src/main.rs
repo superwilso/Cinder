@@ -641,12 +641,12 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let cur = (!queued.is_empty()).then_some(0);
                 let l = up_next::layout(0, queued.len(), cur);
                 let from = 1usize;
-                let grab_off = up_next::RH / 2;
+                let grab_off = up_next::RH() / 2;
                 // The row's screen y comes from the layout — the same rule nav's reorder_begin
                 // follows.
                 let row_top = cinder_ui::chrome::HEADER_BOTTOM + l.movable_top(from).unwrap_or(0);
                 let start_y = row_top + grab_off;
-                let y = start_y + 2 * up_next::RH + 14; // dragged down past two rows
+                let y = start_y + 2 * up_next::RH() + 14; // dragged down past two rows
                 let d = up_next::RowDrag {
                     from,
                     to: l.movable_slot_for(from, y - grab_off, 0),
@@ -851,7 +851,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let l = up_next::layout(0, queued.len(), cur);
                 let row_y = cinder_ui::chrome::HEADER_BOTTOM
                     + l.top_of(up_next::Slot::Upcoming(3)).unwrap_or(0)
-                    + up_next::RH / 2;
+                    + up_next::RH() / 2;
                 up_next::render_view(
                     c,
                     &theme,
@@ -1206,9 +1206,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("playlist_edit_drag", &|c: &mut Canvas| {
                 use cinder_ui::playlist_edit as pe;
                 let n = lib.songs.len();
-                let (from, grab_off) = (1usize, pe::RH / 2);
+                let (from, grab_off) = (1usize, pe::RH() / 2);
                 let start_y = pe::row_top(from, 0) + grab_off;
-                let y = start_y + 2 * pe::RH + 10;
+                let y = start_y + 2 * pe::RH() + 10;
                 let d = up_next::RowDrag {
                     from,
                     to: pe::slot_for(n, y - grab_off, 0),
@@ -1288,7 +1288,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     nc: Some("Automatic"),
                     ..snd
                 };
-                sound::render(c, &theme, &fonts, &s, 0, 0, -sound::NC_H)
+                sound::render(c, &theme, &fonts, &s, 0, 0, -sound::NC_H())
             }),
             ("nc", &|c: &mut Canvas| {
                 cinder_ui::nc::render(
@@ -1355,6 +1355,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         ignore_the: false,
                         quick: false,
                         volume_limit: false,
+                        big_view: false,
                         usb_dac: false,
                         battery_care: true,
                         device: "99% · 34.4 °C",
@@ -2131,6 +2132,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ignore_the: false,
                     quick: false,
                     volume_limit: false,
+                    big_view: false,
                     usb_dac: false,
                     battery_care: true,
                     device: "99% · 34.4 °C",
@@ -2167,6 +2169,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ignore_the: false,
                     quick: false,
                     volume_limit: false,
+                    big_view: false,
                     usb_dac: false,
                     battery_care: true,
                     device: "99% · 34.4 °C",
@@ -3873,8 +3876,61 @@ fn cut_text(pct: u32) -> Vec<String> {
     cut
 }
 
+/// `--big`: every preview in Big view (text at `nav::BIG_TEXT_PCT`, rows and touch zones at
+/// `scale::LARGE_PCT`), written to `out/big/`, with what breaks: text cut short, text past the edge,
+/// text run into other text or covered. The list of pages Big view still needs a redesign for.
+fn big_view() {
+    std::fs::create_dir_all("out/big").ok();
+    BASE_PCT.store(
+        cinder_ui::nav::BIG_TEXT_PCT,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    cinder_ui::scale::set_large(true);
+    cinder_ui::canvas::audit_new_canvases(true);
+    let mut bad: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let mut n = 0;
+    render_all(
+        &mut |name, c| {
+            n += 1;
+            let img = image::RgbImage::from_raw(W as u32, H as u32, c.to_rgb_bytes())
+                .expect("buffer size");
+            img.save(format!("out/big/{name}.png")).expect("save png");
+            let e = bad.entry(name.to_string()).or_default();
+            for run in c.text_runs().iter().filter(|r| r.ends_with('\u{2026}')) {
+                e.push(format!("cut {run:?}"));
+            }
+            if c.oob_x() > 0 {
+                e.push(format!("{} px past the edge", c.oob_x()));
+            }
+            for (a, b, px) in c.text_collisions() {
+                e.push(format!("{a:?} runs into {b:?} ({px} px)"));
+            }
+            for (a, px) in c.text_hidden() {
+                e.push(format!("{a:?} covered ({px} px)"));
+            }
+        },
+        &Opts {
+            language: cinder_ui::i18n::Language::English,
+            golden: true,
+            palette: None,
+        },
+    );
+    cinder_ui::canvas::audit_new_canvases(false);
+    cinder_ui::scale::set_large(false);
+    BASE_PCT.store(100, std::sync::atomic::Ordering::Relaxed);
+    bad.retain(|_, v| !v.is_empty());
+    for (name, v) in &bad {
+        println!("{name}: {}", v.join("; "));
+    }
+    eprintln!(
+        "big view: {} of {n} preview(s) have problems; PNGs in out/big/",
+        bad.len()
+    );
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
+        Some("--big") => big_view(),
         Some("--cut") => {
             let pct = std::env::args()
                 .nth(2)

@@ -18,6 +18,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Big view** (Settings, under Display; off by default): text at 130 % and every list row, Back,
+  Sort and the library tabs 25 % bigger, for anyone who finds the rows and buttons small. The
+  Size slider still goes to 140 %. Some pages are not laid out for it yet and run off the screen
+  or cut a caption; they are listed in `docs/PLAN_big_view.md`. With it off nothing moves (every
+  preview is byte-identical). Host-tested; *device-unverified*.
 - **A Storage page.** Settings ▸ Storage opens it: how full the internal drive and the SD card
   are, split into music, other files and free space, then the library in numbers (songs, albums,
   artists, genres, playing time, size), where it is, its formats, sample rates and bit depths, and

@@ -134,7 +134,11 @@ pub fn balance_label(pos: usize) -> String {
 pub const PATH_STRIP_H: i32 = 58;
 
 /// Row pitch and list top — SINGLE SOURCE for the render below and `nav`'s hit test.
-pub const ROW_H: i32 = crate::kit::ROW_H;
+#[allow(non_snake_case)]
+pub fn ROW_H() -> i32 {
+    crate::kit::ROW_H()
+}
+
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM + PATH_STRIP_H;
 
 /// The Balance row is taller than the rest: it carries a full-width drag slider, MONO and CENTRE
@@ -144,13 +148,17 @@ pub const BALANCE_ROW_H: i32 = 132;
 
 /// The Noise cancelling row, above the mode control — drawn only while Sony's NC earphones are in
 /// (`Sound::nc`). It is not part of [`parts`]: while it shows, the CALLER passes every function
-/// here a scroll `NC_H` smaller than its own (`nav::App::sound_scroll`), which moves the whole
+/// here a scroll `NC_H()` smaller than its own (`nav::App::sound_scroll`), which moves the whole
 /// list down by one row and leaves every hit test, slider and fold exactly as it was. The row
 /// itself sits at [`nc_top`].
-pub const NC_H: i32 = ROW_H;
+#[allow(non_snake_case)]
+pub fn NC_H() -> i32 {
+    ROW_H()
+}
+
 /// Screen-y of the Noise cancelling row's top, for the scroll the rest of this file is given.
 pub fn nc_top(scroll: i32) -> i32 {
-    TOP - scroll - NC_H
+    TOP - scroll - NC_H()
 }
 
 /// One band of the scrolling list.
@@ -181,7 +189,7 @@ fn part_h(p: Part) -> i32 {
         Part::Mode => MODE_H,
         Part::Label(_) => crate::kit::SECTION_H,
         Part::Row(ROW_BALANCE) => BALANCE_ROW_H,
-        Part::Row(_) => ROW_H,
+        Part::Row(_) => ROW_H(),
     }
 }
 
@@ -451,7 +459,7 @@ pub(crate) fn row(
 ) -> i32 {
     let label = crate::i18n::text(label);
     let desc = crate::i18n::text(desc);
-    let rh = ROW_H;
+    let rh = ROW_H();
     let cy = y + rh / 2;
     if sel {
         fill_rect(c, 0, y, crate::canvas::W as i32, rh, t.row_sel);
@@ -1123,7 +1131,7 @@ pub fn render(
         let row = Row::new("Noise cancelling")
             .sub("Sony NC earphones are in")
             .trail(Trail::Open(v));
-        crate::kit::row(c, t, f, nc_top(scroll), NC_H, &row);
+        crate::kit::row(c, t, f, nc_top(scroll), NC_H(), &row);
     }
     for (part, y) in parts(scroll) {
         if y >= crate::canvas::H as i32 || y + part_h(part) <= TOP {
@@ -1144,7 +1152,7 @@ pub fn render(
                     RowTrail::Open(v) => Trail::Open(v),
                 };
                 let row = Row::new(&rt.title).sub(&rt.sub).trail(trail).sel(sel == r);
-                crate::kit::row(c, th, f, y, ROW_H, &row);
+                crate::kit::row(c, th, f, y, ROW_H(), &row);
             }
         }
     }
@@ -1349,14 +1357,14 @@ mod tests {
         let f = FontSet::load();
         let t = Theme::day();
         // The list fits the glass; what scrolls is the Noise cancelling row above it, which the
-        // caller pays for with a scroll from -NC_H to 0.
+        // caller pays for with a scroll from -NC_H() to 0.
         let s = Sound {
             nc: Some("Off"),
             ..loud()
         };
         let mut a = Canvas::new();
         let mut b = Canvas::new();
-        render(&mut a, &t, &f, &s, 0, 0, -NC_H);
+        render(&mut a, &t, &f, &s, 0, 0, -NC_H());
         render(&mut b, &t, &f, &s, 0, 0, max_scroll());
         let w = crate::canvas::W;
         for y in 0..TOP as usize {

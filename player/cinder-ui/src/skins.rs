@@ -44,11 +44,11 @@ pub fn render(
     }
     c.set_clip_y(TOP, H as i32);
     for (i, n) in names.iter().enumerate() {
-        let y = TOP + i as i32 * kit::ROW_H - scroll;
-        if y + kit::ROW_H < TOP || y >= H as i32 {
+        let y = TOP + i as i32 * kit::ROW_H() - scroll;
+        if y + kit::ROW_H() < TOP || y >= H as i32 {
             continue;
         }
-        kit::row(c, t, f, y, kit::ROW_H, &Row::new(n).sel(n == current));
+        kit::row(c, t, f, y, kit::ROW_H(), &Row::new(n).sel(n == current));
     }
     c.clear_clip();
 }

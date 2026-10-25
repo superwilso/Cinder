@@ -33,10 +33,13 @@ use crate::{icons, Canvas};
 /// Screen-y of the first row of the CHANNEL LIST.
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
-/// Row height — the same 62 every other track row uses (`scale::TRACK_ROW_H`). A channel row is
+/// Row height — the same 62 every other track row uses (`scale::TRACK_ROW_H()`). A channel row is
 /// the same height as a track row deliberately: the audit counted eleven row heights in this app
 /// and adding a twelfth to look different is how that happened.
-pub const ROW_H: i32 = crate::scale::TRACK_ROW_H;
+#[allow(non_snake_case)]
+pub fn ROW_H() -> i32 {
+    crate::scale::TRACK_ROW_H()
+}
 
 /// `y_below` for the channel page's PLAY | SHUFFLE band — straight under the header, since this
 /// page has no cover or stat pair above it (the playlist page's 134 leaves room for its cover).
@@ -67,10 +70,25 @@ const TILE_W: i32 = (crate::kit::RIGHT - crate::kit::LEFT - TILE_GAP) / 2;
 /// The grid, under its CHANNELS label, down to the fixed foot.
 pub const GRID_TOP: i32 = TOP + crate::kit::SECTION_H;
 /// The foot: the time-of-day switch row, then the primary button, then a margin.
-const FOOT_H: i32 = crate::kit::ROW_H + crate::kit::BUTTON_H + 12;
-pub const GRID_BOTTOM: i32 = LIST_BOTTOM - FOOT_H;
-pub const FOLLOW_Y: i32 = GRID_BOTTOM;
-pub const BUTTON_Y: i32 = GRID_BOTTOM + crate::kit::ROW_H;
+#[allow(non_snake_case)]
+fn FOOT_H() -> i32 {
+    crate::kit::ROW_H() + crate::kit::BUTTON_H + 12
+}
+
+#[allow(non_snake_case)]
+pub fn GRID_BOTTOM() -> i32 {
+    LIST_BOTTOM - FOOT_H()
+}
+
+#[allow(non_snake_case)]
+pub fn FOLLOW_Y() -> i32 {
+    GRID_BOTTOM()
+}
+
+#[allow(non_snake_case)]
+pub fn BUTTON_Y() -> i32 {
+    GRID_BOTTOM() + crate::kit::ROW_H()
+}
 
 /// Tile `i`'s rectangle on screen at `scroll`: `(x, y, w, h)`.
 pub fn tile_rect(i: usize, scroll: i32) -> (i32, i32, i32, i32) {
@@ -86,7 +104,7 @@ pub fn tile_rect(i: usize, scroll: i32) -> (i32, i32, i32, i32) {
 /// Which of `n` tiles is under `(x, y)`. The gaps belong to no tile, and nothing outside the grid's
 /// band answers — a half-scrolled tile under the label or the foot is not there to tap.
 pub fn tile_at(n: usize, x: i32, y: i32, scroll: i32) -> Option<usize> {
-    if !(GRID_TOP..GRID_BOTTOM).contains(&y) {
+    if !(GRID_TOP..GRID_BOTTOM()).contains(&y) {
         return None;
     }
     (0..n).find(|&i| {
@@ -105,12 +123,12 @@ fn grid_h(n: usize) -> i32 {
 
 /// Is `y` on the "Follow the time of day" row?
 pub fn follow_hit(y: i32) -> bool {
-    (FOLLOW_Y..FOLLOW_Y + crate::kit::ROW_H).contains(&y)
+    (FOLLOW_Y()..FOLLOW_Y() + crate::kit::ROW_H()).contains(&y)
 }
 
 /// Is `(x, y)` on the primary button?
 pub fn button_hit(x: i32, y: i32) -> bool {
-    crate::kit::primary_button_hit(BUTTON_Y, x, y)
+    crate::kit::primary_button_hit(BUTTON_Y(), x, y)
 }
 
 /// Sony's five time-of-day channels, by id (`cinder_db::SENSME_CHANNELS`): Morning 8, Daytime 9,
@@ -157,14 +175,14 @@ pub fn list_top(channel: Option<usize>) -> i32 {
 pub fn content_h(lib: &Library, channel: Option<usize>) -> i32 {
     match channel {
         None => grid_h(lib.channels.len()),
-        Some(_) => rows(lib, channel).len() as i32 * ROW_H,
+        Some(_) => rows(lib, channel).len() as i32 * ROW_H(),
     }
 }
 
 /// The bottom of the scrolling area: the list runs to the Now Playing bar, the grid to its foot.
 pub fn list_bottom(channel: Option<usize>) -> i32 {
     if channel.is_none() {
-        GRID_BOTTOM
+        GRID_BOTTOM()
     } else {
         LIST_BOTTOM
     }
@@ -176,7 +194,7 @@ pub fn max_scroll_px(lib: &Library, channel: Option<usize>) -> i32 {
 
 /// Screen-y of visual row `r` at `scroll`.
 pub fn row_top(r: usize, channel: Option<usize>, scroll: i32) -> i32 {
-    list_top(channel) + r as i32 * ROW_H - scroll
+    list_top(channel) + r as i32 * ROW_H() - scroll
 }
 
 /// Which row is under `y`? `None` above or below the list, or past the last row. The channel list
@@ -187,7 +205,7 @@ pub fn row_at(lib: &Library, channel: Option<usize>, y: i32, scroll: i32) -> Opt
     if !(top..LIST_BOTTOM).contains(&y) {
         return None;
     }
-    let r = ((y - top + scroll.max(0)) / ROW_H) as usize;
+    let r = ((y - top + scroll.max(0)) / ROW_H()) as usize;
     rows(lib, channel).get(r).copied()
 }
 
@@ -367,7 +385,7 @@ pub fn render(
             c,
             t,
             top,
-            GRID_BOTTOM,
+            GRID_BOTTOM(),
             scroll,
             content_h(lib, None),
             sbar_active,
@@ -377,13 +395,13 @@ pub fn render(
 
     c.set_clip_y(top, LIST_BOTTOM);
     // Only the visible window — a channel can hold the whole library.
-    let first = (scroll / ROW_H).max(0) as usize;
+    let first = (scroll / ROW_H()).max(0) as usize;
     for (r, row) in all.iter().enumerate().skip(first) {
         let y = row_top(r, channel, scroll);
         if y >= LIST_BOTTOM {
             break;
         }
-        let cy = y + ROW_H / 2;
+        let cy = y + ROW_H() / 2;
         match row {
             Row::Channel(i) => {
                 let Some(ch) = lib.channels.get(*i) else {
@@ -391,7 +409,7 @@ pub fn render(
                 };
                 // A gradient tile keyed by the channel's name, the way a coverless album row is
                 // drawn — cached, so a screenful costs a blit each rather than a gradient each.
-                art::block_cached(c, t, 22, y + (ROW_H - 40) / 2, 40, 40, ch.name, 1.0);
+                art::block_cached(c, t, 22, y + (ROW_H() - 40) / 2, 40, 40, ch.name, 1.0);
                 let ns = name_style(t, true);
                 text::draw(c, f, 76.0, (cy + 6) as f32, ch.name, &ns);
                 let cs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.12);
@@ -431,7 +449,7 @@ pub fn render(
                 text::draw(c, f, 458.0 - w, (cy + 5) as f32, &s.dur, &ds);
             }
         }
-        hline(c, y + ROW_H - 1, t.line);
+        hline(c, y + ROW_H() - 1, t.line);
     }
     c.clear_clip();
     scrollbar(
@@ -458,10 +476,10 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
         .unwrap_or(1)
         .max(1);
     let now = foot_channel(lib, foot);
-    c.set_clip_y(GRID_TOP, GRID_BOTTOM);
+    c.set_clip_y(GRID_TOP, GRID_BOTTOM());
     for (i, ch) in lib.channels.iter().enumerate() {
         let (x, y, w, h) = tile_rect(i, scroll);
-        if y + h < GRID_TOP || y >= GRID_BOTTOM {
+        if y + h < GRID_TOP || y >= GRID_BOTTOM() {
             continue;
         }
         fill_rect(c, x, y, w, h, t.panel);
@@ -530,7 +548,7 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
     c.clear_clip();
 
     // The foot, ruled off from a half-scrolled tile above it.
-    hline(c, FOLLOW_Y, t.line);
+    hline(c, FOLLOW_Y(), t.line);
     let sub = match (foot.follow, foot.hour.map(time_channel_id)) {
         (false, _) => crate::i18n::text("Play the channel for the hour").to_string(),
         (true, None) => crate::i18n::text("Waiting for the clock").to_string(),
@@ -549,8 +567,8 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
         c,
         t,
         f,
-        FOLLOW_Y,
-        kit::ROW_H,
+        FOLLOW_Y(),
+        kit::ROW_H(),
         &crate::kit::Row::new(crate::i18n::text("Follow the time of day"))
             .sub(&sub)
             .trail(crate::kit::Trail::Switch(foot.follow)),
@@ -559,7 +577,7 @@ fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot
         Some(ch) => crate::ui_format!("Play {}", crate::i18n::text(ch.name)),
         None => crate::i18n::text("Shuffle all analysed").to_string(),
     };
-    kit::primary_button(c, t, f, BUTTON_Y, &label);
+    kit::primary_button(c, t, f, BUTTON_Y(), &label);
 }
 
 #[cfg(test)]
@@ -600,8 +618,8 @@ mod tests {
         let channel = Some(0);
         let all = rows(&l, channel);
         for (r, want) in all.iter().enumerate() {
-            for scroll in [0, 9, ROW_H, ROW_H * 2 - 1] {
-                let y = row_top(r, channel, scroll) + ROW_H / 2;
+            for scroll in [0, 9, ROW_H(), ROW_H() * 2 - 1] {
+                let y = row_top(r, channel, scroll) + ROW_H() / 2;
                 if (list_top(channel)..LIST_BOTTOM).contains(&y) {
                     assert_eq!(
                         row_at(&l, channel, y, scroll),
@@ -611,7 +629,7 @@ mod tests {
                 }
             }
         }
-        let past = row_top(all.len(), channel, 0) + ROW_H / 2;
+        let past = row_top(all.len(), channel, 0) + ROW_H() / 2;
         if past < LIST_BOTTOM {
             assert_eq!(row_at(&l, channel, past, 0), None);
         }
@@ -622,7 +640,7 @@ mod tests {
                 for i in 0..n {
                     let (x, y, w, h) = tile_rect(i, scroll);
                     let (cx, cy) = (x + w / 2, y + h / 2);
-                    let want = (GRID_TOP..GRID_BOTTOM).contains(&cy).then_some(i);
+                    let want = (GRID_TOP..GRID_BOTTOM()).contains(&cy).then_some(i);
                     assert_eq!(
                         tile_at(n, cx, cy, scroll),
                         want,
@@ -723,9 +741,9 @@ mod tests {
             (12, 8, 9, 10, 11, 12)
         );
         // The foot sits below the grid and above the Now Playing bar.
-        assert!(BUTTON_Y + crate::kit::BUTTON_H <= LIST_BOTTOM);
-        assert!(follow_hit(FOLLOW_Y + 10) && !follow_hit(GRID_BOTTOM - 1));
-        assert!(button_hit(240, BUTTON_Y + 20));
+        assert!(BUTTON_Y() + crate::kit::BUTTON_H <= LIST_BOTTOM);
+        assert!(follow_hit(FOLLOW_Y() + 10) && !follow_hit(GRID_BOTTOM() - 1));
+        assert!(button_hit(240, BUTTON_Y() + 20));
     }
 
     /// A library nobody has analysed has no rows, nothing to scroll, and an empty state that says

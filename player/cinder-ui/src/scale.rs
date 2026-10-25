@@ -37,26 +37,83 @@ pub const CAPTION: f32 = 13.0;
 
 // ── row heights ────────────────────────────────────────────────────────────────────────────
 
+// ── Large controls ─────────────────────────────────────────────────────────────────────────
+//
+// Display ▸ Large controls (off by default). The four row heights below are FUNCTIONS of it, so
+// every list on every screen grows together, and render and hit test — which both read these —
+// cannot disagree. Off, every number is exactly what it was as a constant, which the golden
+// previews prove: a pixel that moves with Large off is a bug in this refactor.
+//
+// Reported 2026-10-25 (owner): "some aspects of the UI are still hard to touch for some people".
+// The panel is ~11.9 px/mm, so a 62 px track row is 5.2 mm; the common guidance for a finger
+// target is 7-9 mm. 1.25x makes it 6.5 mm while a list still shows eight rows.
+
+/// Large controls' multiplier for row heights and touch zones, in percent.
+pub const LARGE_PCT: i32 = 125;
+
+#[cfg(not(test))]
+static LARGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// Per test thread: a test that turns Large on must not grow the rows under a parallel one.
+#[cfg(test)]
+thread_local! {
+    static LARGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_large(on: bool) {
+    #[cfg(not(test))]
+    LARGE.store(on, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    LARGE.with(|l| l.set(on));
+}
+
+pub fn large() -> bool {
+    #[cfg(not(test))]
+    return LARGE.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    return LARGE.with(|l| l.get());
+}
+
+/// `px` at the current control size: unchanged with Large off.
+pub fn ctl(px: i32) -> i32 {
+    if large() {
+        (px * LARGE_PCT + 50) / 100
+    } else {
+        px
+    }
+}
+
+// ── row heights ────────────────────────────────────────────────────────────────────────────
+// Upper-case functions on purpose: they replaced constants of the same name at every call site,
+// and the name says what they still are — a row height, the same everywhere.
+
 /// **A track row, wherever it appears** — the Songs tab, an album, an artist, a playlist, Up Next,
 /// the folder tree. It was 68 in Songs, 62 on the album/artist/playlist/Up Next lists and 56 in
-/// Folders, and `folders.rs` carried a comment claiming its 56 was "the same 56 the Songs tab
-/// uses, so a track row looks the same wherever it is". The Songs tab was 68.
-///
-/// 62 because four of the five lists already used it, so the fewest screens move; the list area is
+/// Folders; 62 because four of the five lists already used it (2026-09-12). The list area is
 /// 645 px tall (`chrome::HEADER_BOTTOM` to `library::LIST_BOTTOM`), which is 10.4 rows.
-pub const TRACK_ROW_H: i32 = 62;
+#[allow(non_snake_case)]
+pub fn TRACK_ROW_H() -> i32 {
+    ctl(62)
+}
 
 /// A row standing for a GROUP of tracks — an album, an artist, a playlist — which carries stacked
-/// art and a count, and is therefore legitimately taller than the track row inside it. Albums were
-/// 68 and Artists/Playlists 70; one number for one object.
-pub const GROUP_ROW_H: i32 = 68;
+/// art and a count, and is therefore legitimately taller than the track row inside it.
+#[allow(non_snake_case)]
+pub fn GROUP_ROW_H() -> i32 {
+    ctl(68)
+}
 
 /// A settings-style row: a label, and a value or a switch on the right.
-pub const SETTING_ROW_H: i32 = 64;
+#[allow(non_snake_case)]
+pub fn SETTING_ROW_H() -> i32 {
+    ctl(64)
+}
 
 /// A picker row — a one-of-N list the user is choosing from (genre, codec, playlist actions).
 /// Denser than a setting row on purpose: a picker is scanned, not lived in.
-pub const PICKER_ROW_H: i32 = 56;
+#[allow(non_snake_case)]
+pub fn PICKER_ROW_H() -> i32 {
+    ctl(56)
+}
 
 // ── what is still open ─────────────────────────────────────────────────────────────────────
 //

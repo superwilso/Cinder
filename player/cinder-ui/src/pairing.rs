@@ -40,7 +40,11 @@ const CARD_Y: i32 = 100;
 const CARD_H: i32 = 72;
 const SCAN_BTN: (i32, i32, i32, i32) = (340, 118, 118, 36); // x,y,w,h
 const LIST_Y0: i32 = 218;
-const ROW_H: i32 = crate::scale::TRACK_ROW_H;
+#[allow(non_snake_case)]
+fn ROW_H() -> i32 {
+    crate::scale::TRACK_ROW_H()
+}
+
 const FORGET_W: i32 = 104;
 const FOOT_Y: i32 = 736;
 /// Paired rows are capped so a long pairing history can never push the FOUND section off screen —
@@ -88,7 +92,7 @@ pub fn paired_page_rows(paired: usize, page: usize) -> usize {
 
 /// Y of the FOUND section's header text, given how many paired rows are drawn.
 fn found_header_y(paired: usize) -> i32 {
-    LIST_Y0 + paired.min(MAX_PAIRED) as i32 * ROW_H + SECTION_GAP
+    LIST_Y0 + paired.min(MAX_PAIRED) as i32 * ROW_H() + SECTION_GAP
 }
 /// Y of the first FOUND row.
 fn found_y0(paired: usize) -> i32 {
@@ -100,7 +104,7 @@ fn found_capacity(paired: usize) -> usize {
     if room <= 0 {
         0
     } else {
-        (room / ROW_H) as usize
+        (room / ROW_H()) as usize
     }
 }
 
@@ -280,10 +284,10 @@ pub fn hit(x: i32, y: i32, paired: usize, found: usize, page: usize) -> PairHit 
         }
     }
     let prows = paired_page_rows(paired, page);
-    if (LIST_Y0..LIST_Y0 + prows as i32 * ROW_H).contains(&y) {
+    if (LIST_Y0..LIST_Y0 + prows as i32 * ROW_H()).contains(&y) {
         // ABSOLUTE index out, page-relative row in. Every caller — connect, disconnect, forget —
         // indexes the shell's `g_bt_paired`, which is the whole list and never a page of it.
-        let i = paired_page_start(paired, page) + ((y - LIST_Y0) / ROW_H) as usize;
+        let i = paired_page_start(paired, page) + ((y - LIST_Y0) / ROW_H()) as usize;
         return if x >= 458 - FORGET_W {
             PairHit::Forget(i)
         } else {
@@ -292,8 +296,8 @@ pub fn hit(x: i32, y: i32, paired: usize, found: usize, page: usize) -> PairHit 
     }
     let frows = found.min(found_capacity(paired));
     let fy0 = found_y0(paired);
-    if (fy0..fy0 + frows as i32 * ROW_H).contains(&y) {
-        return PairHit::Pair(((y - fy0) / ROW_H) as usize);
+    if (fy0..fy0 + frows as i32 * ROW_H()).contains(&y) {
+        return PairHit::Pair(((y - fy0) / ROW_H()) as usize);
     }
     PairHit::None
 }
@@ -311,7 +315,7 @@ fn row(
     right_label: Option<&str>,
     right_accent: bool,
 ) {
-    let cy = y + ROW_H / 2;
+    let cy = y + ROW_H() / 2;
     icons::bt(c, 34.0, cy as f32, 16.0, if accent { t.acc } else { t.dim });
     crate::widgets::draw_fit(
         c,
@@ -353,7 +357,7 @@ fn row(
             &s,
         );
     }
-    hline(c, y + ROW_H, t.line);
+    hline(c, y + ROW_H(), t.line);
 }
 
 /// `forget_armed` = the paired row whose FORGET is one tap from firing (two-tap confirm, same idiom
@@ -507,7 +511,7 @@ pub fn render(
             crate::ui_format!("{} · TAP TO CONNECT", d.kind.to_uppercase())
         };
         let armed = forget_armed == Some(ai);
-        let ry = LIST_Y0 + i as i32 * ROW_H;
+        let ry = LIST_Y0 + i as i32 * ROW_H();
         row(
             c,
             t,
@@ -528,7 +532,7 @@ pub fn render(
         // Placed in the empty gap between the subtitle and the FORGET button — x≈30 is where the
         // row's own Bluetooth glyph lives, so the obvious spot would have drawn straight over it.
         if busy == Some(ai) {
-            crate::widgets::spinner(c, 330, ry + ROW_H / 2, 7, 3, busy_phase, t.acc);
+            crate::widgets::spinner(c, 330, ry + ROW_H() / 2, 7, 3, busy_phase, t.acc);
         }
     }
 
@@ -570,7 +574,7 @@ pub fn render(
                 c,
                 t,
                 f,
-                fy0 + i as i32 * ROW_H,
+                fy0 + i as i32 * ROW_H(),
                 &d.name,
                 &sub,
                 false,
@@ -623,13 +627,13 @@ mod tests {
     #[test]
     fn paired_rows_map_to_their_own_index_and_forget_is_the_drawn_button() {
         assert_eq!(hit(120, LIST_Y0 + 4, 2, 0, 0), PairHit::Row(0));
-        assert_eq!(hit(120, LIST_Y0 + ROW_H - 1, 2, 0, 0), PairHit::Row(0));
-        assert_eq!(hit(120, LIST_Y0 + ROW_H, 2, 0, 0), PairHit::Row(1));
+        assert_eq!(hit(120, LIST_Y0 + ROW_H() - 1, 2, 0, 0), PairHit::Row(0));
+        assert_eq!(hit(120, LIST_Y0 + ROW_H(), 2, 0, 0), PairHit::Row(1));
         assert_eq!(
             hit(458 - FORGET_W, LIST_Y0 + 4, 2, 0, 0),
             PairHit::Forget(0)
         );
-        assert_eq!(hit(479, LIST_Y0 + ROW_H + 4, 2, 0, 0), PairHit::Forget(1));
+        assert_eq!(hit(479, LIST_Y0 + ROW_H() + 4, 2, 0, 0), PairHit::Forget(1));
         assert_eq!(
             hit(458 - FORGET_W - 1, LIST_Y0 + 4, 2, 0, 0),
             PairHit::Row(0)
@@ -647,7 +651,7 @@ mod tests {
             for page in 0..paired_pages(n) {
                 let rows = paired_page_rows(n, page);
                 for r in 0..rows {
-                    let y = LIST_Y0 + r as i32 * ROW_H + 4;
+                    let y = LIST_Y0 + r as i32 * ROW_H() + 4;
                     match hit(120, y, n, 0, page) {
                         PairHit::Row(i) => {
                             assert!(i < n, "n={n} page={page} row={r} gave out-of-range {i}");
@@ -677,7 +681,7 @@ mod tests {
         for n in 0..=9usize {
             for page in 0..paired_pages(n) {
                 let rows = paired_page_rows(n, page);
-                let past = LIST_Y0 + rows as i32 * ROW_H + 1;
+                let past = LIST_Y0 + rows as i32 * ROW_H() + 1;
                 assert!(
                     !matches!(
                         hit(120, past, n, 0, page),
@@ -757,19 +761,22 @@ mod tests {
     #[test]
     fn found_rows_sit_below_the_paired_list_and_both_clip() {
         assert_eq!(hit(120, found_y0(2) + 4, 2, 3, 0), PairHit::Pair(0));
-        assert_eq!(hit(120, found_y0(2) + ROW_H + 4, 2, 3, 0), PairHit::Pair(1));
+        assert_eq!(
+            hit(120, found_y0(2) + ROW_H() + 4, 2, 3, 0),
+            PairHit::Pair(1)
+        );
         // With no paired devices the FOUND rows move up, and the same y is a different row.
         assert_eq!(hit(120, found_y0(0) + 4, 0, 3, 0), PairHit::Pair(0));
         assert_ne!(found_y0(0), found_y0(2));
         // Past the end of each list: nothing.
         assert_eq!(
-            hit(120, found_y0(2) + 3 * ROW_H + 4, 2, 3, 0),
+            hit(120, found_y0(2) + 3 * ROW_H() + 4, 2, 3, 0),
             PairHit::None
         );
-        assert_eq!(hit(120, LIST_Y0 + 2 * ROW_H + 4, 2, 0, 0), PairHit::None);
+        assert_eq!(hit(120, LIST_Y0 + 2 * ROW_H() + 4, 2, 0, 0), PairHit::None);
         // A pairing history longer than MAX_PAIRED is clipped, and the FOUND section stays reachable.
         assert_eq!(
-            hit(120, LIST_Y0 + MAX_PAIRED as i32 * ROW_H - 1, 99, 1, 0),
+            hit(120, LIST_Y0 + MAX_PAIRED as i32 * ROW_H() - 1, 99, 1, 0),
             PairHit::Row(MAX_PAIRED - 1)
         );
         assert_eq!(hit(120, found_y0(99) + 4, 99, 1, 0), PairHit::Pair(0));

@@ -51,11 +51,14 @@ const CODEC_PREFS: [&str; 4] = ["Auto", "LDAC or SBC", "AAC or SBC", "SBC only"]
 /// "Use Sony's receiver": restart into the stock player with its receiver open. Below the status
 /// lines (at most three, ending by y≈290) and well clear of the notes rule at 580.
 pub const SONY_Y: i32 = 489;
-pub const SONY_H: i32 = kit::ROW_H;
+#[allow(non_snake_case)]
+pub fn SONY_H() -> i32 {
+    kit::ROW_H()
+}
 
 /// Did this tap land on the "Use Sony's receiver" row?
 pub fn sony_hit(_x: i32, y: i32) -> bool {
-    (SONY_Y..SONY_Y + SONY_H).contains(&y)
+    (SONY_Y..SONY_Y + SONY_H()).contains(&y)
 }
 
 /// Did this tap land on the switch row?
@@ -193,7 +196,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         t,
         f,
         SONY_Y,
-        SONY_H,
+        SONY_H(),
         &Row::new(crate::i18n::text("Use Sony's receiver"))
             .sub(crate::i18n::text("Restarts into the Sony player"))
             .trail(Trail::Open("")),
@@ -346,7 +349,7 @@ mod tests {
         assert!(sony_hit(240, SONY_Y + 1));
         assert!(!switch_hit(240, SONY_Y + 1));
         assert!(!sony_hit(240, SWITCH_Y + 1));
-        assert!(SONY_Y + SONY_H < 580, "clear of the notes");
+        assert!(SONY_Y + SONY_H() < 580, "clear of the notes");
     }
 
     #[test]
@@ -374,6 +377,6 @@ mod tests {
         assert!(CODEC_LABEL_Y > STATUS_Y);
         assert!(CODEC_HINT_Y < SONY_Y);
         assert!(LDAC_HINT_Y < SONY_Y);
-        assert!(SONY_Y + SONY_H < 580, "clear of the notes section");
+        assert!(SONY_Y + SONY_H() < 580, "clear of the notes section");
     }
 }

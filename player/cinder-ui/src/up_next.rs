@@ -10,10 +10,12 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline, right, sty};
 use crate::Canvas;
 
-pub const RH: i32 = crate::scale::TRACK_ROW_H;
-// Must equal `library::list_bottom()`: the scrollbar this screen draws is `library::scrollbar`,
-// and `sbar_begin` measures the thumb's travel against the LIBRARY's bottom. Two independent
-// literals happened to agree (800 - 64); deriving it means they cannot quietly stop agreeing.
+#[allow(non_snake_case)]
+pub fn RH() -> i32 {
+    crate::scale::TRACK_ROW_H()
+} // Must equal `library::list_bottom()`: the scrollbar this screen draws is `library::scrollbar`,
+  // and `sbar_begin` measures the thumb's travel against the LIBRARY's bottom. Two independent
+  // literals happened to agree (800 - 64); deriving it means they cannot quietly stop agreeing.
 const LIST_BOTTOM: i32 = crate::H as i32 - crate::chrome::NP_BAR_H;
 const LIST_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
@@ -89,7 +91,7 @@ pub fn hit_now_save(l: &Layout, x: i32, y: i32, scroll_px: i32) -> bool {
 /// A row being dragged to a new position in the movable span.
 ///
 /// `y`/`grab_off` are in SCREEN space, not content space, so the floating row keeps sitting under
-/// the finger while the list auto-scrolls beneath it — deriving the float from `from * RH` instead
+/// the finger while the list auto-scrolls beneath it — deriving the float from `from * RH()` instead
 /// would make it slide away from the thumb the moment the edge-scroll kicked in.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RowDrag {
@@ -179,7 +181,7 @@ impl Slot {
     pub fn h(&self) -> i32 {
         match self {
             Slot::Head(_) => HDR_H,
-            _ => RH,
+            _ => RH(),
         }
     }
     /// Is this a row a finger can act on?
@@ -227,14 +229,14 @@ pub fn metrics(hist: usize, len: usize, current: Option<usize>) -> Metrics {
     let mut y = 0i32;
     let mut current_top = None;
     if hist > 0 {
-        y += HDR_H + hist as i32 * RH; // history header + the played rows
+        y += HDR_H + hist as i32 * RH(); // history header + the played rows
     }
     if let Some(cur) = current {
         y += HDR_H; // NOW PLAYING header
         current_top = Some(y);
-        y += RH;
+        y += RH();
         if cur + 1 < len {
-            y += HDR_H + (len - cur - 1) as i32 * RH;
+            y += HDR_H + (len - cur - 1) as i32 * RH();
         }
     }
     Metrics {
@@ -413,9 +415,9 @@ impl Layout {
         let floor = self.drop_first() - usize::from(from < self.drop_first());
         let clamp = |i: i32| (i.max(floor as i32) as usize).min(len - 1);
         // Content-space centre of the floating row.
-        let cy = float_top - LIST_TOP + scroll_px + RH / 2;
+        let cy = float_top - LIST_TOP + scroll_px + RH() / 2;
         match (self.upcoming_top(), ulen > 0) {
-            (Some(ut), true) if cy >= ut => clamp(hlen as i32 + (cy - ut).div_euclid(RH)),
+            (Some(ut), true) if cy >= ut => clamp(hlen as i32 + (cy - ut).div_euclid(RH())),
             // Over the history, NOW PLAYING or the NEXT heading: the front of what is coming,
             // which is the floor — one lower for a row that came out of the history.
             (Some(_), true) => clamp(0),
@@ -581,10 +583,10 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     // How many MOVABLE rows are scrolled off the top, because `morder` is indexed by drawn
     // position — the same arithmetic the binary search replaced, per section.
     let mut mseen = match l.history_top() {
-        Some(ht) => (((scroll - ht).max(0) / RH) as usize).min(hlen),
+        Some(ht) => (((scroll - ht).max(0) / RH()) as usize).min(hlen),
         None => 0,
     } + match l.upcoming_top() {
-        Some(ut) => (((scroll - ut).max(0) / RH) as usize).min(left),
+        Some(ut) => (((scroll - ut).max(0) / RH()) as usize).min(left),
         None => 0,
     };
 
@@ -628,8 +630,8 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
 
             Slot::Current(i) => {
                 if let Some(song) = v.tracks.get(i) {
-                    fill_rect(c, 0, y, W as i32, RH, t.panel);
-                    fill_rect(c, 0, y, 4, RH, t.acc);
+                    fill_rect(c, 0, y, W as i32, RH(), t.panel);
+                    fill_rect(c, 0, y, 4, RH(), t.acc);
                     track_row(c, t, f, song, v.lib, y, 0, false, true, false);
                 }
             }
@@ -641,7 +643,7 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                 let mi = morder.get(mseen).copied().unwrap_or(0);
                 mseen += 1;
                 if v.drag.map(|d| d.from) == Some(mi) {
-                    fill_rect(c, 0, y, W as i32, RH, t.panel); // the well the row came out of
+                    fill_rect(c, 0, y, W as i32, RH(), t.panel); // the well the row came out of
                 } else if let Some((song, past)) = span_row(mi) {
                     let n = match *slot {
                         Slot::Upcoming(i) => i - ufirst + 1,
@@ -655,7 +657,7 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                     } else {
                         let sw = v
                             .swipe
-                            .filter(|s| (y..y + RH).contains(&s.y) && s.dx != 0)
+                            .filter(|s| (y..y + RH()).contains(&s.y) && s.dx != 0)
                             .map(|s| s.dx);
                         if let Some(dx) = sw {
                             crate::library::swipe_reveal(
@@ -663,7 +665,7 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                                 t,
                                 f,
                                 y,
-                                RH,
+                                RH(),
                                 dx,
                                 crate::library::SwipeIntent::Remove,
                             );
@@ -687,12 +689,12 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     // out of the history is on its way back into what is coming.
     if let Some(d) = v.drag {
         if let Some((song, _)) = span_row(d.from) {
-            let ft = d.float_top().clamp(y0 - RH / 2, LIST_BOTTOM - RH / 2);
+            let ft = d.float_top().clamp(y0 - RH() / 2, LIST_BOTTOM - RH() / 2);
             c.set_clip_y(y0, LIST_BOTTOM);
-            fill_rect(c, 0, ft, W as i32, RH, t.row_sel);
-            fill_rect(c, 0, ft, 4, RH, t.acc);
+            fill_rect(c, 0, ft, W as i32, RH(), t.row_sel);
+            fill_rect(c, 0, ft, 4, RH(), t.acc);
             hline(c, ft, t.line);
-            hline(c, ft + RH, t.line);
+            hline(c, ft + RH(), t.line);
             track_row(
                 c,
                 t,
@@ -747,7 +749,7 @@ fn track_row(
     now: bool,
     grippy: bool,
 ) {
-    let cy = (y + RH / 2) as f32;
+    let cy = (y + RH() / 2) as f32;
     let idx_col = if now { t.acc } else { t.faint };
     let idx = if now {
         Some("\u{25b6}".to_string())
@@ -781,7 +783,7 @@ fn track_row(
         song.album_id,
         &song.art,
         46,
-        y + (RH - 48) / 2,
+        y + (RH() - 48) / 2,
         48,
         dim,
     );
@@ -845,7 +847,7 @@ fn track_row(
 /// is lifted so the gesture reads as engaged even though the finger covers the icon.
 fn grip(c: &mut Canvas, t: &Theme, y: i32, lifted: bool) {
     let col = if lifted { t.acc } else { t.faint };
-    let cy = y + RH / 2;
+    let cy = y + RH() / 2;
     let w = GRIP_X1 - GRIP_X0 - 8;
     for k in -1..=1 {
         fill_rect(c, GRIP_X0 + 4, cy + k * 7 - 1, w, 2, col);
@@ -1011,7 +1013,18 @@ mod tests {
     fn the_first_visible_slot_is_found_by_search_not_by_walking() {
         let l = layout(100, 200, Some(100));
         let max = l.max_scroll_px();
-        for scroll in [0, 1, RH - 1, RH, RH + 1, HDR_H, 500, 1234, max / 2, max] {
+        for scroll in [
+            0,
+            1,
+            RH() - 1,
+            RH(),
+            RH() + 1,
+            HDR_H,
+            500,
+            1234,
+            max / 2,
+            max,
+        ] {
             let want = l
                 .slots
                 .iter()
@@ -1039,10 +1052,10 @@ mod tests {
                     .count();
                 // Exactly the expression the draw loop uses.
                 let computed = match l.history_top() {
-                    Some(ht) => (((scroll - ht).max(0) / RH) as usize).min(hist),
+                    Some(ht) => (((scroll - ht).max(0) / RH()) as usize).min(hist),
                     None => 0,
                 } + match l.upcoming_top() {
-                    Some(ut) => (((scroll - ut).max(0) / RH) as usize).min(l.upcoming_len()),
+                    Some(ut) => (((scroll - ut).max(0) / RH()) as usize).min(l.upcoming_len()),
                     None => 0,
                 };
                 assert_eq!(computed, counted, "hist={hist} scroll={scroll}");

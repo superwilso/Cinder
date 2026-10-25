@@ -1238,7 +1238,7 @@ pub(crate) fn write_atomic(
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nbt_on={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nmono={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\nclear_bass={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nbt_on={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nmono={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nbig_view={}\nui_scale={}\nsetup={}\nclear_bass={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -1266,6 +1266,9 @@ fn settings_body(r: &Render) -> String {
         r.app.dsee_mode(),
         r.app.vinyl_type(),
         r.app.tone_bands().iter().map(|b| b.to_string()).collect::<Vec<_>>().join(","),
+        // Before ui_scale on purpose: loading big_view=0 puts a 130 % text size back to 100 %, so
+        // the saved size has to be read after it.
+        u8::from(r.app.big_view()),
         r.app.ui_scale_pct(),
         r.app.setup_idx(),
         r.app.clear_bass_step(),
@@ -8564,6 +8567,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_brightness(n);
                         }
                     }
+                    "big_view" => r.app.set_big_view(v == "1"),
                     "ui_scale" => {
                         // set_ui_scale_pct clamps into the SCALE_STEPS range.
                         if let Ok(n) = v.parse::<u32>() {

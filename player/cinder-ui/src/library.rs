@@ -214,7 +214,7 @@ pub fn grid_x(col: usize) -> i32 {
 /// The height the cursor-follow keeps on screen for `tab`: one line of it.
 pub fn cursor_h(tab: Tab, lib: &Library) -> i32 {
     match (tab, view_of(lib, tab)) {
-        (Tab::Albums, LibView::List) => ALBUM_ROW_H,
+        (Tab::Albums, LibView::List) => ALBUM_ROW_H(),
         _ => line_h(tab, lib),
     }
 }
@@ -633,11 +633,11 @@ fn filter_strip(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, y: i32) {
 pub fn row_h(tab: Tab) -> i32 {
     match tab {
         // A track row is a track row: the same 62 as the album, artist, playlist and Up Next
-        // lists (`scale::TRACK_ROW_H`). It was 68 here alone.
-        Tab::Songs => crate::scale::TRACK_ROW_H,
+        // lists (`scale::TRACK_ROW_H()`). It was 68 here alone.
+        Tab::Songs => crate::scale::TRACK_ROW_H(),
         // A row standing for a GROUP of tracks, which carries stacked art and a count. Albums
         // were 68 and Artists/Playlists 70, for no reason either screen recorded.
-        Tab::Albums | Tab::Artists | Tab::Playlists => crate::scale::GROUP_ROW_H,
+        Tab::Albums | Tab::Artists | Tab::Playlists => crate::scale::GROUP_ROW_H(),
     }
 }
 
@@ -823,15 +823,19 @@ pub fn album_tracks_top() -> i32 {
     let (_, by, _, bh) = shuffle_band_rect(ALBUM_BAND_Y);
     by + bh + 6
 }
-pub const ALBUM_TRACK_RH: i32 = crate::scale::TRACK_ROW_H;
-
-// ── Albums tab: sortable + expandable (accordion) display list ────────────────────────────
-// The Albums tab is a single flat list of variable-height rows: an artist header (grouped sort
-// only), an album row, or the track rows of the one expanded album. `albums_build` produces that
-// list (with content-space y tops) once per render/hit; layout/hit/scroll all read from it so the
-// three can never drift.
+#[allow(non_snake_case)]
+pub fn ALBUM_TRACK_RH() -> i32 {
+    crate::scale::TRACK_ROW_H()
+} // ── Albums tab: sortable + expandable (accordion) display list ────────────────────────────
+  // The Albums tab is a single flat list of variable-height rows: an artist header (grouped sort
+  // only), an album row, or the track rows of the one expanded album. `albums_build` produces that
+  // list (with content-space y tops) once per render/hit; layout/hit/scroll all read from it so the
+  // three can never drift.
 pub const ALBUM_HDR_H: i32 = 34; // artist section header (grouped sort)
-pub const ALBUM_ROW_H: i32 = crate::scale::GROUP_ROW_H; // an album row
+#[allow(non_snake_case)]
+pub fn ALBUM_ROW_H() -> i32 {
+    crate::scale::GROUP_ROW_H()
+} // an album row
 pub const ALBUM_CHILD_H: i32 = 50; // an expanded track row (indented under its album)
 /// A tap on an album row left of this x opens the drill-in page (cover art); right of it toggles
 /// the inline accordion. Keeps both affordances on one row.
@@ -856,7 +860,7 @@ pub fn albums_row_h(row: &AlbumsRow, view: LibView) -> i32 {
     match row {
         AlbumsRow::Group { .. } => ALBUM_HDR_H,
         AlbumsRow::Album { .. } if view == LibView::Compact => COMPACT_ROW_H,
-        AlbumsRow::Album { .. } => ALBUM_ROW_H,
+        AlbumsRow::Album { .. } => ALBUM_ROW_H(),
         AlbumsRow::Track { .. } => ALBUM_CHILD_H,
         AlbumsRow::Tiles { .. } => GRID_ROW_H,
     }
@@ -1253,7 +1257,7 @@ pub fn max_scroll_px(
 
 /// Largest useful `scroll_px` for the album drill-in track list.
 pub fn album_max_scroll_px(album: &crate::model::AlbumRow) -> i32 {
-    (album.rows() as i32 * ALBUM_TRACK_RH - (LIST_BOTTOM - album_tracks_top())).max(0)
+    (album.rows() as i32 * ALBUM_TRACK_RH() - (LIST_BOTTOM - album_tracks_top())).max(0)
 }
 
 /// Virtual y (content px) of selectable row `idx` — for the cursor-follow used by button nav. For
@@ -1447,7 +1451,7 @@ pub fn album_hit_track(album: &crate::model::AlbumRow, scroll_px: i32, y: i32) -
         return None;
     }
     let cy = y - album_tracks_top() + scroll_px.max(0);
-    let r = (cy / ALBUM_TRACK_RH) as usize;
+    let r = (cy / ALBUM_TRACK_RH()) as usize;
     (r < album.rows()).then_some(r)
 }
 
@@ -2229,13 +2233,13 @@ pub fn render(
                         let al = flat[fi];
                         let now = rank == current;
                         rank += 1;
-                        let cy = y + ALBUM_ROW_H / 2;
-                        let sw = swipe_for(swipe, y, ALBUM_ROW_H);
+                        let cy = y + ALBUM_ROW_H() / 2;
+                        let sw = swipe_for(swipe, y, ALBUM_ROW_H());
                         if let Some(dx) = sw {
-                            swipe_reveal(c, t, f, y, ALBUM_ROW_H, dx, SwipeIntent::Queue);
+                            swipe_reveal(c, t, f, y, ALBUM_ROW_H(), dx, SwipeIntent::Queue);
                         }
                         if now {
-                            fill_rect(c, 0, y, W as i32, ALBUM_ROW_H, t.row_sel);
+                            fill_rect(c, 0, y, W as i32, ALBUM_ROW_H(), t.row_sel);
                         }
                         thumb(
                             c,
@@ -2244,7 +2248,7 @@ pub fn render(
                             al.album_id,
                             &al.art,
                             22,
-                            y + (ALBUM_ROW_H - THUMB_PX) / 2,
+                            y + (ALBUM_ROW_H() - THUMB_PX) / 2,
                             THUMB_PX,
                             artdim(t),
                         );
@@ -2279,7 +2283,7 @@ pub fn render(
                         // Accordion caret (right): points down when open, right when closed.
                         let caret = if expanded { t.acc } else { t.faint };
                         icons::chevron(c, 452.0, cy as f32, 13.0, caret);
-                        hline(c, y + ALBUM_ROW_H, t.line);
+                        hline(c, y + ALBUM_ROW_H(), t.line);
                         if sw.is_some() {
                             c.clear_offset_x();
                         }
@@ -2657,7 +2661,7 @@ pub fn album_view(
         crate::i18n::text("IN ORDER · THEN SHUFFLE"),
     );
     let top = album_tracks_top();
-    let rh = ALBUM_TRACK_RH;
+    let rh = ALBUM_TRACK_RH();
     let total = album.rows();
     let first = (scroll_px / rh) as usize;
     let mut y = top - (scroll_px % rh);
@@ -2769,8 +2773,15 @@ pub const ARTIST_SEC_H: i32 = 36; // "ALBUMS · n" / "MOST PLAYED" section heade
 pub const ARTIST_SONGS_H: i32 = 48;
 /// How many most-played tracks the artist page lists (handoff 5m: "then the 3 most played").
 pub const ARTIST_TOP_N: usize = 3;
-pub const ARTIST_ALBUM_RH: i32 = crate::scale::GROUP_ROW_H;
-pub const ARTIST_TRACK_RH: i32 = crate::scale::TRACK_ROW_H;
+#[allow(non_snake_case)]
+pub fn ARTIST_ALBUM_RH() -> i32 {
+    crate::scale::GROUP_ROW_H()
+}
+
+#[allow(non_snake_case)]
+pub fn ARTIST_TRACK_RH() -> i32 {
+    crate::scale::TRACK_ROW_H()
+}
 
 /// One row of the artist page's scrolling content.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -2792,8 +2803,8 @@ impl ArtistRowKind {
         match self {
             ArtistRowKind::AlbumsSection | ArtistRowKind::TopSection => ARTIST_SEC_H,
             ArtistRowKind::SongsSection => ARTIST_SONGS_H,
-            ArtistRowKind::Album(_) => ARTIST_ALBUM_RH,
-            ArtistRowKind::Song(_) | ArtistRowKind::Top(_) => ARTIST_TRACK_RH,
+            ArtistRowKind::Album(_) => ARTIST_ALBUM_RH(),
+            ArtistRowKind::Song(_) | ArtistRowKind::Top(_) => ARTIST_TRACK_RH(),
         }
     }
 }
@@ -2893,7 +2904,7 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str, songs_open: bool) -> Art
         y += ARTIST_SEC_H;
         for i in 0..albums.len() {
             rows.push((y, ArtistRowKind::Album(i)));
-            y += ARTIST_ALBUM_RH;
+            y += ARTIST_ALBUM_RH();
         }
     }
     if !top.is_empty() {
@@ -2901,7 +2912,7 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str, songs_open: bool) -> Art
         y += ARTIST_SEC_H;
         for &i in &top {
             rows.push((y, ArtistRowKind::Top(i)));
-            y += ARTIST_TRACK_RH;
+            y += ARTIST_TRACK_RH();
         }
     }
     let songs_open = songs_open || albums.is_empty();
@@ -2911,7 +2922,7 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str, songs_open: bool) -> Art
         if songs_open {
             for i in 0..tracks.len() {
                 rows.push((y, ArtistRowKind::Song(i)));
-                y += ARTIST_TRACK_RH;
+                y += ARTIST_TRACK_RH();
             }
         }
     }
@@ -3082,10 +3093,10 @@ pub fn artist_view(
                 let Some(tr) = page.tracks.get(i) else {
                     continue;
                 };
-                let cy = y + ARTIST_TRACK_RH / 2;
-                let sw = swipe_for(swipe, y, ARTIST_TRACK_RH);
+                let cy = y + ARTIST_TRACK_RH() / 2;
+                let sw = swipe_for(swipe, y, ARTIST_TRACK_RH());
                 if let Some(dx) = sw {
-                    swipe_reveal(c, t, f, y, ARTIST_TRACK_RH, dx, SwipeIntent::Queue);
+                    swipe_reveal(c, t, f, y, ARTIST_TRACK_RH(), dx, SwipeIntent::Queue);
                 }
                 let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink);
                 text::draw(
@@ -3120,7 +3131,7 @@ pub fn artist_view(
                     &n,
                     &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06),
                 );
-                hline(c, y + ARTIST_TRACK_RH, t.line);
+                hline(c, y + ARTIST_TRACK_RH(), t.line);
                 if sw.is_some() {
                     c.clear_offset_x();
                 }
@@ -3129,10 +3140,10 @@ pub fn artist_view(
                 let Some((_, al)) = page.albums.get(i) else {
                     continue;
                 };
-                let cy = y + ARTIST_ALBUM_RH / 2;
-                let sw = swipe_for(swipe, y, ARTIST_ALBUM_RH);
+                let cy = y + ARTIST_ALBUM_RH() / 2;
+                let sw = swipe_for(swipe, y, ARTIST_ALBUM_RH());
                 if let Some(dx) = sw {
-                    swipe_reveal(c, t, f, y, ARTIST_ALBUM_RH, dx, SwipeIntent::Queue);
+                    swipe_reveal(c, t, f, y, ARTIST_ALBUM_RH(), dx, SwipeIntent::Queue);
                 }
                 thumb(
                     c,
@@ -3141,7 +3152,7 @@ pub fn artist_view(
                     al.album_id,
                     &al.art,
                     22,
-                    y + (ARTIST_ALBUM_RH - THUMB_PX) / 2,
+                    y + (ARTIST_ALBUM_RH() - THUMB_PX) / 2,
                     THUMB_PX,
                     artdim(t),
                 );
@@ -3176,7 +3187,7 @@ pub fn artist_view(
                     crate::kit::stars(c, t, 436 - 5 * 14, cy + 11, 12, 14, r, false);
                 }
                 icons::chevron(c, 452.0, cy as f32, 13.0, t.faint);
-                hline(c, y + ARTIST_ALBUM_RH, t.line);
+                hline(c, y + ARTIST_ALBUM_RH(), t.line);
                 if sw.is_some() {
                     c.clear_offset_x();
                 }
@@ -3187,13 +3198,13 @@ pub fn artist_view(
                 };
                 let sgn = tr.song;
                 let now = i == sel;
-                let cy = y + ARTIST_TRACK_RH / 2;
-                let sw = swipe_for(swipe, y, ARTIST_TRACK_RH);
+                let cy = y + ARTIST_TRACK_RH() / 2;
+                let sw = swipe_for(swipe, y, ARTIST_TRACK_RH());
                 if let Some(dx) = sw {
-                    swipe_reveal(c, t, f, y, ARTIST_TRACK_RH, dx, SwipeIntent::Queue);
+                    swipe_reveal(c, t, f, y, ARTIST_TRACK_RH(), dx, SwipeIntent::Queue);
                 }
                 if now {
-                    fill_rect(c, 0, y, W as i32, ARTIST_TRACK_RH, t.row_sel);
+                    fill_rect(c, 0, y, W as i32, ARTIST_TRACK_RH(), t.row_sel);
                 }
                 text::draw(
                     c,
@@ -3236,7 +3247,7 @@ pub fn artist_view(
                     &sgn.dur,
                     &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
                 );
-                hline(c, y + ARTIST_TRACK_RH, t.line);
+                hline(c, y + ARTIST_TRACK_RH(), t.line);
                 if sw.is_some() {
                     c.clear_offset_x();
                 }
@@ -3283,7 +3294,10 @@ pub fn hit_playlist_cover(pl: &crate::model::PlaylistRow, x: i32, y: i32) -> boo
     let (cx, cy, cw, ch) = PLAYLIST_COVER;
     pl.user && (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y)
 }
-pub const PLAYLIST_TRACK_RH: i32 = ARTIST_TRACK_RH;
+#[allow(non_snake_case)]
+pub fn PLAYLIST_TRACK_RH() -> i32 {
+    ARTIST_TRACK_RH()
+}
 
 /// Top of the member list. A user playlist gives up 56 px of it to the edit bar; a Sony one has
 /// no bar and keeps the space. Both the renderer and the hit test read this, so they cannot drift.
@@ -3395,7 +3409,7 @@ pub fn playlist_view_h(pl: &crate::model::PlaylistRow) -> i32 {
 }
 
 pub fn playlist_content_h(pl: &crate::model::PlaylistRow) -> i32 {
-    pl.track_list.len() as i32 * PLAYLIST_TRACK_RH + 8
+    pl.track_list.len() as i32 * PLAYLIST_TRACK_RH() + 8
 }
 
 pub fn playlist_max_scroll_px(pl: &crate::model::PlaylistRow) -> i32 {
@@ -3408,7 +3422,7 @@ pub fn playlist_hit_track(pl: &crate::model::PlaylistRow, scroll_px: i32, y: i32
     if y < top || y >= LIST_BOTTOM {
         return None;
     }
-    let i = ((y - top + scroll_px.max(0)) / PLAYLIST_TRACK_RH) as usize;
+    let i = ((y - top + scroll_px.max(0)) / PLAYLIST_TRACK_RH()) as usize;
     (i < pl.track_list.len()).then_some(i)
 }
 
@@ -3660,20 +3674,20 @@ pub fn playlist_view(
         c.clear_clip();
         return;
     }
-    let first = (scroll_px / PLAYLIST_TRACK_RH) as usize;
-    let mut y = top - (scroll_px % PLAYLIST_TRACK_RH);
+    let first = (scroll_px / PLAYLIST_TRACK_RH()) as usize;
+    let mut y = top - (scroll_px % PLAYLIST_TRACK_RH());
     for (i, sgn) in pl.track_list.iter().enumerate().skip(first) {
         if y >= LIST_BOTTOM {
             break;
         }
         let now = Some(i) == sel;
-        let cy = y + PLAYLIST_TRACK_RH / 2;
-        let sw = swipe_for(swipe, y, PLAYLIST_TRACK_RH);
+        let cy = y + PLAYLIST_TRACK_RH() / 2;
+        let sw = swipe_for(swipe, y, PLAYLIST_TRACK_RH());
         if let Some(dx) = sw {
-            swipe_reveal(c, t, f, y, PLAYLIST_TRACK_RH, dx, SwipeIntent::Queue);
+            swipe_reveal(c, t, f, y, PLAYLIST_TRACK_RH(), dx, SwipeIntent::Queue);
         }
         if now {
-            fill_rect(c, 0, y, W as i32, PLAYLIST_TRACK_RH, t.row_sel);
+            fill_rect(c, 0, y, W as i32, PLAYLIST_TRACK_RH(), t.row_sel);
         }
         text::draw(
             c,
@@ -3696,7 +3710,7 @@ pub fn playlist_view(
             sgn.album_id,
             &sgn.art,
             52,
-            y + (PLAYLIST_TRACK_RH - THUMB_PX) / 2,
+            y + (PLAYLIST_TRACK_RH() - THUMB_PX) / 2,
             THUMB_PX,
             artdim(t),
         );
@@ -3747,11 +3761,11 @@ pub fn playlist_view(
                 icons::close(c, 428.0, cy as f32, 11.0, t.faint);
             }
         }
-        hline(c, y + PLAYLIST_TRACK_RH, t.line);
+        hline(c, y + PLAYLIST_TRACK_RH(), t.line);
         if sw.is_some() {
             c.clear_offset_x();
         }
-        y += PLAYLIST_TRACK_RH;
+        y += PLAYLIST_TRACK_RH();
     }
     c.clear_clip();
     scrollbar(
@@ -4057,7 +4071,7 @@ mod tests {
         // Content-y (0 = list top): header(One) 0..HDR, A1 HDR.., A2 (same artist, no header)..,
         // header(Two).., B1.. — all derived from the shared row-height constants.
         let top = list_top(Tab::Albums);
-        let (hdr, row) = (ALBUM_HDR_H, ALBUM_ROW_H);
+        let (hdr, row) = (ALBUM_HDR_H, ALBUM_ROW_H());
         let a1 = hdr + row / 2; // A1 body centre
         let a2 = hdr + row + row / 2; // A2 (no second header)
         let hdr_two = hdr + 2 * row + hdr / 2; // header(Two)
@@ -4084,7 +4098,7 @@ mod tests {
         //   header(One) 0, A1 HDR, t0 HDR+ROW, t1 +CH, t2 +2CH, A2 HDR+ROW+3CH, ...
         let exp = Some(0);
         let top = list_top(Tab::Albums);
-        let (hdr, row, ch) = (ALBUM_HDR_H, ALBUM_ROW_H, ALBUM_CHILD_H);
+        let (hdr, row, ch) = (ALBUM_HDR_H, ALBUM_ROW_H(), ALBUM_CHILD_H);
         let hit = |cy| albums_hit(&l, 0, exp, 0, 200, top + cy);
         assert_eq!(hit(hdr + row / 2), Some(AlbumsHit::AlbumToggle(0))); // A1 row
         assert_eq!(hit(hdr + row + ch / 2), Some(AlbumsHit::Track(0, 0))); // t0
@@ -4562,7 +4576,7 @@ mod tests {
         let flat = l.albums_flat();
         let a = flat[2]; // B1, 4 tracks
         let t = album_tracks_top();
-        let rh = ALBUM_TRACK_RH; // rows from t @rh
+        let rh = ALBUM_TRACK_RH(); // rows from t @rh
         assert_eq!(album_hit_track(a, 0, t - 1), None); // Play-album band / gap
         assert_eq!(album_hit_track(a, 0, t + 1), Some(0));
         assert_eq!(album_hit_track(a, 0, t + rh + 1), Some(1));
@@ -4574,7 +4588,7 @@ mod tests {
     #[test]
     fn pixel_scroll_geometry_helpers() {
         let l = lib();
-        let (hdr, row) = (ALBUM_HDR_H, ALBUM_ROW_H);
+        let (hdr, row) = (ALBUM_HDR_H, ALBUM_ROW_H());
         // Albums content (grouped, collapsed): 2 headers + 3 rows; fits → no scroll.
         assert_eq!(content_h(Tab::Albums, &l, 0, None), 2 * hdr + 3 * row);
         assert_eq!(max_scroll_px(Tab::Albums, &l, 0, None), 0);
@@ -4778,22 +4792,22 @@ mod tests {
         // Section headers are labels, not targets.
         assert_eq!(artist_hit(&p, 0, top + ARTIST_SEC_H / 2), None);
         // First album row → its FLAT index, which is what opens the Album drill-in.
-        let a0 = top + ARTIST_SEC_H + ARTIST_ALBUM_RH / 2;
+        let a0 = top + ARTIST_SEC_H + ARTIST_ALBUM_RH() / 2;
         assert_eq!(artist_hit(&p, 0, a0), Some(ArtistHit::Album(0)));
         assert_eq!(
-            artist_hit(&p, 0, a0 + ARTIST_ALBUM_RH),
+            artist_hit(&p, 0, a0 + ARTIST_ALBUM_RH()),
             Some(ArtistHit::Album(1))
         );
         // First track row, past both album rows and the SONGS header.
-        let s0 = top + ARTIST_SEC_H + 2 * ARTIST_ALBUM_RH + ARTIST_SEC_H + ARTIST_TRACK_RH / 2;
+        let s0 = top + ARTIST_SEC_H + 2 * ARTIST_ALBUM_RH() + ARTIST_SEC_H + ARTIST_TRACK_RH() / 2;
         assert_eq!(artist_hit(&p, 0, s0), Some(ArtistHit::Track(0)));
         assert_eq!(
-            artist_hit(&p, 0, s0 + ARTIST_TRACK_RH),
+            artist_hit(&p, 0, s0 + ARTIST_TRACK_RH()),
             Some(ArtistHit::Track(1))
         );
         // Scrolling shifts what is under the same y by exactly the scroll.
         assert_eq!(
-            artist_hit(&p, ARTIST_TRACK_RH, s0),
+            artist_hit(&p, ARTIST_TRACK_RH(), s0),
             Some(ArtistHit::Track(1))
         );
         // Above the content and below the list are both misses.
@@ -4811,7 +4825,11 @@ mod tests {
 // no second control.
 
 /// Row height in the picker.
-pub const GENRE_RH: i32 = crate::scale::PICKER_ROW_H;
+#[allow(non_snake_case)]
+pub fn GENRE_RH() -> i32 {
+    crate::scale::PICKER_ROW_H()
+}
+
 /// Screen-y of the first picker row.
 pub const GENRE_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
@@ -4827,7 +4845,7 @@ pub const GENRE_ROW_ALL: usize = 1;
 
 /// Total scrollable height: the two header rows plus one per genre.
 pub fn genre_content_h(lib: &Library) -> i32 {
-    (lib.genres.len() + GENRE_HEAD_ROWS) as i32 * GENRE_RH
+    (lib.genres.len() + GENRE_HEAD_ROWS) as i32 * GENRE_RH()
 }
 
 pub fn genre_max_scroll_px(lib: &Library) -> i32 {
@@ -4841,7 +4859,7 @@ pub fn genre_row_at(lib: &Library, y: i32, scroll_px: i32) -> Option<usize> {
     if !(GENRE_TOP..LIST_BOTTOM).contains(&y) {
         return None;
     }
-    let r = ((y - GENRE_TOP + scroll_px.max(0)) / GENRE_RH) as usize;
+    let r = ((y - GENRE_TOP + scroll_px.max(0)) / GENRE_RH()) as usize;
     (r < lib.genres.len() + GENRE_HEAD_ROWS).then_some(r)
 }
 
@@ -4860,9 +4878,9 @@ pub fn genre_render(
     c.set_clip_y(y0, LIST_BOTTOM);
 
     // Only the visible window, like every other long list here — 95 rows is more than a screen.
-    let first = ((scroll / GENRE_RH).max(0)) as usize;
+    let first = ((scroll / GENRE_RH()).max(0)) as usize;
     for r in first..lib.genres.len() + GENRE_HEAD_ROWS {
-        let y = GENRE_TOP + r as i32 * GENRE_RH - scroll;
+        let y = GENRE_TOP + r as i32 * GENRE_RH() - scroll;
         if y >= LIST_BOTTOM {
             break;
         }
@@ -4885,10 +4903,10 @@ pub fn genre_render(
             }
         };
         if on {
-            fill_rect(c, 0, y, W as i32, GENRE_RH, t.row_sel);
-            fill_rect(c, 0, y, 4, GENRE_RH, t.acc);
+            fill_rect(c, 0, y, W as i32, GENRE_RH(), t.row_sel);
+            fill_rect(c, 0, y, 4, GENRE_RH(), t.acc);
         }
-        let cy = y + GENRE_RH / 2;
+        let cy = y + GENRE_RH() / 2;
         let ns = body_label(
             Family::Sans,
             Weight::SemiBold,
@@ -4911,7 +4929,7 @@ pub fn genre_render(
         // heavier than the row separators, rather than letting it read as the first genre.
         hline(
             c,
-            y + GENRE_RH,
+            y + GENRE_RH(),
             if r == GENRE_ROW_HIRES { t.dim } else { t.line },
         );
     }

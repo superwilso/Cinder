@@ -26,10 +26,9 @@ Each has a row in [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §41:
 2. **A backup tool that can rescue a player stuck in a boot loop** (see Help wanted below for the
    design). Booting the player into MediaTek's download mode needs nothing from the firmware, so it
    works when nothing else does.
-3. **Large controls,** a Display option (off by default): bigger rows, Now Playing buttons and
-   slider handles, more space between neighbouring targets, and a tap that lands between two
-   targets going to the nearer one. Separate from the text Size slider, which already grows Back
-   and Sort.
+3. **Big view** (Settings ▸ Big view, off by default): 130 % text and 25 % taller rows and touch
+   zones. The switch is built; the pages that still break in it are listed, with a direction for
+   each, in [`PLAN_big_view.md`](PLAN_big_view.md). A good first contribution: pick one page.
 
 Later: the rest of the redesign ([`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md) Part F:
 the Library view bar, Search scopes, the sideways page swipe, saved views, the installer window),

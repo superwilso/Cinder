@@ -94,31 +94,31 @@ fn parts(n: usize) -> Vec<(Part, i32, i32)> {
         v.push((p, y, h));
         y += h;
     };
-    push(Part::Row(Hit::Save), kit::ROW_H, &mut v);
+    push(Part::Row(Hit::Save), kit::ROW_H(), &mut v);
     push(
         Part::Label(crate::i18n::text("SAVED")),
         kit::SECTION_H,
         &mut v,
     );
     if n == 0 {
-        push(Part::Empty, kit::ROW_H, &mut v);
+        push(Part::Empty, kit::ROW_H(), &mut v);
     }
     for i in 0..n.min(MAX) {
-        push(Part::Row(Hit::Load(i)), kit::ROW_H, &mut v);
+        push(Part::Row(Hit::Load(i)), kit::ROW_H(), &mut v);
     }
     push(
         Part::Label(crate::i18n::text("A/B COMPARE")),
         kit::SECTION_H,
         &mut v,
     );
-    push(Part::Row(Hit::Copy), kit::ROW_H, &mut v);
+    push(Part::Row(Hit::Copy), kit::ROW_H(), &mut v);
     push(
         Part::Label(crate::i18n::text("ALSO SAVED")),
         kit::SECTION_H,
         &mut v,
     );
     for (bit, _, _) in FOLLOWS {
-        push(Part::Row(Hit::Follow(bit)), kit::ROW_H, &mut v);
+        push(Part::Row(Hit::Follow(bit)), kit::ROW_H(), &mut v);
     }
     v
 }

@@ -14,7 +14,11 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, stroke_rect, sty};
 use crate::Canvas;
 
-pub const ROW_H: i32 = kit::ROW_H;
+#[allow(non_snake_case)]
+pub fn ROW_H() -> i32 {
+    kit::ROW_H()
+}
+
 pub const SECTION_H: i32 = kit::SECTION_H;
 /// One drive in the hero: its name and figures, then the bar.
 const DRIVE_H: i32 = 74;
@@ -266,7 +270,7 @@ pub fn items(v: &StorageView) -> Vec<Item> {
 fn item_h(it: &Item) -> i32 {
     match it {
         Item::Section(_) => SECTION_H,
-        Item::Row(..) => ROW_H,
+        Item::Row(..) => ROW_H(),
     }
 }
 
@@ -466,7 +470,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &StorageView, scroll: i
                     t,
                     f,
                     y,
-                    ROW_H,
+                    ROW_H(),
                     &Row::new(label).sub(sub).trail(Trail::Value(value)),
                 );
             }

@@ -41,21 +41,25 @@ pub const HOMES: [&str; 4] = ["Library", "Now Playing", "Menu", "Last screen"];
 pub const STRIP_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 pub const TOP: i32 = STRIP_TOP + kit::STRIP_H;
 /// Designed pitch: the kit's row.
-pub const ROW_H: i32 = kit::ROW_H;
+#[allow(non_snake_case)]
+pub fn ROW_H() -> i32 {
+    kit::ROW_H()
+}
+
 /// Space kept under the chips.
 const BOTTOM_PAD: i32 = 16;
 /// Top of the START ON label, and of the chips under it.
 pub const LABEL_TOP: i32 = crate::H as i32 - BOTTOM_PAD - kit::CHIP_H - kit::SECTION_H;
 pub const CHIPS_TOP: i32 = LABEL_TOP + kit::SECTION_H;
 
-/// The pitch for `rows` rows: [`ROW_H`] when they fit, otherwise whatever does fit between the
+/// The pitch for `rows` rows: [`ROW_H()`] when they fit, otherwise whatever does fit between the
 /// strip and the START ON label. Never below 52: two lines of text need it (checked by a test for
 /// every count the Menu can have).
 pub fn row_h(rows: usize) -> i32 {
     if rows == 0 {
-        return ROW_H;
+        return ROW_H();
     }
-    ROW_H.min((LABEL_TOP - TOP) / rows as i32)
+    ROW_H().min((LABEL_TOP - TOP) / rows as i32)
 }
 
 /// Which menu row is under `y`, given how many rows there are.
@@ -173,7 +177,7 @@ mod fit_tests {
         }
         assert_eq!(
             row_h(8),
-            ROW_H,
+            ROW_H(),
             "the designed eight rows keep the kit's pitch"
         );
     }

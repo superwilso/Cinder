@@ -69,7 +69,7 @@ cd6841fdd8d2c783 clockset_day
 ba2f861362d834c8 sound_balance_day
 2bb25090fcd6b6ba sound_mono_day
 fc6e0948ae425b07 sound_mono_live_day
-5dde39042dcd1aca settings_day
+0a32482714b87b9f settings_day
 9c4d0cdfdd4c4a59 display_day
 aa5a1c551b1762a9 genre_picker_day
 52c1fb364b3921aa library_songs_filtered_day
@@ -176,7 +176,7 @@ f6e24799f4cdf803 clockset_night
 aacdef84e4860df7 sound_balance_night
 a3512f475e5a8817 sound_mono_night
 76368ff4b2cabc17 sound_mono_live_night
-6cb280b098e77739 settings_night
+f5e93cf3b1862115 settings_night
 cb00803b82c7afcc display_night
 6a18465a7a81b920 genre_picker_night
 0eb7c4ffa2f6c59c library_songs_filtered_night
@@ -304,7 +304,7 @@ ae12076382947d32 swipe_play_next_4_100px_armed
 b6fce007a75af2d0 swipe_queue_5_132px_armed
 496c7ad697bc9ac2 swipe_play_next_5_132px_armed
 936f9328a929080d uiscale_80_library
-f19941844071a45d uiscale_80_settings
+615f3cdcf269dd86 uiscale_80_settings
 259b08eb304aa92a uiscale_80_display
 d093aab9a732e82b uiscale_80_bluetooth
 5acc22e90dd131f8 uiscale_80_sound
@@ -317,7 +317,7 @@ fc6d8ca2cdd20ec4 uiscale_80_receiver_ldac
 85245ddff799d4aa uiscale_80_receiver_sbc
 efd589c964bd3642 uiscale_80_settings_bottom
 5a622d92e316ebc8 uiscale_100_library
-864865797e747cfc uiscale_100_settings
+226047e156cc2290 uiscale_100_settings
 a12a41122e670d6c uiscale_100_display
 210713a5bc48e295 uiscale_100_bluetooth
 ccf46d578eee3a70 uiscale_100_sound
@@ -330,7 +330,7 @@ cc9dda3328990485 uiscale_100_receiver_aac
 b523c3e6a0090d55 uiscale_100_receiver_sbc
 352e5c6b7ecf24bc uiscale_100_settings_bottom
 bcc95e34359f29af uiscale_120_library
-6b4a96be7e7cc5ef uiscale_120_settings
+7483d30d6a81f843 uiscale_120_settings
 91816a4d3a8c2201 uiscale_120_display
 aa4b06517908dd06 uiscale_120_bluetooth
 d927b8f8c0fe5c73 uiscale_120_sound
@@ -343,7 +343,7 @@ a4b2574ff192c824 uiscale_120_receiver_aac
 3570d285f3cf1e76 uiscale_120_receiver_sbc
 310542b4ea892d37 uiscale_120_settings_bottom
 23f68a85c8e1e46b uiscale_140_library
-36eac6d517a4079e uiscale_140_settings
+6b2c9526e073bd81 uiscale_140_settings
 2aad1fee0b14564b uiscale_140_display
 360c7d3b32c1c645 uiscale_140_bluetooth
 91cb8a45cd9043b8 uiscale_140_sound

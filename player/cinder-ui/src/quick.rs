@@ -46,11 +46,26 @@ const LEVELS: [&str; 5] = ["1", "2", "3", "4", "5"];
 pub const TOP: i32 = crate::chrome::STATUS_H;
 const BRIGHT_CHIPS: i32 = TOP + kit::SECTION_H;
 pub const ROW_BT: i32 = BRIGHT_CHIPS + kit::CHIP_H + 10;
-pub const ROW_NIGHT: i32 = ROW_BT + kit::ROW_H;
-const SLEEP_LABEL: i32 = ROW_NIGHT + kit::ROW_H;
-const SLEEP_CHIPS: i32 = SLEEP_LABEL + kit::SECTION_H;
+#[allow(non_snake_case)]
+pub fn ROW_NIGHT() -> i32 {
+    ROW_BT + kit::ROW_H()
+}
+
+#[allow(non_snake_case)]
+fn SLEEP_LABEL() -> i32 {
+    ROW_NIGHT() + kit::ROW_H()
+}
+
+#[allow(non_snake_case)]
+fn SLEEP_CHIPS() -> i32 {
+    SLEEP_LABEL() + kit::SECTION_H
+}
+
 /// The sheet's bottom edge. Below it the screen shows through, dimmed, and a tap there closes.
-pub const BOTTOM: i32 = SLEEP_CHIPS + kit::CHIP_H + 26;
+#[allow(non_snake_case)]
+pub fn BOTTOM() -> i32 {
+    SLEEP_CHIPS() + kit::CHIP_H + 26
+}
 
 /// What the panel shows. Built by `nav`.
 pub struct QuickView<'a> {
@@ -80,19 +95,19 @@ pub enum QuickHit {
 
 /// Which control is under `(x, y)`. Pure geometry, so the hit test and the render cannot drift.
 pub fn hit(x: i32, y: i32) -> QuickHit {
-    if y >= BOTTOM {
+    if y >= BOTTOM() {
         return QuickHit::Outside;
     }
     if let Some(i) = kit::chip_at(LEVELS.len(), BRIGHT_CHIPS, x, y) {
         return QuickHit::Brightness(i as u8 + 1);
     }
-    if (ROW_BT..ROW_BT + kit::ROW_H).contains(&y) {
+    if (ROW_BT..ROW_BT + kit::ROW_H()).contains(&y) {
         return QuickHit::Bluetooth;
     }
-    if (ROW_NIGHT..ROW_NIGHT + kit::ROW_H).contains(&y) {
+    if (ROW_NIGHT()..ROW_NIGHT() + kit::ROW_H()).contains(&y) {
         return QuickHit::Night;
     }
-    if let Some(i) = kit::chip_at(SLEEP_LABELS.len(), SLEEP_CHIPS, x, y) {
+    if let Some(i) = kit::chip_at(SLEEP_LABELS.len(), SLEEP_CHIPS(), x, y) {
         return QuickHit::Sleep(i);
     }
     QuickHit::Sheet
@@ -103,7 +118,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
     c.begin_layer();
     // The screen behind, below the sheet, dimmed to under half: still recognisably the place you
     // were, and plainly not the thing to tap.
-    for y in BOTTOM..H as i32 {
+    for y in BOTTOM()..H as i32 {
         for px in &mut c.buf[y as usize * W..(y as usize + 1) * W] {
             let r = ((*px >> 16) & 0xff) * 40 / 100;
             let g = ((*px >> 8) & 0xff) * 40 / 100;
@@ -111,7 +126,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
             *px = (r << 16) | (g << 8) | b;
         }
     }
-    fill_rect(c, 0, TOP, W as i32, BOTTOM - TOP, t.bg);
+    fill_rect(c, 0, TOP, W as i32, BOTTOM() - TOP, t.bg);
 
     kit::section_label(c, t, f, TOP, crate::i18n::text("BRIGHTNESS"), None);
     let level = (1..=5)
@@ -129,7 +144,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
         t,
         f,
         ROW_BT,
-        kit::ROW_H,
+        kit::ROW_H(),
         &Row::new(crate::i18n::text("Bluetooth"))
             .sub(bt_sub)
             .trail(Trail::Switch(v.bt_on)),
@@ -138,26 +153,33 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
         c,
         t,
         f,
-        ROW_NIGHT,
-        kit::ROW_H,
+        ROW_NIGHT(),
+        kit::ROW_H(),
         &Row::new(crate::i18n::text("Night"))
             .sub(crate::i18n::text("Dims everything after dark"))
             .trail(Trail::Switch(v.night)),
     );
 
-    kit::section_label(c, t, f, SLEEP_LABEL, crate::i18n::text("SLEEP TIMER"), None);
+    kit::section_label(
+        c,
+        t,
+        f,
+        SLEEP_LABEL(),
+        crate::i18n::text("SLEEP TIMER"),
+        None,
+    );
     kit::chips(
         c,
         t,
         f,
-        SLEEP_CHIPS,
+        SLEEP_CHIPS(),
         &SLEEP_LABELS,
         Some(v.sleep_idx.min(SLEEP_LABELS.len() - 1)),
     );
 
     // The grab bar says the sheet came from the top and goes back there; the hairline is its edge.
-    fill_rect(c, W as i32 / 2 - 20, BOTTOM - 12, 40, 4, t.ctrl());
-    hline(c, BOTTOM - 1, t.line);
+    fill_rect(c, W as i32 / 2 - 20, BOTTOM() - 12, 40, 4, t.ctrl());
+    hline(c, BOTTOM() - 1, t.line);
 }
 
 #[cfg(test)]
@@ -177,25 +199,25 @@ mod tests {
         for i in 0..SLEEP_PRESETS.len() {
             let (x, w) = kit::chip_span(i, SLEEP_PRESETS.len());
             assert_eq!(
-                hit(x + w / 2, SLEEP_CHIPS + kit::CHIP_H / 2),
+                hit(x + w / 2, SLEEP_CHIPS() + kit::CHIP_H / 2),
                 QuickHit::Sleep(i)
             );
         }
         assert_eq!(hit(240, ROW_BT + 30), QuickHit::Bluetooth);
-        assert_eq!(hit(240, ROW_NIGHT + 30), QuickHit::Night);
+        assert_eq!(hit(240, ROW_NIGHT() + 30), QuickHit::Night);
         assert_eq!(
             hit(240, TOP + 10),
             QuickHit::Sheet,
             "the section label is not a control"
         );
-        assert_eq!(hit(240, BOTTOM), QuickHit::Outside);
+        assert_eq!(hit(240, BOTTOM()), QuickHit::Outside);
         assert_eq!(hit(240, H as i32 - 1), QuickHit::Outside);
     }
 
     /// The sheet leaves most of the screen showing, so it reads as a panel and not a page.
     #[test]
     fn the_sheet_is_a_panel_not_a_page() {
-        assert!(BOTTOM < H as i32 / 2, "the sheet runs to {BOTTOM}");
+        assert!(BOTTOM() < H as i32 / 2, "the sheet runs to {}", BOTTOM());
         assert_eq!(SLEEP_PRESETS.len(), SLEEP_LABELS.len());
     }
 }

@@ -105,7 +105,14 @@ impl Drop for ScaleGuard {
 /// because their geometry was fixed.
 #[inline]
 pub fn touch_scale() -> f32 {
-    scale_pct().max(100) as f32 / 100.0
+    let pct = scale_pct().max(100) as i32;
+    // Big view grows them too, whatever the text size is.
+    let pct = if crate::scale::large() {
+        pct.max(crate::scale::LARGE_PCT)
+    } else {
+        pct
+    };
+    pct as f32 / 100.0
 }
 
 /// A type size at the current UI scale: what `draw` and `measure` actually use.

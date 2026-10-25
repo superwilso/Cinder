@@ -35,7 +35,10 @@ pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
 // the Songs tab uses", and the Songs tab was 68). It is 62 like every other track row now. The
 // 48 px cover thumbnail the other lists draw is NOT here yet — a folder row has no album-art
 // lookup — so the row is taller with the tick it always had; see scale.rs for what is still open.
-pub const ROW_H: i32 = crate::scale::TRACK_ROW_H;
+#[allow(non_snake_case)]
+pub fn ROW_H() -> i32 {
+    crate::scale::TRACK_ROW_H()
+}
 
 /// What a given visual row is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,7 +67,7 @@ pub fn rows(lib: &Library, dir: Option<usize>) -> Vec<Row> {
 }
 
 pub fn content_h(lib: &Library, dir: Option<usize>) -> i32 {
-    rows(lib, dir).len() as i32 * ROW_H
+    rows(lib, dir).len() as i32 * ROW_H()
 }
 
 pub fn max_scroll_px(lib: &Library, dir: Option<usize>) -> i32 {
@@ -73,7 +76,7 @@ pub fn max_scroll_px(lib: &Library, dir: Option<usize>) -> i32 {
 
 /// Screen-y of visual row `r` at `scroll`.
 pub fn row_top(r: usize, scroll: i32) -> i32 {
-    TOP + r as i32 * ROW_H - scroll
+    TOP + r as i32 * ROW_H() - scroll
 }
 
 /// Which row is under `y`? `None` above/below the list, or past the last row.
@@ -81,7 +84,7 @@ pub fn row_at(lib: &Library, dir: Option<usize>, y: i32, scroll: i32) -> Option<
     if !(TOP..LIST_BOTTOM).contains(&y) {
         return None;
     }
-    let r = ((y - TOP + scroll.max(0)) / ROW_H) as usize;
+    let r = ((y - TOP + scroll.max(0)) / ROW_H()) as usize;
     rows(lib, dir).get(r).copied()
 }
 
@@ -155,13 +158,13 @@ pub fn render(
     }
 
     // Only the visible window: a music root can hold hundreds of directories.
-    let first = ((scroll / ROW_H).max(0)) as usize;
+    let first = ((scroll / ROW_H()).max(0)) as usize;
     for (r, row) in all.iter().enumerate().skip(first) {
         let y = row_top(r, scroll);
         if y >= LIST_BOTTOM {
             break;
         }
-        let cy = y + ROW_H / 2;
+        let cy = y + ROW_H() / 2;
         match row {
             Row::Dir(i) => {
                 let Some(fr) = lib.folders.get(*i) else {
@@ -218,7 +221,7 @@ pub fn render(
                 fill_rect(c, 32, cy - 2, 5, 5, t.line);
             }
         }
-        hline(c, y + ROW_H - 1, t.line);
+        hline(c, y + ROW_H() - 1, t.line);
     }
     c.clear_clip();
     scrollbar(
@@ -280,8 +283,8 @@ mod tests {
         assert_eq!(rows(&l, Some(1)), vec![Row::Track(0), Row::Track(1)]);
 
         for (r, want) in rows(&l, Some(0)).into_iter().enumerate() {
-            for scroll in [0, 7, ROW_H, ROW_H * 2 - 1] {
-                let y = row_top(r, scroll) + ROW_H / 2;
+            for scroll in [0, 7, ROW_H(), ROW_H() * 2 - 1] {
+                let y = row_top(r, scroll) + ROW_H() / 2;
                 if (TOP..LIST_BOTTOM).contains(&y) {
                     assert_eq!(
                         row_at(&l, Some(0), y, scroll),
@@ -292,7 +295,7 @@ mod tests {
             }
         }
         // Past the last row is nothing, not the last row again.
-        let past = row_top(2, 0) + ROW_H / 2;
+        let past = row_top(2, 0) + ROW_H() / 2;
         assert_eq!(row_at(&l, Some(0), past, 0), None);
     }
 

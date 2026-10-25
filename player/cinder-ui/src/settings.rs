@@ -17,11 +17,11 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 23;
+pub const ROWS: usize = 24;
 /// Rows shown while the list is folded: the everyday ones and `ROW_MORE` itself.
-pub const EVERYDAY: usize = 10;
+pub const EVERYDAY: usize = 11;
 /// More settings: unfolds every row after it, in place, and folds them away again.
-pub const ROW_MORE: usize = 9;
+pub const ROW_MORE: usize = 10;
 
 /// How many rows are on the screen: all of them, or the everyday ones.
 pub fn rows(more: bool) -> usize {
@@ -33,13 +33,17 @@ pub fn rows(more: bool) -> usize {
 }
 /// Display ▸ — palette, accent, night, the volume readout, text size and the visualiser.
 pub const ROW_DISPLAY: usize = 0;
-pub const ROW_BRIGHTNESS: usize = 1;
-pub const ROW_SCREEN_OFF: usize = 2;
+/// Big view: bigger text and easier-to-press controls, in one switch (`scale::set_large`). In the
+/// everyday list, right under Display, because the people who need it are the ones who find small
+/// rows hard to reach — it must not sit behind More settings.
+pub const ROW_BIG: usize = 1;
+pub const ROW_BRIGHTNESS: usize = 2;
+pub const ROW_SCREEN_OFF: usize = 3;
 /// The pull-down panel (`quick.rs`): a swipe down from the status bar opens brightness, Bluetooth,
 /// night and the sleep timer. Asked for on the r/walkman thread; OFF by default, because the owner
 /// uses the Shelf and a new gesture must never arrive unasked (`docs/PLAN_community_2026-09-23.md`
 /// B1). With it off there is no gesture and nothing else on any screen changes.
-pub const ROW_QUICK: usize = 15;
+pub const ROW_QUICK: usize = 16;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -49,53 +53,57 @@ pub const ROW_QUICK: usize = 15;
 /// directly; the flag would be a control that accepts a write and changes nothing, which is
 /// exactly what "High gain output" turned out to be (see sound.rs). So the shell reads Sony's
 /// number and clamps in its own `apply_volume`.
-pub const ROW_VOLUME_LIMIT: usize = 14;
-pub const ROW_SLEEP: usize = 3;
+pub const ROW_VOLUME_LIMIT: usize = 15;
+pub const ROW_SLEEP: usize = 4;
 /// What the shuffle button deals: SONGS (every track at random, as always), ALBUMS (whole albums
 /// at random, each in its own order) or ARTISTS. `shuffle.rs`. SONGS by default, so the button
 /// does what it has always done until the owner picks otherwise.
-pub const ROW_SHUFFLE: usize = 4;
+pub const ROW_SHUFFLE: usize = 5;
 /// Ignore "The" in artists — sort "The Beatles" among the B's in the Artists tab, the Albums tab's
 /// artist groups and Songs by artist (and file it under B on the rail). OFF by default: artists
 /// sort as written. Titles and album names keep their "The" either way. See `collate`.
-pub const ROW_IGNORE_THE: usize = 10;
-pub const ROW_DATABASE: usize = 11;
+pub const ROW_IGNORE_THE: usize = 11;
+pub const ROW_DATABASE: usize = 12;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. 30 MIN by default since 2026-10-04 (it was OFF): the owner's rule
 /// is that no state may drain a player nobody is using. OFF is one tap away.
-pub const ROW_AUTO_OFF: usize = 12;
+pub const ROW_AUTO_OFF: usize = 13;
 /// Bluetooth auto off: switch the radio off after ten minutes of a dark screen with nothing
 /// playing over it. The radio (and a link carrying nothing) costs power for as long as it is up,
 /// and nothing but the user ever switched it off. ON by default since 2026-10-04, like Auto power
 /// off. It does not come back by itself.
-pub const ROW_BT_IDLE_OFF: usize = 13;
-pub const ROW_STORAGE: usize = 16;
-pub const ROW_BATTERY: usize = 6;
+pub const ROW_BT_IDLE_OFF: usize = 14;
+pub const ROW_STORAGE: usize = 17;
+pub const ROW_BATTERY: usize = 7;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 5;
-pub const ROW_USB_MODE: usize = 7; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 6;
+pub const ROW_USB_MODE: usize = 8; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 17;
+pub const ROW_BOOT_STOCK: usize = 18;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 18;
-pub const ROW_POWER_OFF: usize = 8;
+pub const ROW_RESTART: usize = 19;
+pub const ROW_POWER_OFF: usize = 9;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 19;
+pub const ROW_RESET: usize = 20;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_LANGUAGE: usize = 20;
-pub const ROW_FIRMWARE: usize = 21;
-pub const ROW_MODEL: usize = 22;
+pub const ROW_LANGUAGE: usize = 21;
+pub const ROW_FIRMWARE: usize = 22;
+pub const ROW_MODEL: usize = 23;
 
-const RH: i32 = kit::ROW_H;
+#[allow(non_snake_case)]
+fn RH() -> i32 {
+    kit::ROW_H()
+}
+
 /// Section labels and how many rows sit under each — the single source both `content_height` and
 /// `row_at` read, so a row added to one can't be missed by the other.
 /// The first group is the everyday list and has no label: a list that fits the screen needs none.
@@ -123,6 +131,8 @@ pub const SHUFFLE_SUB: &str = "What the shuffle button deals";
 pub const MORE_SUB: &str = "Library · power saving · system";
 /// The pull-down panel row's second line: where the gesture starts and what it opens.
 pub const QUICK_SUB: &str = "Swipe down from the top of the screen";
+/// The Big view row's second line: what it changes.
+pub const BIG_SUB: &str = "Bigger text, easier-to-press controls";
 /// The Bluetooth auto off row's second line: when it acts.
 pub const BT_IDLE_OFF_SUB: &str = "Sleeps after 10 min idle, wakes on use";
 
@@ -173,6 +183,8 @@ pub struct SettingsView<'a> {
     /// Volume limit on/off. A toggle, not a value: the cap itself is Sony's and is read live by
     /// the shell, so there is no number here for the user to pick.
     pub volume_limit: bool,
+    /// Big view on/off (`ROW_BIG`).
+    pub big_view: bool,
     /// Ignore "The" at the start of artist names when sorting (`ROW_IGNORE_THE`).
     pub ignore_the: bool,
     /// The pull-down panel is switched on (`ROW_QUICK`).
@@ -199,21 +211,28 @@ pub fn language_title(languages: &[crate::i18n::Language]) -> String {
 pub fn content_height(more: bool, lang: bool) -> i32 {
     row_span(0, more, lang)
         .last()
-        .map_or(LIST_TOP, |(_, top)| top + RH)
+        .map_or(LIST_TOP, |(_, top)| top + RH())
 }
 
 /// How far this screen can scroll. 0 would mean everything fits (it doesn't).
 pub fn max_scroll_px(more: bool, lang: bool) -> i32 {
-    (content_height(more, lang) + 8 - crate::canvas::H as i32).max(0)
+    // The 8 px margin under the last row is for a list that scrolls: one that fits (the folded
+    // everyday list ends at 795 since Big view joined it) must not scroll 3 px to show a margin.
+    let h = content_height(more, lang);
+    if h <= crate::canvas::H as i32 {
+        0
+    } else {
+        h + 8 - crate::canvas::H as i32
+    }
 }
 
 /// Which selectable row is at touch-y `y`, given the current `scroll` offset? Mirrors `render`'s
 /// vertical layout exactly: header ends at 91, each section label is `kit::SECTION_H`, and every
-/// row is `RH` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow). `lang`: the
+/// row is `RH()` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow). `lang`: the
 /// Language row is shown (`SettingsView::languages` has more than one).
 pub fn row_at(y: i32, scroll: i32, more: bool, lang: bool) -> Option<usize> {
     row_span(scroll, more, lang)
-        .find(|(_, top)| y >= *top && y < *top + RH)
+        .find(|(_, top)| y >= *top && y < *top + RH())
         .map(|(r, _)| r)
 }
 
@@ -235,7 +254,7 @@ fn row_span(scroll: i32, more: bool, lang: bool) -> impl Iterator<Item = (usize,
             }
             out.push((r, yy));
             r += 1;
-            yy += RH;
+            yy += RH();
         }
     }
     out.into_iter()
@@ -261,6 +280,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_BRIGHTNESS => Trail::Value(v.brightness),
         ROW_SCREEN_OFF => Trail::Value(v.screen_off),
         ROW_QUICK => Trail::Switch(v.quick),
+        ROW_BIG => Trail::Switch(v.big_view),
         // The volume limit is a value row rather than a switch because the interesting half is
         // WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number the
         // user did not choose, and the number is Sony's per-output AVLS threshold, read live.
@@ -315,6 +335,7 @@ fn title(r: usize) -> &'static str {
         ROW_BRIGHTNESS => crate::i18n::text("Brightness"),
         ROW_SCREEN_OFF => crate::i18n::text("Screen-off timer"),
         ROW_QUICK => crate::i18n::text("Pull-down panel"),
+        ROW_BIG => crate::i18n::text("Big view"),
         ROW_VOLUME_LIMIT => crate::i18n::text("Volume limit"),
         ROW_SLEEP => crate::i18n::text("Sleep timer"),
         ROW_SHUFFLE => crate::i18n::text("Shuffle"),
@@ -373,6 +394,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                 ROW_DISPLAY => crate::i18n::text(DISPLAY_SUB),
                 ROW_MORE => crate::i18n::text(MORE_SUB),
                 ROW_QUICK => crate::i18n::text(QUICK_SUB),
+                ROW_BIG => crate::i18n::text(BIG_SUB),
                 ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
                 ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
                 ROW_STORAGE => storage_parts(v.storage).1,
@@ -388,9 +410,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
             .trail(trail(r, v))
             .sel(sel == r);
             y = if r == ROW_LANGUAGE {
-                crate::text::with_fixed_ui_glyphs(|| kit::row(c, t, f, y, RH, &row))
+                crate::text::with_fixed_ui_glyphs(|| kit::row(c, t, f, y, RH(), &row))
             } else {
-                kit::row(c, t, f, y, RH, &row)
+                kit::row(c, t, f, y, RH(), &row)
             };
             r += 1;
         }
@@ -406,6 +428,7 @@ mod tests {
     fn view<'a>() -> SettingsView<'a> {
         SettingsView {
             volume_limit: false,
+            big_view: false,
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",
@@ -571,12 +594,12 @@ mod tests {
                 .find(|(r, _)| *r == ROW_FIRMWARE)
                 .unwrap()
                 .1;
-            assert_eq!(row_at(top + RH / 2, 0, true, lang), Some(ROW_FIRMWARE));
+            assert_eq!(row_at(top + RH() / 2, 0, true, lang), Some(ROW_FIRMWARE));
             top
         };
-        assert_eq!(firmware(false), firmware(true) - RH);
+        assert_eq!(firmware(false), firmware(true) - RH());
         assert!(row_span(0, true, false).all(|(r, _)| r != ROW_LANGUAGE));
-        assert_eq!(max_scroll_px(true, false), max_scroll_px(true, true) - RH);
+        assert_eq!(max_scroll_px(true, false), max_scroll_px(true, true) - RH());
 
         let _scale = crate::text::scale_guard();
         let (t, f) = (Theme::day(), FontSet::load());
@@ -618,9 +641,9 @@ mod volume_limit_tests {
     fn every_row_including_the_new_one_is_hittable() {
         for r in 0..ROWS {
             let top = row_top_px(r) + LIST_TOP;
-            let scroll =
-                (top + RH / 2 - (crate::canvas::H as i32 / 2)).clamp(0, max_scroll_px(true, true));
-            let y = top - scroll + RH / 2;
+            let scroll = (top + RH() / 2 - (crate::canvas::H as i32 / 2))
+                .clamp(0, max_scroll_px(true, true));
+            let y = top - scroll + RH() / 2;
             assert_eq!(
                 row_at(y, scroll, true, true),
                 Some(r),
@@ -640,15 +663,15 @@ mod volume_limit_tests {
             0,
             "the folded list must not scroll"
         );
-        let last = LIST_TOP + EVERYDAY as i32 * RH - RH / 2;
+        let last = LIST_TOP + EVERYDAY as i32 * RH() - RH() / 2;
         assert_eq!(row_at(last, 0, false, true), Some(ROW_MORE));
         assert_eq!(
-            row_at(last + RH, 0, false, true),
+            row_at(last + RH(), 0, false, true),
             None,
             "nothing below More settings while folded"
         );
         assert_eq!(
-            row_at(last + RH + kit::SECTION_H, 0, true, true),
+            row_at(last + RH() + kit::SECTION_H, 0, true, true),
             Some(ROW_IGNORE_THE)
         );
     }

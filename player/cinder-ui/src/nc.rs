@@ -74,11 +74,11 @@ fn parts(model: usize, ambient_ok: bool) -> Vec<(Part, i32, i32)> {
     };
     push(Part::Label("MODE"), kit::SECTION_H, &mut v);
     for m in (0..MODES.len()).filter(|&m| mode_ok(m, model, ambient_ok)) {
-        push(Part::Row(Hit::Mode(m)), kit::ROW_H, &mut v);
+        push(Part::Row(Hit::Mode(m)), kit::ROW_H(), &mut v);
     }
     push(Part::Label("YOUR EARPHONES"), kit::SECTION_H, &mut v);
     for i in 0..MODELS.len() {
-        push(Part::Row(Hit::Model(i)), kit::ROW_H, &mut v);
+        push(Part::Row(Hit::Model(i)), kit::ROW_H(), &mut v);
     }
     v
 }
