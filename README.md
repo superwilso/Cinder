@@ -13,10 +13,22 @@ underneath. Install it from a PC over USB; the same installer puts Sony's app ba
 > their own use, please do, but I can't promise features or time for it. Raise issues in the issues
 > section, but I can't promise they will be patched. **Back up with
 > [wbrt](https://github.com/unknown321/wbrt) before you install**, and if you have the time and
-> skill, please contribute pull requests. I have deliberately not included any way to sponsor or pay
-> for this project. I want it to be free, and I don't want the obligation for support that comes
-> with payment; as I said, I made this for me. I am aware that using ai to create this is an unpopular decision, but I do not have the time or skill to put in to be able to make this in a "moraly correct" way, every feature that is added, is based on if i think it will be useful, helpful or if it is requested. This project came from me wanting somthing that didn't exist to the level I wanted it at the time. I do hope in time a community will form around this project and that people  will support it and use it in every way that they want to. I hope cinder does what you want it to, if not make a request! The best way to support it is to test, give feedback
-> and patch. **Cinder is still in testing and development, whatever GitHub's labels say. Updates are always being pushed (at the moment at least) **
+> skill, please contribute pull requests.
+>
+> I have deliberately not included any way to sponsor or pay for this project. I want it to be free,
+> and I don't want the obligation for support that comes with payment; as I said, I made this for me.
+>
+> I am aware that using AI to create this is an unpopular decision, but I do not have the time or
+> skill to make it in a "morally correct" way. Every feature that is added is based on whether I think
+> it will be useful, helpful or if it is requested. This project came from me wanting something that
+> didn't exist to the level I wanted it at the time.
+>
+> I do hope in time a community will form around this project and that people will support it and use
+> it in every way that they want to. I hope Cinder does what you want it to; if not, make a request!
+> The best way to support it is to test, give feedback and patch.
+>
+> **Cinder is still in testing and development, whatever GitHub's labels say. Updates are always
+> being pushed (at the moment at least).**
 
 <p align="center">
   <img src="docs/screenshots/now-playing.png" width="220" alt="Now playing">
@@ -170,8 +182,8 @@ allowed. The terms are the [PolyForm Noncommercial License 1.0.0](LICENSE). Rele
 were MIT, and those copies stay MIT; contributions made before the change keep their MIT notice.
 
 Bundled fonts are SIL OFL 1.1 (`*-OFL.txt` beside each). The fdk-aac encoder that the `bt-aac`
-option installs has its own licence ([`cinder-aac/NOTICE.fdk-aac`](cinder-aac/NOTICE.fdk-aac)). The repository contains no Sony code or artwork; the reverse-engineering notes describe
-interfaces only. Rockbox's `nwztools` (GPL) is used as an external tool, not vendored.
+option installs has its own licence ([`cinder-aac/NOTICE.fdk-aac`](cinder-aac/NOTICE.fdk-aac)). The repository
+contains no Sony code or artwork; the reverse-engineering notes describe interfaces only. Rockbox's `nwztools` (GPL) is used as an external tool, not vendored.
 
 Not affiliated with or endorsed by Sony. "Walkman" and "SensMe" are Sony's marks.
 
