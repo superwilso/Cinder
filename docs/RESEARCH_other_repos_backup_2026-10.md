@@ -16,7 +16,7 @@ unless the licence below says otherwise and the file is credited.
 | [`bkerler/mtkclient`](https://github.com/bkerler/mtkclient) | GPL-3.0 | General MediaTek exploit and flash tool, Windows (usbdk) and Linux. LICENSE is GPLv3. The README's chip list does not mention MT8590 (it lists V6 chips such as MT6781 and MT8985), though the flash tool above links to it for the DA file. Useful as a reference for BROM entry, not a dependency. |
 | [`zhangboyang/llusbdac`](https://github.com/zhangboyang/llusbdac) | GPLv2 | Low-latency USB DAC kernel module for the ZX300A (about 50 ms, PCM only, behaves as Direct Source). Only a precedent for the USB-DAC work; keep any GPL code out of Cinder's tree. |
 | [`unknown321/battery-charge-fix`](https://github.com/unknown321/battery-charge-fix) | GPL-3.0 | Per its description, fixes the charging indicator on an NW-A50 after a knock-off battery; the README says it only ignores the temperature warning. A50 only. Not needed. |
-| [`unknown321/nw-installer`](https://github.com/unknown321/nw-installer) | GPLv3 with the Commons Clause (inferred to match wbrt; its LICENSE opens with the same condition) | README: "Generic service installer for Walkman NW-A50Series". Packs your files and a `run.sh` into `userdata.tar.gz` and builds `.UPG` installers with `make` and Docker, plus a Windows installer target. Overlaps what `cinder-installer` does; read for facts, not code. |
+| [`unknown321/nw-installer`](https://github.com/unknown321/nw-installer) | GPLv3 with the Commons Clause (its LICENSE applies the Commons Clause to GPLv3, as wbrt's does) | README: "Generic service installer for Walkman NW-A50Series". Packs your files and a `run.sh` into `userdata.tar.gz` and builds `.UPG` installers with `make` and Docker, plus a Windows installer target. Overlaps what `cinder-installer` does; read for facts, not code. |
 | Head-Fi [custom firmware thread](https://head-fi.org/threads/sony-walkman-custom-firmware-non-android.943661/page-545) | n/a | **Not verified.** The page returned a Head-Fi security checkpoint when fetched, so its contents were not read. A web search snippet suggested users post A50 findings there. Check it by hand before relying on it. |
 
 ## Staying clean of wbrt
@@ -67,8 +67,8 @@ and refuses to restore the wrong image.
   Still untested by us on an A55.
 - Download Agent: wbrt ships one taken from mtkclient (GPLv3); the flash tool's README uses an SP
   Flash Tool file. May Cinder redistribute either? Probably not, so the tool may need to fetch it
-  or ask the user to supply it. Check each file's terms.
-- Driver: wbrt installs a WinUSB-style driver for VID_0E8D&PID_2000 using libwdi (licence not checked). Whether a
+  or ask the user to supply it. The mtkclient `Loader` directory holds several DA binaries and shows no licence or origin notice for them; the SP Flash Tool file belongs to MediaTek. Neither is cleared. Check each file's terms.
+- Driver: wbrt installs a WinUSB-style driver for VID_0E8D&PID_2000 using libwdi (LGPL v3 per its README). Whether a
   Cinder tool can reuse that or must ask the user to install a driver is open.
 - How does the A55 enter the preloader (key combination, cable state), and is that stable?
 - Does a read-only dump match wbrt's backup byte for byte? That is the acceptance test.
