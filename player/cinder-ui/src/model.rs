@@ -405,6 +405,10 @@ pub struct BookRow {
     pub title: String,
     /// The folder above it when that is an author folder, else empty.
     pub author: String,
+    /// The series the book's tags name (`series`, from its first chapter), else empty.
+    pub series: String,
+    /// Its number in that series as written (`"3"`, `"2.5"`), empty when the tag has none.
+    pub series_part: String,
     /// The book's folder path: its key in the store.
     pub dir: String,
     /// The chapters, in play order.
@@ -421,6 +425,15 @@ pub struct BookRow {
 }
 
 impl BookRow {
+    /// The title as the list shows it: a book in a series is led by its number (`3. Title`).
+    pub fn list_title(&self) -> String {
+        if self.series.is_empty() || self.series_part.is_empty() {
+            self.title.clone()
+        } else {
+            format!("{}. {}", self.series_part, self.title)
+        }
+    }
+
     /// Has the listener started it (and not finished)?
     pub fn in_progress(&self) -> bool {
         !self.finished && (self.chapter > 0 || self.pos_ms > 0)
@@ -814,6 +827,7 @@ impl Library {
                 chapter: 2,
                 pos_ms: 754_000,
                 finished: false,
+                ..Default::default()
             },
             BookRow {
                 title: "The Left Hand of Darkness".into(),

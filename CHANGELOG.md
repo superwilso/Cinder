@@ -18,6 +18,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Audiobooks show their series.** A book whose first chapter is tagged with a series is listed
+  under its author in a series heading, its number in front of the title (`3. Title`), the series in
+  number order (2 before 2.5 before 10); an author's books that belong to no series follow the
+  series. Read from the tags of the book's first chapter: a `series` and a `series-part` tag (or the
+  movement name and number, `MVNM` / `MVIN` / `©mvn` / `mvin`) in MP3, M4B / MP4, FLAC, Ogg and Opus
+  files (the names Audiobookshelf writes). Host-tested for every format; *device-verified* on an
+  NW-A55 (owner) for MP3: the heading, the numbers and the order. M4B and FLAC / Ogg / Opus are
+  *device-unverified* (DEVICE_CHECKLIST §37.11).
 - **Cinder has a folder of its own.** It lived in `/system/vendor/unknown321`, the folder Wampy's
   installer makes; it now installs to `/system/vendor/cinder`. An Update moves an older install
   across: once the Home app points at the new launcher, Cinder's files leave Wampy's folder by

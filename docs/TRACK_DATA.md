@@ -167,6 +167,10 @@ chapters, in file-name order with numbers compared as numbers (`2` before `10`).
   to a PC and before a power-off; written through a temporary file and a rename.
 * If the file changed while the player held it, this side's books win for the ones it changed since
   its last write and every other book is the file's.
+* A book's **series** is not stored anywhere by Cinder: it is read from the tags of the book's first
+  chapter whenever the library is built (`series.rs`): a `series` and a `series-part` tag (or the
+  movement name and number) in MP3, M4B / MP4, FLAC, Ogg and Opus files. A number that is not a
+  number (`Book Three`) is ignored; `3/10` is read as `3`.
 * Audiobooks are kept out of Songs, Albums, Artists, Folders, search and the shuffles. A playlist
   may still hold an audiobook file, because a playlist is the owner's own choice.
 
@@ -179,6 +183,7 @@ chapters, in file-name order with numbers compared as numbers (`2` before `10`).
 | Saved views | `player/cinder-ui/src/views.rs` (`SavedView`, `parse`, `serialize`) |
 | Load and save | `cinder-ffi/src/lib.rs`: `load_views`, `save_views`, `flush_stats` |
 | Audiobooks: which files, the store | `player/cinder-ffi/src/books.rs` (`book_dir`, `rows`, `Store`, `start_point`) |
+| Audiobooks: series tags | `player/cinder-ffi/src/series.rs` (`read_file`), ordering in `books::order` |
 | Audiobooks: saving and playing | `cinder-ffi/src/lib.rs`: `record_book_pos`, `flush_books`, `Action::PlayBook` |
 | Audiobooks: the screen | `player/cinder-ui/src/audiobooks.rs`, the header button in `library.rs` |
 
