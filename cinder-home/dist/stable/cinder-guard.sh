@@ -28,7 +28,7 @@ STATE=/db/cinder-guard
 COUNT=$STATE/count
 LOG=$STATE/log
 APPCFG=/system/vendor/sony/bin/HgrmMediaPlayerApp.appcfg
-REAL=/system/vendor/unknown321/HgrmMediaPlayerApp.appcfg.real
+REAL=$APPCFG.real
 LAUNCHER_COUNT=/data/cinder/bootcount
 MAX=3
 
@@ -160,12 +160,6 @@ if [ ! -f "$STATE/backstop_on" ]; then
     exit 0
 fi
 
-# Nothing to guard: Cinder is not installed (no backup means the .appcfg was never repointed).
-if [ ! -s "$REAL" ]; then
-    _log "cinder not installed (.appcfg.real absent) — nothing to guard"
-    exit 0
-fi
-
 # Already on stock: the .appcfg does not point at Cinder's launcher. Leave it alone; this is how
 # the device sits after a revert, and re-arming here would undo the user's own choice.
 if ! grep -q 'cinderhome-launch.sh' "$APPCFG" 2>/dev/null; then
@@ -218,13 +212,22 @@ fi
 # loop this is escaping.
 _log "LIMIT REACHED — reverting .appcfg to stock"
 mount -o remount,rw /system 2>/dev/null
-cat "$REAL" > "$APPCFG.guardtmp" 2>/dev/null
+# The installer's backup, unless it names Cinder's launcher (one did, on the owner's player from
+# 2026-09-22 until the installer learned to refuse it): then Sony's own four lines, the same on
+# stock 1.02 and Walkman One 3.02. Either way this depends on no Cinder file.
+if [ -s "$REAL" ] && grep -q '^command: ' "$REAL" 2>/dev/null && ! grep -q cinderhome-launch "$REAL" 2>/dev/null; then
+    cat "$REAL" > "$APPCFG.guardtmp" 2>/dev/null
+else
+    _log "the .appcfg.real backup is missing or names Cinder's launcher - writing Sony's own"
+    { echo "name: HgrmMediaPlayerApp"; echo "command: HgrmMediaPlayerApp"; echo "type: Home"; echo "hidden: false"; } > "$APPCFG.guardtmp" 2>/dev/null
+fi
 # init runs this under umask 077 (see /db/cinder-guard: 0700/0600), so the temp file is born 0600
 # root:root — and appmgrservice runs as uid 100. Moved into place as-is, the revert would leave an
 # .appcfg appmgr cannot READ: no Home app at all, the outcome this block exists to prevent. Stock
 # is 0755; give it that back before the move.
 chmod 0755 "$APPCFG.guardtmp" 2>/dev/null
-if [ -s "$APPCFG.guardtmp" ] && grep -q '^command:' "$APPCFG.guardtmp" 2>/dev/null; then
+if [ -s "$APPCFG.guardtmp" ] && grep -q '^command:' "$APPCFG.guardtmp" 2>/dev/null \
+   && ! grep -q cinderhome-launch "$APPCFG.guardtmp" 2>/dev/null; then
     mv "$APPCFG.guardtmp" "$APPCFG" 2>/dev/null
     echo 0 > $COUNT 2>/dev/null
     _log "reverted to stock Home app — Cinder disabled, device should boot normally"
