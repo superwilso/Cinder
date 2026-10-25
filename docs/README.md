@@ -21,6 +21,7 @@ The four documents that are always current live outside this directory:
 | Document | What it is |
 |---|---|
 | [`ROADMAP.md`](ROADMAP.md) | **What is planned, and where help is wanted:** what is being built next, testers with a Mac, device tests grouped by setup, open research, other models and translations. |
+| [`MONO.md`](MONO.md) | **Mono, and why Cinder stands on its own.** What Sound ▸ MONO does, the two install options that put it in Sony's sound service (with or without Wampy), its safety, and how it led to Cinder needing nothing else installed. |
 | [`COMPARE_cinder_sony.md`](COMPARE_cinder_sony.md) | **Cinder against Sony's firmware, in pictures:** what Cinder replaces, the effect chain by firmware, what Clear Bass does at the jack, what the effects cost the processor, and what Bluetooth costs during jack playback. Measured 2026-10-11 on one Walkman One player. |
 | [`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md) | **The redesign ledger.** Every screen in the 2026-09 design handoff (Cinder, Flint, the installer) and every promised feature the handoff does not draw — the goals, Walkman One parity, the community's requests — each with a state and a phase. What landed first, and where the build departs from the mock on purpose. |
 | [`PLAN_audio_unification.md`](PLAN_audio_unification.md) | **Every audio source on every output.** Library, soundscape, FM, the Bluetooth receiver and USB-DAC against the jack and Bluetooth: what each gets (audible test, sleep timer, mono, DSP, visualiser, volume), what changed 2026-10-04 and what is left |
@@ -43,7 +44,6 @@ The four documents that are always current live outside this directory:
 |---|---|
 | [`baseline_v1.4.md`](baseline_v1.4.md) | The NW-A55 technical baseline, with explicit trust tiers per claim (`[Verified]` / inferred). The longest-lived document here. |
 | [`AUDIT_2026-08-18_device_vs_sony.md`](AUDIT_2026-08-18_device_vs_sony.md) | What the hardware can do versus what Sony's services expose. Prompted by the FM result: the chip could seek and measure signal; `TunerPlayerService` could not. |
-| [`COMPARISON_cinder_wampy_sony.md`](COMPARISON_cinder_wampy_sony.md) | How Cinder, Wampy and the stock player each solve the same problems. Bluetooth and FM rows revised 2026-08-26. |
 | [`adb_setup.md`](adb_setup.md) | adb on the dev channel — fast iteration and reverse-engineering access. |
 | [cinder-sony-analysis](https://github.com/superwilso/cinder-sony-analysis) | **Reverse-engineering without the player.** The Sony-derived material kept out of this repository: a scrubbed map of a running NW-A55 (services, sockets, kernel config, I2C, mixer), catalogues of the A50 and ZX100 firmware images (files, hashes, dependencies, every exported symbol), and the Clear Bass tables and decompilations. Regenerated with [`../tools/device_map/device_map.py`](../tools/device_map/device_map.py) and [`../tools/firmware_catalogue.py`](../tools/firmware_catalogue.py). |
 

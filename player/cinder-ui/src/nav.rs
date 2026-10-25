@@ -2712,8 +2712,8 @@ impl App {
             && !self.landscape()
     }
 
-    /// Now Playing is on its side (a Winamp skin or a cassette tape): the panel's edges and the
-    /// status strip belong to the view, which has no status bar of its own.
+    /// Now Playing is a full-panel view (a Winamp skin, or a cassette tape on its side): the
+    /// panel's edges and the status strip belong to the view, which has no status bar of its own.
     pub fn landscape(&self) -> bool {
         self.current() == Screen::NowPlaying && (self.winamp_view() || self.tape_view())
     }
@@ -4584,7 +4584,7 @@ impl App {
             Screen::NowPlaying if self.winamp_view() => self.winamp_tap(x, y),
             Screen::NowPlaying if self.tape_view() => {
                 use crate::tape::Tap;
-                let (lx, ly) = crate::winamp::to_land(x, y);
+                let (lx, ly) = crate::tape::to_land(x, y);
                 match crate::tape::tap_at(lx, ly) {
                     Tap::Menu => {
                         self.push(Screen::Menu);
@@ -4991,8 +4991,7 @@ impl App {
                 if let Some(i) = crate::display::style_chip_at(x, y) {
                     self.display_sel = crate::display::ROW_STYLE;
                     let style = crate::style::Style::from_index(i);
-                    // Winamp or Cassette again: the next skin or tape on the drive, Wampy's
-                    // on-the-fly skin change.
+                    // Winamp or Cassette again: the skins or tapes on the drive, to pick one.
                     let skinned = matches!(
                         style,
                         crate::style::Style::Winamp | crate::style::Style::Cassette
@@ -7185,9 +7184,9 @@ impl App {
         match winamp::ctl_at(lx, ly, self.wa_playlist) {
             Some(Ctl::Menu) => open(self, Screen::Menu),
             Some(Ctl::Minimize | Ctl::Close) => open(self, Screen::Library),
-            // Wampy's ⏏ opens its settings.
-            Some(Ctl::Eject) => open(self, Screen::Settings),
-            // The playlist takes the whole panel, and gives it back (Wampy's PL button).
+            // ⏏ is Winamp's "open files": the library.
+            Some(Ctl::Eject) => open(self, Screen::Library),
+            // The playlist takes the whole panel, and gives it back (Winamp's PL button).
             Some(Ctl::Shade | Ctl::Pl) => {
                 self.wa_playlist = !self.wa_playlist;
                 self.wa_pl_first = None;
@@ -7413,10 +7412,10 @@ impl App {
                 shift0,
                 moved,
             } => {
-                // One character per cell of the skin's font (5 px); dragging left reads on.
+                // One character per cell of the skin's font; dragging left reads on.
                 let lx = crate::winamp::to_land(x, y).0;
-                let moved = moved || (lx - lx0).abs() >= 5;
-                self.wa_title_shift = shift0 + (lx0 - lx) / 5;
+                let moved = moved || (lx - lx0).abs() >= crate::winamp::CELL;
+                self.wa_title_shift = shift0 + (lx0 - lx) / crate::winamp::CELL;
                 self.scrub = Scrub::WaTitle {
                     x0,
                     y0,
@@ -8039,8 +8038,8 @@ impl App {
             }
             // Turned on its side, a swipe means nothing the window has: Winamp has no gestures.
             Screen::NowPlaying if self.tape_view() => vec![],
-            // On its side a swipe across the panel runs along the playlist: it pages through the
-            // queue, a page a swipe, toward where the finger went. Anywhere else it means nothing.
+            // A swipe on the playlist pages through the queue, a page a swipe, like turning a page:
+            // leftward is the next one. Anywhere else it means nothing.
             Screen::NowPlaying if self.winamp_view() => {
                 let ly = crate::winamp::to_land(x, y).1;
                 if crate::winamp::on_playlist(ly, self.wa_playlist) && !self.context.is_empty() {
@@ -8049,11 +8048,10 @@ impl App {
                         .max(1);
                     let last = self.context.len() - 1;
                     let first = self.wa_pl_first();
-                    // Leftward on the panel is downward on its side: the earlier tracks.
                     self.wa_pl_first = Some(if dir < 0 {
-                        first.saturating_sub(page)
-                    } else {
                         (first + page).min(last)
+                    } else {
+                        first.saturating_sub(page)
                     });
                 }
                 vec![]
@@ -10852,7 +10850,7 @@ impl App {
         // y 406..800 opaquely) painted straight over both: the pin/clear confirmation was
         // invisible in the one place it fires, and the volume HUD — which still responds to Vol±
         // while the sheet is open — came up half-covered.
-        // On its side the HUD would lie across the view sideways (and Winamp has its own slider).
+        // Over a full-panel view the HUD would cover it (and Winamp has its own slider).
         let wa = self.landscape();
         if self.vol_overlay > 0 && self.current() != Screen::Lock && !wa {
             if self.volume_hud == 1 {
@@ -19666,8 +19664,8 @@ mod tests {
         assert!(!a.winamp_view());
         a.set_winamp_skin(true);
         assert!(a.winamp_view());
-        // A landscape point on the panel: the inverse of `winamp::to_land`.
-        let at = |lx: i32, ly: i32| (479 - ly, lx);
+        // A point of the layout on the panel: the inverse of `winamp::to_land`.
+        let at = |lx: i32, ly: i32| (lx, ly);
         // The middle of everywhere that answers as `ctl`.
         let centre = |ctl: Ctl, shade: bool| {
             let pts: Vec<(i32, i32)> = (0..winamp::LW)
@@ -19717,7 +19715,7 @@ mod tests {
         b.set_winamp_prefs("junk");
         assert_eq!(b.wa_style, 1, "an unreadable line changes nothing");
         for (ctl, screen) in [
-            (Ctl::Eject, Screen::Settings),
+            (Ctl::Eject, Screen::Library),
             (Ctl::Menu, Screen::Menu),
             (Ctl::Close, Screen::Library),
             (Ctl::Options, Screen::Settings),
@@ -19733,8 +19731,7 @@ mod tests {
         // The volume slider sets the level outright on the jack; the shell reads it back.
         let (x0, y0) = centre(Ctl::Volume, false);
         assert!(a.scrub_begin(x0, y0));
-        let vy = y0 + 60; // further along the slider (landscape x is the panel's y)
-        assert_eq!(a.scrub_move(x0, vy), vec![Action::VolUp]);
+        assert_eq!(a.scrub_move(x0 + 40, y0), vec![Action::VolUp]);
         let set = a.volume_level();
         assert_eq!(a.scrub_end(), vec![Action::VolUp]);
         assert!(set > 0);
@@ -19743,12 +19740,12 @@ mod tests {
         assert!(a.scrub_begin(sx, sy));
         assert!(a.scrub_is_rail());
         assert!(matches!(a.scrub_end().as_slice(), [Action::Seek(_)]));
-        // The title drags by hand (landscape x is the panel's y), and a press that never moves
-        // is still the tap: Track information.
+        // The title drags by hand, and a press that never moves is still the tap: Track
+        // information.
         let (tx, ty) = centre(Ctl::Title, false);
         assert!(a.scrub_begin(tx, ty));
-        a.scrub_move(tx, ty - 20);
-        assert_eq!(a.wa_title_shift, 4, "20 px left = four characters on");
+        a.scrub_move(tx - 4 * crate::winamp::CELL, ty);
+        assert_eq!(a.wa_title_shift, 4, "four cells left = four characters on");
         assert_eq!(a.scrub_end(), vec![]);
         assert_eq!(a.current(), Screen::NowPlaying, "a drag opens nothing");
         assert!(a.scrub_begin(tx, ty));
@@ -19758,7 +19755,7 @@ mod tests {
         // The balance is live, like Sound's.
         let (bx, by) = centre(Ctl::Balance, false);
         assert!(a.scrub_begin(bx, by));
-        a.scrub_move(bx, by + 200);
+        a.scrub_move(bx + 200, by);
         assert_eq!(a.balance(), 100);
         assert_eq!(a.scrub_end(), vec![Action::SoundChanged]);
         // PL and windowshade swap the window for the playlist, full screen; its title bar swaps
@@ -19781,10 +19778,10 @@ mod tests {
         assert_eq!(tap(&mut a, Ctl::PlRow(0)), vec![], "the playing track");
         assert!(!a.scrub_begin(240, 400), "no sliders on the playlist");
         // A swipe pages through the queue; a row then plays that track and follows it again.
-        assert_eq!(a.swipe(1, 240, 400), vec![]);
+        assert_eq!(a.swipe(-1, 240, 400), vec![]);
         let first = a.wa_pl_first();
         assert!(first > 1, "paged on");
-        a.swipe(-1, 240, 400);
+        a.swipe(1, 240, 400);
         assert_eq!(a.wa_pl_first(), 0, "and back, no further than the top");
         tap(&mut a, Ctl::Pl);
         assert!(!a.wa_playlist);
@@ -19793,8 +19790,10 @@ mod tests {
             vec![Action::PlayContextAt(2)],
             "under the window too"
         );
-        // Swipes mean nothing on its side.
-        assert_eq!(a.swipe(-1, 240, 400), vec![]);
+        // A swipe on the window means nothing.
+        let before = a.wa_pl_first();
+        assert_eq!(a.swipe(-1, 240, 100), vec![]);
+        assert_eq!(a.wa_pl_first(), before);
     }
 
     #[test]

@@ -9,14 +9,14 @@
 It replaces Sony's music app with a faster one and keeps Sony's audio services, effects and DAC path
 underneath. Install it from a PC over USB; the same installer puts Sony's app back.
 
-> This is a personal project that I made for myself. If people want to tweak it and adapt it to
+> This is a personal project that was made for myself. If people want to tweak it and adapt it to
 > their own use, please do, but I can't promise features or time for it. Raise issues in the issues
 > section, but I can't promise they will be patched. **Back up with
 > [wbrt](https://github.com/unknown321/wbrt) before you install**, and if you have the time and
 > skill, please contribute pull requests. I have deliberately not included any way to sponsor or pay
 > for this project. I want it to be free, and I don't want the obligation for support that comes
-> with payment; as I said, I made this for me. The best way to support it is to test, give feedback
-> and patch. **Cinder is still in testing and development, whatever GitHub's labels say.**
+> with payment; as I said, I made this for me. I am aware that using ai to create this is an unpopular decision, but I do not have the time or skill to put in to be able to make this in a "moraly correct" way, every feature that is added, is based on if i think it will be useful, helpful or if it is requested. This project came from me wanting somthing that didn't exist to the level I wanted it at the time. I do hope in time a community will form around this project and that people  will support it and use it in every way that they want to. I hope cinder does what you want it to, if not make a request! The best way to support it is to test, give feedback
+> and patch. **Cinder is still in testing and development, whatever GitHub's labels say. Updates are always being pushed (at the moment at least) **
 
 <p align="center">
   <img src="docs/screenshots/now-playing.png" width="220" alt="Now playing">

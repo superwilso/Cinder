@@ -371,11 +371,6 @@
 > parity, queue/playback behaviour, and a measured performance + battery sweep, with an ordered
 > plan. Read it before promising a feature: it is the current gap list, and its §E is a device pass
 > that closed two open RE questions and found one new defect.
-
-> **How Cinder differs from Wampy and from Sony's stock player (2026-07-28):**
-> [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md) — subsystem by
-> subsystem, including the three Cinder defects that comparison found, why Cinder's volume is correct
-> as-is, and the full evidenced answer on FM-over-Bluetooth with a 3.5 mm cable as the antenna.
 >
 > **What to do next, all of it:** [`../docs/ROADMAP.md`](../docs/ROADMAP.md) — decisions, offline work,
 > device sessions and battery, in one ordered list.
@@ -993,7 +988,7 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 
 ### ◐ Partial (UI works; backend/hardware leg pending — device-gated)
 
-- **Standalone parity, 2026-10-23 — code done, device-gated** (`docs/DEVICE_CHECKLIST.md` §39):
+- **New options, 2026-10-23 — code done, device-gated** (`docs/DEVICE_CHECKLIST.md` §39):
   * **ATRAC on any region** (`atrac`): verified by hand-install 10-22; installer path unrun.
   * **FM recording** (`fmrec`): the jack recorder verified by hand-install 10-22 (a 7.9 s WAV);
     the RECORD button, BT OUT recording and the installer path unrun. FM over BT OUT had a 16/32-bit
@@ -1002,7 +997,7 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
     helper's `curve` verified writing a byte-identical table 10-23), **CUE sheets** (playback:
     titles and ◁/▷ inside the file, and the album page lists the CUE tracks), **Cassette, Clock and Winamp
     (`.wsz` skins)** Now Playing styles, and the **guided installer** (window pages checked from screenshots).
-- **More parity, 2026-10-24 — code done, device-gated** (`docs/DEVICE_CHECKLIST.md` §41): the
+- **More options, 2026-10-24 — code done, device-gated** (`docs/DEVICE_CHECKLIST.md` §41): the
   **low-latency USB DAC** (`llusbdac`, waiting on cinder-llusbdac's first release for its pinned
   hash), a **skins and tapes list**, **swap ⏮/⏭** (`swap_prev_next`), **dragging the Winamp title**,
   a **user font** (`cinder_font.ttf`), and **Bluetooth auto off that wakes** with the player.

@@ -14,7 +14,7 @@ Each has a row in [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §41:
   for the NW-A50 kernel), and a Low latency switch on the USB-DAC screen.
 - **Bluetooth that sleeps and wakes:** the radio switches off after ten idle minutes and back on
   when the player is used (screen on or any button).
-- **From Wampy:** a list of Winamp skins and cassette tapes to pick from, swapping ⏮ and ⏭,
+- **Look and buttons:** a list of Winamp skins and cassette tapes to pick from, swapping ⏮ and ⏭,
   dragging a long Winamp title, and your own font from the drive.
 
 ## Being built next

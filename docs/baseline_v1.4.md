@@ -52,10 +52,6 @@ scrobbler.log compatibility, 2038-safe timestamps, and configurable hold-switch 
 An additional headline feature — simultaneous USB-DAC input + LDAC Bluetooth output — is
 technically plausible but unconfirmed; see §5.10 and OQ2.
 
-The **Wampy** project (`github.com/unknown321/wampy`) is an open-source interface addon
-licensed under GPLv3 with a Commons Clause non-sale condition. GitHub shows C 80.9% /
-C++ 17.3%, 71 releases as of v1.14.3 (Feb 22, 2026). **[Verified]**
-
 The main remaining unknowns sit at the **MediaTek MT8590 boot ROM** layer (now that the SoC
 is identified), the **clang/LLVM vs GCC C++ ABI** mismatch between Sony's toolchain and the
 replacement player's C shim (OQ3/OQ6), and the **USB-DAC enforcement layer** (OQ2).
@@ -227,16 +223,6 @@ on. It uses the same `.UPG` format and install path as stock.
 
 Phase 5 diffs stock vs WO to identify exactly which sectors/files WO modifies.
 
-### 5.7 Wampy architecture overview
-
-Wampy injects into the running player via `LD_PRELOAD` + a modified boot image. It adds an
-overlay UI (skins, clock, spectrum analyser) without replacing `HgrmMediaPlayerApp`. Its
-`src/Controller.cpp` exposes the view-model surface that the replacement player can use as a
-reverse-engineering map.
-
-Key files: `MAKING_OF.md` (the whole device in one document), `ALSA.md` (audio topology),
-`kernel.md` (boot image), `installer/run.sh` (`.UPG` install pattern).
-
 ### 5.8 Bluetooth
 
 BlueZ 4 (old). LDAC encoder is present. Bluetooth and USB-DAC share the audio output path in
@@ -341,28 +327,6 @@ playback engine.
 
 ## §6 Key Resources
 
-### 6.1 Wampy
-
-The single most useful resource for this project. Open source on GitHub, licensed under
-**GPLv3 with a Commons Clause non-sale condition** (not MIT — this was incorrectly stated in
-v1.0–v1.3). As of this revision, GitHub shows **C 80.9%, C++ 17.3%**, **71 releases**,
-latest **v1.14.3 (Feb 22, 2026)**, 114 stars, 4 forks. **[Verified]**
-
-**License implication for the project:** The Commons Clause condition restricts selling Wampy
-as a product. If the customer's replacement player reuses any Wampy code (not just its
-documentation), the license terms apply. This is a project risk — see §8. A clean-room
-approach (using Wampy's documentation as a map, but writing new code) avoids the issue.
-
-Key files:
-- `MAKING_OF.md` — the entire device in one document
-- `MAKING_OF_FM.md` — FM radio implementation
-- `MAKING_OF_SCROBBLER.md` — scrobbler integration notes
-- `ALSA.md` — audio topology (§5.11 source)
-- `kernel.md` — boot image modification
-- `VOLUME_TABLES.md` — per-model volume/filter tables (includes DMP-Z1 contradiction)
-- `installer/run.sh` — `.UPG` install pattern template
-- `src/Controller.cpp` — view-model surface
-
 ### 6.2 unknown321/wbrt (Walkman Backup/Restore Tool)
 
 **Primary citation for MT8590 SoC identification.** README: "Create and restore backups for
@@ -419,7 +383,6 @@ Cross-compilation is done on the WSL2 host; the output binary is deployed via `.
 | MT8590 boot ROM bypass inapplicable | Low | Low (not needed for player) | Only investigate if Phase 8 reveals eMMC-level need |
 | .UPG round-trip repack breaks checksums | Low | Medium (uninstallable firmware) | Phase 7 verifies; never deploy without round-trip passing |
 | Bad-boot counter absent → unrecoverable brick | Medium | High | Always implement bad-boot counter (Wampy pattern) before full UI swap |
-| Wampy license contamination (GPLv3 + Commons Clause) | Medium (if any Wampy code is reused) | Medium (legal/distribution constraint) | Use Wampy's documentation and RE findings as a map; write all code from scratch. Do not copy-paste from Wampy source. |
 | Rust 2038 safe but kernel/RTC/filesystem not | High (Linux 3.10 kernel is 32-bit time_t) | Medium (incorrect timestamps in filesystem, RTC overflow) | Keep all timestamp logic in Rust u64; never pass `time_t` across the shim boundary; test RTC behavior on-device before 2038 reliance |
 | USB-DAC + LDAC advertised as headline feature before verification | Medium | Medium (customer expectation) | Classify as "experiment" until ALSA device visibility confirmed during USB-DAC mode on a live device |
 | NVP U-Boot password slot overwrite | Very Low (only if explicitly targeted) | Critical (permanent brick) | Never write the U-Boot slot; read-only NVP dump first |
@@ -570,8 +533,6 @@ See CLAUDE.md Part E for the full device-side procedure. Steps in safety-gradien
 
 - **Sony NW-A55 Help Guide** — `sony.net` — stock feature descriptions (queue behavior,
   shuffle behavior, FM range)
-- **`unknown321/wampy`** — `github.com/unknown321/wampy` — MAKING_OF series, ALSA.md,
-  USAGE.md, installer pattern, view-model surface
 - **`unknown321/wbrt`** — `github.com/unknown321/wbrt` — Walkman Backup/Restore Tool;
   **primary citation for MT8590 SoC identification** and MediaTek USB VID `0x0E8D`
 - **`unknown321/scrobbler`** — `github.com/unknown321/scrobbler` — scrobbler log format,
@@ -582,5 +543,3 @@ See CLAUDE.md Part E for the full device-side procedure. Steps in safety-gradien
   — `upgDocs.md`: V2 `.UPG` format + crypto spec
 - **`zhangboyang/llusbdac`** — `github.com/zhangboyang/llusbdac` — USB-DAC kernel module
   precedent; central to OQ2 investigation
-- **Wampy `ALSA.md`** — `github.com/unknown321/wampy/blob/master/ALSA.md` — primary source
-  for the full ALSA device topology (`sonysoccard`, 6 PCM devices, CXD3778GF device names)

@@ -1,23 +1,18 @@
-//! The Winamp style with a skin on the drive: Now Playing on its side and across the whole panel,
-//! laid out as Wampy lays it out. The skin's main window fills the top 337 of the 480 px (×2.9,
-//! so its buttons are a finger's size), and three rows of the playlist (Up Next) sit under it. PL,
-//! or the playlist's title bar, gives the playlist the whole panel, and the same takes it back.
-//! Every control in the window works.
+//! The Winamp style with a skin on the drive: Now Playing across the whole panel as Winamp's own
+//! default arrangement has it, the main window on top and the playlist editor (Up Next) under it.
+//! The window is the panel's width (×1.75); the playlist fills the rest, and PL, or the playlist's
+//! title bar, gives it the whole panel and takes it back. Every control in the window works.
 //!
-//! The panel is turned a quarter anticlockwise, so the player's top is on the left, as in Wampy's
-//! photographs. Everything here is in those landscape pixels (`LW` × `LH`). `to_land` turns a
-//! touch into them, and `skin::blit_to(.., land)` draws out of them. Positions are the classic skin
-//! format's public layout, in skin pixels, scaled by `K`.
-//!
-//! What each control does. As in Wampy, ⏏ opens the settings and EQ the equaliser. Wampy leaves
-//! the title bar's buttons and the clutter bar inert; here they do what Winamp's would, as near as
-//! a player with no windows can:
+//! Everything here is in panel pixels (`LW` × `LH`); `to_land` is kept as the one place a touch
+//! enters this layout. Positions are the classic skin format's public layout, in skin pixels,
+//! scaled by `K`. The window's buttons do what Winamp's would, as near as a player with no windows
+//! can:
 //!
 //! | Control | Does |
 //! |---|---|
 //! | ◁ ▶ ‖ ▷, shuffle, repeat | what they say; ▶ only plays and ‖ only pauses |
 //! | ■ | pauses and goes back to 0:00 |
-//! | ⏏ | Settings |
+//! | ⏏ (open files) | Library |
 //! | minimise, close | Library |
 //! | the menu icon (top left) | Menu |
 //! | PL, windowshade, the playlist's title bar | the playlist full screen, and back |
@@ -38,14 +33,16 @@ use crate::text::{Family, FontSet, TextStyle, Weight};
 use crate::theme::Theme;
 use embedded_graphics::pixelcolor::Rgb888;
 
-/// The panel on its side.
-pub const LW: i32 = crate::canvas::H as i32;
-pub const LH: i32 = W as i32;
-/// Skin pixels to landscape pixels: the 275 px window across the 800.
+/// The panel, upright.
+pub const LW: i32 = W as i32;
+pub const LH: i32 = crate::canvas::H as i32;
+/// Skin pixels to panel pixels: the 275 px window across the 480.
 const K: f32 = LW as f32 / 275.0;
-/// The playlist's title bar (20 skin px) and rows, Wampy's sizes.
-const PL_TITLE_H: i32 = 58;
-const ROW_H: i32 = 30;
+/// The playlist's title bar (20 skin px) and its rows.
+const PL_TITLE_H: i32 = 35;
+const ROW_H: i32 = 34;
+/// One character of the skin's font (5 skin px), in panel pixels: a dragged title moves by these.
+pub const CELL: i32 = 9;
 /// A near miss within this many skin px still lands on the control it was aimed at.
 const SLOP: f32 = 3.0;
 
@@ -58,9 +55,9 @@ fn kr((x, y, w, h): (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
     (k(x), k(y), k(x + w) - k(x), k(y + h) - k(y))
 }
 
-/// A touch at `(px, py)` on the panel, in landscape pixels.
+/// A touch at `(px, py)` on the panel, in this layout's pixels (the same, upright).
 pub fn to_land(px: i32, py: i32) -> (i32, i32) {
-    (py, W as i32 - 1 - px)
+    (px, py)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -124,7 +121,7 @@ const WINDOW: [(Ctl, (i32, i32, i32, i32)); 25] = [
 ];
 
 /// The window's height, and so where the playlist starts unless it has the panel.
-pub const WINDOW_H: i32 = 337;
+pub const WINDOW_H: i32 = 202;
 
 /// The playlist's top: under the window, or the top of the panel.
 fn pl_top(full: bool) -> i32 {
@@ -135,8 +132,8 @@ fn pl_top(full: bool) -> i32 {
     }
 }
 
-/// How many playlist rows show: three under the window, as in Wampy, or a panelful. A last row
-/// the panel cuts short still counts; it is drawn clipped.
+/// How many playlist rows show, under the window or with the panel. A last row the panel cuts
+/// short still counts; it is drawn clipped.
 pub fn pl_rows(full: bool) -> usize {
     ((LH - pl_top(full) - PL_TITLE_H + ROW_H - 1) / ROW_H) as usize
 }
@@ -214,7 +211,7 @@ pub struct View<'a> {
     pub vis: u8,
     /// The analyzer's look: `ANALYZER_STYLES[style]`.
     pub style: u8,
-    /// Characters the user dragged the scrolling title by (Wampy's wish: scroll it by hand).
+    /// Characters the user dragged the scrolling title by.
     pub title_shift: i32,
 }
 
@@ -252,10 +249,10 @@ fn dimmed(col: u32, dim: u32) -> u32 {
     ch(16) | ch(8) | ch(0)
 }
 
-/// A landscape rect filled.
+/// A rect filled.
 fn fill(c: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32), col: u32) {
     let col = Rgb888::new((col >> 16) as u8, (col >> 8) as u8, col as u8);
-    crate::widgets::fill_rect(c, W as i32 - y - h, x, h, w, col);
+    crate::widgets::fill_rect(c, x, y, w, h, col);
 }
 
 /// `m:ss` or `h:mm:ss` (a leading `-` is ignored) as Winamp's minutes and seconds.
@@ -322,7 +319,7 @@ fn text(
             font,
             (col * 5, row * 6, 5, 6),
             cell(i as i32),
-            true,
+            false,
             key,
         );
     }
@@ -333,14 +330,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, skin: &Sk
     let idle = np.title.is_empty() && np.artist.is_empty();
     let sprite = |c: &mut Canvas, img: &Option<Image>, src, dst| {
         if let Some(i) = img {
-            blit_to(c, dim, i, src, kr(dst), true, None);
+            blit_to(c, dim, i, src, kr(dst), false, None);
         }
     };
     c.fill(Rgb888::new(0, 0, 0));
     if !v.playlist {
         if let Some(m) = &skin.main {
             let src = (0, 0, MAIN_W as i32, MAIN_H as i32);
-            blit_to(c, dim, m, src, (0, 0, LW, WINDOW_H), true, None);
+            blit_to(c, dim, m, src, (0, 0, LW, WINDOW_H), false, None);
         }
         sprite(c, &skin.titlebar, (27, 0, 275, 14), (0, 0, 275, 14));
         sprite(c, &skin.titlebar, (304, 0, 8, 43), (10, 22, 8, 43));
@@ -365,7 +362,7 @@ fn window(
 ) {
     let sprite = |c: &mut Canvas, img: &Option<Image>, src, dst| {
         if let Some(i) = img {
-            blit_to(c, dim, i, src, kr(dst), true, None);
+            blit_to(c, dim, i, src, kr(dst), false, None);
         }
     };
     if !idle {
@@ -385,7 +382,7 @@ fn window(
                     nums,
                     ((d % 10) as i32 * 9, 0, 9, 13),
                     kr((x, 26, 9, 13)),
-                    true,
+                    false,
                     None,
                 );
             }
@@ -395,7 +392,7 @@ fn window(
                 } else {
                     ((20, 6, 5, 1), (38, 32, 5, 1))
                 };
-                blit_to(c, dim, nums, src, kr(dst), true, None);
+                blit_to(c, dim, nums, src, kr(dst), false, None);
             }
         }
         // The spectrum, in viscolor.txt's colours 2..=17 (top to bottom): 19 bands of 3 px, or 75
@@ -531,7 +528,7 @@ fn playlist(c: &mut Canvas, dim: u32, f: &FontSet, skin: &Skin, v: &View) {
     fill(c, (0, top, LW, LH - top), bg);
     let (side_l, side_r) = (k(12), k(20));
     if let Some(pl) = &skin.pledit {
-        let mut put = |src, dst| blit_to(c, dim, pl, src, dst, true, None);
+        let mut put = |src, dst| blit_to(c, dim, pl, src, dst, false, None);
         let cw = k(25);
         let mut x = cw;
         while x < LW - cw {
@@ -550,7 +547,7 @@ fn playlist(c: &mut Canvas, dim: u32, f: &FontSet, skin: &Skin, v: &View) {
         }
     }
     // Rows in Cinder's own font, in pledit.txt's colours, as Wampy draws them by default: every
-    // script shows, where the skin's font has Latin capitals only.
+    // font has Latin capitals only.
     let (x0, x1) = (side_l + 8, LW - side_r - 8);
     for i in 0..pl_rows(v.playlist) {
         let qi = v.first + i;
@@ -584,7 +581,7 @@ fn sty(col: u32, dim: u32, size: f32) -> TextStyle {
 }
 
 fn text_land(c: &mut Canvas, f: &FontSet, at: (f32, f32), s: &str, st: &TextStyle, max_w: f32) {
-    crate::text::draw_land(c, f, at, s, st, max_w);
+    crate::widgets::draw_fit(c, f, at.0, at.1, s, st, at.0 + max_w);
 }
 
 #[cfg(test)]
@@ -592,10 +589,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_touch_turns_with_the_panel() {
-        // The player's top is on the left: the panel's top-right corner is the landscape origin.
-        assert_eq!(to_land(479, 0), (0, 0));
-        assert_eq!(to_land(0, 799), (799, 479));
+    fn a_touch_is_where_it_lands() {
+        assert_eq!(to_land(479, 0), (479, 0));
+        assert_eq!(to_land(0, 799), (0, 799));
+        assert_eq!(k(5), CELL, "a font cell");
     }
 
     #[test]
@@ -609,22 +606,22 @@ mod tests {
         assert_eq!(ctl_at(x + w / 2, y + h + 4, false), Some(Ctl::Play));
         assert_eq!(ctl_at(5, k(110), false), None, "the window's plain border");
         assert_eq!(k(116), WINDOW_H);
-        // The transport is a finger's size on its side.
+        // The transport is still a fingertip's size at the panel's width.
         for (ctl, r) in &WINDOW[17..] {
             let (_, _, w, h) = kr(*r);
-            assert!(w >= 60 && h >= 40, "{ctl:?} is {w}x{h}");
+            assert!(w >= 38 && h >= 26, "{ctl:?} is {w}x{h}");
         }
-        // Under the window: the playlist's title bar, then three rows, as in Wampy.
-        assert_eq!(pl_rows(false), 3);
+        // Under the window: the playlist's title bar, then the rest of the panel in rows.
+        assert_eq!(pl_rows(false), 17);
         assert_eq!(ctl_at(400, WINDOW_H + 10, false), Some(Ctl::Pl));
-        assert_eq!(ctl_at(400, LH - 1, false), Some(Ctl::PlRow(2)));
+        assert_eq!(ctl_at(400, LH - 1, false), Some(Ctl::PlRow(16)));
         // With the panel: title bar at the top, a panelful of rows.
         assert_eq!(ctl_at(400, 10, true), Some(Ctl::Pl));
         assert_eq!(
             ctl_at(400, PL_TITLE_H + ROW_H + 2, true),
             Some(Ctl::PlRow(1))
         );
-        assert!(pl_rows(true) >= 14);
+        assert!(pl_rows(true) >= 22);
     }
 
     #[test]

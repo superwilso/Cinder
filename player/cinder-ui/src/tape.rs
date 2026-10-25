@@ -2,10 +2,10 @@
 //! for Wampy works here as it is: an 800×480 JPEG of the tape, a folder of reel frames shown in
 //! turn every 55 ms while the song plays, and a `config.txt` placing the song's text and the reel.
 //!
-//! With a tape on the drive the Cassette style turns on its side and takes the whole panel, as
-//! Wampy draws it (`winamp::to_land` is the same turn). Without one it is Cinder's drawn cassette.
-//! The shell finds and decodes the files (`cinder-ffi/src/tape_load.rs`); this file holds what a
-//! tape is, how its `config.txt` reads, how it draws, and what a tap on it does.
+//! With a tape on the drive the Cassette style turns on its side and takes the whole panel
+//! (`to_land`). Without one it is Cinder's drawn cassette. The shell finds and decodes the files
+//! (`cinder-ffi/src/tape_load.rs`); this file holds what a tape is, how its `config.txt` reads, how
+//! it draws, and what a tap on it does.
 //!
 //! Taps, as there is nothing on a tape to press: the left third is ◁, the middle ▶/‖, the right
 //! third ▷, and the top right corner (where Wampy keeps its settings) opens the Menu.
@@ -16,11 +16,19 @@ use crate::now_playing::NowPlaying;
 use crate::skin::{blit_to, hex_color};
 use crate::text::{Family, FontSet, TextStyle, Weight};
 use crate::theme::Theme;
-use crate::winamp::{LH, LW};
 use embedded_graphics::pixelcolor::Rgb888;
 
 /// A reel frame lasts this long, as in Wampy.
 pub const FRAME_MS: u32 = 55;
+
+/// The panel on its side: the player's top on the left.
+pub const LW: i32 = crate::canvas::H as i32;
+pub const LH: i32 = crate::canvas::W as i32;
+
+/// A touch at `(px, py)` on the panel, in the tape's landscape pixels.
+pub fn to_land(px: i32, py: i32) -> (i32, i32) {
+    (py, crate::canvas::W as i32 - 1 - px)
+}
 
 /// One text line on the tape: where it starts (a negative x hides it) and what it says.
 #[derive(Clone, Debug, PartialEq)]
@@ -295,17 +303,17 @@ mod tests {
         assert_eq!(format_duration("100%", 5), "100%", "a lone % is kept");
         assert_eq!((secs("4:21"), secs("1:02:03"), secs("")), (261, 3723, 0));
         let s = Song {
-            title: "Black Betty",
-            artist: "Ram Jam",
-            album: "Ram Jam",
+            title: "Night Train",
+            artist: "The Example Band",
+            album: "The Example Band",
             year: "1977",
             track: "1",
             duration: 150,
         };
-        assert_eq!(fill("$ARTIST", &s, "%1$02d:%2$02d"), "RAM JAM");
+        assert_eq!(fill("$ARTIST", &s, "%1$02d:%2$02d"), "THE EXAMPLE BAND");
         assert_eq!(
             fill("$track. $title ($duration, $year)", &s, "%1$02d:%2$02d"),
-            "1. Black Betty (02:30, 1977)"
+            "1. Night Train (02:30, 1977)"
         );
     }
 

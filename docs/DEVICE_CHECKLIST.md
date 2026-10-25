@@ -981,7 +981,7 @@ scanner pick them up (reconnect from the PC, or the rescan Cinder triggers after
 | 38.7 | **Noise cancelling with Sony NC earphones** (v0.3.17-rc3) | **Open — needs the earphones** (the #27 reporter). Plug in: Sound shows "Noise cancelling" at the top within a second, log `nc: Sony NC earphones in (5-pin plug)`. Pick the earphone, then Automatic: log `nc: cinder-voltable nc-load -> rc=0` (W1 only) and `nc: mode ainc, earphones nw500n -> written, status nc`; cancellation is heard. Pause 60 s: still cancelling (no `codec: idle 30 s` line). Unplug: the row goes. `cinder_nc_probe.txt` appears 3 s after the plug |
 | 38.8 | **Sound ▸ Advanced holds VPT, DC Phase and Vinyl** (v0.3.17-rc3) | **Open:** the three rows at the top of Advanced change the sound exactly as they did on Sound; the list scrolls to the DAC EQ row and the banner; Sound has no More effects row |
 
-## 39 — 2026-10-23 — Standalone parity: ATRAC, FM recording, album sound, volume curve, CUE, styles
+## 39 — 2026-10-23 — New options: ATRAC, FM recording, album sound, volume curve, CUE, styles
 
 Host-tested only, except where a row says otherwise. ATRAC and FM recording need the `preload`
 component (the hagodaemon wrapper) and their own options ticked; each takes effect at the next
