@@ -37,6 +37,7 @@ The four documents that are always current live outside this directory:
 | [`SHORTCOMINGS.md`](SHORTCOMINGS.md) | Standing reference: what is structurally weak about the project and its repository, with evidence per claim. Cited by section ID (A1, B1, D4…) from other documents. |
 | [`DEVICE_TESTS.md`](DEVICE_TESTS.md) | The backlog of things only ears or a hand can settle, ordered by payoff. |
 | [`DEVICE_SHELL_GOTCHAS.md`](DEVICE_SHELL_GOTCHAS.md) | The device's busybox is not your shell. Written after an install reported success while doing three things wrong. Read before writing anything that runs on the player. |
+| [`RESEARCH_other_repos_backup_2026-10.md`](RESEARCH_other_repos_backup_2026-10.md) | **Other repos worth knowing, and a universal backup tool.** What the Walkman tuning guide, wbrt, the MediaTek flash tools and llusbdac offer Cinder (licences first), and a sketch of a cross-platform backup tool with a restore that checks the model and serial. README-level research; nothing was run on a device. |
 
 ## Reference — how the device actually behaves
 
