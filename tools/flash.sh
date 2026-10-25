@@ -118,6 +118,10 @@ detect_dev() {
     # WSL's own disks are "Msft Virtual Disk" — skip them.
     printf '%s' "$model" | grep -qi 'virtual disk' && continue
     if printf '%s %s' "$vendor" "$model" | grep -qiE 'sony|walkman|wm-port'; then
+      # LUN 0 is internal storage, LUN 1 the SD card. Size picked the card whenever it was the
+      # bigger of the two (a 238 GB card against 56 GB internal, 2026-10-25), and the card is
+      # exFAT, where the .UPG is never looked for.
+      [ "$(basename "$(readlink -f "$d/device")" | awk -F: '{print $NF}')" = 0 ] || continue
       size="$(cat "$d/size" 2>/dev/null || echo 0)"   # 512-byte sectors
       if [ "${size:-0}" -gt "$bestsz" ]; then bestsz="$size"; best="/dev/$base"; fi
     fi

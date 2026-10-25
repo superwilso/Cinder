@@ -219,10 +219,12 @@ fcb07e6e116f98e8 library_artists_compact_night
 950663098198cf80 viz_size_0_off
 2864fac45dfb0e69 viz_size_1_veil
 2513c2d1b1efb6b5 viz_size_2_full
-98f9f5129eb0fe74 confirm_restart
-57423959cdd171e4 confirm_poweroff
-408b5906abddf38c settings_scrolled
+89a09a41c5c6bfeb confirm_restart
+683a3f8cad92e88f confirm_poweroff
+a1199150b1d665e1 settings_scrolled
 5dd66b36c95c03b2 device
+7f57e56560f6b8e8 storage
+ee4c891f9f9ade65 storage_end
 cf8c69078f80b1da device_scrolled
 3f4281c899b9c2bd device_degraded
 2864fac45dfb0e69 np_page_0
@@ -313,7 +315,7 @@ fb6ebbd88f827cf8 uiscale_80_eq
 fc6d8ca2cdd20ec4 uiscale_80_receiver_ldac
 827ae83f4ebc6018 uiscale_80_receiver_aac
 85245ddff799d4aa uiscale_80_receiver_sbc
-93179525b9cbc33b uiscale_80_settings_bottom
+efd589c964bd3642 uiscale_80_settings_bottom
 5a622d92e316ebc8 uiscale_100_library
 864865797e747cfc uiscale_100_settings
 a12a41122e670d6c uiscale_100_display
@@ -326,7 +328,7 @@ f92e7f91efbc19c9 uiscale_100_eq
 d445fd08e40b1c92 uiscale_100_receiver_ldac
 cc9dda3328990485 uiscale_100_receiver_aac
 b523c3e6a0090d55 uiscale_100_receiver_sbc
-eeb5e1c5bfb89809 uiscale_100_settings_bottom
+352e5c6b7ecf24bc uiscale_100_settings_bottom
 bcc95e34359f29af uiscale_120_library
 6b4a96be7e7cc5ef uiscale_120_settings
 91816a4d3a8c2201 uiscale_120_display
@@ -339,7 +341,7 @@ d851e59ec26950fd uiscale_120_receiver_auto
 310aaca7f4d3fc03 uiscale_120_receiver_ldac
 a4b2574ff192c824 uiscale_120_receiver_aac
 3570d285f3cf1e76 uiscale_120_receiver_sbc
-1231a3e90579062a uiscale_120_settings_bottom
+310542b4ea892d37 uiscale_120_settings_bottom
 23f68a85c8e1e46b uiscale_140_library
 36eac6d517a4079e uiscale_140_settings
 2aad1fee0b14564b uiscale_140_display
@@ -352,7 +354,7 @@ d6ca61eae8d850f4 uiscale_140_upnext
 5bcb1de6e77aa08c uiscale_140_receiver_ldac
 00202da258a887bb uiscale_140_receiver_aac
 e58f2bd39104f009 uiscale_140_receiver_sbc
-1b173a81f1fb07a7 uiscale_140_settings_bottom
+19be508cdbecad9e uiscale_140_settings_bottom
 2f8e0d4639490d55 palette_picker_100
 6f18e5dd6dfc242d palette_picker_140
 ba7c469cfb249e17 viz_0_bars
@@ -394,7 +396,7 @@ bc9d2226dfb6c5fd soundscape_rain_alone
 b90d39e01acbb705 soundscape_beach_music_night
 73fa3f850052f3ae language_picker_100
 829cbfd9849c1f67 language_picker_140
-eeb5e1c5bfb89809 language_entry_no_sony
+352e5c6b7ecf24bc language_entry_no_sony
 c5253a8bdd806b71 zappin_ready_en
 df297692a9259481 zappin_no_queue_en
 c02cd88aee9db482 zappin_active_sabi_en

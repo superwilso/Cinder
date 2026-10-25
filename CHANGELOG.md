@@ -18,6 +18,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **A Storage page.** Settings ▸ Storage opens it: how full the internal drive and the SD card
+  are, split into music, other files and free space, then the library in numbers (songs, albums,
+  artists, genres, playing time, size), where it is, its formats, sample rates and bit depths, and
+  the longest song, the biggest album and how much was added in the last 30 days. Read from
+  Sony's music database at library build, so it opens instantly and reads no files. Sizes are in
+  the units Windows shows. Host-tested; *device-verified* 10-25 for the numbers in the log
+  (4,646 tracks, 238 GB card, 149 ms).
+
 - **Cinder has a folder of its own.** It lived in `/system/vendor/unknown321`, the folder Wampy's
   installer makes; it now installs to `/system/vendor/cinder`. An Update moves an older install
   across: once the Home app points at the new launcher, Cinder's files leave Wampy's folder by
@@ -64,6 +72,21 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Silence over Bluetooth after a boot, on Walkman One.** Music played, but to the empty
+  headphone jack: Walkman One 3.02 boots in Sony's "Initial" function mode, which leaves the
+  Bluetooth output switched off (stock 1.02 boots in music playback and was never affected). Cinder
+  now moves Initial to music playback at every boot. Using the Receiver or USB-DAC first hid it,
+  because leaving either sets the right mode. *Device-verified* 10-25 by setting the mode live on
+  Walkman One (audio came back at once); the boot step is *device-unverified* there.
+- **Power did nothing over a dialog, USB storage or the intro.** All three swallowed the button,
+  so a screen that went dark over one of them could only be woken by the Hold switch. Power now
+  always toggles the screen. Host-tested; seen on the player 10-25.
+- **Dev builds keep adb on stock firmware.** Sony's USB manager drops adb on every cable event
+  (a cable in at boot, a plug-in, a wake); Walkman One's own boot script had been starting it
+  again. The dev channel now puts it back whenever it goes. *Device-verified* 10-25.
+- **Clear Bass on stock firmware.** The row was only offered on Walkman One's patched sound
+  library, though stock's own chain already has the six-band EQ it lives in. Host-tested;
+  *device-unverified* (is it audible).
 - **Bluetooth volume that stops reaching the headphones fixes itself.** Rarely, right after a
   boot, the volume buttons moved the bar but not the headphones until they were disconnected and
   reconnected. Cinder now notices two presses in a row the headphones never answer, says

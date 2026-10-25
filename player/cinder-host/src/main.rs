@@ -2222,6 +2222,27 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99);
             save(&c, "device");
         }
+        // Settings ▸ Storage, at the top and scrolled to the bottom.
+        for (name, at_end) in [("storage", false), ("storage_end", true)] {
+            let mut c = Canvas::new();
+            let sum = cinder_ui::storage::Summary::sample();
+            let v = cinder_ui::storage::StorageView {
+                sum: &sum,
+                albums: 417,
+                artists: 253,
+                genres: 95,
+                int_total_mb: 57_270,
+                int_free_mb: 12_100,
+            };
+            let scroll = if at_end {
+                cinder_ui::storage::max_scroll_px(&v)
+            } else {
+                0
+            };
+            cinder_ui::storage::render(&mut c, &theme, &fonts, &v, scroll);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99);
+            save(&c, name);
+        }
         // Same screen scrolled to the bottom — the sections below the fold are the reason it
         // scrolls at all, and the footer has to land inside the panel.
         {

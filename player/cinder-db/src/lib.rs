@@ -191,6 +191,17 @@ impl SensMeAkeys {
     }
 }
 
+/// One track's file, as Sony's scanner recorded it ([`Db::file_facts`]). 0 = not recorded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileFacts {
+    pub object_id: i64,
+    pub bytes: u64,
+    pub sample_rate: u32,
+    pub bits: u32,
+    /// Bits per second.
+    pub bitrate: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Sort {
     Title,
@@ -1006,6 +1017,53 @@ impl Db {
             }
             None => Ok(None),
         }
+    }
+
+    /// What Sony's scanner recorded about each track's FILE: its size, sample rate, bit depth and
+    /// bitrate, for the Storage page. Not part of `Track` because nothing else reads them and the
+    /// library build should not carry four more columns for one screen. Each property's akey is
+    /// resolved by NAME, like DURATION's; a store that lacks one reads 0 for it.
+    pub fn file_facts(&self) -> Result<Vec<FileFacts>> {
+        let akey = |name: &str| -> Option<i64> {
+            self.conn
+                .query_row(
+                    "SELECT akey FROM schema WHERE prop_name = ?1 LIMIT 1",
+                    [name],
+                    |r| r.get::<_, i64>(0),
+                )
+                .ok()
+        };
+        let mut joins = String::new();
+        let mut sels = Vec::new();
+        for (i, name) in ["SAMPLE_RATE", "BITS_PER_SAMPLE", "AUDIO_BITRATE"]
+            .iter()
+            .enumerate()
+        {
+            match akey(name) {
+                Some(k) => {
+                    joins.push_str(&format!(
+                        " LEFT JOIN object_ext_int e{i} ON e{i}.object_id = ob.object_id AND e{i}.akey = {k}"
+                    ));
+                    sels.push(format!("COALESCE(e{i}.value,0)"));
+                }
+                None => sels.push("0".into()),
+            }
+        }
+        let sql = format!(
+            "SELECT ob.object_id, COALESCE(ob.filesize,0), {} FROM object_body ob{joins} WHERE {TRACK_WHERE}",
+            sels.join(", ")
+        );
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map([], |r| {
+            Ok(FileFacts {
+                object_id: r.get(0)?,
+                bytes: r.get::<_, i64>(1)?.max(0) as u64,
+                sample_rate: r.get::<_, i64>(2)?.max(0) as u32,
+                bits: r.get::<_, i64>(3)?.max(0) as u32,
+                bitrate: r.get::<_, i64>(4)?.max(0) as u32,
+            })
+        })?;
+        rows.collect()
     }
 
     /// Shared track SELECT: object_body + artist/album names + optional DURATION ext-int.

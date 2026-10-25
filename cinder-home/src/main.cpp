@@ -1238,6 +1238,28 @@ static void scrobble_open_ours(const char* who) {
 // so a blocking Sony-IPC can't stall the device. Idempotent, one-shot.
 void sony_rx_restore_at_boot();   // defined with the receiver, below
 
+#ifdef CINDER_DEV
+// Dev channel: put adb on the USB gadget — at boot, and again whenever the gadget has lost it
+// (dev_adb_keepalive). Disable, set functions=mass_storage,adb (keep storage so the log/DB stay
+// reachable), the MSC+adb composite PID 0B8D, re-enable, THEN start adbd.
+static void dev_compose_adb() {
+    std::system(
+        "echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null; "
+        "echo mass_storage,adb > /sys/class/android_usb/android0/functions 2>/dev/null; "
+        "echo 0B8D > /sys/class/android_usb/android0/idProduct 2>/dev/null; "
+        // STAY OFF THE BUS LONG ENOUGH FOR THE HOST TO SEE IT. A cable CAN be in here now (the
+        // owner's cable_escape_off, and the first boot after an install), and with the two
+        // writes 2 ms apart the PC never saw a disconnect: it kept talking to a device that no
+        // longer existed, the gadget was never configured again, and adb was gone until the
+        // cable was pulled and put back. Kernel log 2026-10-11: disable at 23.405 s, functions
+        // re-added at 23.407 s, and no `high-speed config` after it, where the four earlier
+        // bounces of the same boot (0.25 s apart or more) each got one.
+        "sleep 1; "
+        "echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null; "
+        "setprop ctl.start adbd 2>/dev/null");
+}
+#endif
+
 void deferred_up() {
     if (g_deferred_done) return;
     // First, and exactly once: this depends on nothing below it and costs one thread that
@@ -1686,20 +1708,7 @@ void deferred_up() {
     // guarded + best-effort.
     clog_("deferred_up: DEV channel — composing adb into the USB gadget + starting adbd (guarded)");
     run_watchdog_only("deferred_up: enable adb (dev)", 10, []() {   // system(), see above
-        std::system(
-            "echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null; "
-            "echo mass_storage,adb > /sys/class/android_usb/android0/functions 2>/dev/null; "
-            "echo 0B8D > /sys/class/android_usb/android0/idProduct 2>/dev/null; "
-            // STAY OFF THE BUS LONG ENOUGH FOR THE HOST TO SEE IT. A cable CAN be in here now (the
-            // owner's cable_escape_off, and the first boot after an install), and with the two
-            // writes 2 ms apart the PC never saw a disconnect: it kept talking to a device that no
-            // longer existed, the gadget was never configured again, and adb was gone until the
-            // cable was pulled and put back. Kernel log 2026-10-11: disable at 23.405 s, functions
-            // re-added at 23.407 s, and no `high-speed config` after it, where the four earlier
-            // bounces of the same boot (0.25 s apart or more) each got one.
-            "sleep 1; "
-            "echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null; "
-            "setprop ctl.start adbd 2>/dev/null");
+        dev_compose_adb();
         // Verification snapshot ~3 s later, straight into cinderhome.log: service state per init,
         // the live process, and the gadget functions (now expected to read `mass_storage,adb`).
         // One log pull answers "is adb enumerated, or is it just the Windows driver?" (docs/adb_setup.md).
@@ -2407,10 +2416,11 @@ static void apply_balance(int pos) {
     clog_(m);
 }
 
-// Is Sony's six-band EQ (Clear Bass) in this player's effect chain? On Walkman One 3.02 it is
+// Is Sony's six-band EQ (Clear Bass) in this player's effect chain? Stock's chain has it (seen
+// 2026-10-25: the mono shim adds eq10band "after eq6band" on stock 1.02). On Walkman One 3.02 it is
 // there only after cinder-chain.sh has pointed one chain entry at it: one byte, 0x8e at 0x6f918 of
-// a 3306868-byte library (analysis/RE_clear_bass.md 6.3). Anything else reads as "no", and the
-// Clear Bass row is then never drawn.
+// a 3306868-byte library (analysis/RE_clear_bass.md 6.3). An unpatched Walkman One library reads as
+// "no", and the Clear Bass row is then never drawn.
 //
 // The same size also identifies the library as Walkman One 3.02's, with or without that byte: a
 // chain of i2f dseehxcustom heq dynamicnormalizer attn eq10band eqtone alc dcphaselinear vinylizer
@@ -2426,7 +2436,7 @@ static bool clear_bass_in_chain() {
         unsigned char b = 0;
         if (fd >= 0) {
             g_w1_chain = ::fstat(fd, &st) == 0 && st.st_size == 3306868;
-            if (g_w1_chain && ::pread(fd, &b, 1, 0x6f918) == 1 && b == 0x8e)
+            if (!g_w1_chain || (::pread(fd, &b, 1, 0x6f918) == 1 && b == 0x8e))
                 known = 1;
             ::close(fd);
         }
@@ -7139,7 +7149,7 @@ static bool usb_set_device_type(unsigned t) {
 // It early-outs when the requested mode already equals the current one, so calling it twice is
 // harmless. That also means SetUsbFunction from apply_usb_dac below is now redundant — kept only
 // because it is the proven-harmless half and costs one call.
-enum { FM_MEDIAPLAY = 0, FM_USBDAC = 1, FM_A2DPSINK = 2 };
+enum { FM_MEDIAPLAY = 0, FM_USBDAC = 1, FM_A2DPSINK = 2, FM_INITIAL = 7 };
 
 static bool usb_enter_func_mode(int mode) {
     typedef bool (*enterfn)(void*, const int*);
@@ -9035,28 +9045,31 @@ static void sony_rx_read_mode() {
     g_sony_rx_boot_mode = get(self);
 }
 
-// deferred_up: the first Cinder boot after a trip to Sony's receiver. One-shot — the flag is
-// renamed before any Sony call, so a call that hangs or kills us cannot make every boot retry it.
+// deferred_up, every boot. The restore half runs on the first Cinder boot after a trip to Sony's
+// receiver, and is one-shot — the flag is renamed before any Sony call, so a call that hangs or
+// kills us cannot make every boot retry it.
 void sony_rx_restore_at_boot() {
-    FILE* f = std::fopen(SONY_RX_FLAG, "r");
-    if (!f) return;
-    int old = -1;
-    if (std::fscanf(f, "%d", &old) != 1) old = -1;
-    std::fclose(f);
-    std::string spent = std::string(SONY_RX_FLAG) + ".spent";
-    std::rename(SONY_RX_FLAG, spent.c_str());
-    ::sync();
-    if (old >= 0 && old <= 7) {
-        g_sony_rx_restore_to = old;
-        run_guarded("sony-rx: restore stock's function", 10, sony_rx_restore_body);
+    if (FILE* f = std::fopen(SONY_RX_FLAG, "r")) {
+        int old = -1;
+        if (std::fscanf(f, "%d", &old) != 1) old = -1;
+        std::fclose(f);
+        std::string spent = std::string(SONY_RX_FLAG) + ".spent";
+        std::rename(SONY_RX_FLAG, spent.c_str());
+        ::sync();
+        if (old >= 0 && old <= 7) {
+            g_sony_rx_restore_to = old;
+            run_guarded("sony-rx: restore stock's function", 10, sony_rx_restore_body);
+        }
     }
-    // Sony's app may have left the boot FuncMode at A2dpSink. Music needs MediaPlay; 9 is the
-    // binder-failure value and means "unknown", not "wrong", so only a clear 2 is acted on.
+    // Music needs MediaPlay. Sony's app may have left A2dpSink, and a boot with no Sony app stays
+    // at Initial: measured 2026-10-25, Initial leaves PathMgr's A2dpSink device disabled, so music
+    // over a connected Bluetooth link went to the jack — silence. 9 is the binder-failure value and
+    // means "unknown", not "wrong", so only a clear 2 or 7 is acted on.
     run_guarded("sony-rx: read FuncMode", 6, sony_rx_read_mode);
     char m[96];
     std::snprintf(m, sizeof m, "sony-rx: FuncMode at boot = %d", g_sony_rx_boot_mode);
     clog_(m);
-    if (g_sony_rx_boot_mode == FM_A2DPSINK) {
+    if (g_sony_rx_boot_mode == FM_A2DPSINK || g_sony_rx_boot_mode == FM_INITIAL) {
         run_guarded("sony-rx: EnterFuncMode(MediaPlay)", 20, rx_fm_mediaplay);
         rx_usb_restore();
     }
@@ -9180,6 +9193,28 @@ static void rescan_campaign_arm() {
 }
 
 static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
+
+#ifdef CINDER_DEV
+// Dev channel, 1 Hz. On stock firmware Sony's UsbMgrServiceFw rewrites the gadget to bare
+// mass_storage (054c:0ca0) and stops adbd on a cable event: a cable in at boot, a plug-in, a
+// resume. Walkman One hid that for months, because its own init starts adbd every boot. Measured
+// 2026-10-25, the first boots on stock: adb there after an install, gone after a reboot with the
+// cable in. USB storage mode keeps adb itself (init's `msc` block), so it is left alone, and
+// USB-DAC's gadget is `audio_func,adb`.
+static void dev_adb_keepalive() {
+    static long long next_try = 0;
+    if (g_msc_active || now_ms() < next_try) return;
+    char f[96] = {0};
+    if (FILE* fp = std::fopen("/sys/class/android_usb/android0/functions", "r")) {
+        if (!std::fgets(f, sizeof f, fp)) f[0] = 0;
+        std::fclose(fp);
+    }
+    if (!f[0] || std::strstr(f, "adb")) return;
+    next_try = now_ms() + 30000;
+    clog_("adb: the gadget lost adb (a cable event on stock) — composing it again (dev)");
+    run_watchdog_only("adb: keepalive (dev)", 10, dev_compose_adb);
+}
+#endif
 
 // ── Bluetooth debug log (community request B6, docs/PLAN_community_2026-09-23.md) ─────────────
 // Bluetooth ▸ THIS DEVICE ▸ Debug log turns on the MTK stack's HCI capture:
@@ -14366,6 +14401,9 @@ void* render_driver(void*) {
                 // flicker costs a single increment that the next tick resets.
                 const Audible src = audible_now();   // every source, one definition (see Audible)
                 hago_tick(src.library);   // the wrapper's trial: five of these in a row is the proof
+#ifdef CINDER_DEV
+                dev_adb_keepalive();
+#endif
                 const bool audible = src.any();
                 const bool idle = !g_screen_on && !audible;
 

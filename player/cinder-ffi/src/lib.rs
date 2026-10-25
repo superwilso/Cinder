@@ -1730,6 +1730,75 @@ fn set_progress(np: &mut Np, pos_ms: i64, dur_ms: i64) {
 /// cached cover.
 const NO_ALBUM_ID: i64 = i64::MIN;
 
+/// The Storage screen's numbers: the tracks just built plus what Sony's scanner recorded about
+/// each file, and the SD card's size from statvfs. One query, at library build.
+fn storage_summary(db: &cinder_db::Db, tracks: &[cinder_db::Track]) -> cinder_ui::storage::Summary {
+    let t0 = std::time::Instant::now();
+    let facts: std::collections::HashMap<i64, cinder_db::FileFacts> = db
+        .file_facts()
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "cinder-ffi: storage: file facts unreadable ({e}) — sizes and quality read 0"
+            );
+            Vec::new()
+        })
+        .into_iter()
+        .map(|f| (f.object_id, f))
+        .collect();
+    let files: Vec<cinder_ui::storage::TrackFile> = tracks
+        .iter()
+        .map(|t| {
+            let f = facts.get(&t.object_id).copied().unwrap_or_default();
+            cinder_ui::storage::TrackFile {
+                path: &t.filename,
+                title: &t.title,
+                album_id: t.album_id.unwrap_or(0),
+                album: &t.album,
+                ms: t.duration_raw.unwrap_or(0).max(0) as u64,
+                added: t.added,
+                bytes: f.bytes,
+                sample_rate: f.sample_rate,
+                bits: f.bits,
+                bitrate: f.bitrate,
+                hires: t.is_hires,
+            }
+        })
+        .collect();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (sd_total, sd_free) = statvfs_mb("/contents_ext");
+    let s = cinder_ui::storage::summarise(&files, now, sd_total, sd_free);
+    eprintln!(
+        "cinder-ffi: storage: {} tracks, {} bytes, {} formats, SD {sd_total} MB ({} ms)",
+        s.tracks,
+        s.bytes,
+        s.formats.len(),
+        t0.elapsed().as_millis()
+    );
+    s
+}
+
+/// (total, free) MB of the filesystem at `path`, or (0, 0) when nothing is mounted there. A path
+/// that is only a directory on /data would report /data's size, so the card counts only when its
+/// filesystem differs from the root's.
+fn statvfs_mb(path: &str) -> (i32, i32) {
+    fn read(p: &str) -> Option<libc::statvfs> {
+        let c = std::ffi::CString::new(p).ok()?;
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        (unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0).then_some(st)
+    }
+    let (Some(st), Some(root)) = (read(path), read("/")) else {
+        return (0, 0);
+    };
+    if st.f_fsid == root.f_fsid && st.f_blocks == root.f_blocks {
+        return (0, 0);
+    }
+    let mb = |blocks: u64| (blocks as u128 * st.f_frsize as u128 / 1_048_576) as i32;
+    (mb(st.f_blocks as u64), mb(st.f_bavail as u64))
+}
+
 #[cfg(test)]
 fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     build_library_with(db, None, true)
@@ -2138,6 +2207,7 @@ fn build_library_with(
         v
     };
 
+    let summary = storage_summary(db, &tracks);
     let hires_tracks = songs.iter().filter(|s| s.is_hires).count() as u32;
     eprintln!("cinder-ffi: hi-res tracks: {hires_tracks}");
     let (folders, folder_roots) = if is_shared.iter().any(|&x| x) {
@@ -2176,6 +2246,7 @@ fn build_library_with(
     auto_playlist_covers(&mut playlists);
 
     let mut lib = cinder_ui::Library {
+        summary,
         stats: track_stats,
         songs,
         album_groups,
@@ -2340,7 +2411,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 49] = [
+const SCREEN_NAMES: [&str; 50] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2392,6 +2463,7 @@ const SCREEN_NAMES: [&str; 49] = [
     "Zappin",
     "VolCurve",
     "Skins",
+    "Storage",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2447,6 +2519,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Language => 45,
         S::Zappin => 46,
         S::Skins => 48,
+        S::Storage => 49,
     }
 }
 
@@ -10451,6 +10524,7 @@ mod tests {
             S::Zappin,
             S::Skins,
             S::VolCurve,
+            S::Storage,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
         const RESERVED: usize = 1;

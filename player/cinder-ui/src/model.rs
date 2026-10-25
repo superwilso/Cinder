@@ -531,6 +531,8 @@ pub struct Library {
     /// The audiobooks — everything under `LEARNING`, kept out of every music list above. Sorted by
     /// author then title.
     pub books: Vec<BookRow>,
+    /// What the Storage screen shows, folded once per build (`storage::summarise`).
+    pub summary: crate::storage::Summary,
 }
 
 impl Library {
@@ -851,6 +853,7 @@ impl Library {
             // Two sample books so the Audiobooks screen has something to draw on the host: one
             // part-way through, one not started.
             books: sample_books,
+            summary: crate::storage::Summary::sample(),
         };
         lib.prepare_order();
         lib.build_channels(&SAMPLE_CHANNELS);

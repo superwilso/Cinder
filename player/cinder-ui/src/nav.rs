@@ -102,6 +102,8 @@ pub enum Screen {
     /// a world-readable file the app was already allowed to read and simply never did. Scrolls.
     /// See `device.rs`.
     Device,
+    /// Settings ▸ Storage: each drive's space and what the music on it is made of.
+    Storage,
     Fm,
     UsbDac,
     Receiver,
@@ -1413,6 +1415,7 @@ pub struct App {
     dev_kernel: String,
     dev_base_fw: String,
     device_scroll_px: i32,
+    storage_scroll_px: i32,
     /// A rescan has been asked for and the library has not come back yet. Purely a label state.
     ///
     /// It needs TWO ways out, not one. `set_library` clears it when a reloaded library arrives,
@@ -1995,6 +1998,7 @@ impl Default for App {
             dev_kernel: String::new(),
             dev_base_fw: String::new(),
             device_scroll_px: 0,
+            storage_scroll_px: 0,
             rescanning: false,
             snd_dsee: false,
             snd_vinyl: false,
@@ -4061,6 +4065,11 @@ impl App {
                 // would have been a lie. It runs now.
                 self.rescanning = true;
                 vec![Action::RescanLibrary]
+            }
+            crate::settings::ROW_STORAGE => {
+                self.storage_scroll_px = 0;
+                self.push(Screen::Storage);
+                vec![]
             }
             crate::settings::ROW_BATTERY => {
                 // Was a toggle in place. It is a chevron into the Device screen now — the care
@@ -6999,6 +7008,10 @@ impl App {
                 let max = crate::device::max_scroll_px(&self.device_view());
                 self.device_scroll_px = (self.device_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::Storage => {
+                let max = crate::storage::max_scroll_px(&self.storage_view());
+                self.storage_scroll_px = (self.storage_scroll_px + dy_px).clamp(0, max);
+            }
             Screen::PlaylistPick => {
                 let max = self.pick_max_scroll();
                 self.pick_scroll_px = (self.pick_scroll_px + dy_px).clamp(0, max);
@@ -8983,6 +8996,13 @@ impl App {
 
     /// Handle a button press; returns any actions for the shell to perform.
     pub fn press(&mut self, b: Button) -> Vec<Action> {
+        // POWER ALWAYS TOGGLES THE SCREEN, ahead of every modal below. A dialog, USB storage and
+        // the intro all swallowed it, so a screen that timed out over one of them could not be
+        // woken by Power at all — only the Hold switch, which the shell handles itself. Seen
+        // 2026-10-25 on the first stock boots: three presses did nothing, the lock brought it back.
+        if b == Button::Power {
+            return vec![Action::Sleep];
+        }
         // Hold/lock SWITCH engaged: the touchscreen is disabled (see `tap`), but the physical
         // transport + volume buttons still control playback — you can skip/pause/adjust without
         // unlocking. Power only toggles the screen (the shell blanks/wakes the backlight on Sleep);
@@ -10262,6 +10282,13 @@ impl App {
             Screen::Device => {
                 crate::device::render(c, &theme, fonts, &self.device_view(), self.device_scroll_px)
             }
+            Screen::Storage => crate::storage::render(
+                c,
+                &theme,
+                fonts,
+                &self.storage_view(),
+                self.storage_scroll_px,
+            ),
             Screen::Advanced => {
                 let adv = crate::advanced::Advanced {
                     source_direct: self.adv_source_direct,
@@ -10964,6 +10991,7 @@ impl App {
                 Screen::Advanced => a.adv_scroll_px,
                 Screen::Presets => a.presets_scroll_px,
                 Screen::Device => a.device_scroll_px,
+                Screen::Storage => a.storage_scroll_px,
                 Screen::UpNext => a.queue_scroll_px,
                 Screen::Lyrics => a.lyrics_scroll_px,
                 _ => 0,
@@ -12215,6 +12243,18 @@ impl App {
             kernel: &self.dev_kernel,
             firmware: crate::settings::FIRMWARE_LABEL,
             base_fw: &self.dev_base_fw,
+        }
+    }
+
+    /// The Storage screen's view: the library's summary plus the pushed internal-storage reading.
+    fn storage_view(&self) -> crate::storage::StorageView<'_> {
+        crate::storage::StorageView {
+            sum: &self.lib.summary,
+            albums: self.lib.album_groups.iter().map(|g| g.albums.len()).sum(),
+            artists: self.lib.artists.len(),
+            genres: self.lib.genres.len(),
+            int_total_mb: self.dev_music_total_mb,
+            int_free_mb: self.dev_music_free_mb,
         }
     }
 
@@ -16774,6 +16814,20 @@ mod tests {
         assert_eq!(acts, vec![Action::Sleep]); // shell blanks/wakes the backlight
         assert!(!a.locked); // Power never locks — that's the Hold switch's job
         assert_ne!(a.current(), Screen::Lock);
+    }
+
+    #[test]
+    fn power_wakes_the_screen_over_a_dialog_usb_storage_and_the_intro() {
+        let mut a = unlocked();
+        a.confirm = Some(crate::confirm::Ask::Restart);
+        assert_eq!(a.press(Button::Power), vec![Action::Sleep]);
+        assert!(a.confirm.is_some(), "Power must not dismiss the dialog");
+        a.confirm = None;
+        a.push(Screen::UsbStorage);
+        assert_eq!(a.press(Button::Power), vec![Action::Sleep]);
+        assert_eq!(a.current(), Screen::UsbStorage);
+        a.push(Screen::Onboarding);
+        assert_eq!(a.press(Button::Power), vec![Action::Sleep]);
     }
 
     #[test]

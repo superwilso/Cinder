@@ -23,6 +23,14 @@ Each has a row in [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §41:
    resume (DEVICE_CHECKLIST 33.2). The port reset Sony's own firmware does is in
    `cinder-msc usb-resume` and needs a run on a player.
 
+2. **A backup tool that can rescue a player stuck in a boot loop** (see Help wanted below for the
+   design). Booting the player into MediaTek's download mode needs nothing from the firmware, so it
+   works when nothing else does.
+3. **Large controls,** a Display option (off by default): bigger rows, Now Playing buttons and
+   slider handles, more space between neighbouring targets, and a tap that lands between two
+   targets going to the nearer one. Separate from the text Size slider, which already grows Back
+   and Sort.
+
 Later: the rest of the redesign ([`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md) Part F:
 the Library view bar, Search scopes, the sideways page swipe, saved views, the installer window),
 CUE tracks listed in Songs, the RMT-NWS20 remote, and Flint 0.3 (setup, convert-on-transfer,

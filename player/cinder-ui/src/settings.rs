@@ -5,7 +5,7 @@
 //! USB mode, Power off) and a last row, More settings. That row unfolds the rest below it, in
 //! place — LIBRARY, POWER SAVING, SYSTEM, ABOUT — and folds it away again. Nothing was removed and
 //! no row changed what it does; the set-once rows no longer stand between a thumb and Brightness.
-//! Every row acts except Storage, Firmware and Model, which are information.
+//! Every row acts except Firmware and Model, which are information.
 //!
 //! Drawn with the redesign kit (`kit.rs`): 64 px rows, 34 px section labels. Theme, palette,
 //! accent, text size and the visualiser moved to Settings ▸ Display (`display.rs`, handoff 5k) —
@@ -281,9 +281,9 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_DATABASE => Trail::Open(v.database),
         ROW_AUTO_OFF => Trail::Value(v.auto_off),
         ROW_BT_IDLE_OFF => Trail::Switch(v.bt_idle_off),
-        // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
-        // The card's half goes on the sub line (`storage_parts`).
-        ROW_STORAGE => Trail::Value(storage_parts(v.storage).0),
+        // Storage: chevron into the Storage screen. The value keeps the statvfs reading and the
+        // card's half goes on the sub line (`storage_parts`), so the row still answers at a glance.
+        ROW_STORAGE => Trail::Open(storage_parts(v.storage).0),
         // Device: chevron into the hardware's vital signs. The value carries the two numbers people
         // open it for, so the row usually answers the question without being opened at all.
         ROW_BATTERY => Trail::Open(v.device),
