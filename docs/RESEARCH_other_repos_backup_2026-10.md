@@ -11,13 +11,28 @@ unless the licence below says otherwise and the file is credited.
 | Repo | Licence | What it gives Cinder |
 |---|---|---|
 | [`neoncloud/walkman-tuning-guide`](https://github.com/neoncloud/walkman-tuning-guide) | CC BY-NC-SA 4.0 | Turns AutoEq/PEQ corrections into CXD3778GF tone tables: five cascaded biquads per chunk, 40-bit Q37 coefficients, one half per sample-rate family (44.1 / 48 kHz). Reports the tone DSP clock as about 176.4 / 192 kHz, not 4x the input rate. Says that on tested A50 devices the stock proc node can apply a table directly; the only node it names is `/proc/icx_audio_cxd3778gf_data/tct`, in a backup command. **Facts only**: share-alike does not fit PolyForm. Cinder has already decoded `tct` as the codec's five-biquad EQ and ships Sound ▸ Advanced ▸ **DAC EQ** (`analysis/RE_codec_tone_table.md`, `PLAN_sound_2026-09-29.md` §3), so this is a cross-check of our decode and the clock finding, plus a source of ideas for PEQ import and finer bands. It does not give us the table. |
-| [`unknown321/wbrt`](https://github.com/unknown321/wbrt) | LICENSE opens with the Commons Clause condition; underlying licence not read | Windows 10+ GUI backup/restore for the MT8590 family: NW-A30/40/50, ZX300, WM1A/Z, DMP-Z1. Device VID_0E8D, PID_2000. No cross-model or cross-device restore checks. README does not describe the protocol, language or method. |
+| [`unknown321/wbrt`](https://github.com/unknown321/wbrt) | GPLv3 with the Commons Clause (no selling the software or services built on it) | Windows 10+ GUI backup/restore for the MT8590 family: NW-A30/40/50, ZX300, WM1A/Z, DMP-Z1. Device VID_0E8D, PID_2000. No cross-model or cross-device restore checks. README does not describe the protocol. Its `Makefile` shows what it is built from: a Windows installer (MinGW-w64 in Docker, NSIS) that bundles a **prebuilt `flash_tool.exe` from unknown321's `mediatek_flash_tool` v0.1.7**, a **Download Agent (`DA.bin`) taken from the mtkclient 1.9 release**, and a driver installer built with **libwdi** for the VID_0E8D&PID_2000 device. So the protocol work lives in the MIT flash tool, not in wbrt. Only the build recipe and README were read; wbrt's own backup logic was deliberately not studied (see below). |
 | [`unknown321/mediatek_flash_tool`](https://github.com/unknown321/mediatek_flash_tool) | MIT | Command-line dump/flash over the MediaTek bootloader. README: a fork of [`saleemrashid/mediatek_flash_tool`](https://github.com/saleemrashid/mediatek_flash_tool) "with modifications for MT8590 Walkmans - NW-A30/40/50, ZX300, WM1A, WM1Z, DMP-Z1", "only tested on MT8590, with Download Agent from SP Flash Tool" (examples use `MTK_AllInOne_DA_5.2136.bin`), eMMC devices only. Upstream (MIT, libusb, Argp) sends a Download Agent to the Preloader and takes an arbitrary address and length with no scatter file; it was tested only on the MT6580. Copyright lines: Saleem Rashid 2020, unknown321 2025. Implementation language not confirmed. |
 | [`bkerler/mtkclient`](https://github.com/bkerler/mtkclient) | GPL-3.0 | General MediaTek exploit and flash tool, Windows (usbdk) and Linux. LICENSE is GPLv3. The README's chip list does not mention MT8590 (it lists V6 chips such as MT6781 and MT8985), though the flash tool above links to it for the DA file. Useful as a reference for BROM entry, not a dependency. |
 | [`zhangboyang/llusbdac`](https://github.com/zhangboyang/llusbdac) | GPLv2 | Low-latency USB DAC kernel module for the ZX300A (about 50 ms, PCM only, behaves as Direct Source). Only a precedent for the USB-DAC work; keep any GPL code out of Cinder's tree. |
 | [`unknown321/battery-charge-fix`](https://github.com/unknown321/battery-charge-fix) | GPL-3.0 | Per its description, fixes the charging indicator on an NW-A50 after a knock-off battery; the README says it only ignores the temperature warning. A50 only. Not needed. |
-| [`unknown321/nw-installer`](https://github.com/unknown321/nw-installer) | LICENSE opens with the Commons Clause condition; underlying licence not read | README: "Generic service installer for Walkman NW-A50Series". Packs your files and a `run.sh` into `userdata.tar.gz` and builds `.UPG` installers with `make` and Docker, plus a Windows installer target. Overlaps what `cinder-installer` does; read for facts, not code. |
+| [`unknown321/nw-installer`](https://github.com/unknown321/nw-installer) | GPLv3 with the Commons Clause (inferred to match wbrt; its LICENSE opens with the same condition) | README: "Generic service installer for Walkman NW-A50Series". Packs your files and a `run.sh` into `userdata.tar.gz` and builds `.UPG` installers with `make` and Docker, plus a Windows installer target. Overlaps what `cinder-installer` does; read for facts, not code. |
 | Head-Fi [custom firmware thread](https://head-fi.org/threads/sony-walkman-custom-firmware-non-android.943661/page-545) | n/a | **Not verified.** The page returned a Head-Fi security checkpoint when fetched, so its contents were not read. A web search snippet suggested users post A50 findings there. Check it by hand before relying on it. |
+
+## Staying clean of wbrt
+
+wbrt is GPLv3 with the Commons Clause. Cinder is PolyForm Noncommercial, so none of wbrt's code,
+scripts or installer logic goes into Cinder (`CLAUDE.md` licence rule). What was read, and what was not:
+
+- **Read:** README, LICENSE, `Makefile`, the top-level file list. Used only to learn what it is made of.
+- **Not read:** the installer script and whatever drives the backup (which regions, in what order,
+  with what flags). Do not read it before the tool is built; if it has to be read later, record that
+  here and have someone other than the author of the code do the comparison.
+- **Where Cinder's tool takes its facts instead:** the MIT `mediatek_flash_tool` (credited,
+  copyright lines kept), the region map already in `RECOVERY.md`, and measurements on a real A55.
+- **Not wbrt's to give:** wbrt contributes nothing the flash tool does not. The backup is a flash-tool
+  dump of regions; the value of a Cinder tool is the header, the checks and the verify step, none of
+  which wbrt has.
 
 ## A universal backup tool
 
@@ -48,13 +63,15 @@ and refuses to restore the wrong image.
 
 ### Open questions (all need hardware)
 
-- The flash tool's README says the Download Agent flow was tested on an MT8590, so the route
-  exists. Whether wbrt uses the same one is unknown: read wbrt's source or capture its USB traffic.
-- The README's example DA is `MTK_AllInOne_DA_5.2136.bin`, taken from SP Flash Tool; may we
-  redistribute it? Probably not, so the tool would need the user to supply it.
+- Settled from wbrt's `Makefile`: it uses the same route, the flash tool plus a DA from mtkclient 1.9.
+  Still untested by us on an A55.
+- Download Agent: wbrt ships one taken from mtkclient (GPLv3); the flash tool's README uses an SP
+  Flash Tool file. May Cinder redistribute either? Probably not, so the tool may need to fetch it
+  or ask the user to supply it. Check each file's terms.
+- Driver: wbrt installs a WinUSB-style driver for VID_0E8D&PID_2000 using libwdi (LGPL). Whether a
+  Cinder tool can reuse that or must ask the user to install a driver is open.
 - How does the A55 enter the preloader (key combination, cable state), and is that stable?
 - Does a read-only dump match wbrt's backup byte for byte? That is the acceptance test.
-- Wbrt's underlying licence, beyond the Commons Clause condition, before reusing anything beyond facts.
 
 ### Order
 
