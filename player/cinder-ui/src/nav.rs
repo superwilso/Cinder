@@ -4739,6 +4739,17 @@ impl App {
                     // The "Play album" band: play from track 1 — the shell's album_context
                     // expands it to the whole album in order. (Hit-tested through the band's own
                     // rect; the old literal range started 16px above where the band is drawn.)
+                    // Shuffle, beside it: this album, its tracks shuffled. One album is one group,
+                    // so it deals songs whatever Settings ▸ Shuffle says.
+                    if library::hit_album_shuffle(x, y) {
+                        let ids: Vec<i64> = album.track_list.iter().map(|s| s.object_id).collect();
+                        if ids.is_empty() {
+                            return vec![];
+                        }
+                        self.play_list = ids;
+                        self.list_shuffle_by = crate::shuffle::ShuffleBy::Songs;
+                        return self.start_play_action(Action::ShuffleList);
+                    }
                     if library::hit_album_play_band(x, y) {
                         self.album_track_idx = 0;
                         let id = album.track_list.first().map(|s| s.object_id);
@@ -5872,6 +5883,9 @@ impl App {
         if library::hit_artist_shuffle_band(x, y) {
             return self.start_play_action(Action::ShuffleArtist(self.artist_view));
         }
+        if library::hit_artist_random_album(x, y) {
+            return self.play_random_album();
+        }
         // Resolve the hit and copy the result out — `page` borrows `self.lib`, and everything
         // below this line mutates `self`.
         let hit = self.artist_page().and_then(|p| {
@@ -5908,6 +5922,43 @@ impl App {
             }
             _ => vec![],
         }
+    }
+
+    /// The artist page's Random album: one of their albums, in order, from its first track (the
+    /// shell's album context plays the rest), named in a toast so the button explains itself. Not
+    /// the album already playing when there is another to choose.
+    fn play_random_album(&mut self) -> Vec<Action> {
+        let playing = self.playing_object_id();
+        let albums: Vec<(String, Vec<i64>)> = self
+            .artist_page()
+            .map(|p| {
+                p.albums
+                    .iter()
+                    .map(|(_, a)| {
+                        let ids = a.track_list.iter().map(|s| s.object_id).collect();
+                        (a.name.clone(), ids)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut pick: Vec<&(String, Vec<i64>)> =
+            albums.iter().filter(|(_, ids)| !ids.is_empty()).collect();
+        if pick.len() > 1 {
+            pick.retain(|(_, ids)| playing.is_none_or(|p| !ids.contains(&p)));
+        }
+        if pick.is_empty() {
+            return vec![];
+        }
+        // The same xorshift step the shuffle button uses (seeded from the clock by the shell).
+        self.shuffle_seed = self
+            .shuffle_seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
+        let (title, ids) = pick[(self.shuffle_seed >> 33) as usize % pick.len()];
+        let (title, first) = (title.clone(), ids[0]);
+        // Raw: already translated by `ui_format!`, and an album name is not a catalogue key.
+        self.notify_raw(&crate::ui_format!("Random album · {}", title));
+        self.start_play(first)
     }
 
     /// Push the playlist page for `lib.playlists[idx]`, from its top.
@@ -20637,6 +20688,54 @@ mod tests {
         assert_eq!(a.tap(240, row0), vec![Action::PlayIndex(first_id)]);
         // A tap in the header art/title area, above the band, plays nothing.
         assert!(a.tap(240, by - 20).is_empty());
+        // The square beside the band shuffles this album: its tracks, dealt as songs.
+        let (sx, sy, sw, sh) = library::album_shuffle_button();
+        assert!(sx >= bx + bw, "the button sits beside the band, not on it");
+        assert_eq!(a.tap(sx + sw / 2, sy + sh / 2), vec![Action::ShuffleList]);
+        let ids: Vec<i64> = album.track_list.iter().map(|s| s.object_id).collect();
+        assert_eq!(a.list_shuffle_by(), crate::shuffle::ShuffleBy::Songs);
+        assert_eq!(a.take_play_list(), ids);
+    }
+
+    /// The artist page's Random album plays one of the artist's albums from its first track, and
+    /// over a few presses reaches more than one of them.
+    #[test]
+    fn random_album_plays_one_of_the_artists_albums() {
+        let mut a = library_on(Tab::Artists);
+        let idx = (0..a.lib.artists.len())
+            .find(|&i| {
+                let name = a.lib.artists[i].name.clone();
+                library::artist_page(&a.lib, &name, false).albums.len() > 1
+            })
+            .expect("the sample has an artist with two albums");
+        a.tap(200, artist_row_y(idx));
+        let names: Vec<String> = a
+            .artist_page()
+            .unwrap()
+            .albums
+            .iter()
+            .map(|(_, al)| al.name.clone())
+            .collect();
+        let (x, y, w, h) = library::artist_random_album_button();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..12 {
+            let acts = a.tap(x + w / 2, y + h / 2);
+            assert!(
+                matches!(acts.as_slice(), [Action::PlayIndex(_)]),
+                "{acts:?}"
+            );
+            let name = a
+                .toast
+                .strip_prefix("Random album · ")
+                .expect("named")
+                .to_string();
+            assert!(names.contains(&name), "{name} is not this artist's");
+            seen.insert(name);
+        }
+        assert!(
+            seen.len() > 1,
+            "always the same album: {seen:?} of {names:?}"
+        );
     }
 
     /// BOTH swipe directions on the album drill-in reach the shell. The right-swipe (queue later)
@@ -24535,8 +24634,8 @@ mod r4_tests {
         a.menu_idx = row;
         assert!(a.press(Button::Select).is_empty());
         assert_eq!(a.current(), Screen::Zappin);
-        assert_eq!(a.tap(350, 457), vec![Action::ZappinLength(15_000)]);
-        assert_eq!(a.tap(240, 532), vec![Action::ZappinStart(15_000)]);
+        assert_eq!(a.tap(350, 420), vec![Action::ZappinLength(15_000)]);
+        assert_eq!(a.tap(240, 500), vec![Action::ZappinStart(15_000)]);
     }
 
     #[test]
@@ -24554,8 +24653,8 @@ mod r4_tests {
         a.set_zappin_active(true);
         assert!(a.press(Button::Select).is_empty());
         assert_eq!(a.current(), Screen::Zappin);
-        assert_eq!(a.tap(240, 620), vec![Action::ZappinFull]);
-        assert_eq!(a.tap(240, 699), vec![Action::ZappinEnd]);
+        assert_eq!(a.tap(240, 590), vec![Action::ZappinFull]);
+        assert_eq!(a.tap(240, 670), vec![Action::ZappinEnd]);
     }
 
     #[test]
@@ -24622,7 +24721,7 @@ mod r4_tests {
         let mut a = App::unlocked();
         a.set_play_context(vec![SongRow::default()], 0);
         a.go(Screen::Zappin);
-        for (x, y) in [(80, 530), (400, 530), (240, 620), (240, 699)] {
+        for (x, y) in [(240, 590), (240, 670)] {
             assert!(a.tap(x, y).is_empty(), "disabled preview tap at ({x}, {y})");
         }
     }

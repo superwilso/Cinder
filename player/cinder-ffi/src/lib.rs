@@ -9148,6 +9148,7 @@ fn request_cover(r: &Render, object_id: i64) {
                 return;
             }
         };
+        let mut retries = 0u32;
         loop {
             let want = {
                 let mut slot = COVER_REQ.lock().unwrap();
@@ -9161,8 +9162,35 @@ fn request_cover(r: &Render, object_id: i64) {
             let full = native.as_ref().map(|img| img.scaled_to(480, 480));
             let thumb = native.as_ref().map(|img| img.scaled_to(92, 92));
             if full.is_none() {
+                // The song's file is not there YET: the track restored at boot is asked for ~4 s
+                // in, before the SD card mounts, and its cover stayed a gradient until the next
+                // track change (owner, 10-25: "the album art cache hasn't started to build" — it
+                // had; Now Playing decodes from the file, not the cache). Try again every 2 s for
+                // up to 40 s, unless another song is asked for first.
+                let missing = db
+                    .track_by_object_id(want)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| std::fs::metadata(&t.filename).is_err());
+                if missing && retries < 20 {
+                    retries += 1;
+                    let slot = COVER_REQ.lock().unwrap();
+                    let (mut slot, _) = COVER_WAKE
+                        .wait_timeout_while(slot, std::time::Duration::from_secs(2), |s| {
+                            s.is_none()
+                        })
+                        .unwrap();
+                    if slot.is_none() {
+                        *slot = Some(want);
+                    } else {
+                        retries = 0;
+                    }
+                    continue;
+                }
+                retries = 0;
                 continue; // no embedded cover; the gradient already on screen is the right answer
             }
+            retries = 0;
             let Ok(mut g) = cell().lock() else { break };
             let Some(r) = g.as_mut() else { break }; // renderer gone (shutdown)
                                                      // STILL WANTED? The track may have changed while we decoded. Installing anyway would

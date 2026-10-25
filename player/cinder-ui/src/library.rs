@@ -178,6 +178,37 @@ const GRID_TILE_TOP: i32 = 8;
 /// scroll back up finds them still there. At 27 KB each this is 2.6 MB at most.
 pub const GRID_COVERS_MAX: usize = 96;
 
+/// Grid columns now: three in Big view, whose 130 % names cut to "Last Smo…" in a 96 px column.
+/// The cover stays the cache's 96 px (scaling one per tile per frame is the cost `GRID_COLS`
+/// avoids); the name and its second line get the whole 144 px column. Never more than
+/// `GRID_COLS`, which sizes the line arrays.
+pub fn grid_cols() -> usize {
+    if crate::scale::large() {
+        3
+    } else {
+        GRID_COLS
+    }
+}
+
+/// Left edge to left edge, now: three columns of 144 in Big view (22 + 2 x 144 + 136 = 446, clear
+/// of the rail at 454).
+fn grid_pitch() -> i32 {
+    if crate::scale::large() {
+        144
+    } else {
+        GRID_PITCH
+    }
+}
+
+/// How wide a tile's name and second line may run.
+fn grid_text_w() -> f32 {
+    if crate::scale::large() {
+        (grid_pitch() - 8) as f32
+    } else {
+        GRID_TILE as f32
+    }
+}
+
 /// A compact row: one line of text, no art.
 pub const COMPACT_ROW_H: i32 = 44;
 
@@ -194,7 +225,7 @@ pub fn line_h(tab: Tab, lib: &Library) -> i32 {
 /// Items per line: the grid's columns, or one.
 pub fn per_line(tab: Tab, lib: &Library) -> usize {
     if view_of(lib, tab) == LibView::Grid {
-        GRID_COLS
+        grid_cols()
     } else {
         1
     }
@@ -203,12 +234,13 @@ pub fn per_line(tab: Tab, lib: &Library) -> usize {
 /// Which grid column `x` falls in. Every pixel belongs to a column — the gaps are split down the
 /// middle, and the margins go to the outer columns — so a tap between two covers is never lost.
 pub fn grid_col(x: i32) -> usize {
-    (((x - GRID_X0 + GRID_GAP / 2).max(0)) / GRID_PITCH).min(GRID_COLS as i32 - 1) as usize
+    let pitch = grid_pitch();
+    (((x - GRID_X0 + GRID_GAP / 2).max(0)) / pitch).min(grid_cols() as i32 - 1) as usize
 }
 
 /// Left edge of grid column `col`.
 pub fn grid_x(col: usize) -> i32 {
-    GRID_X0 + col as i32 * GRID_PITCH
+    GRID_X0 + col as i32 * grid_pitch()
 }
 
 /// The height the cursor-follow keeps on screen for `tab`: one line of it.
@@ -302,7 +334,7 @@ fn grid_tile(
         f,
         x as f32,
         (base + 20) as f32,
-        &crate::widgets::fit(f, title, &tst, GRID_TILE as f32),
+        &crate::widgets::fit(f, title, &tst, grid_text_w()),
         &tst,
     );
     let sst = body_label(Family::Sans, Weight::Regular, 12.0, t.dim);
@@ -311,7 +343,7 @@ fn grid_tile(
         f,
         x as f32,
         (base + 38) as f32,
-        &crate::widgets::fit(f, sub, &sst, GRID_TILE as f32),
+        &crate::widgets::fit(f, sub, &sst, grid_text_w()),
         &sst,
     );
 }
@@ -402,7 +434,7 @@ pub fn grid_cover_ids(tab: Tab, lib: &Library, album_sort: usize, scroll_px: i32
                 lib.playlists.iter().map(|p| p.cover_album_id).collect()
             };
             for (i, id) in ids.into_iter().enumerate() {
-                if let Some(d) = dist((i / GRID_COLS) as i32 * GRID_ROW_H) {
+                if let Some(d) = dist((i / grid_cols()) as i32 * GRID_ROW_H) {
                     near.push((d, id));
                 }
             }
@@ -446,9 +478,31 @@ pub fn library_shuffle_band() -> (i32, i32, i32, i32) {
 /// The album drill-in's "Play album" band sits under the cover/title block.
 pub const ALBUM_BAND_Y: i32 = 186;
 
+/// A band that shares its line with a square button at its right end: `(band, button)`. The
+/// album page's Shuffle and the artist page's Random album sit there (owner, 10-25: "give me a
+/// way to shuffle an album or to randomly play an album from an artist").
+pub fn band_and_side(y_below: i32) -> ((i32, i32, i32, i32), (i32, i32, i32, i32)) {
+    let (x, y, w, h) = shuffle_band_rect(y_below);
+    ((x, y, w - h - 8, h), (x + w - h, y, h, h))
+}
+
+fn inside((bx, by, bw, bh): (i32, i32, i32, i32), x: i32, y: i32) -> bool {
+    (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+}
+
 /// The "Play album" band on the album drill-in.
 pub fn album_play_band() -> (i32, i32, i32, i32) {
-    shuffle_band_rect(ALBUM_BAND_Y)
+    band_and_side(ALBUM_BAND_Y).0
+}
+
+/// The album page's Shuffle button, beside "Play album": this album, its tracks shuffled.
+pub fn album_shuffle_button() -> (i32, i32, i32, i32) {
+    band_and_side(ALBUM_BAND_Y).1
+}
+
+/// True if `(x, y)` is on the album page's Shuffle button.
+pub fn hit_album_shuffle(x: i32, y: i32) -> bool {
+    inside(album_shuffle_button(), x, y)
 }
 
 /// True if `(x, y)` is inside the album drill-in's "Play album" band.
@@ -928,7 +982,7 @@ pub fn albums_build(lib: &Library, sort: usize, expanded: Option<usize>) -> Albu
         for &fi in &order {
             let al = flat[fi];
             let new_group = grouped && prev_artist != Some(al.artist.as_str());
-            if (new_group && n > 0) || n == GRID_COLS {
+            if (new_group && n > 0) || n == grid_cols() {
                 rows.push((
                     vy,
                     AlbumsRow::Tiles {
@@ -1757,11 +1811,24 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
 
 /// Accent shuffle row (scope-aware). Returns the y below it.
 fn shuffle_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str, sub: &str) -> i32 {
-    let (bx, top, bw, h) = shuffle_band_rect(y);
+    band_in(c, t, f, shuffle_band_rect(y), label, sub)
+}
+
+/// [`shuffle_row`] in the rect it is given, so a band can share its line with a side button.
+fn band_in(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    (bx, top, bw, h): (i32, i32, i32, i32),
+    label: &str,
+    sub: &str,
+) -> i32 {
     fill_rect(c, bx, top, bw, h, t.acc);
     let cy = top + h / 2;
     icons::shuffle(c, 42.0, cy as f32, 20.0, t.acc_ink);
-    // Fit inside the accent band (64 → the play glyph at 428), or the caption spills past it.
+    // Fit inside the accent band (64 → 10 px short of the play glyph), or the caption spills past
+    // it.
+    let room = (bw - 72) as f32;
     let lst = sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0);
     let sst = sty(Family::Mono, Weight::Regular, 12.0, t.acc_ink, 0.06);
     text::draw(
@@ -1769,7 +1836,7 @@ fn shuffle_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str, sub:
         f,
         64.0,
         (cy - 4) as f32,
-        &crate::widgets::fit(f, label, &lst, 364.0),
+        &crate::widgets::fit(f, label, &lst, room),
         &lst,
     );
     text::draw(
@@ -1777,11 +1844,22 @@ fn shuffle_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str, sub:
         f,
         64.0,
         (cy + 14) as f32,
-        &crate::widgets::fit(f, sub, &sst, 364.0),
+        &crate::widgets::fit(f, sub, &sst, room),
         &sst,
     );
-    icons::play(c, 438.0, cy as f32, 18.0, t.acc_ink);
+    icons::play(c, (bx + bw - 20) as f32, cy as f32, 18.0, t.acc_ink);
     top + h
+}
+
+/// The square button beside a band: outlined in the accent, `glyph` in its middle.
+fn side_button(
+    c: &mut Canvas,
+    t: &Theme,
+    (x, y, w, h): (i32, i32, i32, i32),
+    glyph: fn(&mut Canvas, f32, f32, f32, Rgb888),
+) {
+    crate::widgets::stroke_rect(c, x, y, w, h, t.acc, 2);
+    glyph(c, (x + w / 2) as f32, (y + h / 2) as f32, 22.0, t.acc);
 }
 
 fn body_label(fam: Family, w: Weight, size: f32, col: Rgb888) -> TextStyle {
@@ -2652,14 +2730,15 @@ pub fn album_view(
         &mst,
     );
 
-    shuffle_row(
+    band_in(
         c,
         t,
         f,
-        ALBUM_BAND_Y,
+        album_play_band(),
         crate::i18n::text("Play album"),
         crate::i18n::text("IN ORDER · THEN SHUFFLE"),
     );
+    side_button(c, t, album_shuffle_button(), icons::shuffle);
     let top = album_tracks_top();
     let rh = ALBUM_TRACK_RH();
     let total = album.rows();
@@ -2763,8 +2842,18 @@ pub fn artist_content_top() -> i32 {
 
 /// True if `(x, y)` is inside the artist page's "Shuffle artist" band.
 pub fn hit_artist_shuffle_band(x: i32, y: i32) -> bool {
-    let (bx, by, bw, bh) = shuffle_band_rect(ARTIST_BAND_Y);
-    (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+    inside(band_and_side(ARTIST_BAND_Y).0, x, y)
+}
+
+/// The artist page's Random album button, beside "Shuffle artist": one of their albums, picked
+/// at random, played in order.
+pub fn artist_random_album_button() -> (i32, i32, i32, i32) {
+    band_and_side(ARTIST_BAND_Y).1
+}
+
+/// True if `(x, y)` is on the artist page's Random album button.
+pub fn hit_artist_random_album(x: i32, y: i32) -> bool {
+    inside(artist_random_album_button(), x, y)
 }
 
 pub const ARTIST_SEC_H: i32 = 36; // "ALBUMS · n" / "MOST PLAYED" section header
@@ -3026,14 +3115,18 @@ pub fn artist_view(
         &stats,
         &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1),
     );
-    shuffle_row(
+    band_in(
         c,
         t,
         f,
-        ARTIST_BAND_Y,
+        band_and_side(ARTIST_BAND_Y).0,
         crate::i18n::text("Shuffle artist"),
         &crate::ui_format!("ALL {} TRACKS · RANDOM ORDER", page.tracks.len()),
     );
+    // Random album needs a choice of albums to be random about.
+    if page.albums.len() > 1 {
+        side_button(c, t, artist_random_album_button(), icons::library);
+    }
 
     let top = artist_content_top();
     c.set_clip_y(top, LIST_BOTTOM);

@@ -1,7 +1,7 @@
 //! Standalone retro portable-player page for finite music previews.
 
 use crate::canvas::Canvas;
-use crate::text::{Family, FontSet, Weight};
+use crate::text::{Family, FontSet, TextStyle, Weight};
 use crate::theme::Theme;
 use crate::widgets::{self, fill_rect, stroke_rect};
 use embedded_graphics::pixelcolor::Rgb888;
@@ -33,52 +33,68 @@ impl Rect {
     }
 }
 
+// The cartridge, then the controls under it. Before a pass starts, the only thing to do is pick a
+// length and start, so the transport row is one wide START and Full and End are not drawn: four
+// disabled buttons said nothing a first-time reader could use.
+const CART: Rect = Rect {
+    x: 20,
+    y: 104,
+    w: 440,
+    h: 276,
+};
 const SHORT_RECT: Rect = Rect {
     x: 24,
-    y: 430,
+    y: 396,
     w: 208,
-    h: 54,
+    h: 56,
 };
 const LONG_RECT: Rect = Rect {
     x: 248,
-    y: 430,
+    y: 396,
     w: 208,
-    h: 54,
+    h: 56,
 };
 const PREV_RECT: Rect = Rect {
     x: 24,
-    y: 500,
+    y: 468,
     w: 128,
-    h: 64,
+    h: 80,
 };
 const PLAY_RECT: Rect = Rect {
     x: 160,
-    y: 500,
+    y: 468,
     w: 160,
-    h: 64,
+    h: 80,
 };
 const NEXT_RECT: Rect = Rect {
     x: 328,
-    y: 500,
+    y: 468,
     w: 128,
-    h: 64,
+    h: 80,
+};
+/// START, before a pass: the whole transport row.
+const START_RECT: Rect = Rect {
+    x: 24,
+    y: 468,
+    w: 432,
+    h: 80,
 };
 const FULL_RECT: Rect = Rect {
     x: 24,
-    y: 590,
+    y: 564,
     w: 432,
     h: 64,
 };
 const END_RECT: Rect = Rect {
     x: 24,
-    y: 668,
+    y: 640,
     w: 432,
-    h: 62,
+    h: 64,
 };
 
 pub fn hit(x: i32, y: i32, active: bool, has_queue: bool) -> Option<Hit> {
     // Drawing and hit testing share the exact same strict rectangles. This rejects margins,
-    // inter-button gaps, and disabled controls at the geometry boundary.
+    // inter-button gaps, and controls that are not drawn.
     if SHORT_RECT.contains(x, y) {
         return Some(Hit::Short);
     }
@@ -88,7 +104,8 @@ pub fn hit(x: i32, y: i32, active: bool, has_queue: bool) -> Option<Hit> {
     if active && PREV_RECT.contains(x, y) {
         return Some(Hit::Prev);
     }
-    if (active || has_queue) && PLAY_RECT.contains(x, y) {
+    let play = if active { PLAY_RECT } else { START_RECT };
+    if (active || has_queue) && play.contains(x, y) {
         return Some(Hit::PlayPause);
     }
     if active && NEXT_RECT.contains(x, y) {
@@ -158,7 +175,15 @@ fn button(
     );
 }
 
+/// `s` fitted to `w` and centred on `cx`.
+fn center_in(c: &mut Canvas, f: &FontSet, cx: f32, baseline: f32, s: &str, st: &TextStyle, w: f32) {
+    let s = widgets::fit(f, s, st, w);
+    let sw = crate::text::measure(f, &s, st);
+    crate::text::draw(c, f, cx - sw / 2.0, baseline, &s, st);
+}
+
 /// Render on the real 480×800 canvas. Copy is fitted at the selected 80–140% UI scale.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     c: &mut Canvas,
     t: &Theme,
@@ -185,7 +210,8 @@ pub fn render(
     // At night the metal is dimmed well below the page's own night palette, or the cartridge is
     // the brightest thing on a dark screen; its lettering then takes the theme's light inks.
     let metal = |r: u8, g: u8, b: u8| {
-        let k: u16 = if t.night { 40 } else { 100 };
+        // 22 %, not 40: at 40 the night theme's light lettering all but vanished into the metal.
+        let k: u16 = if t.night { 22 } else { 100 };
         let m = |v: u8| (u16::from(v) * k / 100) as u8;
         t.scale_color(Rgb888::new(m(r), m(g), m(b)))
     };
@@ -197,36 +223,48 @@ pub fn render(
     } else {
         t.scale_color(Rgb888::new(36, 42, 45))
     };
+    // At night the dim ink is too close to the metal; size alone sets the artist apart.
     let cartridge_dim = if t.night {
-        t.dim
+        t.ink
     } else {
         t.scale_color(Rgb888::new(66, 73, 76))
     };
-    fill_rect(c, 20, 138, 440, 276, silver);
-    stroke_rect(c, 20, 138, 440, 276, shadow, 2);
-    stroke_rect(c, 27, 145, 426, 262, bright, 1);
-    fill_rect(c, 33, 151, 7, 250, shadow);
-    fill_rect(c, 440, 151, 7, 250, bright);
-    fill_rect(c, 30, 151, 112, 5, bright);
-    fill_rect(c, 30, 396, 112, 5, shadow);
+    let Rect {
+        x: cx0,
+        y: y0,
+        w: cw,
+        h: ch,
+    } = CART;
+    fill_rect(c, cx0, y0, cw, ch, silver);
+    stroke_rect(c, cx0, y0, cw, ch, shadow, 2);
+    stroke_rect(c, cx0 + 7, y0 + 7, cw - 14, ch - 14, bright, 1);
+    fill_rect(c, cx0 + 13, y0 + 13, 7, ch - 26, shadow);
+    fill_rect(c, cx0 + cw - 20, y0 + 13, 7, ch - 26, bright);
+    fill_rect(c, cx0 + 10, y0 + 13, 112, 5, bright);
+    fill_rect(c, cx0 + 10, y0 + ch - 18, 112, 5, shadow);
     let disc = metal(116, 125, 93);
-    Circle::with_center(Point::new(105, 244), 132)
+    let hub = Point::new(105, y0 + ch / 2);
+    Circle::with_center(hub, 132)
         .into_styled(PrimitiveStyle::with_fill(disc))
         .draw(c)
         .ok();
-    Circle::with_center(Point::new(105, 244), 48)
+    Circle::with_center(hub, 48)
         .into_styled(PrimitiveStyle::with_fill(t.panel))
         .draw(c)
         .ok();
-    Circle::with_center(Point::new(105, 244), 132)
+    Circle::with_center(hub, 132)
         .into_styled(PrimitiveStyle::with_stroke(t.line, 2))
         .draw(c)
         .ok();
-    Rectangle::new(Point::new(98, 237), Size::new(14, 14))
+    Rectangle::new(hub - Point::new(7, 7), Size::new(14, 14))
         .into_styled(PrimitiveStyle::with_fill(t.acc))
         .draw(c)
         .ok();
-    let label = if active {
+
+    // The lettering column, right of the disc.
+    let (lx, right) = (186.0, 438.0);
+    let y = |dy: i32| (y0 + dy) as f32;
+    let state = if active {
         crate::i18n::text("PREVIEWING")
     } else if completed {
         crate::i18n::text("ROUND COMPLETE")
@@ -235,99 +273,123 @@ pub fn render(
     } else {
         crate::i18n::text("READY TO PREVIEW")
     };
+    // Where in the pass, while there is one.
+    let label = if (active || completed) && total > 0 {
+        format!("{state} \u{b7} {current}/{total}")
+    } else {
+        state.to_string()
+    };
     let cap = widgets::sty(Family::Mono, Weight::Bold, 13.0, cartridge_ink, 0.08);
-    widgets::draw_fit(c, f, 186.0, 180.0, label, &cap, 438.0);
-    let title_style = widgets::sty(Family::Sans, Weight::Bold, 16.0, cartridge_ink, 0.0);
-    widgets::draw_fit(
+    widgets::draw_fit(c, f, lx, y(42), &label, &cap, right);
+    let title_style = widgets::sty(Family::Sans, Weight::Bold, 19.0, cartridge_ink, 0.0);
+    let sub = widgets::sty(Family::Sans, Weight::Regular, 14.0, cartridge_dim, 0.0);
+    if title.is_empty() {
+        // An instruction, not a title: the smaller type, wrapped (in title type it was cut).
+        let hint = crate::i18n::text("Start an album or playlist");
+        let wrapped = crate::track_info::wrap(f, hint, &sub, right - lx);
+        for (i, line) in wrapped.iter().take(2).enumerate() {
+            let base = y(72) + i as f32 * crate::text::scaled(20.0);
+            widgets::draw_fit(c, f, lx, base, line.trim_end(), &sub, right);
+        }
+    } else {
+        widgets::draw_fit(c, f, lx, y(72), title, &title_style, right);
+        widgets::draw_fit(c, f, lx, y(96), artist, &sub, right);
+    }
+
+    // What this sample is, while there is one; before a pass, what a pass does.
+    let info = widgets::sty(Family::Mono, Weight::Regular, 13.0, cartridge_ink, 0.0);
+    let line_h = crate::text::scaled(21.0);
+    let mut lines: Vec<String> = Vec::new();
+    if active {
+        lines.push(
+            match source {
+                Some(crate::zappin::StartSource::Sabi) => crate::i18n::text("Chorus start"),
+                Some(crate::zappin::StartSource::FixedFallback) => {
+                    crate::i18n::text("Fixed position")
+                }
+                Some(crate::zappin::StartSource::UnknownDurationFromStart) => {
+                    crate::i18n::text("Unknown duration")
+                }
+                None => crate::i18n::text("Loading the next song"),
+            }
+            .to_string(),
+        );
+        // Its own line: at 140 % a combined one ellipsized the timestamp, and the start position
+        // is required playback context, not decoration.
+        if let Some(ms) = start_ms {
+            lines.push(format!(
+                "{} {}",
+                crate::i18n::text("Start position"),
+                time(ms)
+            ));
+        }
+        if length_ms != preview_ms {
+            lines.push(format!(
+                "{} {}s \u{b7} {} {}s",
+                crate::i18n::text("NOW"),
+                length_ms / 1_000,
+                crate::i18n::text("NEXT PREVIEW"),
+                preview_ms / 1_000,
+            ));
+        }
+    } else if !completed && has_queue {
+        // With no queue, the state line, the hint and the LCD already say it.
+        let why = crate::i18n::text("Preview will not change your queue");
+        lines = crate::track_info::wrap(f, why, &info, right - lx)
+            .into_iter()
+            .take(2)
+            .map(|l| l.trim_end().to_string())
+            .collect();
+    }
+    for (i, line) in lines.iter().take(3).enumerate() {
+        let base = y(126) + i as f32 * line_h;
+        widgets::draw_fit(c, f, lx, base, line, &info, right);
+    }
+
+    // The LCD carries the one live number: the sample's time. Before and after a pass, the step.
+    let (lcd_x, lcd_y, lcd_w, lcd_h) = (186, y0 + 192, 252, 40);
+    let lcd = metal(194, 201, 158);
+    fill_rect(c, lcd_x, lcd_y, lcd_w, lcd_h, lcd);
+    stroke_rect(c, lcd_x, lcd_y, lcd_w, lcd_h, t.line, 1);
+    let lcd_ink = if t.night {
+        t.ink
+    } else {
+        t.scale_color(Rgb888::new(42, 50, 36))
+    };
+    let lcd_text = if active {
+        format!(
+            "{} / {}",
+            time(u64::from(elapsed_ms.min(length_ms))),
+            time(u64::from(length_ms))
+        )
+    } else if completed {
+        crate::i18n::text("PASS FINISHED").to_string()
+    } else if has_queue {
+        crate::i18n::text("PRESS START").to_string()
+    } else {
+        crate::i18n::text("ADD SONGS TO UP NEXT").to_string()
+    };
+    let size = if active { 20.0 } else { 14.0 };
+    let lcd_style = widgets::sty(Family::Mono, Weight::Bold, size, lcd_ink, 0.0);
+    let lcd_mid = (lcd_x + lcd_w / 2) as f32;
+    let lcd_base = (lcd_y + lcd_h / 2) as f32 + crate::text::scaled(size) * 0.36;
+    center_in(
         c,
         f,
-        186.0,
-        208.0,
-        if title.is_empty() {
-            crate::i18n::text("Start an album or playlist")
-        } else {
-            title
-        },
-        &title_style,
-        438.0,
+        lcd_mid,
+        lcd_base,
+        &lcd_text,
+        &lcd_style,
+        (lcd_w - 16) as f32,
     );
-    let sub = widgets::sty(Family::Sans, Weight::Regular, 12.0, cartridge_dim, 0.0);
-    widgets::draw_fit(c, f, 186.0, 232.0, artist, &sub, 438.0);
-    let source_copy = match source {
-        Some(crate::zappin::StartSource::Sabi) => crate::i18n::text("Chorus start"),
-        Some(crate::zappin::StartSource::FixedFallback) => crate::i18n::text("Fixed position"),
-        Some(crate::zappin::StartSource::UnknownDurationFromStart) => {
-            crate::i18n::text("Unknown duration")
-        }
-        None if active => crate::i18n::text("Loading the next song"),
-        None => crate::i18n::text("Choose a preview length"),
-    };
-    let source_style = widgets::sty(Family::Mono, Weight::Regular, 13.0, cartridge_ink, 0.0);
-    // Keep source and exact start on separate rows. At 140% English, a combined line silently
-    // ellipsized the timestamp; the start position is required playback context, not decoration.
-    widgets::draw_fit(c, f, 186.0, 262.0, source_copy, &source_style, 438.0);
-    let start_copy = start_ms
-        .map(|ms| format!("{} {}", crate::i18n::text("Start position"), time(ms)))
-        .unwrap_or_else(|| format!("{} · …", crate::i18n::text("Start position")));
-    widgets::draw_fit(c, f, 186.0, 284.0, &start_copy, &source_style, 438.0);
-    let detail = if active && length_ms != preview_ms {
-        format!(
-            "{} {}s · {} {}s",
-            crate::i18n::text("NOW"),
-            length_ms / 1_000,
-            crate::i18n::text("NEXT PREVIEW"),
-            preview_ms / 1_000,
-        )
-    } else if active {
-        crate::i18n::text(if length_ms <= 4_000 {
-            "4 SEC SAMPLE"
-        } else {
-            "15 SEC SAMPLE"
-        })
-        .to_string()
-    } else if !has_queue {
-        crate::i18n::text("No playable music queue").to_string()
-    } else {
-        crate::i18n::text("Up Next stays as it is").to_string()
-    };
-    if has_queue {
-        widgets::draw_fit(c, f, 186.0, 306.0, &detail, &source_style, 438.0);
-    }
-    let lcd = metal(194, 201, 158);
-    fill_rect(c, 186, 322, 252, 30, lcd);
-    stroke_rect(c, 186, 322, 252, 30, t.line, 1);
-    let lcd_style = widgets::sty(
-        Family::Mono,
-        Weight::Bold,
-        14.0,
-        if t.night {
-            t.ink
-        } else {
-            t.scale_color(Rgb888::new(42, 50, 36))
-        },
-        0.0,
-    );
-    let lcd_text = if active {
-        crate::i18n::text("UP NEXT IS SAFE")
-    } else if completed {
-        crate::i18n::text("PASS FINISHED")
-    } else if has_queue {
-        crate::i18n::text("PRESS START")
-    } else {
-        crate::i18n::text("ADD SONGS TO UP NEXT")
-    };
-    widgets::center(c, f, 312.0, 341.0, lcd_text, &lcd_style);
-    fill_rect(c, 186, 360, 252, 4, t.line);
     if active && length_ms > 0 {
-        let width = ((elapsed_ms.min(length_ms) as u64 * 252) / length_ms as u64) as i32;
+        let bar_y = lcd_y + lcd_h + 10;
+        fill_rect(c, lcd_x, bar_y, lcd_w, 4, t.line);
+        let width = ((elapsed_ms.min(length_ms) as u64 * lcd_w as u64) / length_ms as u64) as i32;
         if width > 0 {
-            fill_rect(c, 186, 360, width, 4, t.acc);
+            fill_rect(c, lcd_x, bar_y, width, 4, t.acc);
         }
     }
-    let elapsed = time(u64::from(elapsed_ms));
-    let remaining = time(u64::from(length_ms.saturating_sub(elapsed_ms)));
-    let timer_copy = format!("{} / {} · {}/{}", elapsed, remaining, current, total);
-    widgets::draw_fit(c, f, 186.0, 389.0, &timer_copy, &source_style, 438.0);
 
     let short = preview_ms == 4_000;
     button(
@@ -348,7 +410,18 @@ pub fn render(
         !short,
         true,
     );
-    let enabled = active || has_queue;
+    if !active {
+        button(
+            c,
+            t,
+            f,
+            START_RECT,
+            crate::i18n::text("START"),
+            has_queue,
+            has_queue,
+        );
+        return;
+    }
     button(
         c,
         t,
@@ -356,26 +429,18 @@ pub fn render(
         PREV_RECT,
         crate::i18n::text("PREVIOUS"),
         false,
-        active,
+        true,
     );
     button(
         c,
         t,
         f,
         PLAY_RECT,
-        crate::i18n::text(if active {
-            if playing {
-                "PAUSE"
-            } else {
-                "RESUME"
-            }
-        } else {
-            "START"
-        }),
-        enabled,
-        enabled,
+        crate::i18n::text(if playing { "PAUSE" } else { "RESUME" }),
+        true,
+        true,
     );
-    button(c, t, f, NEXT_RECT, crate::i18n::text("NEXT"), false, active);
+    button(c, t, f, NEXT_RECT, crate::i18n::text("NEXT"), false, true);
     button(
         c,
         t,
@@ -383,7 +448,7 @@ pub fn render(
         FULL_RECT,
         crate::i18n::text("PLAY THIS SONG IN FULL"),
         false,
-        enabled && active,
+        true,
     );
     button(
         c,
@@ -392,7 +457,7 @@ pub fn render(
         END_RECT,
         crate::i18n::text("END PREVIEW"),
         false,
-        active,
+        true,
     );
 }
 
@@ -404,32 +469,32 @@ mod tests {
     #[test]
     fn every_control_has_a_touch_target_and_gaps_do_nothing() {
         for (x, y, expected) in [
-            (80, 450, Hit::Short),
-            (400, 450, Hit::Long),
-            (80, 530, Hit::Prev),
-            (240, 530, Hit::PlayPause),
-            (400, 530, Hit::Next),
-            (240, 620, Hit::Full),
-            (240, 700, Hit::End),
+            (80, 420, Hit::Short),
+            (400, 420, Hit::Long),
+            (80, 500, Hit::Prev),
+            (240, 500, Hit::PlayPause),
+            (400, 500, Hit::Next),
+            (240, 590, Hit::Full),
+            (240, 670, Hit::End),
         ] {
             assert_eq!(hit(x, y, true, true), Some(expected));
         }
-        assert_eq!(hit(-1, 530, true, true), None);
-        assert_eq!(hit(480, 530, true, true), None);
-        assert_eq!(hit(240, 490, true, true), None);
-        assert_eq!(hit(240, 660, true, true), None);
+        assert_eq!(hit(-1, 500, true, true), None);
+        assert_eq!(hit(480, 500, true, true), None);
+        assert_eq!(hit(240, 460, true, true), None);
+        assert_eq!(hit(240, 634, true, true), None);
         for (x, y) in [
-            (10, 450),
-            (240, 450),
-            (470, 450),
-            (10, 530),
-            (156, 530),
-            (324, 530),
-            (470, 530),
-            (10, 620),
-            (470, 620),
-            (10, 700),
-            (470, 700),
+            (10, 420),
+            (240, 420),
+            (470, 420),
+            (10, 500),
+            (156, 500),
+            (324, 500),
+            (470, 500),
+            (10, 590),
+            (470, 590),
+            (10, 670),
+            (470, 670),
         ] {
             assert_eq!(
                 hit(x, y, true, true),
@@ -437,15 +502,23 @@ mod tests {
                 "margin/gap tap at {x},{y} must be rejected"
             );
         }
-        for (x, y) in [(80, 530), (400, 530), (240, 620), (240, 700)] {
-            assert_eq!(hit(x, y, false, true), None, "disabled control at {x},{y}");
+        for (x, y) in [(240, 590), (240, 670)] {
+            assert_eq!(hit(x, y, false, true), None, "undrawn control at {x},{y}");
+        }
+        // Before a pass, START is the whole transport row.
+        for x in [40, 240, 440] {
+            assert_eq!(
+                hit(x, 500, false, true),
+                Some(Hit::PlayPause),
+                "START at {x}"
+            );
         }
         assert_eq!(
-            hit(240, 530, false, false),
+            hit(240, 500, false, false),
             None,
             "Start is disabled without a queue"
         );
-        assert_eq!(hit(80, 450, false, false), Some(Hit::Short));
+        assert_eq!(hit(80, 420, false, false), Some(Hit::Short));
     }
 
     #[test]

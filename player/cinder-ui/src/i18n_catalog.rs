@@ -748,6 +748,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "ROUND COMPLETE" => Some("已试听完成"),
         "Radial" => Some("放射"),
         "Rain" => Some("雨声"),
+        "Random album · {}" => Some("随机专辑 · {}"),
         "Range" => Some("范围"),
         "Rating" => Some("评分"),
         "Receiver mode" => Some("接收模式"),
@@ -1475,6 +1476,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("声音配置 {} · {}" $(, $($args)*)?),
             _ => format!("Profile {} · {}" $(, $($args)*)?),
+        }
+    };
+    ("Random album · {}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("随机专辑 · {}" $(, $($args)*)?),
+            _ => format!("Random album · {}" $(, $($args)*)?),
         }
     };
     ("Removed — {}" $(, $($args:tt)*)?) => {

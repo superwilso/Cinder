@@ -810,7 +810,9 @@ fn cassette_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     c.fill(t.bg);
     let quiet = idle(np);
     let mono = |size: f32, w: Weight, col: Rgb888| s(Family::Mono, w, size, col, 0.06);
-    let (bx, by, bw, bh) = (FRAME_X, FRAME_Y + 40, FRAME, 300);
+    // Centred in the cover block, so the space above and below it is even.
+    let (bx, bw, bh) = (FRAME_X, FRAME, 300);
+    let by = FRAME_Y + (FRAME - bh) / 2;
 
     if quiet || np::page_from_index(np.page) == NpPage::Cover {
         // The shell, its label, and the window the reels show through.
@@ -824,8 +826,10 @@ fn cassette_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
         if !quiet {
             cover(c, t, np, lx + 8, ly + 22, thumb);
         }
-        let tx = (lx + 16 + thumb) as f32;
-        let tw = (lw - 24 - thumb) as f32;
+        // No cover with no song, so no gap for one.
+        let lead = if quiet { 0 } else { thumb };
+        let tx = (lx + 16 + lead) as f32;
+        let tw = (lw - 24 - lead) as f32;
         let side = mono(11.0, Weight::Regular, t.faint);
         text::draw(
             c,
@@ -874,8 +878,16 @@ fn cassette_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
         } else {
             np.progress.clamp(0.0, 1.0)
         };
-        let (rmin, rmax) = (22.0f32, 48.0f32);
+        // A full pack keeps 6 px clear of the window's edges.
+        let (rmin, rmax) = (20.0f32, 44.0f32);
         let cy = wy + wh / 2;
+        // The tape first, so the packs sit on it: it runs between two guide rollers along the
+        // bottom of the window (drawn over the reels it sliced a full pack in half).
+        let ty = wy + wh - 9;
+        fill_rect(c, wx + 12, ty, ww - 24, 1, t.dim);
+        for gx in [wx + 12, wx + ww - 12] {
+            widgets::disc(c, gx, ty, 7, t.line);
+        }
         let spin = if np.playing && !quiet {
             np.viz_seed
         } else {
@@ -892,8 +904,7 @@ fn cassette_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
                 widgets::disc(c, sx.round() as i32, sy.round() as i32, 5, t.faint);
             }
         }
-        // The tape across the bottom of the window, and the head opening under it.
-        fill_rect(c, wx + 8, wy + wh - 10, ww - 16, 1, t.dim);
+        // The head opening.
         let (hx, hy, hw, hh) = (bx + 110, by + bh - 44, bw - 220, 44);
         stroke_rect(c, hx, hy, hw, hh, t.line, 1);
         for x in [hx + 30, hx + hw - 30] {
