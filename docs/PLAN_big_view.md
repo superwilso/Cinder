@@ -25,29 +25,37 @@ Song and album names cut short in a list are expected (they are cut at any size)
 on that list is a page still to fix. Fixed-height pages that run off the bottom are not detected
 yet. Look at their PNGs.
 
-## Pages still to redesign, as of the first run (2026-10-25)
+## Pages still to redesign
 
-121 of 416 previews report something; most are long song titles. What is left is these pages, in
-the order a user meets them:
+First run (2026-10-25): 121 of 416 previews reported something. After the first redesign pass: 103,
+nearly all long song titles (cut at any size) and the literal "…" in copy such as "Linking to
+device…". What is left:
 
 | Page | What breaks in Big view | Direction |
 |---|---|---|
-| Now Playing | ⏮ ⏯ ⏭, shuffle, repeat, the like heart and the bottom bar keep their size; the Clock style's time is cut | Grow the transport row and spread it edge to edge; a bigger seek bar handle and touch band |
-| Display | Runs off the bottom: the Style chips are cut | Make it scroll, like Settings |
-| Bluetooth | Runs off the bottom; the Debug log sub line runs into the NFC hint and Receiver mode | Make it scroll; move the NFC hint into the strip |
-| Lock | The footer ("HOLD LOCK · SIDE KEYS ACTIVE…") runs past both edges | Two lines, or drop the middle part |
-| Intro (Buttons, Gestures, Features) | Labels run into their descriptions; cut descriptions | One column: label above description |
-| Soundscapes | "On its own" and "With music" labels cut to "On its o…" | Label above the slider, not beside it |
-| Pairing, BT Receiver | Captions and the EXPERIMENTAL footer cut | Wrap the captions |
-| Sound (Tone Control note), Presets, Volume curve, Date & time | One sub line each is cut | Wrap, or shorter copy |
-| SensMe (empty) | Something draws far past the right edge | Find and fix |
+| Pairing, BT Receiver, Bluetooth ▸ Sound quality | Captions and the EXPERIMENTAL footer cut | Wrap the captions |
+| Sound (Tone Control note), Presets, Volume curve, Date & time, Zappin | One sub line each is cut | Wrap, or shorter copy |
 | FM, Equalizer | Not broken, but the ±0.1, ◀ ▶ buttons and the EQ handles stay small | Bigger buttons and handle bands |
+| Winamp skins, cassette tapes | Sideways views with their own targets; not looked at | Nearest-target taps, as Now Playing |
 
-The pull-down panel, Library, albums, artists, playlists, Settings, Sound, Device, Storage, Menu,
-SensMe channels and BT Receiver already work at Big view.
+## Done
+
+| Page | What Big view does there |
+|---|---|
+| Now Playing | In every style, a tap anywhere in the transport row goes to the nearest control (`now_playing::big_targets`, read only by the tap test, so no style's drawing moves); the heart's target is 76 px square. Cinder's style draws its glyphs, heart, seek bar and toolbar icons 1.25x; Nocturne and Clock grow their transport glyphs. The Clock style's time no longer grows with the text size (it was cut to "14:…"). |
+| Menu | Its rows were squeezed to fit the glass, so Big view left them at 63 px. Now they keep the full 80, START ON follows them with its chips two to a line ("Now Playing" was cut four across), and the page scrolls under the fixed strip. |
+| Display | Scrolls (the Style chips ran off the bottom). |
+| Bluetooth | Shows four paired devices instead of five (four Big view rows are the height of five), so THIS DEVICE no longer runs into the footer; the NFC hint gets its own line above RECEIVER MODE. |
+| Lock | The footer splits at its last " · " onto two lines whenever it does not fit, at any size. |
+| Intro pages | Each key sits above its description instead of in a 130 px column beside it. |
+| Soundscapes | The level's name sits above a full-width slider. |
+| SensMe (empty) | The explanation wraps to the glass (it was three hand-broken lines). |
+
+The pull-down panel, Library, albums, artists, playlists, Settings, Sound, Device, Storage, SensMe
+channels and BT Receiver already worked at Big view.
 
 ## Gate
 
-When a page is fixed, its previews stop appearing in `--big`'s list. A few Big view previews
-(Settings, Library, Now Playing) should then join the golden set, so Big view cannot quietly break
-again.
+When a page is fixed, its previews stop appearing in `--big`'s list. Six Big view previews are in
+the golden set (`big_*`: Now Playing, Library, Settings, the Menu and Display scrolled to the end,
+Bluetooth), so Big view cannot quietly break again.

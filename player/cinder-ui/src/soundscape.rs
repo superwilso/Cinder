@@ -270,22 +270,40 @@ pub fn level_row_at(y: i32) -> Option<usize> {
 const SLIDER_X0: i32 = 176;
 const SLIDER_W: i32 = 200;
 
+/// Big view stacks a level row: the title on its own line, the slider full width under it. Beside
+/// the slider the titles were cut to "On its o…".
+fn stacked() -> bool {
+    crate::scale::large()
+}
+
+/// The slider track's left end and width.
+fn slider() -> (i32, i32) {
+    if stacked() {
+        (kit::LEFT + 8, kit::RIGHT - kit::LEFT - 8 - 64)
+    } else {
+        (SLIDER_X0, SLIDER_W)
+    }
+}
+
 /// Is `x` on (or near) a level slider's track? Tapping the title does nothing; the track is the
 /// target, with 20 px of grace either side so the ends are reachable.
 pub fn slider_grab(x: i32) -> bool {
-    (SLIDER_X0 - 20..SLIDER_X0 + SLIDER_W + 20).contains(&x)
+    let (x0, w) = slider();
+    (x0 - 20..x0 + w + 20).contains(&x)
 }
 
 /// A level for an x on the slider, clamped, in [`LEVEL_STEP`]s.
 pub fn level_at(x: i32) -> u8 {
-    let dx = (x - SLIDER_X0).clamp(0, SLIDER_W);
+    let (x0, w) = slider();
+    let dx = (x - x0).clamp(0, w);
     let steps = 100 / LEVEL_STEP as i32;
-    let k = (dx * steps * 2 + SLIDER_W) / (SLIDER_W * 2);
+    let k = (dx * steps * 2 + w) / (w * 2);
     (k * LEVEL_STEP as i32).clamp(0, 100) as u8
 }
 
 fn level_x(pct: u8) -> i32 {
-    SLIDER_X0 + pct.min(100) as i32 * SLIDER_W / 100
+    let (x0, w) = slider();
+    x0 + pct.min(100) as i32 * w / 100
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &View) {
@@ -393,22 +411,41 @@ fn level_row(
     sel: bool,
     on: bool,
 ) {
-    kit::row(
-        c,
-        t,
-        f,
-        y,
-        kit::ROW_H(),
-        &Row::new(title)
-            .trail(Trail::Reserve(W as i32 - SLIDER_X0 + 6))
-            .sel(sel),
-    );
-    let cy = y + kit::ROW_H() / 2;
+    let (x0, sw) = slider();
+    let cy = if stacked() {
+        if sel {
+            fill_rect(c, 0, y, W as i32, kit::ROW_H(), t.row_sel);
+        }
+        // kit::row's title, without its divider: the label and its slider are one row.
+        let tst = sty(
+            Family::Sans,
+            Weight::SemiBold,
+            crate::scale::ROW,
+            if sel { t.acc } else { t.ink },
+            0.0,
+        );
+        let room = (kit::RIGHT - kit::LEFT) as f32;
+        let title = fit(f, title, &tst, room);
+        text::draw(c, f, kit::LEFT as f32, (y + 29) as f32, &title, &tst);
+        y + kit::ROW_H() - 24
+    } else {
+        kit::row(
+            c,
+            t,
+            f,
+            y,
+            kit::ROW_H(),
+            &Row::new(title)
+                .trail(Trail::Reserve(W as i32 - SLIDER_X0 + 6))
+                .sel(sel),
+        );
+        y + kit::ROW_H() / 2
+    };
     // Dimmed, not hidden, while switched off: the levels can be set before turning it on.
     let fg = if on { t.acc } else { t.faint };
-    fill_rect(c, SLIDER_X0, cy - 1, SLIDER_W, 2, t.line);
+    fill_rect(c, x0, cy - 1, sw, 2, t.line);
     let kx = level_x(pct);
-    fill_rect(c, SLIDER_X0, cy - 1, kx - SLIDER_X0, 2, fg);
+    fill_rect(c, x0, cy - 1, kx - x0, 2, fg);
     fill_rect(c, kx - 7, cy - 9, 14, 18, fg);
     right(
         c,

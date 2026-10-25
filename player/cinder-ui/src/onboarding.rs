@@ -68,8 +68,12 @@ fn welcome(c: &mut Canvas, t: &Theme, f: &FontSet) {
     );
 }
 
-// One "key → action" row on the Controls page.
-fn ctl(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, key: &str, action: &str) {
+// One "key → action" row on the Controls page, on baseline `y`; returns the next row's baseline.
+// Big view stacks the action under its key: beside it, in a 130 px column, "Tap the title" ran
+// into "Track info".
+fn ctl(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, key: &str, action: &str) -> i32 {
+    let stacked = crate::scale::large();
+    let (ax, ay) = if stacked { (38.0, y + 22) } else { (168.0, y) };
     crate::widgets::draw_fit(
         c,
         f,
@@ -82,12 +86,13 @@ fn ctl(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, key: &str, action: &str) 
     crate::widgets::draw_fit(
         c,
         f,
-        168.0,
-        y as f32,
+        ax,
+        ay as f32,
         action,
         &sty(Family::Sans, Weight::Regular, 16.0, t.ink, 0.0),
         458.0,
     );
+    y + if stacked { 54 } else { 46 }
 }
 
 fn title(c: &mut Canvas, t: &Theme, f: &FontSet, s: &str) {
@@ -279,8 +284,7 @@ fn playing(c: &mut Canvas, t: &Theme, f: &FontSet) {
         ),
     ];
     for (k, a) in rows {
-        ctl(c, t, f, y, k, a);
-        y += 46;
+        y = ctl(c, t, f, y, k, a);
     }
     y += 18;
     section(c, t, f, y, crate::i18n::text("IN UP NEXT"));
@@ -302,8 +306,7 @@ fn playing(c: &mut Canvas, t: &Theme, f: &FontSet) {
         ),
     ];
     for (k, a) in rows {
-        ctl(c, t, f, y, k, a);
-        y += 46;
+        y = ctl(c, t, f, y, k, a);
     }
     crate::widgets::draw_fit(
         c,
@@ -329,8 +332,7 @@ fn controls(c: &mut Canvas, t: &Theme, f: &FontSet) {
         ("VOL + / \u{2212}", crate::i18n::text("Volume")),
     ];
     for (k, a) in buttons {
-        ctl(c, t, f, y, k, a);
-        y += 46;
+        y = ctl(c, t, f, y, k, a);
     }
     y += 18;
     section(c, t, f, y, crate::i18n::text("POWER AND HOLD"));
@@ -350,8 +352,7 @@ fn controls(c: &mut Canvas, t: &Theme, f: &FontSet) {
         ),
     ];
     for (k, a) in power {
-        ctl(c, t, f, y, k, a);
-        y += 46;
+        y = ctl(c, t, f, y, k, a);
     }
 }
 
@@ -381,8 +382,7 @@ fn gestures(c: &mut Canvas, t: &Theme, f: &FontSet) {
         ),
     ];
     for (k, a) in np {
-        ctl(c, t, f, y, k, a);
-        y += 46;
+        y = ctl(c, t, f, y, k, a);
     }
 
     y += 18;
@@ -400,8 +400,7 @@ fn gestures(c: &mut Canvas, t: &Theme, f: &FontSet) {
         ),
     ];
     for (k, a) in any {
-        ctl(c, t, f, y, k, a);
-        y += 46;
+        y = ctl(c, t, f, y, k, a);
     }
 }
 

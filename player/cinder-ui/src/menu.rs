@@ -17,6 +17,11 @@
 //!
 //! The list does NOT scroll, so the pitch is sized to fit every row between the strip and the chips
 //! — see [`row_h`]. Everything that positions or hit-tests a Menu row derives from it.
+//!
+//! Except in Big view, where squeezing defeated the point (its rows came out 63 px, not 80): the
+//! rows keep the kit's pitch, START ON follows them with its chips two to a line ("Now Playing"
+//! was cut four across), and the page scrolls under the strip. The geometry below is in page
+//! coordinates; `nav` adds the scroll to a tap's y before asking.
 
 use crate::canvas::Canvas;
 use crate::kit::{self, Row, Trail};
@@ -56,10 +61,48 @@ pub const CHIPS_TOP: i32 = LABEL_TOP + kit::SECTION_H;
 /// strip and the START ON label. Never below 52: two lines of text need it (checked by a test for
 /// every count the Menu can have).
 pub fn row_h(rows: usize) -> i32 {
-    if rows == 0 {
+    if rows == 0 || big() {
         return ROW_H();
     }
     ROW_H().min((LABEL_TOP - TOP) / rows as i32)
+}
+
+fn big() -> bool {
+    crate::scale::large()
+}
+
+/// START ON's chips per line.
+fn chip_cols() -> usize {
+    if big() {
+        2
+    } else {
+        HOMES.len()
+    }
+}
+
+/// Top of the START ON label: pinned to the bottom of the glass, or in Big view straight under the
+/// last row.
+pub fn label_top(rows: usize) -> i32 {
+    if big() {
+        TOP + rows as i32 * ROW_H()
+    } else {
+        LABEL_TOP
+    }
+}
+
+/// Top of START ON's chip line `line`.
+fn chip_line_top(rows: usize, line: usize) -> i32 {
+    label_top(rows) + kit::SECTION_H + line as i32 * (kit::CHIP_H + kit::CHIP_GAP)
+}
+
+/// How far the page scrolls: 0 except in Big view.
+pub fn max_scroll_px(rows: usize) -> i32 {
+    if !big() {
+        return 0;
+    }
+    let lines = HOMES.len().div_ceil(chip_cols());
+    let bottom = chip_line_top(rows, lines - 1) + kit::CHIP_H + BOTTOM_PAD;
+    (bottom - crate::H as i32).max(0)
 }
 
 /// Which menu row is under `y`, given how many rows there are.
@@ -76,9 +119,14 @@ pub fn strip_hit(y: i32) -> bool {
     (STRIP_TOP..TOP).contains(&y)
 }
 
-/// Which START ON chip is under `(x, y)`.
-pub fn home_chip_at(x: i32, y: i32) -> Option<usize> {
-    kit::chip_at(HOMES.len(), CHIPS_TOP, x, y)
+/// Which START ON chip is under `(x, y)`, with `rows` rows above them.
+pub fn home_chip_at(x: i32, y: i32, rows: usize) -> Option<usize> {
+    let cols = chip_cols();
+    (0..HOMES.len().div_ceil(cols)).find_map(|line| {
+        kit::chip_at(cols, chip_line_top(rows, line), x, y)
+            .map(|i| line * cols + i)
+            .filter(|&i| i < HOMES.len())
+    })
 }
 
 /// `strip` is the Now Playing line; `home` the chosen [`HOMES`] index.
@@ -89,6 +137,7 @@ pub fn render(
     strip: &str,
     items: &[MenuItem],
     home: usize,
+    scroll: i32,
 ) {
     c.fill(t.bg);
     let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Menu"), None);
@@ -96,14 +145,16 @@ pub fn render(
     let y = kit::strip(c, t, f, y0, strip);
     debug_assert_eq!(y, TOP);
     let rh = row_h(items.len());
-    let compact_subtitles = text::scale_pct() > 100;
+    // Big view's rows are the kit's full pitch, where the kit's own subtitle fits.
+    let compact_subtitles = text::scale_pct() > 100 && !big();
+    c.set_clip_y(TOP, crate::H as i32);
     for (i, m) in items.iter().enumerate() {
         let trail = if m.home {
             Trail::Tag(crate::i18n::text("HOME"))
         } else {
             Trail::Open("")
         };
-        let yt = TOP + i as i32 * rh;
+        let yt = TOP + i as i32 * rh - scroll;
         if compact_subtitles && !m.sub.is_empty() {
             // The Menu has ten fixed destinations plus START ON. At enlarged type, its computed
             // row pitch is only 55 px; the shared row subtitle baseline then meets the separator.
@@ -150,8 +201,17 @@ pub fn render(
             );
         }
     }
-    kit::section_label(c, t, f, LABEL_TOP, crate::i18n::text("START ON"), None);
-    kit::chips(c, t, f, CHIPS_TOP, &HOMES, Some(home.min(HOMES.len() - 1)));
+    let rows = items.len();
+    let label = crate::i18n::text("START ON");
+    kit::section_label(c, t, f, label_top(rows) - scroll, label, None);
+    let cols = chip_cols();
+    let on = home.min(HOMES.len() - 1);
+    for (line, chunk) in HOMES.chunks(cols).enumerate() {
+        let top = chip_line_top(rows, line) - scroll;
+        let sel = on.checked_sub(line * cols).filter(|&i| i < chunk.len());
+        kit::chips_in(c, t, f, top, chunk, sel, cols);
+    }
+    c.clear_clip();
 }
 
 #[cfg(test)]
@@ -187,12 +247,34 @@ mod fit_tests {
     fn the_strip_rows_and_chips_are_separate_targets() {
         assert!(strip_hit(STRIP_TOP) && strip_hit(TOP - 1) && !strip_hit(TOP));
         assert_eq!(row_at(TOP - 1, 10), None);
-        assert!(home_chip_at(240, CHIPS_TOP + 5).is_some());
+        assert!(home_chip_at(240, CHIPS_TOP + 5, 10).is_some());
         assert_eq!(
-            home_chip_at(240, LABEL_TOP + 5),
+            home_chip_at(240, LABEL_TOP + 5, 10),
             None,
             "the label is not a chip"
         );
         assert!(CHIPS_TOP + kit::CHIP_H <= crate::H as i32);
+        assert_eq!(max_scroll_px(10), 0);
+    }
+
+    /// Big view: full-pitch rows, START ON under them two chips to a line, each chip picking
+    /// itself, and a scroll that reaches the last line.
+    #[test]
+    fn big_view_keeps_full_rows_and_scrolls_to_start_on() {
+        crate::scale::set_large(true);
+        let rows = 9;
+        assert_eq!(row_h(rows), ROW_H());
+        assert_eq!(label_top(rows), TOP + 9 * ROW_H());
+        let picks: Vec<_> = (0..HOMES.len())
+            .map(|i| {
+                let (x, w) = kit::chip_span(i % 2, 2);
+                home_chip_at(x + w / 2, chip_line_top(rows, i / 2) + 5, rows)
+            })
+            .collect();
+        let last = chip_line_top(rows, 1) + kit::CHIP_H;
+        let max = max_scroll_px(rows);
+        crate::scale::set_large(false);
+        assert_eq!(picks, [Some(0), Some(1), Some(2), Some(3)]);
+        assert!(last + BOTTOM_PAD - max <= crate::H as i32);
     }
 }

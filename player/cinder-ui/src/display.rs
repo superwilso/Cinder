@@ -18,8 +18,9 @@
 //! screen was designed, and six direct targets beat a list you open to choose from six), and Size
 //! keeps its slider (the same reasoning — the mock's chevron leads nowhere yet).
 //!
-//! The page does not scroll, so the layout is a fixed table: `row_top` is the single source both
-//! `render` and the hit tests read.
+//! The layout is a fixed table: `row_top` is the single source both `render` and the hit tests
+//! read, in page coordinates. The page fits the glass at every text size; Big view's taller rows
+//! do not, so then it scrolls, and `nav` adds the scroll to a tap's y before asking.
 
 use crate::canvas::{Canvas, W};
 use crate::kit::{self, Row, Trail};
@@ -177,18 +178,36 @@ pub struct DisplayView<'a> {
     pub style: crate::style::Style,
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &DisplayView) {
+/// How far the page scrolls: 0 unless Big view's rows push the Style chips off the glass. The
+/// 8 px margin under the last row is only for a page that scrolls.
+pub fn max_scroll_px() -> i32 {
+    let bottom = row_top(ROW_STYLE) + style_row_h();
+    if bottom <= crate::canvas::H as i32 {
+        0
+    } else {
+        bottom + 8 - crate::canvas::H as i32
+    }
+}
+
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &DisplayView, scroll: i32) {
     c.fill(t.bg);
-    let mut y = crate::chrome::header(c, t, f, crate::i18n::text("Display"), None);
+    let head = crate::chrome::header(c, t, f, crate::i18n::text("Display"), None);
+    c.set_clip_y(head, crate::canvas::H as i32);
+    let mut y = head - scroll;
     let mut r = 0usize;
     for (label, n) in SECTIONS {
         y = kit::section_label(c, t, f, y, label, None);
         for _ in 0..n {
-            debug_assert_eq!(y, row_top(r), "display row {r} drifted from its hit test");
+            debug_assert_eq!(
+                y + scroll,
+                row_top(r),
+                "display row {r} drifted from its hit test"
+            );
             y = draw_row(c, t, f, y, r, sel == r, v);
             r += 1;
         }
     }
+    c.clear_clip();
 }
 
 fn draw_row(
@@ -300,7 +319,8 @@ fn draw_row(
                 c,
                 t,
                 f,
-                chips_top(),
+                // `y` is where the row is on screen; `chips_top` is where it is on the page.
+                chips_top() - row_top(ROW_VOLUME) + y,
                 &VOLUME_HUDS,
                 Some(v.volume_hud as usize),
             );
@@ -317,7 +337,8 @@ fn draw_row(
             for (line, chunk) in names.chunks(STYLE_COLS).enumerate() {
                 let on = v.style.index().checked_sub(line * STYLE_COLS);
                 let on = on.filter(|&i| i < chunk.len());
-                kit::chips_in(c, t, f, style_line_top(line), chunk, on, STYLE_COLS);
+                let top = style_line_top(line) - row_top(ROW_STYLE) + y;
+                kit::chips_in(c, t, f, top, chunk, on, STYLE_COLS);
             }
             crate::widgets::hline(c, y + h - 1, t.line);
             y + h
@@ -424,6 +445,7 @@ mod tests {
             top + style_row_h() <= crate::canvas::H as i32,
             "the page does not scroll"
         );
+        assert_eq!(max_scroll_px(), 0);
         let picks: Vec<usize> = (0..n)
             .filter_map(|i| {
                 let (x, y) = style_chip_centre(i);

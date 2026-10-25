@@ -442,27 +442,30 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     // The transport: plain glyphs either side of an outlined ring.
     let side = if quiet { t.faint } else { t.ink };
     let (px, py) = centre(l, Hit::PlayPause);
-    for (rad, col) in [(33, t.acc), (31, t.bg)] {
+    // Big view grows the glyphs and the ring as far as the room between the rail and the toolbar
+    // allows; the targets themselves are `now_playing::big_targets`' band.
+    let ring = np::g(33.0).min(38.0) as i32;
+    for (rad, col) in [(ring, t.acc), (ring - 2, t.bg)] {
         Circle::with_center(Point::new(px as i32, py as i32), (rad * 2) as u32)
             .into_styled(PrimitiveStyle::with_fill(col))
             .draw(c)
             .ok();
     }
     if np.playing && !quiet {
-        icons::pause(c, px, py, 26.0, t.acc);
+        icons::pause(c, px, py, np::g(26.0), t.acc);
     } else {
-        icons::play(c, px + 2.0, py, 26.0, t.acc);
+        icons::play(c, px + 2.0, py, np::g(26.0), t.acc);
     }
     let (x, y) = centre(l, Hit::Prev);
-    icons::prev(c, x, y, 28.0, side);
+    icons::prev(c, x, y, np::g(28.0), side);
     let (x, y) = centre(l, Hit::Next);
-    icons::next(c, x, y, 28.0, side);
+    icons::next(c, x, y, np::g(28.0), side);
     let (x, y) = centre(l, Hit::Shuffle);
     icons::shuffle(
         c,
         x,
         y,
-        20.0,
+        np::g(20.0),
         if np.shuffle && !quiet { t.acc } else { t.faint },
     );
     let (x, y) = centre(l, Hit::Repeat);
@@ -470,7 +473,7 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
         c,
         x,
         y,
-        20.0,
+        np::g(20.0),
         if np.repeat > 0 && !quiet {
             t.acc
         } else {
@@ -1034,13 +1037,16 @@ fn clock_face(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     use noc::*;
     let mid = (ART_X + ART / 2) as f32;
     let cy = (ART_Y + ART / 2) as f32;
+    // Display type, not body text: it already fills the block, so the text size must not grow it
+    // (at 130 % it was cut to "14:…").
+    let size = 112.0 * 100.0 / crate::text::scale_pct().max(100) as f32;
     widgets::center(
         c,
         f,
         mid,
         cy + 30.0,
         np.clock,
-        &s(Family::Mono, Weight::Light, 112.0, t.ink, 0.0),
+        &s(Family::Mono, Weight::Light, size, t.ink, 0.0),
     );
     fill_rect(c, ART_X, ART_Y + ART / 2 + 70, ART, 1, t.line);
     if !np.title.is_empty() {

@@ -313,11 +313,10 @@ fn name_style(t: &Theme, strong: bool) -> TextStyle {
 /// between a blank screen and an instruction — the rule this project wrote down after shipping a
 /// Bluetooth receiver screen that could not work and did not say so.
 pub const EMPTY_TITLE: &str = "No analysed tracks";
-pub const EMPTY_BODY: [&str; 3] = [
-    "SensMe channels come from an analysis tag inside",
-    "each file, written on a PC by Flint or by Sony's",
-    "Music Center. Tag your files, then rescan.",
-];
+/// Wrapped to the glass when drawn: hand-broken lines ran off the edge at larger text sizes.
+pub const EMPTY_BODY: &str = "SensMe channels come from an analysis tag inside each file, written \
+                              on a PC by Flint or by Sony's Music Center. Tag your files, then \
+                              rescan.";
 
 /// The grid's foot state, from `nav`.
 #[derive(Clone, Copy, Default)]
@@ -373,8 +372,10 @@ pub fn render(
         let ts = sty(Family::Sans, Weight::SemiBold, 18.0, t.ink, 0.0);
         let bs = sty(Family::Sans, Weight::Regular, crate::scale::ROW, t.dim, 0.0);
         text::draw(c, f, 22.0, (y0 + 48) as f32, EMPTY_TITLE, &ts);
-        for (i, line) in EMPTY_BODY.iter().enumerate() {
-            text::draw(c, f, 22.0, (y0 + 80 + 24 * i as i32) as f32, line, &bs);
+        let lines = crate::track_info::wrap(f, EMPTY_BODY, &bs, 480.0 - 44.0);
+        for (i, line) in lines.iter().enumerate() {
+            let y = y0 + 80 + (text::scaled(24.0) * i as f32) as i32;
+            text::draw(c, f, 22.0, y as f32, line.trim_end(), &bs);
         }
         return;
     }
@@ -755,8 +756,8 @@ mod tests {
         assert_eq!(max_scroll_px(&empty, None), 0);
         assert_eq!(content_h(&empty, None), 0);
         assert!(row_at(&empty, None, TOP + 10, 0).is_none());
-        assert!(EMPTY_BODY.iter().any(|l| l.contains("Flint")));
-        assert!(EMPTY_BODY.iter().any(|l| l.contains("Music Center")));
+        assert!(EMPTY_BODY.contains("Flint"));
+        assert!(EMPTY_BODY.contains("Music Center"));
     }
 
     /// The band's two halves tile the accent rect exactly and never overlap: a gap would be a dead

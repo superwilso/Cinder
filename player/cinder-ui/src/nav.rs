@@ -1419,6 +1419,10 @@ pub struct App {
     dev_base_fw: String,
     device_scroll_px: i32,
     storage_scroll_px: i32,
+    /// Display and the Menu only scroll in Big view; read through `display_scroll` and
+    /// `menu_scroll`, which clamp them.
+    display_scroll_px: i32,
+    menu_scroll_px: i32,
     /// A rescan has been asked for and the library has not come back yet. Purely a label state.
     ///
     /// It needs TWO ways out, not one. `set_library` clears it when a reloaded library arrives,
@@ -2002,6 +2006,8 @@ impl Default for App {
             dev_base_fw: String::new(),
             device_scroll_px: 0,
             storage_scroll_px: 0,
+            display_scroll_px: 0,
+            menu_scroll_px: 0,
             rescanning: false,
             snd_dsee: false,
             snd_vinyl: false,
@@ -3549,6 +3555,12 @@ impl App {
             if matches!(s, Screen::Settings | Screen::Display | Screen::Palette) {
                 self.palettes_stale = true;
             }
+            // Big view's scrolling pages open at the top.
+            match s {
+                Screen::Display => self.display_scroll_px = 0,
+                Screen::Menu => self.menu_scroll_px = 0,
+                _ => {}
+            }
             self.stack.push(s);
         }
     }
@@ -4588,7 +4600,12 @@ impl App {
                     }
                     return vec![];
                 }
-                if let Some(i) = crate::menu::home_chip_at(x, y) {
+                // Under the strip the page scrolls (Big view); ask in page coordinates.
+                if y < crate::menu::TOP {
+                    return vec![];
+                }
+                let y = y + self.menu_scroll();
+                if let Some(i) = crate::menu::home_chip_at(x, y, self.menu_len()) {
                     self.home_screen = i as u8;
                     return vec![];
                 }
@@ -4992,6 +5009,11 @@ impl App {
                 vec![]
             }
             Screen::Display => {
+                // A row scrolled up under the header is not there to tap.
+                if y < crate::chrome::HEADER_BOTTOM {
+                    return vec![];
+                }
+                let y = y + self.display_scroll();
                 // A swatch tap picks that accent directly. Checked first because it lives inside
                 // the Accent row's band, and falling through to `display_activate` would advance
                 // the cycle by one instead of honouring the colour under the finger. Not while the
@@ -7020,6 +7042,14 @@ impl App {
                 let max = crate::storage::max_scroll_px(&self.storage_view());
                 self.storage_scroll_px = (self.storage_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::Display => {
+                let max = crate::display::max_scroll_px();
+                self.display_scroll_px = (self.display_scroll() + dy_px).clamp(0, max);
+            }
+            Screen::Menu => {
+                let max = crate::menu::max_scroll_px(self.menu_len());
+                self.menu_scroll_px = (self.menu_scroll() + dy_px).clamp(0, max);
+            }
             Screen::PlaylistPick => {
                 let max = self.pick_max_scroll();
                 self.pick_scroll_px = (self.pick_scroll_px + dy_px).clamp(0, max);
@@ -7112,6 +7142,20 @@ impl App {
     // copy of "is the finger on the rail".
 
     /// Now Playing's layout as it stands: this style, this mode, this song.
+    /// The Menu's scroll, clamped like Display's.
+    fn menu_scroll(&self) -> i32 {
+        self.menu_scroll_px
+            .min(crate::menu::max_scroll_px(self.menu_len()))
+            .max(0)
+    }
+
+    /// Display's scroll, clamped: turning Big view off leaves nothing to scroll.
+    fn display_scroll(&self) -> i32 {
+        self.display_scroll_px
+            .min(crate::display::max_scroll_px())
+            .max(0)
+    }
+
     fn np_layout(&self) -> crate::now_playing::Layout {
         crate::now_playing::layout(self.style, self.night, self.has_lyrics())
     }
@@ -7306,7 +7350,10 @@ impl App {
                 }
             }
             Screen::Display => {
-                if crate::display::row_at(y) == Some(crate::display::ROW_SIZE) {
+                let row = (y >= crate::chrome::HEADER_BOTTOM)
+                    .then(|| crate::display::row_at(y + self.display_scroll()))
+                    .flatten();
+                if row == Some(crate::display::ROW_SIZE) {
                     self.scrub = Scrub::UiScale;
                     self.display_sel = crate::display::ROW_SIZE;
                     crate::text::set_scale_idx(crate::display::size_idx_at(x));
@@ -9878,7 +9925,15 @@ impl App {
                         active: i == self.menu_idx,
                     })
                     .collect();
-                crate::menu::render(c, &theme, fonts, &strip, &items, self.home_screen as usize);
+                crate::menu::render(
+                    c,
+                    &theme,
+                    fonts,
+                    &strip,
+                    &items,
+                    self.home_screen as usize,
+                    self.menu_scroll(),
+                );
             }
             Screen::Library => {
                 // Record the tab strip exactly as drawn, so `tap` hits the labels the user sees.
@@ -10538,7 +10593,14 @@ impl App {
                     viz: &viz_lbl,
                     style: self.style,
                 };
-                crate::display::render(c, &theme, fonts, self.display_sel, &view)
+                crate::display::render(
+                    c,
+                    &theme,
+                    fonts,
+                    self.display_sel,
+                    &view,
+                    self.display_scroll(),
+                )
             }
             Screen::Skins => crate::skins::render(
                 c,
@@ -11017,6 +11079,8 @@ impl App {
                 Screen::Presets => a.presets_scroll_px,
                 Screen::Device => a.device_scroll_px,
                 Screen::Storage => a.storage_scroll_px,
+                Screen::Display => a.display_scroll(),
+                Screen::Menu => a.menu_scroll(),
                 Screen::UpNext => a.queue_scroll_px,
                 Screen::Lyrics => a.lyrics_scroll_px,
                 _ => 0,
@@ -16875,6 +16939,50 @@ mod tests {
         crate::text::set_scale_pct(BIG_TEXT_PCT);
         a.set_big_view(false);
         assert_eq!(crate::text::scale_pct(), 100);
+    }
+
+    /// Big view pushes Display's Style chips off the glass, so the page scrolls, and a chip tapped
+    /// after scrolling picks itself. Under the header nothing is tappable.
+    #[test]
+    fn big_view_display_scrolls_to_its_style_chips() {
+        let _g = crate::text::scale_guard();
+        let mut a = unlocked();
+        a.push_for_test(Screen::Display);
+        a.set_big_view(true);
+        let max = crate::display::max_scroll_px();
+        assert!(max > 0, "Display fits in Big view; drop its scroll");
+        a.scroll_px(10_000);
+        assert_eq!(a.display_scroll(), max);
+        let (x, y) = crate::display::style_chip_centre(1);
+        a.tap(x, y - max);
+        assert_eq!(a.style, crate::style::Style::Nocturne);
+        let before = a.display_sel;
+        assert_eq!(a.tap(400, crate::chrome::HEADER_BOTTOM - 4), vec![]);
+        assert_eq!(a.display_sel, before);
+        a.set_big_view(false);
+        assert_eq!(a.display_scroll(), 0, "nothing to scroll with Big view off");
+    }
+
+    /// Big view: the Menu keeps full rows and scrolls to START ON; a chip tapped there picks
+    /// itself, and the strip stays the strip whatever the scroll.
+    #[test]
+    fn big_view_menu_scrolls_to_start_on() {
+        let _g = crate::text::scale_guard();
+        let mut a = unlocked();
+        a.push_for_test(Screen::Menu);
+        a.set_big_view(true);
+        let rows = a.menu_len();
+        let max = crate::menu::max_scroll_px(rows);
+        assert!(max > 0);
+        a.scroll_px(10_000);
+        assert_eq!(a.menu_scroll(), max);
+        let (x, w) = crate::kit::chip_span(1, 2);
+        let y = crate::menu::label_top(rows) + crate::kit::SECTION_H + 5 - max;
+        assert!(a.tap(x + w / 2, y).is_empty());
+        assert_eq!(a.home_screen, 1, "Now Playing");
+        a.tap(240, crate::menu::STRIP_TOP + 5);
+        assert_eq!(a.current(), Screen::NowPlaying);
+        a.set_big_view(false);
     }
 
     #[test]

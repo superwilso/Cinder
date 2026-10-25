@@ -66,7 +66,7 @@ pub fn hit_info(x: i32, y: i32, night: bool) -> bool {
         return (INFO_NIGHT_TOP..=INFO_NIGHT_BOT).contains(&y)
             && (0..crate::canvas::W as i32).contains(&x);
     }
-    (INFO_TOP..=INFO_BOT).contains(&y) && x >= 0 && x < HEART_CX - HEART_HALF - 2
+    (INFO_TOP..=INFO_BOT).contains(&y) && x >= 0 && x < HEART_CX - heart_half() - 2
 }
 
 /// The bottom toolbar's slot centres, and the single source for both the icons above and the hit
@@ -78,6 +78,39 @@ pub const TOOLBAR_CX: [i32; TOOLBAR_SLOTS] = [60, 180, 300, 420];
 pub const HEART_CX: i32 = 432;
 pub const HEART_CY: i32 = 548;
 pub const HEART_HALF: i32 = 30;
+
+/// Big view (Settings ▸ Big view) is on: Cinder's Now Playing grows its controls in place. The
+/// cover keeps its size, so nothing moves; the glyphs grow, and the targets fill their band.
+fn big() -> bool {
+    crate::scale::large()
+}
+
+/// A control's drawn size, 1.25x in Big view.
+pub(crate) fn g(px: f32) -> f32 {
+    if big() {
+        px * crate::scale::LARGE_PCT as f32 / 100.0
+    } else {
+        px
+    }
+}
+
+/// The heart's touch half-size: 76 px (6.4 mm) square in Big view.
+pub fn heart_half() -> i32 {
+    if big() {
+        38
+    } else {
+        HEART_HALF
+    }
+}
+
+/// The seek bar's thickness.
+fn rail_h() -> i32 {
+    if big() {
+        8
+    } else {
+        RAIL_H
+    }
+}
 
 /// Map a UI x coordinate to a 0..1 position along the rail (clamped). Used by the scrub.
 pub fn rail_fraction(x: i32) -> f32 {
@@ -233,10 +266,70 @@ impl Layout {
 /// Now Playing's layout in `style`. `night` matters to Cinder, whose night layout is a different
 /// screen; `lyrics` adds the Lyrics chip's target when the song has lyrics.
 pub fn layout(style: crate::style::Style, night: bool, lyrics: bool) -> Layout {
-    match style {
+    let l = match style {
         crate::style::Style::Cinder => cinder_layout(night, lyrics),
         other => crate::np_styles::layout(other, lyrics),
+    };
+    if big() {
+        big_targets(l)
+    } else {
+        l
     }
+}
+
+/// Big view, in every style: the transport row's targets become one band, from under the seek
+/// bar's grab band to the toolbar, each control owning the width up to the midpoints with its
+/// neighbours. A tap between two round buttons used to answer nothing; now it goes to the nearer.
+/// The heart's target grows to at least `heart_half()`; it is tested before the title block.
+///
+/// Only the tap test reads this. The styles draw from their own layouts, so nothing moves on
+/// screen (Terminal draws its boxes from its targets, and a band would be a box 80 px tall).
+fn big_targets(mut l: Layout) -> Layout {
+    const ROW: [Hit; 5] = [
+        Hit::Shuffle,
+        Hit::Prev,
+        Hit::PlayPause,
+        Hit::Next,
+        Hit::Repeat,
+    ];
+    if let Some(r) = l.regions[..l.len].iter_mut().find(|(_, x)| *x == Hit::Like) {
+        let ((cx, cy), h) = (r.0.centre(), heart_half());
+        if r.0.bounds().2 < 2 * h + 1 {
+            r.0 = Shape::Rect {
+                x: cx - h,
+                y: cy - h,
+                w: 2 * h + 1,
+                h: 2 * h + 1,
+            };
+        }
+    }
+    let Some((_, bot, _, _)) = l.at(Hit::Toolbar(0)).map(Shape::bounds) else {
+        return l;
+    };
+    let top = l.rail.grab_bot + 2;
+    let mut cx = [0; ROW.len()];
+    for (i, h) in ROW.iter().enumerate() {
+        match l.at(*h) {
+            Some(s) => cx[i] = s.centre().0,
+            None => return l,
+        }
+    }
+    for (i, h) in ROW.iter().enumerate() {
+        let x0 = if i == 0 { 0 } else { (cx[i - 1] + cx[i]) / 2 };
+        let x1 = cx
+            .get(i + 1)
+            .map_or(crate::canvas::W as i32, |n| (cx[i] + n) / 2);
+        let band = Shape::Rect {
+            x: x0,
+            y: top,
+            w: x1 - x0,
+            h: bot - top,
+        };
+        if let Some(r) = l.regions[..l.len].iter_mut().find(|(_, x)| x == h) {
+            r.0 = band;
+        }
+    }
+    l
 }
 
 /// The transport row, as Cinder draws it. The render and `cinder_layout` both read these.
@@ -258,7 +351,7 @@ fn cinder_layout(night: bool, lyrics: bool) -> Layout {
         x0: RAIL_X0,
         y: RAIL_Y,
         w: RAIL_W,
-        h: RAIL_H,
+        h: rail_h(),
         grab_top: RAIL_GRAB_TOP,
         grab_bot: RAIL_GRAB_BOT,
     };
@@ -276,10 +369,10 @@ fn cinder_layout(night: bool, lyrics: bool) -> Layout {
     }
     l.push(
         Shape::Rect {
-            x: HEART_CX - HEART_HALF,
-            y: HEART_CY - HEART_HALF,
-            w: 2 * HEART_HALF + 1,
-            h: 2 * HEART_HALF + 1,
+            x: HEART_CX - heart_half(),
+            y: HEART_CY - heart_half(),
+            w: 2 * heart_half() + 1,
+            h: 2 * heart_half() + 1,
         },
         Hit::Like,
     );
@@ -294,7 +387,7 @@ fn cinder_layout(night: bool, lyrics: bool) -> Layout {
         Shape::Rect {
             x: 0,
             y: INFO_TOP,
-            w: HEART_CX - HEART_HALF - 2,
+            w: HEART_CX - heart_half() - 2,
             h: INFO_BOT - INFO_TOP + 1,
         }
     };
@@ -982,20 +1075,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         c,
         HEART_CX as f32,
         HEART_CY as f32,
-        26.0,
+        g(26.0),
         if np.liked { t.acc } else { t.faint },
     );
 
     // ---------- progress (shared) ----------
-    let (py, px0, pw) = (RAIL_Y, RAIL_X0, RAIL_W);
-    fill_rect(c, px0, py, pw, RAIL_H, t.line);
+    let (py, px0, pw, rh) = (RAIL_Y, RAIL_X0, RAIL_W, rail_h());
+    fill_rect(c, px0, py, pw, rh, t.line);
     let fillw = (pw as f32 * np.progress.clamp(0.0, 1.0)) as i32;
-    fill_rect(c, px0, py, fillw, RAIL_H, t.acc);
+    fill_rect(c, px0, py, fillw, rh, t.acc);
     // Scrub handle: only while a drag-to-seek is in progress. It gives the finger something to
     // aim at and makes it obvious the bar is showing a pending target, not the live position.
     if np.scrubbing {
         let cx = px0 + fillw;
-        Circle::with_center(Point::new(cx, py + RAIL_H / 2), 22)
+        Circle::with_center(Point::new(cx, py + rh / 2), g(22.0) as u32)
             .into_styled(PrimitiveStyle::with_fill(t.acc))
             .draw(c)
             .ok();
@@ -1023,25 +1116,25 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         c,
         SHUFFLE_X as f32,
         ty,
-        24.0,
+        g(24.0),
         if np.shuffle { t.acc } else { t.faint },
     );
-    icons::prev(c, PREV_X as f32, ty, 38.0, t.ink);
+    icons::prev(c, PREV_X as f32, ty, g(38.0), t.ink);
     Circle::with_center(Point::new(240, ty as i32), 92)
         .into_styled(PrimitiveStyle::with_fill(t.acc))
         .draw(c)
         .ok();
     if np.playing {
-        icons::pause(c, 240.0, ty, 38.0, t.acc_ink);
+        icons::pause(c, 240.0, ty, g(38.0), t.acc_ink);
     } else {
-        icons::play(c, 240.0, ty, 38.0, t.acc_ink);
+        icons::play(c, 240.0, ty, g(38.0), t.acc_ink);
     }
-    icons::next(c, NEXT_X as f32, ty, 38.0, t.ink);
+    icons::next(c, NEXT_X as f32, ty, g(38.0), t.ink);
     icons::repeat(
         c,
         REPEAT_X as f32,
         ty,
-        24.0,
+        g(24.0),
         if np.repeat > 0 { t.acc } else { t.faint },
     );
     if np.repeat == 1 {
@@ -1054,7 +1147,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             c,
             f,
             436.0,
-            ty + 27.0,
+            ty + g(27.0),
             crate::i18n::text("ALBUM"),
             &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1),
         );
@@ -1068,10 +1161,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     for (index, slot) in TOOLBAR_CX.iter().enumerate() {
         let cx = *slot as f32;
         match index {
-            0 => icons::library(c, cx, tb, 24.0, t.dim),
-            1 => icons::queue(c, cx, tb, 24.0, t.dim),
-            2 => icons::bt(c, cx, tb, 23.0, t.dim),
-            _ => icons::settings(c, cx, tb, 24.0, t.dim),
+            0 => icons::library(c, cx, tb, g(24.0), t.dim),
+            1 => icons::queue(c, cx, tb, g(24.0), t.dim),
+            2 => icons::bt(c, cx, tb, g(23.0), t.dim),
+            _ => icons::settings(c, cx, tb, g(24.0), t.dim),
         }
     }
 }
@@ -1081,25 +1174,25 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 /// idle screen has to put them in exactly the same places or the controls stop working when
 /// nothing is loaded. Only the *state* differs — empty rail, no times, transport shows play.
 fn idle_chrome(c: &mut Canvas, t: &Theme, f: &FontSet) {
-    fill_rect(c, RAIL_X0, RAIL_Y, RAIL_W, RAIL_H, t.line);
+    fill_rect(c, RAIL_X0, RAIL_Y, RAIL_W, rail_h(), t.line);
 
     let ty = 692.0;
-    icons::shuffle(c, 44.0, ty, 24.0, t.faint);
-    icons::prev(c, 128.0, ty, 38.0, t.faint);
+    icons::shuffle(c, 44.0, ty, g(24.0), t.faint);
+    icons::prev(c, 128.0, ty, g(38.0), t.faint);
     Circle::with_center(Point::new(240, ty as i32), 92)
         .into_styled(PrimitiveStyle::with_fill(t.acc))
         .draw(c)
         .ok();
-    icons::play(c, 240.0, ty, 38.0, t.acc_ink);
-    icons::next(c, 352.0, ty, 38.0, t.faint);
-    icons::repeat(c, 436.0, ty, 24.0, t.faint);
+    icons::play(c, 240.0, ty, g(38.0), t.acc_ink);
+    icons::next(c, 352.0, ty, g(38.0), t.faint);
+    icons::repeat(c, 436.0, ty, g(24.0), t.faint);
 
     hline(c, 744, t.line);
     let tb = 774.0;
-    icons::library(c, 60.0, tb, 26.0, t.acc); // the one thing worth tapping from here
-    icons::queue(c, 180.0, tb, 26.0, t.dim);
-    icons::bt(c, 300.0, tb, 25.0, t.dim);
-    icons::settings(c, 420.0, tb, 26.0, t.dim);
+    icons::library(c, 60.0, tb, g(26.0), t.acc); // the one thing worth tapping from here
+    icons::queue(c, 180.0, tb, g(26.0), t.dim);
+    icons::bt(c, 300.0, tb, g(25.0), t.dim);
+    icons::settings(c, 420.0, tb, g(26.0), t.dim);
     let _ = f;
 }
 
@@ -1345,6 +1438,61 @@ mod tests {
             Some(Hit::Lyrics),
             "before the Menu band"
         );
+    }
+
+    /// Big view: the gaps between the round transport targets, which answered nothing, now go to
+    /// the nearest control, and the heart's target is wider.
+    #[test]
+    fn big_view_gives_every_transport_tap_to_the_nearest_control() {
+        use crate::style::Style;
+        let small = layout(Style::Cinder, false, false);
+        crate::scale::set_large(true);
+        let l = layout(Style::Cinder, false, false);
+        crate::scale::set_large(false);
+        for (x, y, want) in [
+            (180, 692, Hit::Prev),
+            (200, 692, Hit::PlayPause),
+            (240, 738, Hit::PlayPause),
+            (80, 660, Hit::Shuffle),
+            (300, 692, Hit::Next),
+            (400, 700, Hit::Repeat),
+            (HEART_CX - 36, HEART_CY, Hit::Like),
+        ] {
+            assert_eq!(l.hit(x, y), Some(want), "({x}, {y})");
+        }
+        assert_eq!(small.hit(180, 692), None, "unchanged with Big view off");
+        assert_eq!(
+            l.hit(240, 646),
+            None,
+            "the seek bar's grab band keeps its edge"
+        );
+        assert_eq!(l.hit(60, 760), Some(Hit::Toolbar(0)));
+
+        // Every style: each control still answers at its own centre, and the gap between Prev and
+        // Play goes to one of the two.
+        for style in Style::ALL {
+            let small = layout(style, false, false);
+            crate::scale::set_large(true);
+            let l = layout(style, false, false);
+            crate::scale::set_large(false);
+            for h in [
+                Hit::Shuffle,
+                Hit::Prev,
+                Hit::PlayPause,
+                Hit::Next,
+                Hit::Repeat,
+                Hit::Like,
+            ] {
+                let (x, y) = small.at(h).unwrap().centre();
+                assert_eq!(l.hit(x, y), Some(h), "{style:?} {h:?}");
+            }
+            let (px, y) = small.at(Hit::Prev).unwrap().centre();
+            let gap = (px + small.at(Hit::PlayPause).unwrap().centre().0) / 2;
+            assert!(
+                matches!(l.hit(gap, y), Some(Hit::Prev | Hit::PlayPause)),
+                "{style:?}"
+            );
+        }
     }
 
     /// Every style draws every state without a panic: day and night, each page, idle, scrubbing,

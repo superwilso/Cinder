@@ -151,13 +151,20 @@ fn PAIRED_RH() -> i32 {
 
 /// Rows shown before the list is cut off. Five fills the space between the card and the footer
 /// without pushing either off; a longer pairing history is managed on the Devices screen, which is
-/// where forgetting lives anyway.
-pub const PAIRED_SHOWN: usize = 5;
+/// where forgetting lives anyway. Four in Big view: four of its taller rows are the height of five.
+#[allow(non_snake_case)]
+pub fn PAIRED_SHOWN() -> usize {
+    if crate::scale::large() {
+        4
+    } else {
+        5
+    }
+}
 /// THIS DEVICE (handoff 2g): its section label, then "Sound quality ›" — the codec page.
 /// Straight under the list, with no gap.
 #[allow(non_snake_case)]
 fn THIS_DEVICE_Y() -> i32 {
-    PAIRED_Y0 + PAIRED_SHOWN as i32 * PAIRED_RH()
+    PAIRED_Y0 + PAIRED_SHOWN() as i32 * PAIRED_RH()
 }
 
 #[allow(non_snake_case)]
@@ -345,7 +352,7 @@ pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
     if (dy..dy + dh).contains(&y) && (dx..dx + dw).contains(&x) {
         return BtHit::Disconnect;
     }
-    let rows = paired.min(PAIRED_SHOWN) as i32;
+    let rows = paired.min(PAIRED_SHOWN()) as i32;
     if (PAIRED_Y0..PAIRED_Y0 + rows * PAIRED_RH()).contains(&y) {
         return BtHit::PairedRow(((y - PAIRED_Y0) / PAIRED_RH()) as usize);
     }
@@ -543,8 +550,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     // reach past it either (see pairing::MAX_PAIRED). Naming the count costs one line and makes
     // "Pair new device", which is the route to the rest, an obvious next step rather than a
     // guess.
-    let head = if bt.on && bt.paired.len() > PAIRED_SHOWN {
-        crate::ui_format!("PAIRED DEVICES · {} OF {}", PAIRED_SHOWN, bt.paired.len())
+    let head = if bt.on && bt.paired.len() > PAIRED_SHOWN() {
+        crate::ui_format!("PAIRED DEVICES · {} OF {}", PAIRED_SHOWN(), bt.paired.len())
     } else {
         crate::i18n::text("PAIRED DEVICES").to_string()
     };
@@ -577,7 +584,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0),
         );
     } else {
-        for (i, d) in bt.paired.iter().take(PAIRED_SHOWN).enumerate() {
+        for (i, d) in bt.paired.iter().take(PAIRED_SHOWN()).enumerate() {
             let y = PAIRED_Y0 + i as i32 * PAIRED_RH();
             let cy = y + PAIRED_RH() / 2;
             if d.connected {
@@ -688,18 +695,21 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     // Footer: an NFC hint on the left and the Receiver-mode link on the right, on ONE baseline.
     // Both were drawn at fixed x, so at 140% "…TO REAR PANEL" ran straight through "RECEIVER
     // MODE ›". The link keeps its width (it names a destination); the hint gives way.
+    let hint = crate::i18n::text("NFC · TOUCH THE REAR PANEL");
+    let hint_st = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08);
+    let link = "RECEIVER MODE \u{203a}";
+    let link_st = sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08);
+    if crate::scale::large() {
+        // Big view: the hint takes the line above the link, in the room four paired rows leave,
+        // so neither is cut. The link's target band (`FOOTER_LINK_TOP`) starts under the hint.
+        icons::rx(c, 30.0, 744.0, 14.0, t.faint);
+        text::draw(c, f, 46.0, 748.0, hint, &hint_st);
+        crate::widgets::right(c, f, 458.0, 780.0, link, &link_st);
+        return;
+    }
     icons::rx(c, 30.0, 776.0, 14.0, t.faint);
     crate::widgets::row_pair(
-        c,
-        f,
-        46.0,
-        458.0,
-        780.0,
-        crate::i18n::text("NFC · TOUCH THE REAR PANEL"),
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
-        "RECEIVER MODE \u{203a}",
-        &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08),
-        14.0,
+        c, f, 46.0, 458.0, 780.0, hint, &hint_st, link, &link_st, 14.0,
     );
 }
 
@@ -855,6 +865,11 @@ mod tests {
             DEBUG_Y() + DEBUG_H(),
             FOOTER_LINK_TOP
         );
+        // Big view: the rows still end above the footer, with room for the hint's own line.
+        crate::scale::set_large(true);
+        let end = DEBUG_Y() + DEBUG_H();
+        crate::scale::set_large(false);
+        assert!(end <= 730, "Big view's Debug log row ends at {end}");
     }
 
     fn bt(on: bool, connected: Option<&str>, codec_sel: u8, link_codec: Option<u8>) -> Bt<'_> {

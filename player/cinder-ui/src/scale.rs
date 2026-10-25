@@ -37,23 +37,23 @@ pub const CAPTION: f32 = 13.0;
 
 // ── row heights ────────────────────────────────────────────────────────────────────────────
 
-// ── Large controls ─────────────────────────────────────────────────────────────────────────
+// ── Big view ───────────────────────────────────────────────────────────────────────────────
 //
-// Display ▸ Large controls (off by default). The four row heights below are FUNCTIONS of it, so
+// Settings ▸ Big view (off by default). The four row heights below are FUNCTIONS of it, so
 // every list on every screen grows together, and render and hit test — which both read these —
 // cannot disagree. Off, every number is exactly what it was as a constant, which the golden
-// previews prove: a pixel that moves with Large off is a bug in this refactor.
+// previews prove: a pixel that moves with Big view off is a bug in this refactor.
 //
 // Reported 2026-10-25 (owner): "some aspects of the UI are still hard to touch for some people".
 // The panel is ~11.9 px/mm, so a 62 px track row is 5.2 mm; the common guidance for a finger
 // target is 7-9 mm. 1.25x makes it 6.5 mm while a list still shows eight rows.
 
-/// Large controls' multiplier for row heights and touch zones, in percent.
+/// Big view's multiplier for row heights and touch zones, in percent.
 pub const LARGE_PCT: i32 = 125;
 
 #[cfg(not(test))]
 static LARGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-// Per test thread: a test that turns Large on must not grow the rows under a parallel one.
+// Per test thread: a test that turns Big view on must not grow the rows under a parallel one.
 #[cfg(test)]
 thread_local! {
     static LARGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -73,7 +73,7 @@ pub fn large() -> bool {
     return LARGE.with(|l| l.get());
 }
 
-/// `px` at the current control size: unchanged with Large off.
+/// `px` at the current control size: unchanged with Big view off.
 pub fn ctl(px: i32) -> i32 {
     if large() {
         (px * LARGE_PCT + 50) / 100

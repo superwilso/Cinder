@@ -590,6 +590,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     "NOW › Atlas Hands · Benjamin Francis Leftwich · 1:47",
                     &menu_items,
                     0,
+                    0,
                 )
             }),
             // Up Next: history above the playing track, then the rest of the album. The history
@@ -1387,6 +1388,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         viz: "BARS · VEIL",
                         style: cinder_ui::style::Style::Cinder,
                     },
+                    0,
                 )
             }),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
@@ -2553,6 +2555,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 viz: "BARS · VEIL",
                 style: cinder_ui::style::Style::Cinder,
             },
+            0,
         );
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
         save(&c, &format!("accent_{lower}_display"));
@@ -3724,6 +3727,32 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let mut c = Canvas::new();
         a.render(&mut c, &fonts, &state);
         save(&c, "now_playing_tape_standin");
+    }
+
+    // Big view (docs/PLAN_big_view.md): the pages it redesigns, so it cannot quietly break. Last
+    // in the set, because the glyph cache makes later previews order-sensitive.
+    {
+        use cinder_ui::nav::Screen;
+        for (name, screen, scroll) in [
+            ("big_now_playing", Screen::NowPlaying, false),
+            ("big_library", Screen::Library, false),
+            ("big_settings", Screen::Settings, false),
+            ("big_menu_end", Screen::Menu, true),
+            ("big_display_end", Screen::Display, true),
+            ("big_bluetooth", Screen::Bluetooth, false),
+        ] {
+            let mut app = new_app();
+            app.set_big_view(true);
+            app.go_for_preview(screen);
+            if scroll {
+                app.scroll_px(10_000);
+            }
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, name);
+            app.set_big_view(false);
+        }
+        base_scale();
     }
 }
 
