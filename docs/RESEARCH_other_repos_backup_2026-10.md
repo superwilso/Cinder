@@ -17,7 +17,7 @@ unless the licence below says otherwise and the file is credited.
 | [`zhangboyang/llusbdac`](https://github.com/zhangboyang/llusbdac) | GPLv2 | Low-latency USB DAC kernel module for the ZX300A (about 50 ms, PCM only, behaves as Direct Source). Only a precedent for the USB-DAC work; keep any GPL code out of Cinder's tree. |
 | [`unknown321/battery-charge-fix`](https://github.com/unknown321/battery-charge-fix) | GPL-3.0 | Per its description, fixes the charging indicator on an NW-A50 after a knock-off battery; the README says it only ignores the temperature warning. A50 only. Not needed. |
 | [`unknown321/nw-installer`](https://github.com/unknown321/nw-installer) | LICENSE opens with the Commons Clause condition; underlying licence not read | README: "Generic service installer for Walkman NW-A50Series". Packs your files and a `run.sh` into `userdata.tar.gz` and builds `.UPG` installers with `make` and Docker, plus a Windows installer target. Overlaps what `cinder-installer` does; read for facts, not code. |
-| Head-Fi [custom firmware thread](https://head-fi.org/threads/sony-walkman-custom-firmware-non-android.943661/page-545) | n/a | Real-user reports on the A50 series. Good for symptoms, not for specs. |
+| Head-Fi [custom firmware thread](https://head-fi.org/threads/sony-walkman-custom-firmware-non-android.943661/page-545) | n/a | **Not verified.** The page returned a Head-Fi security checkpoint when fetched, so its contents were not read. A web search snippet suggested users post A50 findings there. Check it by hand before relying on it. |
 
 ## A universal backup tool
 
