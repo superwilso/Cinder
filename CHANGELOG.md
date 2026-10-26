@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.20] — 2026-10-26
+
 ### Added
 
 - **Big view** (Settings, under Display; off by default): text at 130 % and every list row, Back,
@@ -75,101 +77,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Your own font.** A `cinder_font.ttf` (up to 2 MB) at the top of the drive replaces Cinder's text
   font, in every weight; characters it lacks come from the bundled fonts as before. The size limit is
   there because a large font (a CJK one) runs the player out of memory. *Device-unverified* (§41.5).
-
-### Changed
-
-- **Suspend to RAM is on by default**, on stable builds too (`no_ram_suspend` turns it off). USB
-  after a resume (DEVICE_CHECKLIST 33.2) is still partial; `cinder-msc usb-resume` now does Sony's
-  own port reset and has not yet been run on a player.
-- **Bluetooth auto off wakes up again.** After ten idle minutes the radio still switches off, and
-  now switches back on when the player is used (the screen on or any button); the headphones
-  reconnect 10–15 s later. *Device-unverified* (§41.6).
-- **Hints fit at large text sizes.** At 120 % about 20 second lines were cut with "…": notes with
-  room under them (the welcome pages, Noise cancelling, Device) now wrap to a second line, and
-  the rest are worded shorter. `cargo run -p cinder-host -- --cut 120` lists none but song titles.
-
-### Fixed
-
-- **Silence over Bluetooth after a boot, on Walkman One.** Music played, but to the empty
-  headphone jack: Walkman One 3.02 boots in Sony's "Initial" function mode, which leaves the
-  Bluetooth output switched off (stock 1.02 boots in music playback and was never affected). Cinder
-  now moves Initial to music playback at every boot. Using the Receiver or USB-DAC first hid it,
-  because leaving either sets the right mode. *Device-verified* 10-25 by setting the mode live on
-  Walkman One (audio came back at once); the boot step is *device-unverified* there.
-- **Power did nothing over a dialog, USB storage or the intro.** All three swallowed the button,
-  so a screen that went dark over one of them could only be woken by the Hold switch. Power now
-  always toggles the screen. Host-tested; seen on the player 10-25.
-- **Dev builds keep adb on stock firmware.** Sony's USB manager drops adb on every cable event
-  (a cable in at boot, a plug-in, a wake); Walkman One's own boot script had been starting it
-  again. The dev channel now puts it back whenever it goes. *Device-verified* 10-25.
-- **Clear Bass on stock firmware.** The row was only offered on Walkman One's patched sound
-  library, though stock's own chain already has the six-band EQ it lives in. Host-tested;
-  *device-unverified* (is it audible).
-- **Bluetooth volume that stops reaching the headphones fixes itself.** Rarely, right after a
-  boot, the volume buttons moved the bar but not the headphones until they were disconnected and
-  reconnected. Cinder now notices two presses in a row the headphones never answer, says
-  "Reconnecting headphones to restore volume", reconnects them once, and plays on if music was
-  playing. Only headphones that have answered before are ever reconnected, so ones that never
-  report their volume are left alone. The Bluetooth level is also saved when the headphones report
-  it, so the next connect returns them to their real level. Host-tested
-  (`tools/btvolwatch_selftest.cpp`); *device-unverified* against the fault, which has not been
-  reproduced.
-
-- **A long press never fired.** The hold check also asked whether the current touch frame carried
-  a position, which every frame's end clears, so it never passed between frames, where the check
-  runs. Hold to play next (`hold_play_next`) played the song on the lift instead, and Up Next's
-  hold-to-lift never worked by holding. A harness scenario holds a still finger. *Device-verified
-  10-24*: a held song shows "Playing next" and stays queued; a held Up Next row lifts.
-- **Uninstalling could leave the player with no Home app.** The backup of Sony's launch config
-  could hold Cinder's own (the owner's player carried one from 2026-09-22), so the uninstaller
-  "restored" Cinder's launcher and then deleted it. The installer, the uninstaller and the boot
-  guard now refuse a backup that names Cinder's launcher and write Sony's four lines instead,
-  which are the same on stock 1.02 and Walkman One 3.02. Host-tested; *device-unverified*.
-- **A playlist's page showed a gradient where its cover goes.** The page draws its cover at
-  64 px, a size the cover cache does not keep (it holds the list's 48 px and the grid's 96 px), so
-  every playlist page fell back to the gradient, and tapping the cover to change it showed
-  nothing changing. It now scales the cover it has. Host-tested; seen on the player 10-24.
-- **Settings ▸ Device said "Needs the battery helper" on a player that has it.** For about two
-  seconds after every battery reading, the CHARGER row lost the helper's reading and asked for a
-  reinstall; the next refresh put READY back. The quick reading now keeps the helper's last one.
-  Seen on the player 10-24, and gone on the next build (CHARGING held through eight seconds of
-  battery ticks).
-- **Settings ▸ Storage cut the card's numbers off.** Internal storage and the card shared one
-  value, which ran out of room ("3.4 / 56 GB, SD 108…" at 120 %). The card is now the row's second
-  line. Host-tested; seen on the player 10-24.
-- **Every album page showed its first track as playing.** The accent row and the playing bars
-  were on the last row tapped, which is row 1 when a page opens, so an album that was not playing
-  looked as if it were; a playlist's page did the same with its accent row. Both now follow the
-  song that is playing. Host-tested; seen on the player 10-24.
-- **Chip labels were cut short.** Display's six Style chips sat in one line, which cut every name
-  but "Clock" ("Noct…", "Wina…"); they are now two lines of three. And at larger text sizes the
-  Menu's START ON chips read "Now Pla…" and "Last scr…": a line of chips too wide for its labels
-  now steps down a size, all together, before any label is cut. The Albums and Artists shuffle
-  bands' second lines were cut too ("TRACKS IN SEQUEN…"); they now read "RANDOM ALBUMS · TRACKS IN
-  ORDER" and "RANDOM ARTIST · SONGS SHUFFLED", whole at every text size. Also whole at 120 % now,
-  found by rendering every preview at that size: the NEW PLAYLIST tile ("NAME IT, ADD TRACKS"),
-  Nocturne's, Clock's and Cassette's SETTINGS, a playlist row's REMOVE?, and Track information's
-  + PLAYLIST. `cargo run -p cinder-host -- --cut 120` lists what is still cut. Host-tested; the
-  chips seen fixed on the player 10-24 (layout only; no style was tapped).
-- **Sound's signal path left out the Dynamic Normalizer.** With it on, the strip read "SOURCE →
-  NO EFFECTS → DAC EQ"; it now names NORMALIZER with the other stages, and the Menu's Sound line
-  spells it as the Sound screen does ("Normalizer", not "Normaliser"). Host-tested; the old strip
-  was seen on the player 10-24.
-- **The search keyboard said "TAP DONE TO SAVE · BACK TO CANCEL".** A search filters as you type
-  and Back keeps what was typed, so neither half was true; both searches now say "TAP DONE OR BACK
-  TO SEE THE RESULTS". Host-tested; the old line was seen on the player 10-24.
-- **"1 tracks".** A count of one read as a plural on album, artist and playlist rows, the
-  playlist page's Play button and the artist page; in Chinese the artist and playlist counts got
-  an English "s" ("2 曲目s") or stayed English ("3 albums"). Host-tested; seen on the player
-  10-24 before the fix.
-- **Long playlists are read whole.** A playlist in `cinder_playlists` stopped at 4,096 songs without
-  a word, so a 7,000-song MusicBee playlist lost its end. The limit is now 20,000; a 10,000-line
-  file reads in 2.5 ms on the PC. *Device-unverified.*
-
-## [0.3.20] — 2026-10-23
-
-### Added
-
 - **ATRAC files on any player** (`atrac`, off by default, needs `preload`). Sony builds the ATRAC
   decoder into every A50 and switches it off outside Japan with one call,
   `DmpFeature::IsFeaturedAtrac`, asked once when the playback service starts. A one-function
@@ -287,6 +194,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **Suspend to RAM is on by default**, on stable builds too (`no_ram_suspend` turns it off). USB
+  after a resume (DEVICE_CHECKLIST 33.2) is still partial; `cinder-msc usb-resume` now does Sony's
+  own port reset and has not yet been run on a player.
+- **Bluetooth auto off wakes up again.** After ten idle minutes the radio still switches off, and
+  now switches back on when the player is used (the screen on or any button); the headphones
+  reconnect 10–15 s later. *Device-unverified* (§41.6).
+- **Hints fit at large text sizes.** At 120 % about 20 second lines were cut with "…": notes with
+  room under them (the welcome pages, Noise cancelling, Device) now wrap to a second line, and
+  the rest are worded shorter. `cargo run -p cinder-host -- --cut 120` lists none but song titles.
 - **The installer walks you through it.** Install now asks where to start (Cinder; Cinder with the
   sound options; everything), then shows the options a group at a time (Languages, Library, Radio,
   Sound, Bluetooth, Device), then a review that says, for every option you chose, what it changes
@@ -297,6 +213,81 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Silence over Bluetooth after a boot, on Walkman One.** Music played, but to the empty
+  headphone jack: Walkman One 3.02 boots in Sony's "Initial" function mode, which leaves the
+  Bluetooth output switched off (stock 1.02 boots in music playback and was never affected). Cinder
+  now moves Initial to music playback at every boot. Using the Receiver or USB-DAC first hid it,
+  because leaving either sets the right mode. *Device-verified* 10-25 by setting the mode live on
+  Walkman One (audio came back at once); the boot step is *device-unverified* there.
+- **Power did nothing over a dialog, USB storage or the intro.** All three swallowed the button,
+  so a screen that went dark over one of them could only be woken by the Hold switch. Power now
+  always toggles the screen. Host-tested; seen on the player 10-25.
+- **Dev builds keep adb on stock firmware.** Sony's USB manager drops adb on every cable event
+  (a cable in at boot, a plug-in, a wake); Walkman One's own boot script had been starting it
+  again. The dev channel now puts it back whenever it goes. *Device-verified* 10-25.
+- **Clear Bass on stock firmware.** The row was only offered on Walkman One's patched sound
+  library, though stock's own chain already has the six-band EQ it lives in. Host-tested;
+  *device-unverified* (is it audible).
+- **Bluetooth volume that stops reaching the headphones fixes itself.** Rarely, right after a
+  boot, the volume buttons moved the bar but not the headphones until they were disconnected and
+  reconnected. Cinder now notices two presses in a row the headphones never answer, says
+  "Reconnecting headphones to restore volume", reconnects them once, and plays on if music was
+  playing. Only headphones that have answered before are ever reconnected, so ones that never
+  report their volume are left alone. The Bluetooth level is also saved when the headphones report
+  it, so the next connect returns them to their real level. Host-tested
+  (`tools/btvolwatch_selftest.cpp`); *device-unverified* against the fault, which has not been
+  reproduced.
+
+- **A long press never fired.** The hold check also asked whether the current touch frame carried
+  a position, which every frame's end clears, so it never passed between frames, where the check
+  runs. Hold to play next (`hold_play_next`) played the song on the lift instead, and Up Next's
+  hold-to-lift never worked by holding. A harness scenario holds a still finger. *Device-verified
+  10-24*: a held song shows "Playing next" and stays queued; a held Up Next row lifts.
+- **Uninstalling could leave the player with no Home app.** The backup of Sony's launch config
+  could hold Cinder's own (the owner's player carried one from 2026-09-22), so the uninstaller
+  "restored" Cinder's launcher and then deleted it. The installer, the uninstaller and the boot
+  guard now refuse a backup that names Cinder's launcher and write Sony's four lines instead,
+  which are the same on stock 1.02 and Walkman One 3.02. Host-tested; *device-unverified*.
+- **A playlist's page showed a gradient where its cover goes.** The page draws its cover at
+  64 px, a size the cover cache does not keep (it holds the list's 48 px and the grid's 96 px), so
+  every playlist page fell back to the gradient, and tapping the cover to change it showed
+  nothing changing. It now scales the cover it has. Host-tested; seen on the player 10-24.
+- **Settings ▸ Device said "Needs the battery helper" on a player that has it.** For about two
+  seconds after every battery reading, the CHARGER row lost the helper's reading and asked for a
+  reinstall; the next refresh put READY back. The quick reading now keeps the helper's last one.
+  Seen on the player 10-24, and gone on the next build (CHARGING held through eight seconds of
+  battery ticks).
+- **Settings ▸ Storage cut the card's numbers off.** Internal storage and the card shared one
+  value, which ran out of room ("3.4 / 56 GB, SD 108…" at 120 %). The card is now the row's second
+  line. Host-tested; seen on the player 10-24.
+- **Every album page showed its first track as playing.** The accent row and the playing bars
+  were on the last row tapped, which is row 1 when a page opens, so an album that was not playing
+  looked as if it were; a playlist's page did the same with its accent row. Both now follow the
+  song that is playing. Host-tested; seen on the player 10-24.
+- **Chip labels were cut short.** Display's six Style chips sat in one line, which cut every name
+  but "Clock" ("Noct…", "Wina…"); they are now two lines of three. And at larger text sizes the
+  Menu's START ON chips read "Now Pla…" and "Last scr…": a line of chips too wide for its labels
+  now steps down a size, all together, before any label is cut. The Albums and Artists shuffle
+  bands' second lines were cut too ("TRACKS IN SEQUEN…"); they now read "RANDOM ALBUMS · TRACKS IN
+  ORDER" and "RANDOM ARTIST · SONGS SHUFFLED", whole at every text size. Also whole at 120 % now,
+  found by rendering every preview at that size: the NEW PLAYLIST tile ("NAME IT, ADD TRACKS"),
+  Nocturne's, Clock's and Cassette's SETTINGS, a playlist row's REMOVE?, and Track information's
+  + PLAYLIST. `cargo run -p cinder-host -- --cut 120` lists what is still cut. Host-tested; the
+  chips seen fixed on the player 10-24 (layout only; no style was tapped).
+- **Sound's signal path left out the Dynamic Normalizer.** With it on, the strip read "SOURCE →
+  NO EFFECTS → DAC EQ"; it now names NORMALIZER with the other stages, and the Menu's Sound line
+  spells it as the Sound screen does ("Normalizer", not "Normaliser"). Host-tested; the old strip
+  was seen on the player 10-24.
+- **The search keyboard said "TAP DONE TO SAVE · BACK TO CANCEL".** A search filters as you type
+  and Back keeps what was typed, so neither half was true; both searches now say "TAP DONE OR BACK
+  TO SEE THE RESULTS". Host-tested; the old line was seen on the player 10-24.
+- **"1 tracks".** A count of one read as a plural on album, artist and playlist rows, the
+  playlist page's Play button and the artist page; in Chinese the artist and playlist counts got
+  an English "s" ("2 曲目s") or stayed English ("3 albums"). Host-tested; seen on the player
+  10-24 before the fix.
+- **Long playlists are read whole.** A playlist in `cinder_playlists` stopped at 4,096 songs without
+  a word, so a 7,000-song MusicBee playlist lost its end. The limit is now 20,000; a 10,000-line
+  file reads in 2.5 ms on the PC. *Device-unverified.*
 - **Timers no longer stop after 24.8 days awake** (goal 10's audit). The Home app counted
   milliseconds since boot in a 32-bit number, which overflows after 24.8 days without a suspend.
   About sixty timers compare against it: Bluetooth reconnect and volume walks, the bad-boot health
@@ -323,7 +314,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   tuning applied earlier stays applied; `cinder_nvram_backup.img` on the drive still holds the
   player's own data.
 - **Looking for volume tables in Wampy's folder.** The PC installer fetches Sony's own files.
-
 
 ## [0.3.19] — 2026-10-20
 
@@ -3159,8 +3149,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.20-rc1...HEAD
-[0.3.20]: https://github.com/superwilso/Cinder/compare/v0.3.19...v0.3.20-rc1
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.20-rc3...HEAD
+[0.3.20]: https://github.com/superwilso/Cinder/compare/v0.3.19...v0.3.20-rc3
 [0.3.19]: https://github.com/superwilso/Cinder/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/superwilso/Cinder/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/superwilso/Cinder/compare/v0.3.16...v0.3.17-rc3
