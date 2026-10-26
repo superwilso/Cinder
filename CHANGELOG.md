@@ -24,9 +24,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   transport row goes to the nearest control, the heart's target is bigger, and Cinder's style
   draws its controls bigger. The Menu keeps full-height rows and scrolls, Display scrolls,
   Bluetooth shows four paired devices so nothing runs into its footer, and the Lock footer, the
-  intro pages and Soundscapes' level rows are laid out for the bigger text. Some captions are
-  still cut, and FM's and the EQ's small buttons stay small; they are listed in
-  `docs/PLAN_big_view.md`. With it off nothing moves (every preview is byte-identical).
+  intro pages and Soundscapes' level rows are laid out for the bigger text. Long captions switch
+  to shorter wording, FM's fine-tune buttons, the EQ's presets and handles grow, and Winamp
+  skins forgive a wider near miss; what is left is listed in `docs/PLAN_big_view.md`. With it
+  off nothing moves (every preview is byte-identical).
   Host-tested; *device-unverified*.
 - **A Storage page.** Settings ▸ Storage opens it: how full the internal drive and the SD card
   are, split into music, other files and free space, then the library in numbers (songs, albums,
