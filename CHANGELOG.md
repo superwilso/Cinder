@@ -21,9 +21,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Low-latency USB DAC: its numbers on Cinder's own page.** With Low latency on, the USB-DAC
   info box shows the module's state, the PC's format, the buffer, the time streamed, dropouts and
   USB errors, read once a second from `/proc/llusbdac`. Cinder loads the module with `gui=0`, so
-  llusbdac no longer draws its own screen over Cinder. Needs cinder-llusbdac v0.2.0 (its patch adds
-  both); with v0.1.0 the page shows the plain lines and llusbdac's overlay as before.
-  *Device-verified* 10-26 with a local v0.2.0 build (idle state); streaming not yet seen.
+  llusbdac no longer draws its own screen over Cinder. The installer fetches cinder-llusbdac v0.2.0, whose patch adds both.
+  *Device-verified* 10-26: Windows played through it at the jack with the stats on the page.
 
 ### Fixed
 
@@ -34,7 +33,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   (DEVICE_CHECKLIST 33.2). Stable builds have no adb and are unchanged.
 - **The Low-latency USB DAC option can be installed.** The installers up to v0.3.20-rc3 were built
   before cinder-llusbdac's first release, so they had no checksum to accept its module and said so.
-  They now pin cinder-llusbdac v0.1.0 (SHA-256 `7fdeddb5…`), checked on the PC and on the player.
+  They now pin cinder-llusbdac v0.2.0 (SHA-256 `e4b8dadf…`), checked on the PC and on the player.
   The first load is still to be done with the owner present (DEVICE_CHECKLIST §41.1).
 
 ## [0.3.20] — 2026-10-26

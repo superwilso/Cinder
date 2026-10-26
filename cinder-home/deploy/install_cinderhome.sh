@@ -820,7 +820,7 @@ fi
 # 1g7) Low-latency USB DAC: the `llusbdac` component. The PC installer downloads cinder-llusbdac's
 #      release to the top of the drive; this copies it in only if it is that exact file (the same
 #      SHA-256 installer/src/llusbdac.rs pins), because cinder-msc loads it into the kernel.
-LLUSBDAC_SHA256="7fdeddb520a9b3a52ba8f86705acb9c432a43d6c32966b40e626c7e8766cfc95"
+LLUSBDAC_SHA256="e4b8dadf582d1f5563a1c33714cd599b07914b801c61aff5e1374185eb36bb92"
 LLUSBDAC_KO=$VENDOR/lib/modules/llusbdac.ko
 LLUSBDAC_IN=0
 if [ "$WANT_LLUSBDAC" = 1 ]; then
