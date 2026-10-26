@@ -26,7 +26,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   `usrdata`, `cache`, `var` or `db`, only to the player the backup came from, skips what already
   matches and reads back every write. *Device-verified on the A55 under Windows: a full dump
   matched the player's own reads of every partition the running system leaves alone, and a
-  restore of `bootimg` read back and booted.* Not in a release yet; [`RECOVERY.md`](RECOVERY.md)
+  restore of `bootimg`, then of `cache` (contents really different), read back and booted.* Not in a release yet; [`RECOVERY.md`](RECOVERY.md)
   Step 3 has the steps.
 - **Low-latency USB DAC: its numbers on Cinder's own page.** With Low latency on, the USB-DAC
   info box shows the module's state, the PC's format, the buffer, the time streamed, dropouts and

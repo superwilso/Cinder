@@ -121,8 +121,14 @@ First real write, on the owner's A55: `bootimg` rewritten with the identical byt
 held (`--even-if-same`), 16 MiB in 2 s (about 8 MiB/s, four times the read speed), read back
 matching, and the player booted normally afterwards.
 
-Not yet done: restoring a partition whose contents actually differ (the boot-loop case proper),
-and the larger partitions (`android` is 800 MB: about 2 minutes to write, 6 to read back).
+Then a restore that really changed the partition: `cache` (28 MiB, mounted read-write, so it
+differs after every boot) put back from the afternoon's dump, written in 3 s and read back
+matching. The player booted, ext4 replayed the restored image's journal on mount ("recovery
+complete", as for any image of a filesystem that was in use), and all 13 files in `/cache` were
+byte-identical to before.
+
+Not yet done: the larger partitions (`android` is 800 MB: about 2 minutes to write, 6 to read
+back), and a run on Linux or macOS.
 
 ### Open questions (all need hardware)
 
