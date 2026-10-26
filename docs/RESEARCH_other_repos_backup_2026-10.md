@@ -104,8 +104,25 @@ not an A50-series player's. Checked on the owner's dump and July wbrt backup: bo
 manifests agree with `sha256sum`, and the partitions whose hashes differ between the two are
 exactly the ones found by the byte comparison above.
 
-Next: restore, which writes. The owner has no spare unit; wbrt remains the fallback if a write
-goes wrong, since it restores the same range from the same download mode.
+### Step 3 (2026-10-26): restore
+
+`cinder-rescue restore --from BACKUP --parts bootimg[,...]` writes partitions back from the
+player's own backup with the DA's SDMMC_WRITE_DATA (1 MiB packets, each with an additive checksum,
+each answered with 0x69). It writes only `bootimg`, `recovery`, `android`, `usrdata`, `cache`,
+`var` and `db`: the partitions a boot loop can break. The partition table, bootloader, `nvram`,
+`nvp`, `pro_info`, `seccfg`, `tee` and `contents` are never written, and boot0 (the preloader)
+is outside anything it can address. It refuses unless the chosen partitions still hash to the
+backup's manifest, the backup's and the player's partition tables are both A50-series, and the
+player's chip and eMMC CID equal the manifest's; a wbrt backup has no CID, so it cannot be
+restored from directly. Each partition is read first and left alone if it already matches;
+every write is read back and must hash to the manifest's value. `--dry-run` stops before writing.
+
+First real write, on the owner's A55: `bootimg` rewritten with the identical bytes it already
+held (`--even-if-same`), 16 MiB in 2 s (about 8 MiB/s, four times the read speed), read back
+matching, and the player booted normally afterwards.
+
+Not yet done: restoring a partition whose contents actually differ (the boot-loop case proper),
+and the larger partitions (`android` is 800 MB: about 2 minutes to write, 6 to read back).
 
 ### Open questions (all need hardware)
 
