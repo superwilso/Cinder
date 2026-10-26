@@ -106,9 +106,13 @@ pub fn parse_da(b: &[u8]) -> Result<(String, Vec<DaEntry>), String> {
     }
     let count = u32le(104) as usize;
     if b.len() < DA_HEADER + count * DA_ENTRY {
-        return Err(format!("Download Agent file is cut short ({count} entries)"));
+        return Err(format!(
+            "Download Agent file is cut short ({count} entries)"
+        ));
     }
-    let desc = String::from_utf8_lossy(&b[32..96]).trim_end_matches('\0').to_string();
+    let desc = String::from_utf8_lossy(&b[32..96])
+        .trim_end_matches('\0')
+        .to_string();
     let mut out = Vec::new();
     for i in 0..count {
         let e = DA_HEADER + i * DA_ENTRY;
@@ -140,7 +144,12 @@ pub fn parse_da(b: &[u8]) -> Result<(String, Vec<DaEntry>), String> {
 }
 
 /// The two stages for this chip: the first signed region from the entry region on, and the next.
-pub fn pick_stages(entries: &[DaEntry], hw_code: u16, hw_ver: u16, sw_ver: u16) -> Result<(Region, Region), String> {
+pub fn pick_stages(
+    entries: &[DaEntry],
+    hw_code: u16,
+    hw_ver: u16,
+    sw_ver: u16,
+) -> Result<(Region, Region), String> {
     let e = entries
         .iter()
         .find(|e| e.hw_code == hw_code && e.hw_ver <= hw_ver && e.sw_ver <= sw_ver)
@@ -181,7 +190,11 @@ pub fn handshake(l: &mut impl Link) -> Result<(), String> {
         l.w8(START[i])?;
         i = if l.r8()? == !START[i] { i + 1 } else { 0 };
     }
-    if i == START.len() { Ok(()) } else { Err("the preloader never answered the start sequence".into()) }
+    if i == START.len() {
+        Ok(())
+    } else {
+        Err("the preloader never answered the start sequence".into())
+    }
 }
 
 fn status(l: &mut impl Link, what: &str) -> Result<(), String> {
@@ -200,7 +213,11 @@ pub fn chip(l: &mut impl Link) -> Result<Chip, String> {
     let hw_ver = l.r16()?;
     let sw_ver = l.r16()?;
     status(l, "GET_HW_SW_VER")?;
-    Ok(Chip { hw_code, hw_ver, sw_ver })
+    Ok(Chip {
+        hw_code,
+        hw_ver,
+        sw_ver,
+    })
 }
 
 /// Everything from a synced preloader to a running DA stage 2. Returns the eMMC CID.
@@ -243,7 +260,9 @@ pub fn load_da(l: &mut impl Link, da: &[u8], s1: Region, s2: Region) -> Result<[
     let dev_sum = l.r16()?;
     status(l, "SEND_DA data")?;
     if dev_sum != sum {
-        return Err(format!("stage 1 checksum mismatch: device {dev_sum:#06x}, ours {sum:#06x}"));
+        return Err(format!(
+            "stage 1 checksum mismatch: device {dev_sum:#06x}, ours {sum:#06x}"
+        ));
     }
     l.echo8(0xd5)?; // JUMP_DA
     l.echo32(s1.start_addr)?;
@@ -261,11 +280,20 @@ pub fn load_da(l: &mut impl Link, da: &[u8], s1: Region, s2: Region) -> Result<[
     l.w8(ACK)?;
     l.skip(3)?; // DA version
     if nand != NAND_NOT_FOUND || emmc != 0 {
-        return Err(format!("storage init failed: NAND {nand:#x}, eMMC {emmc:#x}"));
+        return Err(format!(
+            "storage init failed: NAND {nand:#x}, eMMC {emmc:#x}"
+        ));
     }
 
     // Stage 2: device config, then the image in 4 KiB packets, each ACKed.
-    for b in [&[0xffu8, 1][..], &[0, 8, 0], &[0x70, 0x07, 0xff, 0xff], &[1], &[0, 0, 0, 0], &[2, 1, 2, 0]] {
+    for b in [
+        &[0xffu8, 1][..],
+        &[0, 8, 0],
+        &[0x70, 0x07, 0xff, 0xff],
+        &[1],
+        &[0, 0, 0, 0],
+        &[2, 1, 2, 0],
+    ] {
         l.write(b)?;
     }
     std::thread::sleep(std::time::Duration::from_millis(350));
@@ -344,7 +372,10 @@ pub fn read_user(
         let sum = sum16(&buf[..n]);
         let dev = l.r16()?;
         if dev != sum {
-            return Err(format!("checksum mismatch at byte {}: device {dev:#06x}, ours {sum:#06x}", addr + done));
+            return Err(format!(
+                "checksum mismatch at byte {}: device {dev:#06x}, ours {sum:#06x}",
+                addr + done
+            ));
         }
         l.w8(ACK)?;
         sink(&buf[..n])?;
@@ -385,13 +416,19 @@ pub fn write_user(
     let mut done = 0u64;
     while done < len {
         let n = (len - done).min(READ_CHUNK as u64) as usize;
-        src.read_exact(&mut buf[..n]).map_err(|e| format!("backup file: {e}"))?;
+        src.read_exact(&mut buf[..n])
+            .map_err(|e| format!("backup file: {e}"))?;
         l.w8(ACK)?;
         l.write(&buf[..n])?;
         l.w16(sum16(&buf[..n]))?;
         match l.r8()? {
             CONT_CHAR => {}
-            r => return Err(format!("Download Agent stopped the write at byte {}: {r:#04x}", addr + done)),
+            r => {
+                return Err(format!(
+                    "Download Agent stopped the write at byte {}: {r:#04x}",
+                    addr + done
+                ))
+            }
         }
         done += n as u64;
         progress(done);
@@ -436,11 +473,21 @@ mod tests {
         let mut rx = vec![ACK, ACK, ACK]; // switch part, part, read
         for c in data.chunks(READ_CHUNK) {
             rx.extend_from_slice(c);
-            rx.extend_from_slice(&c.iter().fold(0u16, |s, &b| s.wrapping_add(b as u16)).to_be_bytes());
+            rx.extend_from_slice(
+                &c.iter()
+                    .fold(0u16, |s, &b| s.wrapping_add(b as u16))
+                    .to_be_bytes(),
+            );
         }
-        let mut f = Fake { rx: rx.into(), tx: vec![] };
+        let mut f = Fake {
+            rx: rx.into(),
+            tx: vec![],
+        };
         let mut got = vec![];
-        read_user(&mut f, 0x200, data.len() as u64, |c| Ok(got.extend_from_slice(c))).unwrap();
+        read_user(&mut f, 0x200, data.len() as u64, |c| {
+            Ok(got.extend_from_slice(c))
+        })
+        .unwrap();
         assert_eq!(got, data);
         // READ command: op, host OS, storage, addr, len, then packet size; one ACK per chunk.
         assert_eq!(&f.tx[2..5], &[0xd6, 12, 2]);
@@ -451,14 +498,22 @@ mod tests {
         let mut rx = vec![ACK, ACK, ACK];
         rx.extend_from_slice(&[1, 2, 3]);
         rx.extend_from_slice(&7u16.to_be_bytes());
-        let mut f = Fake { rx: rx.into(), tx: vec![] };
-        assert!(read_user(&mut f, 0, 3, |_| Ok(())).unwrap_err().contains("checksum"));
+        let mut f = Fake {
+            rx: rx.into(),
+            tx: vec![],
+        };
+        assert!(read_user(&mut f, 0, 3, |_| Ok(()))
+            .unwrap_err()
+            .contains("checksum"));
     }
 
     #[test]
     fn write_sends_ack_packet_checksum_and_stops_on_anything_but_cont() {
         let data: Vec<u8> = (0..READ_CHUNK + 5).map(|i| (i * 3) as u8).collect();
-        let mut f = Fake { rx: vec![ACK, ACK, ACK, CONT_CHAR, CONT_CHAR].into(), tx: vec![] };
+        let mut f = Fake {
+            rx: vec![ACK, ACK, ACK, CONT_CHAR, CONT_CHAR].into(),
+            tx: vec![],
+        };
         write_user(&mut f, 0x2180000, data.len() as u64, &mut &data[..], |_| {}).unwrap();
         let t = &f.tx;
         // switch part, then op, storage, part, addr, len, packet size
@@ -475,8 +530,13 @@ mod tests {
         assert_eq!(&t[c + 3..c + 8], &data[READ_CHUNK..]);
         assert_eq!(t.len(), c + 10);
 
-        let mut f = Fake { rx: vec![ACK, ACK, ACK, 0xa5].into(), tx: vec![] };
-        assert!(write_user(&mut f, 0, 4, &mut &[1u8, 2, 3, 4][..], |_| {}).unwrap_err().contains("stopped the write"));
+        let mut f = Fake {
+            rx: vec![ACK, ACK, ACK, 0xa5].into(),
+            tx: vec![],
+        };
+        assert!(write_user(&mut f, 0, 4, &mut &[1u8, 2, 3, 4][..], |_| {})
+            .unwrap_err()
+            .contains("stopped the write"));
     }
 
     #[test]
@@ -491,7 +551,10 @@ mod tests {
         b[e + 2..e + 4].copy_from_slice(&0x8590u16.to_le_bytes());
         b[e + 18..e + 20].copy_from_slice(&3u16.to_le_bytes());
         // region 0 unsigned (skipped), 1 = stage 1, 2 = stage 2
-        for (r, (len, sig)) in [(0x100u32, 0u32), (0x200, 0x100), (0x300, 0x100)].iter().enumerate() {
+        for (r, (len, sig)) in [(0x100u32, 0u32), (0x200, 0x100), (0x300, 0x100)]
+            .iter()
+            .enumerate()
+        {
             let o = e + 20 + r * 20;
             b[o + 4..o + 8].copy_from_slice(&len.to_le_bytes());
             b[o + 8..o + 12].copy_from_slice(&(0x20_0000 + r as u32).to_le_bytes());

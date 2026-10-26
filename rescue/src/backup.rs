@@ -65,7 +65,11 @@ pub struct Region {
 pub fn regions(addr: u64, len: u64) -> Vec<Region> {
     TABLE
         .iter()
-        .map(|&(name, s, n)| Region { name, start: s.max(addr), end: (s + n).min(addr + len) })
+        .map(|&(name, s, n)| Region {
+            name,
+            start: s.max(addr),
+            end: (s + n).min(addr + len),
+        })
         .filter(|r| r.start < r.end)
         .collect()
 }
@@ -75,7 +79,9 @@ pub fn regions(addr: u64, len: u64) -> Vec<Region> {
 /// partitions relative to itself, and its fourth entry links the next EBR relative to the first.
 pub fn check_layout(head: &[u8]) -> Result<(), String> {
     let sector = |off: u64| -> Result<&[u8], String> {
-        let s = head.get(off as usize..off as usize + 512).ok_or("image too short for its partition table")?;
+        let s = head
+            .get(off as usize..off as usize + 512)
+            .ok_or("image too short for its partition table")?;
         if s[510..] != [0x55, 0xaa] {
             return Err(format!("no partition table signature at {off:#x}"));
         }
@@ -83,7 +89,11 @@ pub fn check_layout(head: &[u8]) -> Result<(), String> {
     };
     let entry = |s: &[u8], i: usize| {
         let e = &s[446 + 16 * i..];
-        (e[4], u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as u64, u32::from_le_bytes([e[12], e[13], e[14], e[15]]) as u64)
+        (
+            e[4],
+            u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as u64,
+            u32::from_le_bytes([e[12], e[13], e[14], e[15]]) as u64,
+        )
     };
     let mbr = sector(0)?;
     let mut found = vec![];
@@ -116,9 +126,17 @@ pub fn check_layout(head: &[u8]) -> Result<(), String> {
         match found.get(i) {
             Some(&(fs, fn_)) if fs == s && (last || fn_ == n) => {}
             Some(&(fs, fn_)) => {
-                return Err(format!("p{} ({name}) is at {fs:#x}+{fn_:#x}, an A50-series player has {s:#x}+{n:#x}", i + 2))
+                return Err(format!(
+                    "p{} ({name}) is at {fs:#x}+{fn_:#x}, an A50-series player has {s:#x}+{n:#x}",
+                    i + 2
+                ))
             }
-            None => return Err(format!("the partition table stops before p{} ({name})", i + 2)),
+            None => {
+                return Err(format!(
+                    "the partition table stops before p{} ({name})",
+                    i + 2
+                ))
+            }
         }
     }
     Ok(())
@@ -148,7 +166,10 @@ impl Hashes {
     }
 
     pub fn finish(self) -> Vec<(Region, String)> {
-        self.regions.into_iter().zip(self.sums.into_iter().map(Sha256::hex)).collect()
+        self.regions
+            .into_iter()
+            .zip(self.sums.into_iter().map(Sha256::hex))
+            .collect()
     }
 }
 
@@ -159,22 +180,41 @@ pub struct Manifest {
     pub sums: Vec<(String, u64, u64, String)>,
 }
 
-pub fn write_manifest(path: &str, header: &[String], addr: u64, len: u64, sums: &[(Region, String)]) -> Result<(), String> {
+pub fn write_manifest(
+    path: &str,
+    header: &[String],
+    addr: u64,
+    len: u64,
+    sums: &[(Region, String)],
+) -> Result<(), String> {
     let mut s = format!("cinder-rescue backup {}\n", env!("CARGO_PKG_VERSION"));
     for h in header {
         s += &format!("{h}\n");
     }
     s += &format!("range {addr:#x} {len:#x}\n");
     for (r, h) in sums {
-        s += &format!("region {} {:#x} {:#x} {h}\n", r.name, r.start, r.end - r.start);
+        s += &format!(
+            "region {} {:#x} {:#x} {h}\n",
+            r.name,
+            r.start,
+            r.end - r.start
+        );
     }
     std::fs::write(path, s).map_err(|e| format!("{path}: {e}"))
 }
 
 pub fn read_manifest(path: &str) -> Result<Manifest, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-    let num = |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|_| format!("{path}: bad number {s}"));
-    let mut m = Manifest { header: vec![], addr: 0, len: 0, sums: vec![] };
+    let num = |s: &str| {
+        u64::from_str_radix(s.trim_start_matches("0x"), 16)
+            .map_err(|_| format!("{path}: bad number {s}"))
+    };
+    let mut m = Manifest {
+        header: vec![],
+        addr: 0,
+        len: 0,
+        sums: vec![],
+    };
     let mut range = false;
     for line in text.lines() {
         let f: Vec<&str> = line.split_whitespace().collect();
@@ -183,22 +223,33 @@ pub fn read_manifest(path: &str) -> Result<Manifest, String> {
                 (m.addr, m.len) = (num(a)?, num(l)?);
                 range = true;
             }
-            ["region", n, s, l, h] => m.sums.push((n.to_string(), num(s)?, num(l)?, h.to_string())),
+            ["region", n, s, l, h] => m
+                .sums
+                .push((n.to_string(), num(s)?, num(l)?, h.to_string())),
             _ => m.header.push(line.to_string()),
         }
     }
     if !range {
-        return Err(format!("{path}: not a cinder-rescue manifest (no range line)"));
+        return Err(format!(
+            "{path}: not a cinder-rescue manifest (no range line)"
+        ));
     }
     Ok(m)
 }
 
 /// Hash a backup file whose first byte is eMMC position `addr`. Calls `progress` with bytes read.
-pub fn hash_file(path: &str, addr: u64, len: u64, mut progress: impl FnMut(u64)) -> Result<Vec<(Region, String)>, String> {
+pub fn hash_file(
+    path: &str,
+    addr: u64,
+    len: u64,
+    mut progress: impl FnMut(u64),
+) -> Result<Vec<(Region, String)>, String> {
     let mut f = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
     let size = f.metadata().map_err(|e| format!("{path}: {e}"))?.len();
     if size != len {
-        return Err(format!("{path} is {size} bytes, the backup should be {len}"));
+        return Err(format!(
+            "{path} is {size} bytes, the backup should be {len}"
+        ));
     }
     let mut h = Hashes::new(addr, len);
     let mut buf = vec![0u8; 1 << 22];
@@ -222,16 +273,66 @@ mod tests {
     /// The MBR and nine EBR sectors' entries from the A55's own dump (2026-10-26):
     /// (type, start sector, sector count) x 4 per sector, sectors 0x80000 apart.
     const REAL: [[(u8, u32, u32); 4]; 10] = [
-        [(5, 0x400, 0xffffffff), (0x83, 0x2800, 0x1800), (0x83, 0x4000, 0x2800), (0x83, 0x6800, 0x5000)],
-        [(0x83, 0xb400, 0x5000), (0x83, 0x10400, 0x100), (0x83, 0x10500, 0x300), (5, 0x400, 0xffffffff)],
-        [(0x83, 0x10400, 0x8000), (0x83, 0x18400, 0x8000), (0x83, 0x20400, 0x3000), (5, 0x800, 0xffffffff)],
-        [(0x83, 0x23000, 0x400), (0x83, 0x23400, 0x1800), (0x83, 0x24c00, 0x5000), (5, 0xc00, 0xffffffff)],
-        [(0x83, 0x29800, 0x2800), (0x83, 0x2c000, 0x2800), (0x83, 0x2e800, 0x800), (5, 0x1000, 0xffffffff)],
-        [(0x83, 0x2ec00, 0x800), (0x83, 0x2f400, 0x800), (0x83, 0x2fc00, 0x190000), (5, 0x1400, 0xffffffff)],
-        [(0x83, 0x1bf800, 0xe000), (0x83, 0x1cd800, 0x400), (0x83, 0x1cdc00, 0x7800), (5, 0x1800, 0xffffffff)],
-        [(0x83, 0x1d5000, 0x37000), (0x83, 0x20c000, 0x32000), (0x83, 0x23e000, 0x4000), (5, 0x1c00, 0xffffffff)],
-        [(0x83, 0x241c00, 0x40000), (0x83, 0x281c00, 0x200000), (0x83, 0x481c00, 0x14000), (5, 0x2000, 0xffffffff)],
-        [(0x83, 0x495800, 0x20000000), (0x83, 0xffffdc00, 0x3ff), (0, 0, 0), (0, 0, 0)],
+        [
+            (5, 0x400, 0xffffffff),
+            (0x83, 0x2800, 0x1800),
+            (0x83, 0x4000, 0x2800),
+            (0x83, 0x6800, 0x5000),
+        ],
+        [
+            (0x83, 0xb400, 0x5000),
+            (0x83, 0x10400, 0x100),
+            (0x83, 0x10500, 0x300),
+            (5, 0x400, 0xffffffff),
+        ],
+        [
+            (0x83, 0x10400, 0x8000),
+            (0x83, 0x18400, 0x8000),
+            (0x83, 0x20400, 0x3000),
+            (5, 0x800, 0xffffffff),
+        ],
+        [
+            (0x83, 0x23000, 0x400),
+            (0x83, 0x23400, 0x1800),
+            (0x83, 0x24c00, 0x5000),
+            (5, 0xc00, 0xffffffff),
+        ],
+        [
+            (0x83, 0x29800, 0x2800),
+            (0x83, 0x2c000, 0x2800),
+            (0x83, 0x2e800, 0x800),
+            (5, 0x1000, 0xffffffff),
+        ],
+        [
+            (0x83, 0x2ec00, 0x800),
+            (0x83, 0x2f400, 0x800),
+            (0x83, 0x2fc00, 0x190000),
+            (5, 0x1400, 0xffffffff),
+        ],
+        [
+            (0x83, 0x1bf800, 0xe000),
+            (0x83, 0x1cd800, 0x400),
+            (0x83, 0x1cdc00, 0x7800),
+            (5, 0x1800, 0xffffffff),
+        ],
+        [
+            (0x83, 0x1d5000, 0x37000),
+            (0x83, 0x20c000, 0x32000),
+            (0x83, 0x23e000, 0x4000),
+            (5, 0x1c00, 0xffffffff),
+        ],
+        [
+            (0x83, 0x241c00, 0x40000),
+            (0x83, 0x281c00, 0x200000),
+            (0x83, 0x481c00, 0x14000),
+            (5, 0x2000, 0xffffffff),
+        ],
+        [
+            (0x83, 0x495800, 0x20000000),
+            (0x83, 0xffffdc00, 0x3ff),
+            (0, 0, 0),
+            (0, 0, 0),
+        ],
     ];
 
     fn head() -> Vec<u8> {
@@ -272,6 +373,13 @@ mod tests {
         assert_eq!(h.finish(), whole);
         // mbr, ebr1-9, then pro_info clipped to the 6 MiB range.
         assert_eq!(whole.len(), 11);
-        assert_eq!(whole[10].0, Region { name: "pro_info", start: 0x500000, end: 0x600000 });
+        assert_eq!(
+            whole[10].0,
+            Region {
+                name: "pro_info",
+                start: 0x500000,
+                end: 0x600000
+            }
+        );
     }
 }
