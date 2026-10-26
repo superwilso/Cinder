@@ -170,8 +170,19 @@ echo "── off-device harness: boot the app against fake services ──"
 # python3 and a host C++ compiler; skipped rather than failed if either is missing, like the
 # self-tests above.
 if command -v python3 >/dev/null 2>&1 && [ -x "$HERE/harness/run.sh" ]; then
-    if "$HERE/harness/run.sh" >/dev/null 2>&1; then echo "OK: harness — all scenarios passed"; \
-    else "$HERE/harness/run.sh"; echo "FAIL: off-device harness"; exit 1; fi
+    # The first run's log is kept: it used to go to /dev/null and the verbose rerun passed, so the
+    # one flake seen (first run after a heavy build, 10-25 and 10-26) never named its scenario. A
+    # pass on the retry is a warning with that scenario named; failing twice is a real failure.
+    hlog="${TMPDIR:-/tmp}/cinder-harness-first.log"
+    if "$HERE/harness/run.sh" >"$hlog" 2>&1; then echo "OK: harness — all scenarios passed"
+    else
+        flaky="$(sed -n 's/^\([a-z0-9-]*\): FAILED$/\1/p' "$hlog" | paste -sd' ')"
+        echo "harness: first run failed (${flaky:-no scenario named}); log: $hlog — retrying once"
+        tail -40 "$hlog"
+        if "$HERE/harness/run.sh"; then
+            echo "WARN: harness flaked on the first run and passed on the retry: ${flaky:-see $hlog}"
+        else echo "FAIL: off-device harness (twice)"; exit 1; fi
+    fi
 else echo "(skip: no python3 or no harness)"; fi
 
 echo "── verify: device glibc compatibility gate ──"
