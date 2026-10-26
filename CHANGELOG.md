@@ -16,6 +16,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Low-latency USB DAC option can be installed.** The installers up to v0.3.20-rc3 were built
+  before cinder-llusbdac's first release, so they had no checksum to accept its module and said so.
+  They now pin cinder-llusbdac v0.1.0 (SHA-256 `7fdeddb5…`), checked on the PC and on the player.
+  The first load is still to be done with the owner present (DEVICE_CHECKLIST §41.1).
+
 ## [0.3.20] — 2026-10-26
 
 ### Added

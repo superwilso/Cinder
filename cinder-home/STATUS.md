@@ -998,8 +998,8 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
     titles and ◁/▷ inside the file, and the album page lists the CUE tracks), **Cassette, Clock and Winamp
     (`.wsz` skins)** Now Playing styles, and the **guided installer** (window pages checked from screenshots).
 - **More options, 2026-10-24 — code done, device-gated** (`docs/DEVICE_CHECKLIST.md` §41): the
-  **low-latency USB DAC** (`llusbdac`, waiting on cinder-llusbdac's first release for its pinned
-  hash), a **skins and tapes list**, **swap ⏮/⏭** (`swap_prev_next`), **dragging the Winamp title**,
+  **low-latency USB DAC** (`llusbdac`; pinned 10-26 to cinder-llusbdac v0.1.0, whose `vermagic`
+  matches the player's own modules), a **skins and tapes list**, **swap ⏮/⏭** (`swap_prev_next`), **dragging the Winamp title**,
   a **user font** (`cinder_font.ttf`), and **Bluetooth auto off that wakes** with the player.
   **Suspend to RAM is now on by default**; USB after a resume (33.2) is still partial.
 

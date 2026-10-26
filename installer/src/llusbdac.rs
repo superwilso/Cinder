@@ -11,8 +11,8 @@ use std::path::Path;
 pub const NAME: &str = "llusbdac.ko";
 pub const URL: &str =
     "https://github.com/superwilso/cinder-llusbdac/releases/download/v0.1.0/llusbdac.ko";
-/// The release's own sha256 (its `llusbdac.ko.sha256` asset). Empty until v0.1.0 is published.
-pub const SHA256: &str = "";
+/// The release's own sha256 (its `llusbdac.ko.sha256` asset), v0.1.0 of 2026-10-25.
+pub const SHA256: &str = "7fdeddb520a9b3a52ba8f86705acb9c432a43d6c32966b40e626c7e8766cfc95";
 /// Generous: the module is ~70 KB.
 const LIMIT: usize = 1 << 20;
 
