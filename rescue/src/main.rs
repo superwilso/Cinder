@@ -330,6 +330,8 @@ fn help() {
     println!("      writes only {} from this player's own backup;", RESTORABLE.join(", "));
     println!("      anything that already matches is left alone, and every write is read back");
     println!();
+    println!("  cinder-rescue licences                          the notices this program carries");
+    println!();
     println!("A dump writes FILE.manifest (chip, eMMC CID, SHA-256 per partition) and verifies itself.");
     println!("Only restore writes to the player.");
 }
@@ -338,6 +340,14 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str);
     let cmd = args.first().map(String::as_str).unwrap_or("");
+    if cmd == "licences" {
+        // The protocol facts are ported from an MIT tool, whose notice must travel with every copy;
+        // libusb is linked statically under the LGPL 2.1 (its licence ships with each release).
+        println!("{}", include_str!("../LICENSE-mediatek_flash_tool"));
+        println!("libusb 1.0 is linked statically, under the GNU LGPL 2.1: https://libusb.info");
+        println!("Source and relinking: build rescue/ from the tagged release with your own libusb.");
+        return Ok(());
+    }
     if cmd == "verify" {
         return verify(args.get(1).ok_or("verify needs a FILE")?);
     }

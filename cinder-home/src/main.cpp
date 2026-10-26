@@ -9267,17 +9267,40 @@ static bool g_msc_active = false;   // between enter and exit (gates /contents w
 // 2026-10-25, the first boots on stock: adb there after an install, gone after a reboot with the
 // cable in. USB storage mode keeps adb itself (init's `msc` block), so it is left alone, and
 // USB-DAC's gadget is `audio_func,adb`.
+//
+// AND A GADGET THE PC NEVER CONFIGURED. Since usb_adb_enable_dev, Sony's manager rebuilds the
+// gadget WITH adb, so "has adb" stopped meaning "reachable": 2026-10-26 it unbound and re-added
+// both functions 6 ms apart (21.4 s into a boot), the PC never saw the disconnect, and the player
+// stayed off the bus until a replug (dev_compose_adb's comment has the same failure from 10-11).
+// So with the cable in, a mass_storage,adb gadget not CONFIGURED for 5 s gets the slow compose.
 static void dev_adb_keepalive() {
-    static long long next_try = 0;
+    static long long next_try = 0, unconfigured_since = 0;
     if (g_msc_active || now_ms() < next_try) return;
-    char f[96] = {0};
-    if (FILE* fp = std::fopen("/sys/class/android_usb/android0/functions", "r")) {
-        if (!std::fgets(f, sizeof f, fp)) f[0] = 0;
-        std::fclose(fp);
+    auto read_line = [](const char* path, char* out, size_t n) {
+        out[0] = 0;
+        if (FILE* fp = std::fopen(path, "r")) {
+            if (!std::fgets(out, (int)n, fp)) out[0] = 0;
+            std::fclose(fp);
+        }
+    };
+    char f[96], st[32], online[8];
+    read_line("/sys/class/android_usb/android0/functions", f, sizeof f);
+    if (!f[0]) return;
+    const bool has_adb = std::strstr(f, "adb") != nullptr;
+    if (has_adb) {
+        read_line("/sys/class/android_usb/android0/state", st, sizeof st);
+        read_line("/sys/class/power_supply/usb/online", online, sizeof online);
+        const bool lost = std::strstr(f, "mass_storage") && online[0] == '1' &&
+                          std::strncmp(st, "CONFIGURED", 10) != 0;
+        if (!lost) { unconfigured_since = 0; return; }
+        if (!unconfigured_since) unconfigured_since = now_ms();
+        if (now_ms() - unconfigured_since < 5000) return;
     }
-    if (!f[0] || std::strstr(f, "adb")) return;
+    unconfigured_since = 0;
     next_try = now_ms() + 30000;
-    clog_("adb: the gadget lost adb (a cable event on stock) — composing it again (dev)");
+    clog_(has_adb ? "adb: cable in but the PC has not configured the gadget for 5 s — composing it "
+                    "again, slowly enough to be seen (dev)"
+                  : "adb: the gadget lost adb (a cable event on stock) — composing it again (dev)");
     run_watchdog_only("adb: keepalive (dev)", 10, dev_compose_adb);
 }
 #endif

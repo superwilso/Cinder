@@ -1,6 +1,7 @@
 name: release
 
-# Builds the end-user installer and attaches it to a GitHub release.
+# Builds the end-user installer and cinder-rescue (rescue/, eMMC backup and restore over MediaTek's
+# download mode) and attaches both to a GitHub release.
 #
 # Only the INSTALLER is built here. The device binaries it embeds (cinder-home, the
 # setuid helpers, the .UPG) are committed under cinder-home/dist/ because building them needs a
@@ -89,6 +90,19 @@ jobs:
           path: installer/cinder-installer-windows-x64.exe
           if-no-files-found: error
 
+      - name: cinder-rescue — test, build, stage
+        working-directory: rescue
+        run: |
+          cargo test --release
+          cargo build --release
+          Copy-Item target/release/cinder-rescue.exe cinder-rescue-windows-x64.exe
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cinder-rescue-windows-x64.exe
+          path: rescue/cinder-rescue-windows-x64.exe
+          if-no-files-found: error
+
   # The Linux build sends the same vendor SCSI command the Windows build does (SG_IO rather than
   # SCSI pass-through), so both finish the install; it needs root, and says so when it does not
   # have it (installer/src/console.rs, print_trigger_failed).
@@ -118,6 +132,17 @@ jobs:
         with:
           name: cinder-installer-linux-x64
           path: installer/cinder-installer-linux-x64
+          if-no-files-found: error
+      - name: cinder-rescue — test, build, stage
+        working-directory: rescue
+        run: |
+          cargo test --release
+          cargo build --release
+          cp target/release/cinder-rescue cinder-rescue-linux-x64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cinder-rescue-linux-x64
+          path: rescue/cinder-rescue-linux-x64
           if-no-files-found: error
 
   # macOS: EXPERIMENTAL until a real Mac has installed and uninstalled with it (docs/ROADMAP.md,
@@ -154,6 +179,22 @@ jobs:
           path: |
             installer/cinder-installer-macos
             installer/LICENSE-libusb.txt
+          if-no-files-found: error
+      # cinder-rescue links the same vendored libusb, so LICENSE-libusb.txt above covers it too.
+      - name: cinder-rescue — test, build both, join them
+        working-directory: rescue
+        run: |
+          cargo test --release
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          lipo -create -output cinder-rescue-macos \
+            target/aarch64-apple-darwin/release/cinder-rescue \
+            target/x86_64-apple-darwin/release/cinder-rescue
+          lipo -info cinder-rescue-macos
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cinder-rescue-macos
+          path: rescue/cinder-rescue-macos
           if-no-files-found: error
 
   release:

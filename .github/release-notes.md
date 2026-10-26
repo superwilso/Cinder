@@ -55,11 +55,21 @@ It stages the files, ejects the player's volume, and sends the upgrade command a
 because macOS gives no SCSI passthrough for a mounted disk. It has not yet been run on a real
 Mac. If it fails, finish from Linux or Windows; see [install.md](../blob/main/install.md).
 
-The Mac binary contains [libusb](https://libusb.info) 1.0.27, linked statically. libusb is
-licensed under the GNU LGPL 2.1; its licence is attached as `LICENSE-libusb.txt`. Its source
-is at <https://github.com/libusb/libusb/tree/v1.0.27>. To relink the installer against a
-different libusb, build it from this release's tagged source (`installer/`, `cargo build
---release`) with your own libusb.
+### cinder-rescue (experimental): back up, and get a looping player back
+
+`cinder-rescue-windows-x64.exe`, `cinder-rescue-linux-x64` and `cinder-rescue-macos` back up the
+player's eMMC over MediaTek's download mode, which works even when the player will not start,
+and later restore only the partitions a boot loop breaks, only to the player the backup came from.
+Take the backup while the player still works. Steps, and the two things it needs that are not
+in this release (MediaTek's Download Agent file, and on Windows a WinUSB driver): RECOVERY.md,
+Step 3. Run on Windows with an NW-A55; not yet run on Linux or a Mac. `cinder-rescue licences`
+prints the notices it carries.
+
+The Mac installer and all three cinder-rescue builds contain [libusb](https://libusb.info)
+1.0.27, linked statically. libusb is licensed under the GNU LGPL 2.1; its licence is attached as
+`LICENSE-libusb.txt`. Its source is at <https://github.com/libusb/libusb/tree/v1.0.27>. To
+relink either program against a different libusb, build it from this release's tagged source
+(`installer/` or `rescue/`, `cargo build --release`) with your own libusb.
 
 > **The player has no update option in its own menus.** This generation never had one —
 > the upgrade is always triggered by the host over USB.

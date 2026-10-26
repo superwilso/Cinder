@@ -60,8 +60,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   wanted. Dev builds now tell it once at boot (`SetAdbEnabled`), so adb comes back after a
   resume and a cable plug with nothing else to do. *Device-verified* on stock 1.02
   (DEVICE_CHECKLIST 33.2). Stable builds have no adb and are unchanged.
-  Not settled yet: one dev boot later the same day lost USB about 21 s in, after Sony's manager
-  rebuilt the gadget a second time, until the cable was replugged.
+  Sony's manager then rebuilds the gadget with adb in it, sometimes twice in a boot and once with
+  the two writes 8 ms apart, too fast for the PC to see; the player then stayed off USB until a
+  replug, and the keepalive, seeing adb in the function list, did nothing. It now also checks that
+  the PC has configured the gadget: cable in, mass storage + adb, not configured for 5 s, and it
+  composes again with the one-second gap the PC needs. *Device-verified*: the natural case
+  recovered by itself 7 s after Sony's bounce, and a deliberate bounce in 11 s.
 - **The Low-latency USB DAC option can be installed.** The installers up to v0.3.20-rc3 were built
   before cinder-llusbdac's first release, so they had no checksum to accept its module and said so.
   They now pin cinder-llusbdac v0.2.0 (SHA-256 `e4b8dadf…`), checked on the PC and on the player.

@@ -64,6 +64,16 @@ jobs:
           - what: installer (macos)
             os: macos-latest
             dir: installer
+          # cinder-rescue: raw USB through vendored libusb on all three, so each one is built.
+          - what: rescue (linux)
+            os: ubuntu-latest
+            dir: rescue
+          - what: rescue (windows)
+            os: windows-latest
+            dir: rescue
+          - what: rescue (macos)
+            os: macos-latest
+            dir: rescue
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -281,6 +291,10 @@ jobs:
 
       - name: installer — advisory scan
         working-directory: installer
+        run: cargo audit
+
+      - name: rescue — advisory scan
+        working-directory: rescue
         run: cargo audit
 
   payload:
