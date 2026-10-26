@@ -9,7 +9,9 @@
 //!
 //! Windows needs a WinUSB driver on VID_0E8D&PID_2000 ("MT65xx Preloader"), the one wbrt installs.
 
+mod backup;
 mod mtk;
+mod sha256;
 
 use mtk::Link;
 use std::io::Write;
@@ -83,8 +85,9 @@ fn wait_for_player() -> Result<Usb, String> {
     Ok(Usb { h, buf: [0; 512], pos: 0, avail: 0, timeout: Duration::from_secs(1) })
 }
 
-/// Handshake, load the DA, and leave stage 2 running. Prints what it learns.
-fn connect(da: &[u8]) -> Result<Usb, String> {
+/// Handshake, load the DA, and leave stage 2 running. Prints what it learns and returns it as
+/// manifest header lines.
+fn connect(da: &[u8]) -> Result<(Usb, Vec<String>), String> {
     let (desc, entries) = mtk::parse_da(da)?;
     let mut usb = wait_for_player()?;
     mtk::handshake(&mut usb)?;
@@ -95,16 +98,24 @@ fn connect(da: &[u8]) -> Result<Usb, String> {
     let cid = mtk::load_da(&mut usb, da, s1, s2)?;
     println!("eMMC CID {:08X} {:08X} {:08X} {:08X}", cid[0], cid[1], cid[2], cid[3]);
     usb.timeout = Duration::from_secs(10);
-    Ok(usb)
+    let header = vec![
+        format!("chip {:#06x} {:#06x} {:#06x}", chip.hw_code, chip.hw_ver, chip.sw_ver),
+        format!("emmc-cid {:08X} {:08X} {:08X} {:08X}", cid[0], cid[1], cid[2], cid[3]),
+    ];
+    Ok((usb, header))
 }
 
 fn dump(da: &[u8], out: &str, addr: u64, len: u64) -> Result<(), String> {
     // A new file only: never overwrite a backup that already exists. Checked before the wait,
     // created after it, so a run that never connects leaves nothing behind.
-    if std::path::Path::new(out).exists() {
-        return Err(format!("{out} already exists; pick a new name"));
+    let manifest = format!("{out}.manifest");
+    for p in [out, &manifest] {
+        if std::path::Path::new(p).exists() {
+            return Err(format!("{p} already exists; pick a new name"));
+        }
     }
-    let mut usb = connect(da)?;
+    let (mut usb, header) = connect(da)?;
+    let mut hashes = backup::Hashes::new(addr, len);
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(out).map_err(|e| format!("{out}: {e}"))?;
     let mut file = std::io::BufWriter::with_capacity(1 << 20, file);
     println!("Reading {len} bytes from {addr:#x} into {out}");
@@ -113,6 +124,7 @@ fn dump(da: &[u8], out: &str, addr: u64, len: u64) -> Result<(), String> {
     let mut shown = 0u64;
     let res = mtk::read_user(&mut usb, addr, len, |chunk| {
         file.write_all(chunk).map_err(|e| format!("{out}: {e}"))?;
+        hashes.feed(addr + done, chunk);
         done += chunk.len() as u64;
         if done - shown >= 64 << 20 || done == len {
             shown = done;
@@ -132,9 +144,55 @@ fn dump(da: &[u8], out: &str, addr: u64, len: u64) -> Result<(), String> {
             len - done
         ));
     }
-    file.flush().map_err(|e| format!("{out}: {e}"))?;
+    drop(file);
     println!("\nDone in {:.0} s. Restarting the player.", start.elapsed().as_secs_f64());
-    mtk::reboot(&mut usb)
+    mtk::reboot(&mut usb)?;
+    // Hashes of the bytes as received; verify then proves the file on disk holds the same.
+    backup::write_manifest(&manifest, &header, addr, len, &hashes.finish())?;
+    verify(out)
+}
+
+/// Re-read a backup and check it against its manifest, or write a manifest for one that has
+/// none (a wbrt backup, say). Checks the partition layout when the backup starts at 0.
+fn verify(path: &str) -> Result<(), String> {
+    let manifest = format!("{path}.manifest");
+    let m = std::path::Path::new(&manifest).exists().then(|| backup::read_manifest(&manifest)).transpose()?;
+    let (addr, len) = match &m {
+        Some(m) => (m.addr, m.len),
+        None => (0, std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?.len()),
+    };
+    if addr == 0 && len >= 0x500000 {
+        let mut head = vec![0u8; 0x500000];
+        std::io::Read::read_exact(&mut std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?, &mut head)
+            .map_err(|e| format!("{path}: {e}"))?;
+        backup::check_layout(&head)?;
+        println!("Partition table: an NW-A50-series layout");
+    }
+    println!("Reading {path} back ({} MiB)", len >> 20);
+    let sums = backup::hash_file(path, addr, len, |pos| {
+        if pos % (256 << 20) == 0 || pos == len {
+            print!("\r  {} / {} MiB   ", pos >> 20, len >> 20);
+            let _ = std::io::stdout().flush();
+        }
+    })?;
+    println!();
+    let Some(m) = m else {
+        backup::write_manifest(&manifest, &["source: no manifest before; hashed from the file as it is".into()], addr, len, &sums)?;
+        println!("No manifest: wrote {manifest} from the file as it is now ({} partitions).", sums.len());
+        return Ok(());
+    };
+    let mut bad = vec![];
+    for (r, h) in &sums {
+        match m.sums.iter().find(|s| s.0 == r.name) {
+            Some(s) if s.1 == r.start && s.2 == r.end - r.start && &s.3 == h => {}
+            _ => bad.push(r.name),
+        }
+    }
+    if !bad.is_empty() || m.sums.len() != sums.len() {
+        return Err(format!("{path} does not match its manifest: {}", if bad.is_empty() { "partition list differs".into() } else { bad.join(", ") }));
+    }
+    println!("Verified: all {} partitions match {manifest}.", sums.len());
+    Ok(())
 }
 
 fn num(s: &str) -> Result<u64, String> {
@@ -151,7 +209,10 @@ fn help() {
     println!("  cinder-rescue info --da DA.bin                  connect, show the chip and eMMC, restart");
     println!("  cinder-rescue dump --da DA.bin --out FILE       copy what wbrt copies ({WBRT_LEN} bytes from 0)");
     println!("                [--addr N] [--len N]            ...or another range of the user area");
+    println!("  cinder-rescue verify FILE                       re-read a backup against FILE.manifest,");
+    println!("                                                  or write one (for a wbrt backup)");
     println!();
+    println!("A dump writes FILE.manifest (chip, eMMC CID, SHA-256 per partition) and verifies itself.");
     println!("Read-only: nothing here writes to the player.");
 }
 
@@ -159,6 +220,9 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str);
     let cmd = args.first().map(String::as_str).unwrap_or("");
+    if cmd == "verify" {
+        return verify(args.get(1).ok_or("verify needs a FILE")?);
+    }
     if !matches!(cmd, "info" | "dump") {
         help();
         return Ok(());
@@ -166,7 +230,7 @@ fn run() -> Result<(), String> {
     let da_path = opt("--da").ok_or("--da DA.bin is required")?;
     let da = std::fs::read(da_path).map_err(|e| format!("{da_path}: {e}"))?;
     if cmd == "info" {
-        let mut usb = connect(&da)?;
+        let (mut usb, _) = connect(&da)?;
         println!("Download mode works. Restarting the player.");
         return mtk::reboot(&mut usb);
     }

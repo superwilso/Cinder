@@ -89,8 +89,23 @@ every 1 MiB packet checksum-verified. It has no write command.
   each, so the transfer size is the suspect, not proven. Speed was the same both ways.
 - **Driver.** Windows used the WinUSB driver wbrt had already installed for VID_0E8D&PID_2000.
 
-Next: the backup header (chip, CID, range, per-partition hashes) and a verify command; then
-restore, which writes, only on a spare unit.
+### Step 2 (2026-10-26): manifest and verify
+
+Every dump now writes `FILE.manifest` beside it: chip, eMMC CID, the range, and a SHA-256 for each
+of the 38 user-area partitions (the A50-series table from `/proc/dumchar_info`, clipped to the
+range), hashed from the bytes as they arrived over USB. The dump then re-reads its own file
+against that manifest, so "backup done" means "backup readable". `cinder-rescue verify FILE` does
+the same later, and for a backup without a manifest (a wbrt one) it writes one from the file.
+
+Both check the partition layout first: the MBR plus MediaTek's EBR chain (the MBR holds p2-p4 and
+points at the first EBR; each EBR holds three partitions relative to itself and links the next
+relative to the first) must put p2-p29 exactly where the table says, or the image is refused as
+not an A50-series player's. Checked on the owner's dump and July wbrt backup: both pass, the
+manifests agree with `sha256sum`, and the partitions whose hashes differ between the two are
+exactly the ones found by the byte comparison above.
+
+Next: restore, which writes. The owner has no spare unit; wbrt remains the fallback if a write
+goes wrong, since it restores the same range from the same download mode.
 
 ### Open questions (all need hardware)
 
