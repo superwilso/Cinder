@@ -27,6 +27,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::series::Series;
 use crate::stats::sig;
 
 pub const PATH: &str = "/contents/cinder_books.tsv";
@@ -134,12 +135,14 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// Group audiobook tracks into books: one per folder, chapters in file-name order, the books by
-/// author then title. Tracks that are not audiobook chapters are ignored. The listener's place is
-/// not set here — [`Store::apply`] does that.
+/// Group audiobook tracks into books: one per folder, chapters in file-name order. Tracks that are
+/// not audiobook chapters are ignored. `series_of` is asked once per book, with its first
+/// chapter's path, for the series its tags name. The listener's place is not set here —
+/// [`Store::apply`] does that. The order is [`order`]'s.
 pub fn rows(
     tracks: &[cinder_db::Track],
     song_row: impl Fn(&cinder_db::Track) -> SongRow,
+    series_of: impl Fn(&str) -> Option<Series>,
 ) -> Vec<BookRow> {
     let mut by_dir: BTreeMap<&str, Vec<&cinder_db::Track>> = BTreeMap::new();
     for t in tracks {
@@ -151,9 +154,12 @@ pub fn rows(
         .into_iter()
         .map(|(dir, mut ch)| {
             ch.sort_by(|a, b| natural_cmp(&a.filename, &b.filename));
+            let series = series_of(&ch[0].filename).unwrap_or_default();
             BookRow {
                 title: title_of(dir).to_string(),
                 author: author_of(dir).to_string(),
+                series: series.name,
+                series_part: series.part,
                 dir: dir.to_string(),
                 paths: ch.iter().map(|t| t.filename.clone()).collect(),
                 chapters: ch.into_iter().map(&song_row).collect(),
@@ -161,11 +167,27 @@ pub fn rows(
             }
         })
         .collect();
-    books.sort_by(|a, b| {
-        cinder_ui::collate::cmp(&a.author, &b.author)
-            .then_with(|| cinder_ui::collate::cmp(&a.title, &b.title))
-    });
+    order(&mut books);
     books
+}
+
+/// A series number as a sort key; a book with no number goes after the numbered ones.
+fn part_key(part: &str) -> f64 {
+    part.parse().unwrap_or(f64::INFINITY)
+}
+
+/// The list order: by author; under an author the series first (by series name, then number, then
+/// title), then the books that belong to none, by title. The Audiobooks screen puts a heading
+/// wherever the author or the series changes, so this is the order it reads in.
+pub fn order(books: &mut [BookRow]) {
+    use cinder_ui::collate::cmp;
+    books.sort_by(|a, b| {
+        cmp(&a.author, &b.author)
+            .then_with(|| a.series.is_empty().cmp(&b.series.is_empty()))
+            .then_with(|| cmp(&a.series, &b.series))
+            .then_with(|| part_key(&a.series_part).total_cmp(&part_key(&b.series_part)))
+            .then_with(|| cmp(&a.title, &b.title))
+    });
 }
 
 /// Where the listener is in one book, as the store keeps it.
@@ -691,5 +713,58 @@ mod tests {
             !enabled_at(&p),
             "an Update that turns it off removes the flag"
         );
+    }
+
+    fn tagged(author: &str, series: &str, part: &str, title: &str) -> BookRow {
+        BookRow {
+            author: author.into(),
+            series: series.into(),
+            series_part: part.into(),
+            title: title.into(),
+            ..Default::default()
+        }
+    }
+
+    fn titles(b: &[BookRow]) -> Vec<&str> {
+        b.iter().map(|b| b.title.as_str()).collect()
+    }
+
+    #[test]
+    fn a_series_is_read_in_number_order_not_title_order() {
+        let mut b = vec![
+            tagged("Au", "S", "10", "A tenth"),
+            tagged("Au", "S", "2", "Z second"),
+            tagged("Au", "S", "2.5", "M between"),
+            tagged("Au", "S", "1", "B first"),
+        ];
+        order(&mut b);
+        assert_eq!(
+            titles(&b),
+            ["B first", "Z second", "M between", "A tenth"],
+            "2 before 2.5 before 10"
+        );
+    }
+
+    #[test]
+    fn under_an_author_the_series_come_first_then_the_standalone_books() {
+        let mut b = vec![
+            tagged("Au", "", "", "Alone"),
+            tagged("Au", "Beta", "1", "B1"),
+            tagged("Au", "Alpha", "1", "A1"),
+            tagged("Zed", "", "", "Z1"),
+        ];
+        order(&mut b);
+        assert_eq!(titles(&b), ["A1", "B1", "Alone", "Z1"]);
+    }
+
+    #[test]
+    fn an_unnumbered_book_of_a_series_follows_the_numbered_ones() {
+        let mut b = vec![
+            tagged("Au", "S", "", "Extra"),
+            tagged("Au", "S", "1", "One"),
+            tagged("Au", "S", "", "Another"),
+        ];
+        order(&mut b);
+        assert_eq!(titles(&b), ["One", "Another", "Extra"]);
     }
 }

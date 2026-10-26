@@ -133,6 +133,8 @@ fn hostile_library() -> cinder_ui::Library {
         .map(|i| cinder_ui::model::BookRow {
             title: format!("The Complete Annotated Chronicles of the Very Long Winter, Book {i}"),
             author: "Королевский филармонический оркестр / 東京都交響楽団".into(),
+            series: "The Very Long Winter Cycle of Annotated Chronicles and Appendices".into(),
+            series_part: format!("{i}.5"),
             chapters: vec![Default::default(); 120],
             paths: vec![String::new(); 120],
             chapter: 118,

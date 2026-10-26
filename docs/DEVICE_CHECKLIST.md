@@ -943,7 +943,8 @@ side. Not proven.
 
 Host-tested: 27 tests, three harness scenarios, the screen in the overflow and golden gates.
 **2026-10-15: the PR author (plaquette) installed it on their NW-A55 and reports it works and is "already very good"**
-(reported as a whole, so the rows below are not ticked individually). One assumption is unmeasured: that Sony's scanner files the
+(reported as a whole, so the rows below are not ticked individually). Row 37.11 (series): the same author reports it worked as described on their NW-A55 with MP3 files; M4B and
+FLAC / Ogg / Opus have not been tried on a player. One assumption is unmeasured: that Sony's scanner files the
 contents of `LEARNING` as ordinary audio rows (`media_type = 1`) in `/db/MTPDB.dat`. Its scanner is
 configured for `MUSIC` and `LEARNING` (`g_ms_dirs`), so it should, but no player has been asked.
 
@@ -967,6 +968,7 @@ scanner pick them up (reconnect from the PC, or the rescan Cinder triggers after
 | 37.8 | **Over Bluetooth** | 37.3 with headphones | Same result. The seek after the hand-over is the one the boot resume does, but not yet seen on the Bluetooth route | |
 | 37.9 | **The file survives a PC** | Connect to the PC, open `cinder_books.tsv`, change one position, save, eject | The next resume of that book starts at the edited position | A reset position = the PC copy was overwritten: send both versions |
 | 37.10 | **Books are grouped under their author** | Put `LEARNING/Author A/Book 1`, `…/Book 2` and `LEARNING/Author B/Book 3` on the player; open the book button | `Author A` heading with Book 1, Book 2 slightly indented below, then `Author B` with Book 3. Tapping a heading does nothing; tapping a book resumes it | A heading that plays, or a book listed twice = send a photo |
+| 37.11 | **Series** | Tag the first file of three books by `Author A` with `series` = `Series A` and `series-part` = `1`, `2`, `10` (an MP3; an M4B and a FLAC with the same names if you have them), leave a fourth book untagged; open the book button | Under `Author A`: a `Series A` heading, then `1. …`, `2. …`, `10. …` in that order, indented further than before; the untagged book after them with no heading and no number. Tapping the `Series A` heading does nothing | A series missing for one format = send that file's tags (`ffprobe -show_format`) |
 
 ## 38 — 2026-10-18 — v0.3.17 results on the owner's Walkman One player
 

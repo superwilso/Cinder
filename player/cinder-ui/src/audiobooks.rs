@@ -23,13 +23,18 @@ pub fn ROW_H() -> i32 {
 
 /// An author's heading is slimmer than a book row.
 pub const HEAD_H: i32 = 34;
-/// How far a book sits in under its author's heading.
+/// A series' heading, under its author's, is slimmer still.
+pub const SERIES_H: i32 = 30;
+/// How far a book sits in under its author's heading; a series heading sits in by this much, and
+/// its books by twice it.
 const INDENT: f32 = 18.0;
 
-/// One line of the list: an author's heading, or a book (an index into `Library::books`).
+/// One line of the list: an author's heading, a series' heading, or a book (an index into
+/// `Library::books`; a heading carries the index of the first book it covers).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Line {
     Author(usize),
+    Series(usize),
     Book(usize),
 }
 
@@ -37,25 +42,45 @@ impl Line {
     fn height(self) -> i32 {
         match self {
             Line::Author(_) => HEAD_H,
+            Line::Series(_) => SERIES_H,
             Line::Book(_) => ROW_H(),
         }
     }
 }
 
-/// The list top to bottom. `Library::books` arrives sorted by author, so a heading goes in
-/// wherever the author changes; a book with no author folder gets none and sits at the top.
+/// The list top to bottom. `Library::books` arrives sorted by author and, under an author, by
+/// series (`books::order`), so a heading goes in wherever the author changes and a series heading
+/// wherever the series does; a book with no author folder gets no author heading and sits at the
+/// top, and a book in no series gets no series heading.
 pub fn lines(lib: &Library) -> Vec<Line> {
     let mut out = Vec::with_capacity(lib.books.len() * 2);
-    let mut prev: Option<&str> = None;
+    let mut prev: Option<&crate::model::BookRow> = None;
     for (i, b) in lib.books.iter().enumerate() {
-        let new_author = prev.map_or(true, |p| !p.eq_ignore_ascii_case(&b.author));
+        let new_author = prev.map_or(true, |p| !p.author.eq_ignore_ascii_case(&b.author));
         if new_author && !b.author.is_empty() {
             out.push(Line::Author(i));
         }
+        let new_series =
+            new_author || prev.map_or(true, |p| !p.series.eq_ignore_ascii_case(&b.series));
+        if new_series && !b.series.is_empty() {
+            out.push(Line::Series(i));
+        }
         out.push(Line::Book(i));
-        prev = Some(&b.author);
+        prev = Some(b);
     }
     out
+}
+
+/// How far in a book's row sits: under its author, under its series, or flush.
+fn indent_of(b: &crate::model::BookRow) -> f32 {
+    let mut n = 0.0;
+    if !b.author.is_empty() {
+        n += INDENT;
+    }
+    if !b.series.is_empty() {
+        n += INDENT;
+    }
+    n
 }
 
 pub fn content_h(lib: &Library) -> i32 {
@@ -88,7 +113,7 @@ pub fn row_at(lib: &Library, y: i32, scroll: i32) -> Option<usize> {
         if y < top + l.height() {
             return match l {
                 Line::Book(i) => Some(i),
-                Line::Author(_) => None,
+                Line::Author(_) | Line::Series(_) => None,
             };
         }
         top += l.height();
@@ -173,10 +198,16 @@ pub fn render(
                 text::draw(c, f, 22.0, (y + h / 2 + 5) as f32, &name, &hs);
                 hline(c, y + h - 1, t.line);
             }
+            Line::Series(i) => {
+                let b = &lib.books[i];
+                let hs = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
+                let x = if b.author.is_empty() { 0.0 } else { INDENT };
+                let name = crate::widgets::fit(f, &b.series, &hs, 400.0 - x);
+                text::draw(c, f, 22.0 + x, (y + h / 2 + 5) as f32, &name, &hs);
+            }
             Line::Book(i) => {
                 let b = &lib.books[i];
-                let in_group = !b.author.is_empty();
-                let x = if in_group { INDENT } else { 0.0 };
+                let x = indent_of(b);
                 let cy = y + ROW_H() / 2;
                 // A book part-way through is lit; one finished or not started is quiet.
                 let lit = b.in_progress();
@@ -193,7 +224,7 @@ pub fn render(
                     f,
                     62.0 + x,
                     (cy + 1) as f32,
-                    &crate::widgets::fit(f, &b.title, &ts, 330.0 - x),
+                    &crate::widgets::fit(f, &b.list_title(), &ts, 330.0 - x),
                     &ts,
                 );
                 let ps = sty(
@@ -334,5 +365,90 @@ mod tests {
         assert_eq!(row_top(&l, 0, 0), TOP + HEAD_H);
         assert_eq!(row_top(&l, 2, 0), TOP + HEAD_H + 2 * ROW_H() + HEAD_H);
         assert_eq!(content_h(&l), 2 * HEAD_H + 3 * ROW_H());
+    }
+
+    fn in_series(author: &str, series: &str, part: &str, title: &str) -> crate::model::BookRow {
+        BookRow {
+            series: series.into(),
+            series_part: part.into(),
+            ..by(author, title)
+        }
+    }
+
+    fn serial() -> Library {
+        Library {
+            books: vec![
+                in_series("Au", "TKKG", "1", "Erste"),
+                in_series("Au", "TKKG", "2", "Zweite"),
+                in_series("Au", "Other", "1", "Solo"),
+                by("Au", "Standalone"),
+                in_series("Zed", "TKKG", "3", "Dritte"),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_series_is_a_heading_between_the_author_and_its_books() {
+        assert_eq!(
+            lines(&serial()),
+            vec![
+                Line::Author(0),
+                Line::Series(0),
+                Line::Book(0),
+                Line::Book(1),
+                Line::Series(2),
+                Line::Book(2),
+                Line::Book(3),
+                Line::Author(4),
+                Line::Series(4),
+                Line::Book(4),
+            ],
+            "the same series under another author is a new heading"
+        );
+    }
+
+    #[test]
+    fn a_series_without_an_author_folder_still_has_its_heading() {
+        let l = Library {
+            books: vec![
+                in_series("", "S", "1", "One"),
+                in_series("", "S", "2", "Two"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            lines(&l),
+            vec![Line::Series(0), Line::Book(0), Line::Book(1)]
+        );
+    }
+
+    #[test]
+    fn a_numbered_book_shows_its_number_and_an_unnumbered_one_does_not() {
+        assert_eq!(
+            in_series("Au", "TKKG", "12", "Title").list_title(),
+            "12. Title"
+        );
+        assert_eq!(in_series("Au", "TKKG", "", "Title").list_title(), "Title");
+        assert_eq!(by("Au", "Title").list_title(), "Title");
+    }
+
+    #[test]
+    fn taps_still_land_on_books_when_series_headings_shift_the_rows() {
+        let l = serial();
+        assert_eq!(
+            row_at(&l, TOP + HEAD_H + SERIES_H / 2, 0),
+            None,
+            "series heading"
+        );
+        for r in 0..l.books.len() {
+            let y = row_top(&l, r, 0) + ROW_H() / 2;
+            assert_eq!(row_at(&l, y, 0), Some(r), "book {r}");
+        }
+        assert_eq!(
+            content_h(&l),
+            2 * HEAD_H + 3 * SERIES_H + 5 * ROW_H(),
+            "two authors, three series headings, five books"
+        );
     }
 }

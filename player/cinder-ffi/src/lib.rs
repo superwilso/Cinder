@@ -21,6 +21,7 @@ mod pcm_tap;
 mod playlists;
 mod present;
 mod scrobble;
+mod series;
 mod shared;
 mod spectrum;
 mod stats;
@@ -1880,7 +1881,7 @@ fn build_library_with(
         }
         out.into_iter().unzip()
     };
-    let books = books::rows(&book_tracks, song_row_of);
+    let books = books::rows(&book_tracks, song_row_of, series::read_file);
     if !books.is_empty() {
         eprintln!(
             "cinder-ffi: audiobooks: {} books, {} chapters",
