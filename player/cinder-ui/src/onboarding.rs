@@ -465,7 +465,11 @@ fn features(c: &mut Canvas, t: &Theme, f: &FontSet) {
         ),
         (
             crate::i18n::text("Visualiser"),
-            "Thirteen styles: scope, stereo field, spectrogram\u{2026}",
+            if crate::scale::large() {
+                crate::i18n::text("13 visualiser styles")
+            } else {
+                "Thirteen styles: scope, stereo field, spectrogram\u{2026}"
+            },
         ),
         (
             crate::i18n::text("Sleep timer & battery care"),

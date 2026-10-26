@@ -931,14 +931,22 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         // so the row names the one that is actually in the path.
         ROW_EQ if s.tone_control => t(
             crate::i18n::text("Equalizer"),
-            crate::i18n::text("Using Tone Control instead (Advanced)"),
+            crate::i18n::text(if crate::scale::large() {
+                "Tone Control in use (Advanced)"
+            } else {
+                "Using Tone Control instead (Advanced)"
+            }),
             fx_over,
             RowTrail::Open(crate::i18n::text("TONE").into()),
         ),
         // On the jack the curve is the DAC chip's own five bands: no processor time at all.
         ROW_EQ if s.eq_on_dac => t(
             crate::i18n::text("Equalizer"),
-            "In the DAC \u{b7} no battery cost on the jack",
+            crate::i18n::text(if crate::scale::large() {
+                "DAC: no extra battery on jack"
+            } else {
+                "In the DAC \u{b7} no battery cost on the jack"
+            }),
             fx_over,
             RowTrail::Open("DAC".into()),
         ),
@@ -950,7 +958,14 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         ),
         ROW_DSEE => t(
             "DSEE HX",
-            fx(s.dsee, "Upscale compressed audio to near hi-res"),
+            fx(
+                s.dsee,
+                if crate::scale::large() {
+                    "Upscales compressed audio"
+                } else {
+                    "Upscale compressed audio to near hi-res"
+                },
+            ),
             fx_over,
             RowTrail::Switch(s.dsee),
         ),
@@ -995,7 +1010,12 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         ),
         _ => RowText {
             title: crate::i18n::text("Advanced").into(),
-            sub: crate::i18n::text("Surround, DC Phase, Vinyl, Tone, DAC EQ").into(),
+            sub: crate::i18n::text(if crate::scale::large() {
+                "Sound effects and DAC EQ"
+            } else {
+                "Surround, DC Phase, Vinyl, Tone, DAC EQ"
+            })
+            .into(),
             trail: RowTrail::Open(String::new()),
             dim: false,
         },
@@ -1428,6 +1448,9 @@ mod tests {
             row_text(&s, ROW_EQ, 0).sub,
             "In the DAC \u{b7} no battery cost on the jack"
         );
+        crate::scale::set_large(true);
+        assert_eq!(row_text(&s, ROW_EQ, 0).sub, "DAC: no extra battery on jack");
+        crate::scale::set_large(false);
     }
 
     /// The ordinary case: every stage the user switched on is named, in order.

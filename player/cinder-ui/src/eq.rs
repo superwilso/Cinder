@@ -46,7 +46,10 @@ pub fn band_db(raw: i8) -> f32 {
 }
 
 pub const PRESET_TOP: i32 = crate::chrome::HEADER_BOTTOM + 6;
-pub const PRESET_H: i32 = 30;
+#[allow(non_snake_case)]
+pub fn PRESET_H() -> i32 {
+    crate::scale::ctl(30)
+}
 const PRESET_X0: i32 = 22;
 const PRESET_GAP: i32 = 8;
 const PRESET_W: i32 = (W as i32 - 2 * PRESET_X0 - 4 * PRESET_GAP) / 5;
@@ -57,14 +60,14 @@ pub fn preset_rect(i: usize) -> (i32, i32, i32, i32) {
         PRESET_X0 + i as i32 * (PRESET_W + PRESET_GAP),
         PRESET_TOP,
         PRESET_W,
-        PRESET_H,
+        PRESET_H(),
     )
 }
 
 /// Which preset pill is under `(x, y)`, if any. Returns None for the gaps between pills, so a
 /// miss does nothing instead of silently changing the sound.
 pub fn preset_at(x: i32, y: i32) -> Option<usize> {
-    if !(PRESET_TOP..PRESET_TOP + PRESET_H).contains(&y) {
+    if !(PRESET_TOP..PRESET_TOP + PRESET_H()).contains(&y) {
         return None;
     }
     (0..EQ_PRESETS.len()).find(|&i| {
@@ -204,10 +207,16 @@ pub fn render(
         let on = i == sel;
         // knob: bg ring + accent core (selected band gets a brighter, larger highlight ring)
         if on {
-            disc(c, bx, knob_y, 22, t.ink);
+            disc(c, bx, knob_y, crate::scale::ctl(22) as u32, t.ink);
         }
-        disc(c, bx, knob_y, 16, t.bg);
-        disc(c, bx, knob_y, if on { 12 } else { 10 }, t.acc);
+        disc(c, bx, knob_y, crate::scale::ctl(16) as u32, t.bg);
+        disc(
+            c,
+            bx,
+            knob_y,
+            crate::scale::ctl(if on { 12 } else { 10 }) as u32,
+            t.acc,
+        );
         // dB label above (brighter on the selected band)
         // The REAL decibels, not the raw half-dB value — printing the raw number claimed twice
         // the boost the DSP was applying.
@@ -282,4 +291,25 @@ pub fn render(
         ),
     };
     let _ = W;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn big_view_grows_preset_targets_and_eq_knobs() {
+        let x = preset_rect(0).0 + 1;
+        assert_eq!(PRESET_H(), 30);
+        assert_eq!(preset_at(x, PRESET_TOP + 34), None);
+        assert_eq!(crate::scale::ctl(16), 16);
+
+        crate::scale::set_large(true);
+        assert_eq!(PRESET_H(), 38);
+        assert_eq!(preset_at(x, PRESET_TOP + 34), Some(0));
+        assert_eq!(crate::scale::ctl(16), 20);
+        crate::scale::set_large(false);
+
+        assert_eq!(preset_at(x, PRESET_TOP + 34), None);
+    }
 }

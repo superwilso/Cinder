@@ -393,7 +393,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
             let sub = match r {
                 ROW_DISPLAY => crate::i18n::text(DISPLAY_SUB),
                 ROW_MORE => crate::i18n::text(MORE_SUB),
-                ROW_QUICK => crate::i18n::text(QUICK_SUB),
+                ROW_QUICK => crate::i18n::text(if crate::scale::large() {
+                    "Swipe down from screen top"
+                } else {
+                    QUICK_SUB
+                }),
                 ROW_BIG => crate::i18n::text(BIG_SUB),
                 ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
                 ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),

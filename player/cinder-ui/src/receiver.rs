@@ -174,6 +174,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
 
     let sub = if rx.on {
         crate::i18n::text("On · your music is paused")
+    } else if crate::scale::large() {
+        crate::i18n::text("Play phone or PC audio through the jack")
     } else {
         crate::i18n::text("Play from a phone or PC into this Walkman")
     };
@@ -276,11 +278,19 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         crate::text::draw(c, f, 22.0, LDAC_HINT_Y as f32, &hint, &hint_style);
     }
 
-    let notes = [
-        crate::i18n::text("Sound comes out of the headphone jack."),
-        crate::i18n::text("Bluetooth headphones do not reconnect while it is on."),
-        crate::i18n::text("Leaving this page turns it off and gives the music back."),
-    ];
+    let notes = if crate::scale::large() {
+        [
+            crate::i18n::text("Sound comes out of the headphone jack."),
+            crate::i18n::text("Headphones do not reconnect while this is on."),
+            crate::i18n::text("Leave this page to stop it and resume music."),
+        ]
+    } else {
+        [
+            crate::i18n::text("Sound comes out of the headphone jack."),
+            crate::i18n::text("Bluetooth headphones do not reconnect while it is on."),
+            crate::i18n::text("Leaving this page turns it off and gives the music back."),
+        ]
+    };
     let nst = sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0);
     let mut ny = 600.0;
     hline(c, 580, t.line);
@@ -290,14 +300,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         ny += 22.0;
     }
     hline(c, 740, t.line);
-    crate::widgets::center(
-        c,
-        f,
-        240.0,
-        770.0,
-        crate::i18n::text("EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE"),
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1),
-    );
+    let footer = crate::i18n::text("EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE");
+    let footer_style = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1);
+    if crate::scale::large() {
+        crate::widgets::draw_wrap2(c, f, 22.0, 758.0, footer, &footer_style, 458.0, 19.0);
+    } else {
+        crate::widgets::center(c, f, 240.0, 770.0, footer, &footer_style);
+    }
 }
 
 #[cfg(test)]

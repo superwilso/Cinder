@@ -678,6 +678,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     );
     let dsub = if bt.debug_log {
         crate::i18n::text("Recording · switch off to save it to the drive")
+    } else if crate::scale::large() {
+        crate::i18n::text("Record radio traffic for support")
     } else {
         crate::i18n::text("Record the radio's traffic for a bug report")
     };
@@ -776,7 +778,11 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
                 let sub = if !bt.enhanced_supported {
                     crate::i18n::text("Not supported by the connected device")
                 } else if bt.enhanced {
-                    "Sets the headphone's level \u{b7} no button beep"
+                    if crate::scale::large() {
+                        crate::i18n::text("Sets headphone level; no beep")
+                    } else {
+                        "Sets the headphone's level \u{b7} no button beep"
+                    }
                 } else {
                     "Sends key presses \u{b7} on if volume won't change"
                 };
@@ -812,12 +818,12 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         t.faint,
         0.04,
     );
-    let note = crate::widgets::fit(
-        f,
-        crate::i18n::text("Used everywhere, USB-DAC to LDAC included."),
-        &st,
-        (kit::RIGHT - kit::LEFT) as f32,
-    );
+    let note = crate::i18n::text(if crate::scale::large() {
+        "Applies to Bluetooth and USB-DAC."
+    } else {
+        "Used everywhere, USB-DAC to LDAC included."
+    });
+    let note = crate::widgets::fit(f, note, &st, (kit::RIGHT - kit::LEFT) as f32);
     text::draw(c, f, kit::LEFT as f32, (bottom + 28) as f32, &note, &st);
 }
 

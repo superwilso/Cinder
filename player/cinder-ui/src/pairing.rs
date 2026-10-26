@@ -405,9 +405,17 @@ pub fn render(
     let sub = if scanning {
         crate::ui_format!("SEARCHING… {} FOUND", found.len())
     } else if found.is_empty() {
-        crate::i18n::text("PUT THE DEVICE IN PAIRING MODE").to_string()
+        if crate::scale::large() {
+            crate::i18n::text("PUT DEVICE IN PAIRING MODE").to_string()
+        } else {
+            crate::i18n::text("PUT THE DEVICE IN PAIRING MODE").to_string()
+        }
     } else {
-        crate::ui_format!("{} FOUND · SCAN AGAIN TO REFRESH", found.len())
+        if crate::scale::large() {
+            crate::ui_format!("{} FOUND · SCAN TO REFRESH", found.len())
+        } else {
+            crate::ui_format!("{} FOUND · SCAN AGAIN TO REFRESH", found.len())
+        }
     };
     crate::widgets::draw_fit(
         c,
@@ -502,7 +510,11 @@ pub fn render(
         // (forget_armed, busy) is an ABSOLUTE index, because that is what the taps returned.
         let ai = start + i;
         let sub = if busy == Some(ai) {
-            crate::i18n::text("CONNECTING…").to_string()
+            if crate::scale::large() {
+                crate::i18n::text("CONNECTING").to_string()
+            } else {
+                crate::i18n::text("CONNECTING…").to_string()
+            }
         } else if d.connected {
             crate::i18n::text("CONNECTED · TAP TO DISCONNECT").to_string()
         } else if d.kind.is_empty() {

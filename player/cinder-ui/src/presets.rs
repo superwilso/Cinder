@@ -201,6 +201,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Presets) {
             Part::Row(Hit::Save) => {
                 let sub = if n >= MAX {
                     crate::ui_format!("All {} are in use \u{b7} delete one to save another", MAX)
+                } else if crate::scale::large() {
+                    crate::i18n::text("Save current sound as a preset").to_string()
                 } else {
                     crate::ui_format!("Saves how {} sounds now, under a name", p.live)
                 };
@@ -226,7 +228,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Presets) {
                 let w = (kit::RIGHT - kit::LEFT) as f32;
                 let s = fit(
                     f,
-                    crate::i18n::text("Nothing saved yet. Save the sound you have now."),
+                    crate::i18n::text(if crate::scale::large() {
+                        "No presets yet. Save the current sound."
+                    } else {
+                        "Nothing saved yet. Save the sound you have now."
+                    }),
                     &st,
                     w,
                 );

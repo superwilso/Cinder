@@ -340,7 +340,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
         f,
         240.0,
         (sy + sh + 26) as f32,
-        crate::i18n::text("Written to the hardware clock, so it survives a power cycle."),
+        crate::i18n::text(if crate::scale::large() {
+            "Saved to clock; survives power-off."
+        } else {
+            "Written to the hardware clock, so it survives a power cycle."
+        }),
         &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0),
     );
 }

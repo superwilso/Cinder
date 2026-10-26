@@ -25,18 +25,26 @@ Song and album names cut short in a list are expected (they are cut at any size)
 on that list is a page still to fix. Fixed-height pages that run off the bottom are not detected
 yet. Look at their PNGs.
 
-## Pages still to redesign
+## Final pass (2026-10-25)
 
-First run (2026-10-25): 121 of 416 previews reported something. After the first redesign pass: 103,
-nearly all long song titles (cut at any size) and the literal "…" in copy such as "Linking to
-device…". What is left:
+The first run reported 121 of 416 previews; the first redesign pass brought that to 103. The
+remaining page-specific work is now addressed:
 
-| Page | What breaks in Big view | Direction |
+| Page | Big view change |
 |---|---|---|
-| Pairing, BT Receiver, Bluetooth ▸ Sound quality | Captions and the EXPERIMENTAL footer cut | Wrap the captions |
-| Sound (Tone Control note), Presets, Volume curve, Date & time, Zappin | One sub line each is cut | Wrap, or shorter copy |
-| FM, Equalizer | Not broken, but the ±0.1, ◀ ▶ buttons and the EQ handles stay small | Bigger buttons and handle bands |
-| Winamp skins, cassette tapes | Sideways views with their own targets; not looked at | Nearest-target taps, as Now Playing |
+| Pairing | Long scan and connection captions are shortened only in Big view. |
+| BT Receiver | The long mode description is shortened, and the experimental footer wraps. |
+| Bluetooth ▸ Sound quality | The codec note and Enhanced Mode caption use concise Big-view copy. |
+| Sound, Presets, Date & time, Settings, onboarding | Explanatory lines use concise Big-view copy; normal-size copy is unchanged. |
+| FM | Fine-tune buttons grow vertically, and rendering and hit testing share the scaled height. |
+| Equalizer | Preset hit areas and the drawn band handles grow with Big view. |
+| Winamp skin | The existing nearest-control hit test gets a wider Big-view margin; the skin is not redrawn. |
+| Cassette tape | Its three transport regions already cover the full sideways screen; the top-right Menu target is 120 × 100 px. |
+
+The latest `--big` pass reports 68 of 422 previews. The remaining reports are predominantly
+expected truncation of long song, album, artist and playlist names, long sample device names, and
+literal progress ellipses. Review `out/big/` for fixed-height pages that the text audit cannot
+measure.
 
 ## Done
 

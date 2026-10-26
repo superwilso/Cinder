@@ -43,8 +43,16 @@ const PL_TITLE_H: i32 = 35;
 const ROW_H: i32 = 34;
 /// One character of the skin's font (5 skin px), in panel pixels: a dragged title moves by these.
 pub const CELL: i32 = 9;
-/// A near miss within this many skin px still lands on the control it was aimed at.
+/// Normal view keeps a small near-miss margin. Big view widens it so tiny skin controls are easier
+/// to hit without changing the artwork or playlist geometry.
 const SLOP: f32 = 3.0;
+fn slop() -> f32 {
+    if crate::scale::large() {
+        18.0
+    } else {
+        SLOP
+    }
+}
 
 fn k(v: i32) -> i32 {
     (v as f32 * K).round() as i32
@@ -143,7 +151,7 @@ pub fn on_playlist(ly: i32, full: bool) -> bool {
     ly >= pl_top(full)
 }
 
-/// The control at `(lx, ly)`: on the window, an exact hit first, else the nearest within `SLOP`;
+/// The control at `(lx, ly)`: on the window, an exact hit first, else the nearest within `slop()`;
 /// on the playlist, its title bar or a row. `full`: the playlist has the panel.
 pub fn ctl_at(lx: i32, ly: i32, full: bool) -> Option<Ctl> {
     let top = pl_top(full);
@@ -163,7 +171,7 @@ pub fn ctl_at(lx: i32, ly: i32, full: bool) -> Option<Ctl> {
     WINDOW
         .iter()
         .map(|&(c, r)| (miss(r), c))
-        .filter(|(d, _)| *d <= SLOP)
+        .filter(|(d, _)| *d <= slop())
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, c)| c)
 }
@@ -601,6 +609,7 @@ mod tests {
             let (x, y, w, h) = kr(r);
             assert_eq!(ctl_at(x + w / 2, y + h / 2, false), Some(ctl), "{ctl:?}");
         }
+
         // A near miss below Play is still Play; the gap between two buttons is the nearer one.
         let (x, y, w, h) = kr((39, 88, 23, 18));
         assert_eq!(ctl_at(x + w / 2, y + h + 4, false), Some(Ctl::Play));
@@ -622,6 +631,17 @@ mod tests {
             Some(Ctl::PlRow(1))
         );
         assert!(pl_rows(true) >= 22);
+    }
+
+    #[test]
+    fn big_view_widens_winamp_controls_without_changing_normal_hits() {
+        let (x, _, w, _) = kr((39, 88, 23, 18));
+        let near = (x + w / 2, k(112));
+        assert_eq!(ctl_at(near.0, near.1, false), None);
+        crate::scale::set_large(true);
+        assert_eq!(ctl_at(near.0, near.1, false), Some(Ctl::Play));
+        crate::scale::set_large(false);
+        assert_eq!(ctl_at(near.0, near.1, false), None);
     }
 
     #[test]

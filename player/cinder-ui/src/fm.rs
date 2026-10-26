@@ -57,7 +57,10 @@ const DIAL_X0: i32 = 30;
 const DIAL_W: i32 = 420;
 const DIAL_Y: i32 = 285;
 const BTN_Y: i32 = 336;
-const BTN_H: i32 = 44;
+#[allow(non_snake_case)]
+fn BTN_H() -> i32 {
+    crate::scale::ctl(44)
+}
 const PRESET_Y0: i32 = 418;
 const PRESET_W: i32 = 138;
 const PRESET_H: i32 = 52;
@@ -129,7 +132,7 @@ pub fn hit(x: i32, y: i32, rec: bool) -> Option<Hit> {
     if (DIAL_Y - 22..DIAL_Y + 22).contains(&y) && (DIAL_X0..DIAL_X0 + DIAL_W).contains(&x) {
         return Some(Hit::Dial(dial_khz(x)));
     }
-    if (BTN_Y..BTN_Y + BTN_H).contains(&y) {
+    if (BTN_Y..BTN_Y + BTN_H()).contains(&y) {
         for i in 0..4 {
             let bx = btn_x(i);
             if (bx..bx + BTN_W).contains(&x) {
@@ -317,12 +320,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     let bs = sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.08);
     for (i, l) in BTN_LABELS.iter().enumerate() {
         let bx = btn_x(i);
-        stroke_rect(c, bx, BTN_Y, BTN_W, BTN_H, t.line, 1);
+        let button_h = BTN_H();
+        stroke_rect(c, bx, BTN_Y, BTN_W, button_h, t.line, 1);
         center(
             c,
             f,
             (bx + BTN_W / 2) as f32,
-            (BTN_Y + BTN_H / 2 + 4) as f32,
+            (BTN_Y + button_h / 2 + 4) as f32,
             l,
             &bs,
         );
@@ -538,6 +542,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn big_view_grows_the_fine_tune_targets() {
+        assert_eq!(BTN_H(), 44);
+        crate::scale::set_large(true);
+        assert_eq!(BTN_H(), 55);
+        assert_eq!(hit(btn_x(1) + 10, BTN_Y + 54, false), Some(Hit::Prev));
+        crate::scale::set_large(false);
+    }
+
     /// With the recorder installed the scan row splits in two, and the gap between them is dead.
     #[test]
     fn the_record_button_only_exists_when_installed() {
@@ -560,7 +573,7 @@ mod tests {
             "left of the first button"
         );
         assert_eq!(
-            hit(240, BTN_Y + BTN_H + 4, false),
+            hit(240, BTN_Y + BTN_H() + 4, false),
             None,
             "below the button row"
         );
