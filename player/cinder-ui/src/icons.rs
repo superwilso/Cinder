@@ -249,6 +249,23 @@ pub fn bt(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     );
 }
 
+/// "Random": a die showing five. The artist page's Random album button (it used [`library`]'s grid,
+/// which reads as "view", not "pick one").
+pub fn dice(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    vbox(c, cx, cy, s, col, stroke_w(s), 1.5, 1.5, 21.0, 21.0, false);
+    let d = ((s * 4.2 / 24.0).round() as i32).max(3);
+    for (x, y) in [
+        (6.8, 6.8),
+        (17.2, 6.8),
+        (12.0, 12.0),
+        (6.8, 17.2),
+        (17.2, 17.2),
+    ] {
+        let q = p(cx, cy, s, x, y);
+        disc(c, q.x, q.y, d, col);
+    }
+}
+
 pub fn library(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     let w = stroke_w(s);
     vbox(c, cx, cy, s, col, w, 4.0, 4.0, 6.6, 6.6, false);

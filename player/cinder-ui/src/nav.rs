@@ -1424,6 +1424,9 @@ pub struct App {
     /// `menu_scroll`, which clamp them.
     display_scroll_px: i32,
     menu_scroll_px: i32,
+    /// Bluetooth ▸ Sound quality, which also only scrolls in Big view; read through
+    /// `bt_codec_scroll`.
+    bt_codec_scroll_px: i32,
     /// A rescan has been asked for and the library has not come back yet. Purely a label state.
     ///
     /// It needs TWO ways out, not one. `set_library` clears it when a reloaded library arrives,
@@ -2008,6 +2011,7 @@ impl Default for App {
             device_scroll_px: 0,
             storage_scroll_px: 0,
             display_scroll_px: 0,
+            bt_codec_scroll_px: 0,
             menu_scroll_px: 0,
             rescanning: false,
             snd_dsee: false,
@@ -3560,6 +3564,7 @@ impl App {
             match s {
                 Screen::Display => self.display_scroll_px = 0,
                 Screen::Menu => self.menu_scroll_px = 0,
+                Screen::BtCodec => self.bt_codec_scroll_px = 0,
                 _ => {}
             }
             self.stack.push(s);
@@ -5446,9 +5451,13 @@ impl App {
             }
             Screen::BtCodec => {
                 use crate::bluetooth::BtHit;
+                // A row scrolled up under the header is not there to tap.
+                if y < crate::chrome::HEADER_BOTTOM {
+                    return vec![];
+                }
                 match crate::bluetooth::hit_codec(
                     x,
-                    y,
+                    y + self.bt_codec_scroll(),
                     self.bt_on,
                     self.bt_codec == crate::bluetooth::LDAC,
                     self.bt_aac,
@@ -5878,10 +5887,11 @@ impl App {
 
     /// A tap on the artist page: an album row drills in, a track row plays.
     fn tap_artist(&mut self, x: i32, y: i32) -> Vec<Action> {
-        if library::hit_artist_shuffle_band(x, y) {
+        let albums = self.artist_page().map_or(0, |p| p.albums.len());
+        if library::hit_artist_shuffle_band(x, y, albums) {
             return self.start_play_action(Action::ShuffleArtist(self.artist_view));
         }
-        if library::hit_artist_random_album(x, y) {
+        if library::hit_artist_random_album(x, y, albums) {
             return self.play_random_album();
         }
         // Resolve the hit and copy the result out — `page` borrows `self.lib`, and everything
@@ -7099,6 +7109,11 @@ impl App {
                 let max = crate::menu::max_scroll_px(self.menu_len());
                 self.menu_scroll_px = (self.menu_scroll() + dy_px).clamp(0, max);
             }
+            Screen::BtCodec => {
+                let max =
+                    crate::bluetooth::codec_max_scroll(self.bt_codec == crate::bluetooth::LDAC);
+                self.bt_codec_scroll_px = (self.bt_codec_scroll() + dy_px).clamp(0, max);
+            }
             Screen::PlaylistPick => {
                 let max = self.pick_max_scroll();
                 self.pick_scroll_px = (self.pick_scroll_px + dy_px).clamp(0, max);
@@ -7195,6 +7210,16 @@ impl App {
     fn menu_scroll(&self) -> i32 {
         self.menu_scroll_px
             .min(crate::menu::max_scroll_px(self.menu_len()))
+            .max(0)
+    }
+
+    /// Sound quality's scroll, clamped: Big view off, or a codec without the LDAC rows, leaves less
+    /// (or nothing) to scroll.
+    fn bt_codec_scroll(&self) -> i32 {
+        self.bt_codec_scroll_px
+            .min(crate::bluetooth::codec_max_scroll(
+                self.bt_codec == crate::bluetooth::LDAC,
+            ))
             .max(0)
     }
 
@@ -10558,7 +10583,7 @@ impl App {
                     paired: &self.bt_paired,
                     debug_log: self.bt_debug_log,
                 };
-                crate::bluetooth::render_codec(c, &theme, fonts, &bt)
+                crate::bluetooth::render_codec(c, &theme, fonts, &bt, self.bt_codec_scroll())
             }
             Screen::Pairing => {
                 crate::pairing::render(
@@ -10951,6 +10976,9 @@ impl App {
         // Drawn AFTER the screen (each one fills its own background first) but BEFORE the return
         // bar and the overlays, so the previous layering is preserved — the Shelf's dim still
         // covers it. Onboarding and the USB-storage modal own the whole panel and never had one.
+        // A screen that leaves its scroll clip set would hide the bar (Storage did, 10-26).
+        c.clear_clip();
+        c.clear_clip_x();
         if !matches!(self.current(), Screen::Onboarding | Screen::UsbStorage) && !self.landscape() {
             crate::chrome::status_bar(c, &theme, fonts, np.clock, np.badge, np.battery);
         }
@@ -11130,6 +11158,7 @@ impl App {
                 Screen::Storage => a.storage_scroll_px,
                 Screen::Display => a.display_scroll(),
                 Screen::Menu => a.menu_scroll(),
+                Screen::BtCodec => a.bt_codec_scroll(),
                 Screen::UpNext => a.queue_scroll_px,
                 Screen::Lyrics => a.lyrics_scroll_px,
                 _ => 0,
@@ -17025,6 +17054,36 @@ mod tests {
         assert_eq!(a.display_scroll(), 0, "nothing to scroll with Big view off");
     }
 
+    /// Big view pushes Sound quality's last rows off the glass, so the page scrolls, and Fine volume
+    /// answers where it is drawn after scrolling. Nothing to scroll with Big view off.
+    #[test]
+    fn big_view_sound_quality_scrolls_to_fine_volume() {
+        let _g = crate::text::scale_guard();
+        let mut a = unlocked();
+        a.set_bt_on(true);
+        a.bt_codec = crate::bluetooth::LDAC;
+        a.push_for_test(Screen::BtCodec);
+        a.set_big_view(true);
+        let max = crate::bluetooth::codec_max_scroll(true);
+        assert!(max > 0, "Sound quality fits in Big view; drop its scroll");
+        a.scroll_px(10_000);
+        assert_eq!(a.bt_codec_scroll(), max);
+        let span = a.bt_fine_span();
+        a.tap(240, crate::bluetooth::fine_row_y(true) - max);
+        assert_ne!(
+            a.bt_fine_span(),
+            span,
+            "Fine volume did not answer after scrolling"
+        );
+        assert_eq!(a.tap(240, crate::chrome::HEADER_BOTTOM - 4), vec![]);
+        a.set_big_view(false);
+        assert_eq!(
+            a.bt_codec_scroll(),
+            0,
+            "nothing to scroll with Big view off"
+        );
+    }
+
     /// Big view: the Menu keeps full rows and scrolls to START ON; a chip tapped there picks
     /// itself, and the strip stays the strip whatever the scroll.
     #[test]
@@ -18030,7 +18089,7 @@ mod tests {
 
         // The artist PAGE band. Located the way the screen locates it, by asking the hit test.
         let ay = (0..crate::H as i32)
-            .find(|y| library::hit_artist_shuffle_band(240, *y))
+            .find(|y| library::hit_artist_shuffle_band(240, *y, 2))
             .expect("the artist page draws a shuffle band");
         let mut a = unlocked();
         a.push(Screen::Artist);
@@ -20730,7 +20789,9 @@ mod tests {
             .iter()
             .map(|(_, al)| al.name.clone())
             .collect();
-        let (x, y, w, h) = library::artist_random_album_button();
+        let (x, y, w, h) = library::artist_band(names.len())
+            .1
+            .expect("two albums, so a button");
         let mut seen = std::collections::HashSet::new();
         for _ in 0..12 {
             let acts = a.tap(x + w / 2, y + h / 2);
@@ -20750,6 +20811,11 @@ mod tests {
             seen.len() > 1,
             "always the same album: {seen:?} of {names:?}"
         );
+        // One album: no button, and the band runs the whole line instead of leaving its gap.
+        let (one, button) = library::artist_band(1);
+        assert!(button.is_none());
+        assert!(one.2 > library::artist_band(2).0 .2);
+        assert!(!library::hit_artist_random_album(x + w / 2, y + h / 2, 1));
     }
 
     /// BOTH swipe directions on the album drill-in reach the shell. The right-swipe (queue later)

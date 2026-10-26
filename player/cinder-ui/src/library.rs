@@ -826,6 +826,12 @@ fn swipe_for(swipe: Option<SwipeRow>, y: i32, rh: i32) -> Option<i32> {
 // so it gets the iPod-style alphabet rail: tap or drag the letters down the right edge to jump.
 // Touch-native, which matters on a device with no d-pad.
 pub const AZ_W: i32 = 26; // rail width — narrow enough not to eat row taps
+
+/// The rail's touch width at the current control size: wider in Big view, whose users asked for
+/// bigger targets.
+pub fn az_w() -> i32 {
+    crate::scale::ctl(AZ_W)
+}
 pub const AZ_LETTERS: &[u8] = b"#ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 /// First letter of `s` as the rail files it: case and accents fold (`bôa` → B, `Édith` → E), and
@@ -862,7 +868,7 @@ pub fn az_letter_at(y: i32, tab: Tab) -> Option<u8> {
 
 /// Is screen x inside the rail?
 pub fn az_hit_x(x: i32) -> bool {
-    x >= W as i32 - AZ_W
+    x >= W as i32 - az_w()
 }
 
 /// Album drill-in track rows: top y and row height.
@@ -1811,21 +1817,23 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
 
 /// Accent shuffle row (scope-aware). Returns the y below it.
 fn shuffle_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str, sub: &str) -> i32 {
-    band_in(c, t, f, shuffle_band_rect(y), label, sub)
+    band_in(c, t, f, shuffle_band_rect(y), icons::shuffle, label, sub)
 }
 
 /// [`shuffle_row`] in the rect it is given, so a band can share its line with a side button.
+/// An accent band: `glyph` on the left, label and caption, a play arrow on the right.
 fn band_in(
     c: &mut Canvas,
     t: &Theme,
     f: &FontSet,
     (bx, top, bw, h): (i32, i32, i32, i32),
+    glyph: fn(&mut Canvas, f32, f32, f32, Rgb888),
     label: &str,
     sub: &str,
 ) -> i32 {
     fill_rect(c, bx, top, bw, h, t.acc);
     let cy = top + h / 2;
-    icons::shuffle(c, 42.0, cy as f32, 20.0, t.acc_ink);
+    glyph(c, 42.0, cy as f32, 20.0, t.acc_ink);
     // Fit inside the accent band (64 → 10 px short of the play glyph), or the caption spills past
     // it.
     let room = (bw - 72) as f32;
@@ -1913,6 +1921,8 @@ pub fn az_render(
     let top = list_top(tab);
     let h = LIST_BOTTOM - top;
     let n = AZ_LETTERS.len() as i32;
+    // Letters stay where they were; Big view widens only the strip that answers (`az_hit_x`), so
+    // they do not crowd the rows' chevrons.
     let x = W as i32 - AZ_W / 2;
     for (i, &ch) in AZ_LETTERS.iter().enumerate() {
         let cy = top + (i as i32 * h) / n + h / (2 * n);
@@ -2684,20 +2694,21 @@ pub fn album_view(
         }
         _ => art::block_cached(c, t, 22, 82, COVER_PX, COVER_PX, &album.art, artdim(t)),
     }
-    let title = crate::widgets::fit(
-        f,
-        &album.name,
-        &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01),
-        (W as f32) - 150.0,
-    );
-    text::draw(
-        c,
-        f,
-        132.0,
-        110.0,
-        &title,
-        &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01),
-    );
+    // A title too long for one line gets two, a size smaller, and the lines under it move down
+    // (it was cut after about 20 characters, and Big view made that most album names).
+    let room = (W as f32) - 150.0;
+    let tst = sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01);
+    let st2 = sty(Family::Sans, Weight::ExtraBold, 20.0, t.ink, -0.01);
+    let artist_y = if text::measure(f, &album.name, &tst) <= room {
+        text::draw(c, f, 132.0, 110.0, &album.name, &tst);
+        134.0
+    } else if text::measure(f, &album.name, &st2) <= room {
+        text::draw(c, f, 132.0, 110.0, &album.name, &st2);
+        134.0
+    } else {
+        crate::widgets::draw_wrap2(c, f, 132.0, 102.0, &album.name, &st2, 132.0 + room, 24.0);
+        102.0 + text::scaled(24.0) + text::scaled(22.0)
+    };
     // Fitted like the title above it. It was drawn raw, and a long artist credit (an orchestra and
     // its conductor, a "feat." list) ran off the panel (`tests/ui_overflow.rs`, hostile library).
     let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
@@ -2705,7 +2716,7 @@ pub fn album_view(
         c,
         f,
         132.0,
-        134.0,
+        artist_y,
         &crate::widgets::fit(f, &album.artist, &ast, (W as f32) - 150.0),
         &ast,
     );
@@ -2725,7 +2736,7 @@ pub fn album_view(
         c,
         f,
         132.0,
-        156.0,
+        artist_y + 22.0_f32.max(text::scaled(20.0)),
         &crate::widgets::fit(f, &meta, &mst, (W as f32) - 150.0),
         &mst,
     );
@@ -2735,6 +2746,7 @@ pub fn album_view(
         t,
         f,
         album_play_band(),
+        icons::note, // not shuffle: the Shuffle button is right beside it
         crate::i18n::text("Play album"),
         crate::i18n::text("IN ORDER · THEN SHUFFLE"),
     );
@@ -2840,20 +2852,26 @@ pub fn artist_content_top() -> i32 {
     by + bh + 8
 }
 
-/// True if `(x, y)` is inside the artist page's "Shuffle artist" band.
-pub fn hit_artist_shuffle_band(x: i32, y: i32) -> bool {
-    inside(band_and_side(ARTIST_BAND_Y).0, x, y)
+/// The artist page's "Shuffle artist" band, and beside it the Random album button (one of their
+/// albums, picked at random, played in order). With one album there is nothing to pick from, so
+/// there is no button and the band takes the whole line instead of leaving a gap.
+pub fn artist_band(albums: usize) -> ((i32, i32, i32, i32), Option<(i32, i32, i32, i32)>) {
+    if albums > 1 {
+        let (band, side) = band_and_side(ARTIST_BAND_Y);
+        (band, Some(side))
+    } else {
+        (shuffle_band_rect(ARTIST_BAND_Y), None)
+    }
 }
 
-/// The artist page's Random album button, beside "Shuffle artist": one of their albums, picked
-/// at random, played in order.
-pub fn artist_random_album_button() -> (i32, i32, i32, i32) {
-    band_and_side(ARTIST_BAND_Y).1
+/// True if `(x, y)` is inside the artist page's "Shuffle artist" band.
+pub fn hit_artist_shuffle_band(x: i32, y: i32, albums: usize) -> bool {
+    inside(artist_band(albums).0, x, y)
 }
 
 /// True if `(x, y)` is on the artist page's Random album button.
-pub fn hit_artist_random_album(x: i32, y: i32) -> bool {
-    inside(artist_random_album_button(), x, y)
+pub fn hit_artist_random_album(x: i32, y: i32, albums: usize) -> bool {
+    artist_band(albums).1.is_some_and(|r| inside(r, x, y))
 }
 
 pub const ARTIST_SEC_H: i32 = 36; // "ALBUMS · n" / "MOST PLAYED" section header
@@ -3119,13 +3137,13 @@ pub fn artist_view(
         c,
         t,
         f,
-        band_and_side(ARTIST_BAND_Y).0,
+        artist_band(page.albums.len()).0,
+        icons::shuffle,
         crate::i18n::text("Shuffle artist"),
         &crate::ui_format!("ALL {} TRACKS · RANDOM ORDER", page.tracks.len()),
     );
-    // Random album needs a choice of albums to be random about.
-    if page.albums.len() > 1 {
-        side_button(c, t, artist_random_album_button(), icons::library);
+    if let Some(r) = artist_band(page.albums.len()).1 {
+        side_button(c, t, r, icons::dice);
     }
 
     let top = artist_content_top();

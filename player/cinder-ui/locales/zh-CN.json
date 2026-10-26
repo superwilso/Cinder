@@ -923,6 +923,7 @@
   "{} (disc {})": "{}（第 {} 碟）",
   "BLUETOOTH IS OFF · TURN IT ON FIRST": "蓝牙已关闭，请先开启",
   "NOTHING CONNECTED · THESE APPLY TO THE NEXT LINK": "未连接设备，设置将用于下次连接",
+  "NOT CONNECTED · FOR THE NEXT LINK": "未连接，用于下次连接",
   "{name} · {live} · ASKED FOR {}": "{name} · {live} · 请求 {}",
   "{name} · CONNECTED": "{name} · 已连接",
   "{want} requested · {l} in use": "请求 {want} · 正在使用 {l}",

@@ -655,7 +655,7 @@ command -v arm-linux-musleabihf-gcc >/dev/null && echo "musl cross OK" || echo "
 > **Brick warning.** This path writes to the device's firmware-update slot.
 > `exec_file.sh` clears the upgrade flag before running, so a failed payload
 > does not boot-loop — but a wedged payload still requires `wbrt` eMMC restore.
-> Take a `wbrt` backup first (see `RECOVERY.md` step 3) and never overwrite it.
+> Take a `wbrt` backup first (see `RECOVERY.md` Step 4; `cinder-rescue dump` in Step 3 takes the same backup) and never overwrite it.
 
 ### 2.1 Build
 
@@ -1101,7 +1101,7 @@ Removes the wrapper entirely and restores the original scrobbler. See
 ### 7.3 wbrt eMMC restore (last resort)
 
 Native Windows only. Tool: `github.com/unknown321/wbrt/releases`. Driver:
-MediaTek VCOM (`VID_0E8D&PID_2000`). Full procedure in `RECOVERY.md` step 3.
+MediaTek VCOM (`VID_0E8D&PID_2000`). Full procedure in `RECOVERY.md` Step 4.
 
 **Take a fresh `wbrt` Backup before you Restore** — a restore rewrites the
 whole eMMC, and `/contents` (music library, playlists, `.scrobbler.log`) is

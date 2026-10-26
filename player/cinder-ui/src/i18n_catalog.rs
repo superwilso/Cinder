@@ -541,6 +541,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "NORMAL" => Some("标准"),
         "NORMALIZER" => Some("响度均衡"),
         "NOT CHARGING" => Some("未充电"),
+        "NOT CONNECTED · FOR THE NEXT LINK" => Some("未连接，用于下次连接"),
         "NOTHING CONNECTED · THESE APPLY TO THE NEXT LINK" => Some("未连接设备，设置将用于下次连接"),
         "NOTHING PLAYING" => Some("尚未播放"),
         "NOW" => Some("当前"),

@@ -194,11 +194,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         };
         fill_rect(c, bx - 1, fy, 2, fh, ink_fill);
         let on = i == sel;
+        // Big view enlarges the knob like every other control (it was reported staying small).
+        let k = |px: i32| crate::scale::ctl(px) as u32;
         if on {
-            disc(c, bx, ky, 30, t.ink);
+            disc(c, bx, ky, k(30), t.ink);
         }
-        disc(c, bx, ky, 24, t.bg);
-        disc(c, bx, ky, if on { 18 } else { 15 }, ink_fill);
+        disc(c, bx, ky, k(24), t.bg);
+        disc(c, bx, ky, k(if on { 18 } else { 15 }), ink_fill);
 
         let dbl = match band_db(d.bands[i]) {
             v if v == 0.0 => "0".to_string(),

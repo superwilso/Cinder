@@ -203,12 +203,13 @@ pub fn volume_minimal(c: &mut Canvas, t: &Theme, level: u8) {
 }
 
 /// Confirmation toast: a bottom-centered pill with a one-line message (e.g. after swipe-to-queue).
-/// Sized to the text; long titles are clipped by the pill edge rather than wrapped.
+/// Sized to the text; a long title ends in "…" inside the pill rather than wrapping.
 pub fn toast(c: &mut Canvas, t: &Theme, f: &FontSet, msg: &str) {
     c.begin_layer(); // drawn over the screen on purpose (see `Canvas::begin_layer`)
     let st = sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0);
-    let tw = text::measure(f, msg, &st).min((W - 64) as f32);
-    let pw = (tw as i32 + 44).min(W as i32 - 20);
+    let msg = &crate::widgets::fit(f, msg, &st, (W - 64) as f32);
+    let tw = text::measure(f, msg, &st);
+    let pw = tw as i32 + 44;
     let ph = 44;
     let x0 = (W as i32 - pw) / 2;
     let y0 = H as i32 - 96;

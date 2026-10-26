@@ -17,7 +17,8 @@ the whole design: the 2026-07-26 brick happened because every escape that existe
 | 2 | `/contents/cinderhome_off` over USB-MSC → stock. | A mountable `/contents` + a PC. |
 | 3 | `/contents/cinderhome_clear` over USB-MSC → clears the latch, tries again. | Same. |
 | 4 | Flash `cinder_home_uninstall.upg`. | The Sony updater boots. |
-| 5 | `wbrt` eMMC restore. | Nothing — but it wipes `/contents`. |
+| 5 | `cinder-rescue restore` of the broken partitions from your own backup (Step 3). | Nothing but the preloader in boot0; leaves `/contents` and everything else alone. Needs a `cinder-rescue` backup of this player. |
+| 6 | `wbrt` eMMC restore (Step 4). | Nothing — but it rolls back `/contents` too. |
 
 ### What survives kernel work (audited 2026-08-18)
 
@@ -43,7 +44,7 @@ plan writes there. **Never write boot0.** That is the one action with no way bac
 
 `/proc/sys/kernel/panic` = **5** and `panic_on_oops` = **1** (`CONFIG_PANIC_TIMEOUT=5`), so an oops
 or panic auto-reboots after 5 s instead of hanging silently. Every reboot re-runs the preloader, so
-wbrt's catch window recurs — the same trick RECOVERY step 3 already relies on.
+wbrt's catch window recurs — the same trick Steps 3 and 4 rely on.
 
 **But rungs 0-4 mostly do not survive.** Rungs 0-3 are all userspace — cable escape, bad-boot
 counter, `/contents` flags — and every one needs the main kernel to boot. Rung 4 is armed by
@@ -63,7 +64,7 @@ nor the `android` partition. LK carries the standard Android BCB (`boot-recovery
 `mboot_recovery_load_misc`) plus an `MT65XX_RECOVERY_KEY` combo. Two things would have to be armed
 **from a working system, before the risky boot**: the `misc` BCB (`mmcblk0p11`, currently all
 zeros) and NVP `fup` (currently `0xFFFFFFFF`; `icx_start_update.sh` hard-requires `0x70555766`).
-Nobody has tested this. Until someone does, treat a bad `bootimg` as "wbrt only".
+Nobody has tested this. Until someone does, treat a bad `bootimg` as "download mode only": Step 3 (`cinder-rescue restore --parts bootimg`) or Step 4 (wbrt).
 
 **Therefore the working rule for kernel work:**
 
@@ -151,7 +152,46 @@ tools/flash.sh uninstall
 ```
 The next boot enters the Sony updater (which never runs the wrapper), so this breaks a loop.
 
-## Step 3 — wbrt eMMC restore (guaranteed; native Windows)
+## Step 3 — cinder-rescue: put back only what broke
+`cinder-rescue` (in `rescue/`) talks to the same MediaTek download mode wbrt uses, so it works
+on a player that will not boot. It is not in a release yet: build it with
+`cargo build --release` in `rescue/` (for Windows from Linux, add
+`--target x86_64-pc-windows-gnu`). Verified on an A55 on 2026-10-26.
+
+**Take its backup while the player still works.** A restore only accepts a backup of the same
+player, proven by the eMMC serial the backup records.
+```
+cinder-rescue dump --da DA.bin --out a55-backup.bin     # about 21 minutes, read-only
+```
+That writes `a55-backup.bin` (the same range and raw format as a wbrt backup) and
+`a55-backup.bin.manifest` (chip, eMMC serial, a SHA-256 for each partition), then reads the file
+back against the manifest. `cinder-rescue verify a55-backup.bin` repeats that check any time.
+Keep both files together.
+
+**When it loops**, put back the partitions that broke, usually `bootimg` (kernel work) or
+`android` (the system partition):
+```
+cinder-rescue restore --da DA.bin --from a55-backup.bin --parts bootimg --dry-run   # writes nothing
+cinder-rescue restore --da DA.bin --from a55-backup.bin --parts bootimg
+```
+It writes only `bootimg`, `recovery`, `android`, `usrdata`, `cache`, `var` and `db`, never the
+partition table, bootloader, `nvram`, `nvp` or your music. Before writing it checks the backup
+against its manifest, that the player's chip and eMMC serial match the backup's, and that both
+partition tables have the A50-series layout. A partition that already matches is left alone, and
+every write is read back. `usrdata` is `/data`: restoring it rolls Cinder's settings back too.
+
+**What it needs:**
+- **The Download Agent**, MediaTek's file, which is not shipped here. wbrt's installer carries one:
+  open `walkman-backup-restore-tool.*.exe` with 7-Zip and take `$PLUGINSDIR/DA.bin`.
+- **On Windows, a WinUSB driver** for `VID_0E8D&PID_2000` ("MT65xx Preloader"). wbrt installs
+  one; without wbrt, Zadig can (Device ▸ Create New Device, that VID and PID, WinUSB). On Linux it
+  needs root or a udev rule for that device.
+- **Download mode**: unplug the cable, switch the player off (hold POWER about 10 s if it is
+  looping), hold **Play + Volume Down**, plug the cable in, and let go when the tool moves on. A
+  normal reboot never offers it. If the tool stops with an error, the player stays in download
+  mode until you unplug it and hold POWER about 10 s.
+
+## Step 4 — wbrt eMMC restore (guaranteed; native Windows)
 This is brick-insurance and works even in a hard boot loop, because it catches the device in
 **MediaTek mode at the very start of boot**, before any of our code runs.
 

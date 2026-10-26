@@ -19,13 +19,12 @@ Each has a row in [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §41:
 
 ## Being built next
 
-1. **USB after a resume.** Suspend to RAM is now the default; USB has to come back reliably after a
-   resume (DEVICE_CHECKLIST 33.2). The port reset Sony's own firmware does is in
-   `cinder-msc usb-resume` and needs a run on a player.
-
-2. **A backup tool that can rescue a player stuck in a boot loop** (see Help wanted below for the
-   design). Booting the player into MediaTek's download mode needs nothing from the firmware, so it
-   works when nothing else does.
+1. **USB after a resume.** Done 2026-10-26: USB comes back after a suspend to RAM
+   (DEVICE_CHECKLIST 33.2 passes).
+2. **A backup tool that can rescue a player stuck in a boot loop.** Built 2026-10-26 as
+   `cinder-rescue` (`rescue/`, [`RECOVERY.md`](../RECOVERY.md) Step 3): back up, verify, and
+   restore only the partitions a boot loop breaks, only to the player the backup came from. Backup
+   and restore have run on one A55 under Windows. Left: a release build, and the help wanted below.
 3. **Big view** (Settings ▸ Big view, off by default): 130 % text and 25 % taller rows and touch
    zones. The switch is built; the pages that still break in it are listed, with a direction for
    each, in [`PLAN_big_view.md`](PLAN_big_view.md). A good first contribution: pick one page.
@@ -67,11 +66,9 @@ ones. Read its safety rules first. Grouped by what each needs:
 - **Noise cancelling:** the ambient filter Walkman One removed, and whether the DAC EQ and the
   linear amp interact with NC.
 - **DSEE AI**, and the SensMe channel id → name table.
-- **A backup tool of our own** (a possibility, not a commitment). wbrt is Windows-only and does no
-  checks on restore. A Cinder tool could run on Windows, Linux and macOS, write a header (model,
-  serial hash, per-region checksums), verify after backup, and refuse the wrong image. It would
-  build on the MIT `mediatek_flash_tool` and take nothing from wbrt. The first step is a read-only
-  dump on one A55 compared byte for byte with a wbrt backup. Plan, licences and open questions:
+- **`cinder-rescue` on Linux and macOS.** It builds for both (libusb) but has only run on Windows.
+  A `cinder-rescue dump` of your player (read-only) and a `verify` of it is the useful report.
+  Results so far, licences and open questions:
   [`RESEARCH_other_repos_backup_2026-10.md`](RESEARCH_other_repos_backup_2026-10.md).
 
 **Other models** (ZX300, WM1A/Z, A40, A30): start from antiheroriot's ZX300 branch as a pull

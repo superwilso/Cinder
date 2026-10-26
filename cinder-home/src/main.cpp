@@ -13405,6 +13405,9 @@ void report_storage() {
             std::snprintf(buf + len, sizeof buf - len, "%sSD not mounted", sep);
     }
     if (buf[0]) cinder_set_storage(buf);
+    // The Storage screen's bars read the same volumes. Pushed only from the Device screen's
+    // refresh before, so Storage opened first said "Not read yet" beside this row's 3.3 / 56 GB.
+    push_device_storage();
 }
 
 // Watch the card's mount state from housekeeping: a stat and a read of /proc/mounts every 5 s, no

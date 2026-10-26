@@ -1621,7 +1621,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 bluetooth::render(c, &theme, &fonts, &bt)
             }),
             ("bluetooth_codec", &|c: &mut Canvas| {
-                bluetooth::render_codec(c, &theme, &fonts, &bt)
+                bluetooth::render_codec(c, &theme, &fonts, &bt, 0)
             }),
             // The `bt-aac` component: five chips, AAC chosen and the link AAC, SBC sent as XQ.
             ("bluetooth_codec_aac", &|c: &mut Canvas| {
@@ -1632,11 +1632,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     link_codec: Some(0x03),
                     ..bt
                 };
-                bluetooth::render_codec(c, &theme, &fonts, &b)
+                bluetooth::render_codec(c, &theme, &fonts, &b, 0)
             }),
             // The radio off: the page is inert, so every row is faint and nothing is marked chosen.
             ("bluetooth_codec_off", &|c: &mut Canvas| {
-                bluetooth::render_codec(c, &theme, &fonts, &bluetooth::Bt { on: false, ..bt })
+                bluetooth::render_codec(c, &theme, &fonts, &bluetooth::Bt { on: false, ..bt }, 0)
             }),
             // The in-flight state this screen had no representation for at all: before, a connect
             // begun from Devices left this card reading "No device connected" until the link

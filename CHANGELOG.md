@@ -18,6 +18,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **`cinder-rescue`: back up the player and get it out of a boot loop.** A new tool in `rescue/`
+  that talks to MediaTek's download mode, which the player enters before any of its software
+  runs (hold Play and Volume Down while plugging in). `dump` copies the same range as wbrt, in the
+  same raw format, and writes a manifest: chip, eMMC serial and a SHA-256 for each partition.
+  `verify` re-reads a backup against it. `restore` puts back only `bootimg`, `recovery`, `android`,
+  `usrdata`, `cache`, `var` or `db`, only to the player the backup came from, skips what already
+  matches and reads back every write. *Device-verified on the A55 under Windows: a full dump
+  matched the player's own reads of every partition the running system leaves alone, and a
+  restore of `bootimg` read back and booted.* Not in a release yet; [`RECOVERY.md`](RECOVERY.md)
+  Step 3 has the steps.
 - **Low-latency USB DAC: its numbers on Cinder's own page.** With Low latency on, the USB-DAC
   info box shows the module's state, the PC's format, the buffer, the time streamed, dropouts and
   USB errors, read once a second from `/proc/llusbdac`. Cinder loads the module with `gui=0`, so
@@ -30,11 +40,28 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Settings ▸ Storage had no status bar, and said "Not read yet" for internal storage** while the
+  Settings row beside it read 3.3 / 56 GB. The page left its scroll clip set, which hid the bar
+  (now cleared for every screen before the bar is drawn), and its figures were only read while
+  the Device screen was open. *Device-verified.*
+- **The artist page left a gap beside "Shuffle artist"** for an artist with one album, where the
+  Random album button would be, and the gap still answered taps. The band now takes the line.
+  Random album's icon is a die rather than the grid that reads as "view". *Device-verified.*
+- **The album page showed two shuffle icons side by side.** "Play album" now has a note.
+  *Device-verified.*
+- **A long album name was cut after about 20 characters**; it now gets two lines when one is not
+  enough.
+- **A long toast ran off the screen** ("Random album · …"); it ends in "…" inside its box.
+- **Big view:** Bluetooth ▸ Sound quality scrolls instead of cutting off Fine volume, and its top
+  line no longer ends in "…"; the DAC EQ knobs are bigger; the A–Z rail answers a wider strip.
+  *Device-verified.*
 - **USB after a suspend to RAM (dev builds).** Sony's own USB manager rebuilds the gadget on
   every cable event and resume, and it dropped adb each time because stock tells it adb is not
   wanted. Dev builds now tell it once at boot (`SetAdbEnabled`), so adb comes back after a
   resume and a cable plug with nothing else to do. *Device-verified* on stock 1.02
   (DEVICE_CHECKLIST 33.2). Stable builds have no adb and are unchanged.
+  Not settled yet: one dev boot later the same day lost USB about 21 s in, after Sony's manager
+  rebuilt the gadget a second time, until the cable was replugged.
 - **The Low-latency USB DAC option can be installed.** The installers up to v0.3.20-rc3 were built
   before cinder-llusbdac's first release, so they had no checksum to accept its module and said so.
   They now pin cinder-llusbdac v0.2.0 (SHA-256 `e4b8dadf…`), checked on the PC and on the player.

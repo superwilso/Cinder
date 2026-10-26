@@ -248,6 +248,16 @@ fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
     out
 }
 
+/// Room under the last row for the footer note.
+const CODEC_FOOT_H: i32 = 48;
+
+/// How far the page scrolls: only in Big view, whose taller rows push Fine volume and the note
+/// off the glass (reported 10-26).
+pub fn codec_max_scroll(ldac: bool) -> i32 {
+    let bottom = codec_parts(ldac).last().map_or(0, |&(_, top, h)| top + h);
+    (bottom + CODEC_FOOT_H - crate::canvas::H as i32).max(0)
+}
+
 fn codec_part_centre(ldac: bool, want: Part) -> i32 {
     codec_parts(ldac)
         .into_iter()
@@ -405,7 +415,13 @@ fn codec_strip(bt: &Bt) -> String {
         return "BLUETOOTH IS OFF \u{b7} TURN IT ON FIRST".into();
     }
     let Some(name) = bt.connected else {
-        return "NOTHING CONNECTED \u{b7} THESE APPLY TO THE NEXT LINK".into();
+        // Big view's text cut the long form after "THE" (reported 10-26).
+        return if crate::scale::large() {
+            "NOT CONNECTED \u{b7} FOR THE NEXT LINK"
+        } else {
+            "NOTHING CONNECTED \u{b7} THESE APPLY TO THE NEXT LINK"
+        }
+        .into();
     };
     let name = name.to_uppercase();
     match bt.link_codec {
@@ -722,13 +738,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
 /// Drawn on the kit from [`codec_parts`]: a strip with what the link is doing, the codec as chips,
 /// LDAC's four modes as rows under Sony's own names, and VOLUME CONTROL. While the radio is off the
 /// page is inert, the rows are drawn in `faint` and nothing is marked chosen.
-pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
+pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt, scroll: i32) {
     use crate::kit::{self, Row, Trail};
     c.fill(t.bg);
-    crate::chrome::header(c, t, f, crate::i18n::text("Sound quality"), None);
+    let head_bottom = crate::chrome::header(c, t, f, crate::i18n::text("Sound quality"), None);
+    c.set_clip_y(head_bottom, crate::canvas::H as i32);
     let ldac = bt.codec_sel == LDAC;
     let mut bottom = 0;
     for (p, top, h) in codec_parts(ldac) {
+        let top = top - scroll;
         bottom = top + h;
         match p {
             Part::Strip => {
@@ -825,6 +843,7 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     });
     let note = crate::widgets::fit(f, note, &st, (kit::RIGHT - kit::LEFT) as f32);
     text::draw(c, f, kit::LEFT as f32, (bottom + 28) as f32, &note, &st);
+    c.clear_clip();
 }
 
 /// The theme a Sound quality control is drawn in: as it is, or — while the radio is off — with its
