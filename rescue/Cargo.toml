@@ -1,0 +1,18 @@
+[package]
+name = "cinder-rescue"
+version = "0.1.0"
+edition = "2021"
+description = "Back up a Sony NW-A50-series Walkman's eMMC over MediaTek's download mode, even when it boot-loops"
+license = "PolyForm-Noncommercial-1.0.0"
+
+# One crate: raw USB on Windows, Linux and macOS. The same vendored libusb the installer already
+# trusts for macOS (installer/Cargo.toml), so nothing to install beyond the WinUSB driver.
+[dependencies]
+rusb = { version = "0.9", features = ["vendored"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

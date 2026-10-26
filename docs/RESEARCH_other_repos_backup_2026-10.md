@@ -61,6 +61,37 @@ and refuses to restore the wrong image.
 6. **Integration.** Installer step 1 becomes "back up now" with the new tool, falling back to
    pointing at wbrt.
 
+### Step 1 result (2026-10-26): read-only dump works
+
+`rescue/` (`cinder-rescue`, Rust, `rusb` with vendored libusb) ran on Windows against the A55 and
+read wbrt's whole range, 2,885,156,864 bytes from user-area offset 0, in 21 minutes (2.2 MiB/s),
+every 1 MiB packet checksum-verified. It has no write command.
+
+- **Byte-for-byte check.** Every partition the running system does not write (`mbr` through
+  `android`, `cm4`, `nvp`: 23 regions) has the same MD5 as the player's own `dd` of it. The ones
+  that differ are mounted and written on the boot after the dump (`cache`, `var`, `db`, `usrdata`,
+  `contents`), or are `option1-3`, whose only changes are ext4 mount bookkeeping (mount count
+  289 → 290, mount time).
+- **wbrt's backup is the same format**: a raw image of the user area from offset 0. Our dump and the
+  owner's July wbrt backup agree on every partition nothing has rewritten since, at the same
+  offsets, so an existing wbrt backup can be a restore source as it is, once restore exists. `bootimg`
+  differs from July because the July image carried Wampy's init hooks; today's is byte-identical to
+  Sony's stock 1.02 boot image.
+- **Entry needs the buttons.** Player off, hold Play + Volume Down, plug the cable in. A normal
+  reboot with the cable in never offered download mode (Windows saw no 0E8D device). Once the
+  Download Agent is loaded the player stays in it until the host restarts it (watchdog command) or
+  power is held for about 10 s.
+- **Device facts read:** chip `0x8590`, hardware `0xcb01`, software `0x0102`; the DA entry used is the
+  MT8590 one in `MTK_AllInOne_DA_v3.3001` (wbrt's `DA.bin`); eMMC CID
+  `15010043 4B544134 320202B2 EACA8553`, whose serial matches the kernel's `emmc_boot_serial`.
+- **Transport.** The first run, reading 1 MiB per USB transfer, stopped at 120 MiB with a pipe
+  error; the second, reading 512 bytes per transfer like the flash tool, finished. One sample
+  each, so the transfer size is the suspect, not proven. Speed was the same both ways.
+- **Driver.** Windows used the WinUSB driver wbrt had already installed for VID_0E8D&PID_2000.
+
+Next: the backup header (chip, CID, range, per-partition hashes) and a verify command; then
+restore, which writes, only on a spare unit.
+
 ### Open questions (all need hardware)
 
 - Settled from wbrt's `Makefile`: it uses the same route, the flash tool plus a DA from mtkclient 1.9.
