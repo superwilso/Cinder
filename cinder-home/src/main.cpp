@@ -7543,7 +7543,7 @@ static void uac_poll_status() {
 // with no way to correct it except toggling all the way through. Measured 2026-07-29: the gadget
 // sat in `uac` while the UI read MASS STORAGE, and the only route back out was DAC-then-off.
 // llusbdac (the `llusbdac` component): tell the USB-DAC screen whether the module is installed and
-// whether it is already in the kernel, where it stays until the restart.
+// whether it is in the kernel (only while low-latency DAC mode is on; release unloads it).
 static void llusbdac_publish() {
     bool loaded = false;
     if (FILE* m = std::fopen("/proc/modules", "r")) {
@@ -8607,6 +8607,17 @@ void apply_usb_dac() {
                   on ? "engage" : "release", on ? "on" : "off", rc,
                   rc == 0 ? "" : "  (FAILED — is the helper setuid root?)");
     clog_(m);
+
+    // Low latency leaves with the mode: unloading llusbdac puts Sony's own USB audio function back
+    // (cinder-msc llusbdac-off), so the next engage can be the standard path, Bluetooth included,
+    // without a restart. A no-op when it is not loaded.
+    if (!on && ::access("/system/vendor/cinder/lib/modules/llusbdac.ko", R_OK) == 0) {
+        int lr = std::system("/system/vendor/cinder/bin/cinder-msc llusbdac-off");
+        char lm[96];
+        std::snprintf(lm, sizeof lm, "usb-dac: low latency off — cinder-msc llusbdac-off rc=%d", lr);
+        clog_(lm);
+        llusbdac_publish();
+    }
 
     // AND THE OWNER THAT ACTUALLY COMPLETES IT, LAST. The two writers above only move descriptor
     // bytes. This one re-enumerates the gadget in a way UsbDeviceConnectionMonitor is watching, so

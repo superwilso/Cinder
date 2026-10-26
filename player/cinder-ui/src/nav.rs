@@ -1302,7 +1302,6 @@ pub struct App {
     /// the restart, so the switch locks on).
     usb_dac_ll_avail: bool,
     usb_dac_ll: bool,
-    usb_dac_ll_loaded: bool,
     /// llusbdac's own numbers (`/proc/llusbdac`), while it is loaded.
     usb_dac_ll_stats: Option<crate::usbdac::LlStats>,
     /// The raw `BtSoundCodec` word A2DP actually negotiated, or 0 for "not known". Everything else
@@ -1952,7 +1951,6 @@ impl Default for App {
             usb_dac_fmt: None,
             usb_dac_ll_avail: false,
             usb_dac_ll: false,
-            usb_dac_ll_loaded: false,
             usb_dac_ll_stats: None,
             bt_codec_negotiated: 0,
             bt_fine: 0, // OFF: it rides on the EQ, so it is a thing you opt into
@@ -5607,10 +5605,7 @@ impl App {
                     return vec![Action::UsbDacToggle(self.usb_dac_on)];
                 }
                 // Chosen before DAC mode starts, never during it, and locked once loaded.
-                if self.usb_dac_ll_avail
-                    && !self.usb_dac_on
-                    && !self.usb_dac_ll_loaded
-                    && crate::usbdac::hit_low_latency(x, y)
+                if self.usb_dac_ll_avail && !self.usb_dac_on && crate::usbdac::hit_low_latency(x, y)
                 {
                     self.usb_dac_ll = !self.usb_dac_ll;
                     return vec![];
@@ -10750,8 +10745,7 @@ impl App {
                     self.snd_dsee,
                     self.usb_dac_fmt,
                     self.negotiated_codec_name(),
-                    self.usb_dac_ll_avail
-                        .then_some(self.usb_dac_ll || self.usb_dac_ll_loaded),
+                    self.usb_dac_ll_avail.then_some(self.usb_dac_ll),
                     self.usb_dac_ll_stats.as_ref(),
                 )
             }
@@ -13169,15 +13163,19 @@ impl App {
         self.skin_names.get(i).map(String::as_str)
     }
 
-    /// llusbdac as the shell sees it: the module is installed, and whether it is loaded.
+    /// llusbdac as the shell sees it: the module is installed, and whether it is loaded. Loaded means
+    /// low latency is what is running, so the switch shows it; the shell unloads it when DAC mode
+    /// ends, so the switch is free again outside DAC mode.
     pub fn set_usb_dac_low_latency(&mut self, avail: bool, loaded: bool) {
         self.usb_dac_ll_avail = avail;
-        self.usb_dac_ll_loaded = loaded;
+        if loaded {
+            self.usb_dac_ll = true;
+        }
     }
 
     /// Should engaging USB-DAC load llusbdac? Read by the shell on `UsbDacToggle(true)`.
     pub fn usb_dac_low_latency(&self) -> bool {
-        self.usb_dac_ll_avail && (self.usb_dac_ll || self.usb_dac_ll_loaded)
+        self.usb_dac_ll_avail && self.usb_dac_ll
     }
 
     /// The host's stream format, straight from Sony's `stream_info_t` via the engine. A rate of 0
@@ -19400,7 +19398,7 @@ mod tests {
     }
 
     #[test]
-    fn low_latency_is_chosen_before_dac_mode_and_locks_once_loaded() {
+    fn low_latency_is_chosen_before_dac_mode_and_turns_off_after_it() {
         let row = (240, 128);
         let mut a = open_from_menu(Screen::UsbDac);
         a.tap(row.0, row.1);
@@ -19417,10 +19415,13 @@ mod tests {
             a.usb_dac_low_latency(),
             "the row does nothing while DAC mode is on"
         );
-        a.tap(441, 65); // DAC off
-        a.set_usb_dac_low_latency(true, true);
+        a.tap(441, 65); // DAC off: the shell unloads the module and says so
+        a.set_usb_dac_low_latency(true, false);
         a.tap(row.0, row.1);
-        assert!(a.usb_dac_low_latency(), "loaded stays on until the restart");
+        assert!(
+            !a.usb_dac_low_latency(),
+            "outside DAC mode the switch turns off, no restart"
+        );
     }
 
     #[test]

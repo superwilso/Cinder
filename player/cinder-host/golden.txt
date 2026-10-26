@@ -424,5 +424,5 @@ bc94a5e8ab9838ff big_library
 7495adf7ebae5741 big_menu_end
 1c93b080403bd2ef big_display_end
 7bed64c7e58318f3 big_bluetooth
-7af26de32b911f30 usbdac_low_latency
-045176cb6950dfc4 big_usbdac_low_latency
+779d2058d3670b06 usbdac_low_latency
+287bbdfb38b3f37a big_usbdac_low_latency

@@ -574,7 +574,7 @@ static int usb_resume(void)
 
 /* The low-latency USB DAC: load llusbdac (cinder-llusbdac, GPLv2, the `llusbdac` component). A fixed
  * path on /system, put there only after its SHA-256 matched the release; nothing caller-supplied.
- * Upstream's rule: once loaded it stays until the restart, so a second call is a no-op. */
+ * Already loaded = a no-op; `llusbdac-off` (below) unloads it when DAC mode ends. */
 #define LLUSBDAC_KO "/system/vendor/cinder/lib/modules/llusbdac.ko"
 static int llusbdac_load(void)
 {
@@ -593,6 +593,19 @@ static int llusbdac_load(void)
     close(fd);
     fprintf(stderr, "cinder-msc: llusbdac: finit_module rc=%ld errno=%d\n", r, r ? e : 0);
     return r == 0 ? 0 : 1;
+}
+
+/* Unload llusbdac, which puts Sony's own USB audio function back in the gadget table (its
+ * module_exit restores slot 8). Upstream says "reboot to unload" because its overlay patches the
+ * display engine's code; with gui=0 that patch never happens. Measured 2026-10-26 on the owner's
+ * player: load, unload, load, unload, no reboot, and `init audio_func success` after each unload.
+ * O_NONBLOCK: refused (EBUSY/EWOULDBLOCK) rather than waiting if anything still holds it. */
+static int llusbdac_unload(void)
+{
+    long r = syscall(SYS_delete_module, "llusbdac", O_NONBLOCK);
+    int e = errno;
+    fprintf(stderr, "cinder-msc: llusbdac-off: delete_module rc=%ld errno=%d\n", r, r ? e : 0);
+    return r == 0 || e == ENOENT ? 0 : 1;   /* ENOENT: not loaded, which is the goal */
 }
 
 int main(int argc, char **argv)
@@ -628,5 +641,6 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "usb-rescue") == 0) return usb_rescue();
     if (strcmp(argv[1], "usb-resume") == 0) return usb_resume();
     if (strcmp(argv[1], "llusbdac") == 0) return llusbdac_load();
+    if (strcmp(argv[1], "llusbdac-off") == 0) return llusbdac_unload();
     return 2;
 }

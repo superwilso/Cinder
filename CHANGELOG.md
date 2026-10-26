@@ -23,6 +23,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   USB errors, read once a second from `/proc/llusbdac`. Cinder loads the module with `gui=0`, so
   llusbdac no longer draws its own screen over Cinder. The installer fetches cinder-llusbdac v0.2.0, whose patch adds both.
   *Device-verified* 10-26: Windows played through it at the jack with the stats on the page.
+- **Low latency switches off without a restart.** Turning USB-DAC off now unloads llusbdac
+  (`cinder-msc llusbdac-off`), which puts Sony's own USB audio function back, so the next DAC
+  session can be the standard one, with the effects and Bluetooth, straight away. *Device-verified*
+  10-26: load and unload twice with no reboot, then Sony's path came up (`card4`).
 
 ### Fixed
 

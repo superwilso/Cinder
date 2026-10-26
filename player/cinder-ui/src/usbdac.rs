@@ -138,7 +138,7 @@ pub fn render(
             f,
             24.0,
             150.0,
-            crate::i18n::text("About 50 ms, jack only. Stays on until the player restarts."),
+            crate::i18n::text("About 50 ms, jack only."),
             &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0),
         );
         let (lx, ly, lw, lh) = LL_TOGGLE;

@@ -129,7 +129,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "ARTISTS" => Some("歌手"),
         "AUDIO STOPPED — RESTART" => Some("音频已停止，请重启"),
         "AUTO" => Some("自动"),
-        "About 50 ms, jack only. Stays on until the player restarts." => Some("约 50 毫秒，仅耳机插孔。在播放器重启前一直开启。"),
+        "About 50 ms, jack only." => Some("约 50 毫秒，仅耳机插孔。"),
         "Accent" => Some("强调色"),
         "Active" => Some("活力"),
         "Adapts the rate to the link" => Some("根据连接质量调整码率"),

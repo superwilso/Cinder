@@ -6728,7 +6728,7 @@ pub extern "C" fn cinder_set_usb_dac_format(
 }
 
 /// llusbdac (the `llusbdac` component): `avail` = the module is installed, `loaded` = it is in the
-/// kernel (it then stays until the restart).
+/// kernel (only while low-latency DAC mode is on).
 #[no_mangle]
 pub extern "C" fn cinder_set_usb_dac_low_latency(avail: libc::c_int, loaded: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
