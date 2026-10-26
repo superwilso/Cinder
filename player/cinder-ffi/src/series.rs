@@ -309,7 +309,8 @@ fn atoms<R: Read + Seek>(r: &mut R, mut pos: u64, end: u64) -> Vec<Atom> {
         } else if size == 0 {
             size = end - pos;
         }
-        if size < hdr || pos + size > end {
+        // `checked_add`: a 64-bit size can wrap `pos` back to the start and loop for ever.
+        if size < hdr || pos.checked_add(size).is_none_or(|e| e > end) {
             break;
         }
         out.push(Atom {
@@ -706,5 +707,25 @@ mod tests {
         assert_eq!(parse(m4b(&[freeform("mood", "x")], false)), None);
         let bare = [atom(b"ftyp", b"M4B \0\0\0\0M4B "), atom(b"mdat", b"abc")].concat();
         assert_eq!(parse(bare), None);
+    }
+
+    #[test]
+    fn an_m4b_atom_whose_size_wraps_ends_the_read() {
+        // A 64-bit size that wraps the position back to the start: before the fix the box walk
+        // looped for ever, growing its list until the player ran out of memory.
+        let bad = [
+            atom(b"ftyp", b"M4B \0\0\0\0"),
+            [
+                &1u32.to_be_bytes()[..],
+                b"free",
+                &(u64::MAX - 15).to_be_bytes(),
+                &[0; 64],
+            ]
+            .concat(),
+        ]
+        .concat();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(parse(bad)));
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(3)), Ok(None));
     }
 }
