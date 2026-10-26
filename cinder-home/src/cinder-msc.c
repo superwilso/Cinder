@@ -585,7 +585,10 @@ static int llusbdac_load(void)
     if (m) fclose(m);
     int fd = open(LLUSBDAC_KO, O_RDONLY | O_CLOEXEC);
     if (fd < 0) { fprintf(stderr, "cinder-msc: llusbdac: %s not installed\n", LLUSBDAC_KO); return 1; }
-    long r = syscall(SYS_finit_module, fd, "", 0);
+    /* gui=0 (cinder-llusbdac's patch): no overlay drawn over Cinder; the USB-DAC screen shows the
+     * module's numbers from /proc/llusbdac instead. A module without the option ignores it with a
+     * warning in dmesg and still loads. */
+    long r = syscall(SYS_finit_module, fd, "gui=0", 0);
     int e = errno;
     close(fd);
     fprintf(stderr, "cinder-msc: llusbdac: finit_module rc=%ld errno=%d\n", r, r ? e : 0);

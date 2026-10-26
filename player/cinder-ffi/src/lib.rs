@@ -6736,6 +6736,18 @@ pub extern "C" fn cinder_set_usb_dac_low_latency(avail: libc::c_int, loaded: lib
     }
 }
 
+/// llusbdac's `/proc/llusbdac` line, read by the shell while the module is loaded; null or empty
+/// clears the panel's stats.
+#[no_mangle]
+pub extern "C" fn cinder_set_usb_dac_ll_stats(line: *const c_char) {
+    let line = unsafe { cstr(line) };
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if r.app.set_usb_dac_ll_stats(&line) {
+            r.dirty = true;
+        }
+    }
+}
+
 /// 1 if engaging USB-DAC should load llusbdac.
 #[no_mangle]
 pub extern "C" fn cinder_get_usb_dac_low_latency() -> libc::c_int {

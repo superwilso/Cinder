@@ -19,6 +19,64 @@ use crate::theme::Theme;
 use crate::widgets::{center, fill_rect, hline, stroke_rect, sty, toggle};
 use crate::Canvas;
 
+/// What llusbdac reports in `/proc/llusbdac` (cinder-llusbdac's patch: one line of `key=value`
+/// pairs, the numbers its own overlay draws). Carried raw across the FFI and parsed here.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LlStats {
+    /// `streaming`, `idle`, `disabled` or `disconnected`.
+    pub state: String,
+    pub rate: u32,
+    pub bits: u32,
+    pub frames: u64,
+    pub buffer_us: u32,
+    pub overrun: u64,
+    pub underrun: u64,
+    pub usb_errors: u64,
+}
+
+impl LlStats {
+    /// `None` for a line without a `state=` (not llusbdac's, or empty).
+    pub fn parse(line: &str) -> Option<LlStats> {
+        let mut s = LlStats::default();
+        for kv in line.split_whitespace() {
+            let Some((k, v)) = kv.split_once('=') else {
+                continue;
+            };
+            match k {
+                "state" => s.state = v.to_string(),
+                "rate" => s.rate = v.parse().unwrap_or(0),
+                "bits" => s.bits = v.parse().unwrap_or(0),
+                "frames" => s.frames = v.parse().unwrap_or(0),
+                "buffer_us" => s.buffer_us = v.parse().unwrap_or(0),
+                "overrun" => s.overrun = v.parse().unwrap_or(0),
+                "underrun" => s.underrun = v.parse().unwrap_or(0),
+                "usb_errors" => s.usb_errors = v.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+        (!s.state.is_empty()).then_some(s)
+    }
+
+    /// Time streamed, `h:mm:ss`, from frames at the current rate.
+    fn played(&self) -> String {
+        let secs = if self.rate > 0 {
+            self.frames / self.rate as u64
+        } else {
+            0
+        };
+        format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+    }
+
+    fn state_text(&self) -> &'static str {
+        crate::i18n::text(match self.state.as_str() {
+            "streaming" => "STREAMING",
+            "idle" => "IDLE",
+            "disabled" => "DISABLED",
+            _ => "DISCONNECTED",
+        })
+    }
+}
+
 /// `on` = USB-DAC engaged. `ldac` = a Bluetooth device is connected, which is also the condition
 /// under which the engine bridges the USB capture to it; `codec`/`bt_device` describe that link,
 /// and `eq_preset`/`dsee` fill the DSP line.
@@ -61,6 +119,7 @@ pub fn render(
     fmt: Option<(u32, u32, u32)>,
     negotiated: Option<&str>,
     low_latency: Option<bool>,
+    ll_stats: Option<&LlStats>,
 ) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "USB-DAC", None);
@@ -140,12 +199,7 @@ pub fn render(
             &sty(Family::Mono, Weight::Regular, 13.0, t.acc, 0.1),
         );
 
-        // info box
-        // Height tracks the line count: this was 148 for four lines and now holds three, since the
-        // fabricated INPUT rate and SOURCE hostname were removed rather than replaced.
-        let (bx, by, bw, bh) = (50, 352, 380, 112);
-        fill_rect(c, bx, by, bw, bh, t.panel);
-        stroke_rect(c, bx, by, bw, bh, t.line, 1);
+        // info box. The fabricated INPUT rate and SOURCE hostname were removed rather than replaced.
         let out = if ldac && low_latency != Some(true) {
             crate::ui_format!("OUTPUT : {}", out_name)
         } else {
@@ -157,6 +211,14 @@ pub fn render(
         // 44.1 kHz — the fake numbers were not even close. So the line went generic, and now it is
         // live: `fmt` is Sony's own stream_info_t, carried across the FFI by the engine's GetStatus
         // poll. `None` means nothing is streaming, and the generic line is the honest answer then.
+        // Under llusbdac the format is the module's own, and Sony's GetStatus has nothing to say.
+        let fmt = match ll_stats {
+            // Only while streaming: idle, the module still holds its start-up default (384 kHz).
+            Some(ll) if low_latency == Some(true) => {
+                (ll.state == "streaming").then_some((ll.rate, ll.bits, 2))
+            }
+            _ => fmt,
+        };
         let input = match fmt {
             Some((rate, bits, _)) if rate > 0 => {
                 let khz = rate as f32 / 1000.0;
@@ -168,15 +230,36 @@ pub fn render(
             }
             _ => crate::i18n::text("INPUT  : USB AUDIO CLASS 2").to_string(),
         };
-        let lines = [
-            input,
-            format!(
+        let mut lines = vec![input];
+        match ll_stats {
+            // llusbdac writes straight to the hardware PCM, so Sony's effects are not in the path
+            // and the DSP line would be false; its own numbers take that space instead.
+            Some(ll) if low_latency == Some(true) => {
+                lines.insert(0, crate::ui_format!("STATE  : {}", ll.state_text()));
+                lines.push(crate::ui_format!(
+                    "BUFFER : {:.1} MS",
+                    ll.buffer_us as f32 / 1000.0
+                ));
+                lines.push(crate::ui_format!("TIME   : {}", ll.played()));
+                lines.push(crate::ui_format!(
+                    "DROPS  : {} OVER · {} UNDER",
+                    ll.overrun,
+                    ll.underrun
+                ));
+                lines.push(crate::ui_format!("USB    : {} ERRORS", ll.usb_errors));
+            }
+            _ => lines.push(format!(
                 "DSP    : EQ {}{}",
                 eq_preset,
                 if dsee { " · DSEE HX" } else { "" }
-            ),
-            out,
-        ];
+            )),
+        }
+        lines.push(out);
+        // Height tracks the line count, as it did when four lines became three.
+        let (bx, by, bw) = (50, 352, 380);
+        let bh = 34 + 26 * lines.len() as i32;
+        fill_rect(c, bx, by, bw, bh, t.panel);
+        stroke_rect(c, bx, by, bw, bh, t.line, 1);
         let ls = sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.04);
         for (i, ln) in lines.iter().enumerate() {
             text::draw(
@@ -257,4 +340,27 @@ pub fn render(
         crate::i18n::text("CHARGING WHILE IN DAC MODE: ON"),
         &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llusbdac_line_parses_and_a_foreign_one_does_not() {
+        let s = LlStats::parse(
+            "state=streaming rate=96000 bits=32 frames=288000 buffer_us=4000 overrun=1 underrun=2 usb_errors=3\n",
+        )
+        .unwrap();
+        assert_eq!((s.rate, s.bits, s.buffer_us), (96000, 32, 4000));
+        assert_eq!((s.overrun, s.underrun, s.usb_errors), (1, 2, 3));
+        assert_eq!(s.played(), "0:00:03");
+        assert_eq!(s.state_text(), "STREAMING");
+        assert_eq!(LlStats::parse(""), None);
+        assert_eq!(
+            LlStats::parse("rate=44100"),
+            None,
+            "no state, not llusbdac's line"
+        );
+    }
 }

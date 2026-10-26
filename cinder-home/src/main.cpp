@@ -1239,6 +1239,7 @@ static void scrobble_open_ours(const char* who) {
 void sony_rx_restore_at_boot();   // defined with the receiver, below
 
 #ifdef CINDER_DEV
+static void usb_adb_enable_dev();   // with the UsbMgrServiceFw client, below
 // Dev channel: put adb on the USB gadget — at boot, and again whenever the gadget has lost it
 // (dev_adb_keepalive). Disable, set functions=mass_storage,adb (keep storage so the log/DB stay
 // reachable), the MSC+adb composite PID 0B8D, re-enable, THEN start adbd.
@@ -1718,6 +1719,9 @@ void deferred_up() {
                     "idProduct=$(cat /sys/class/android_usb/android0/idProduct 2>/dev/null) "
                     "state=$(getprop sys.usb.state)\"");
     });
+    // And tell Sony's USB manager, so its own cable and resume handling keeps adb (see
+    // usb_adb_enable_dev). dev_adb_keepalive stays as the backstop.
+    run_guarded("deferred_up: Sony USB manager adb flag (dev)", 6, usb_adb_enable_dev);
 #endif
     // The real-spectrum visualiser is NOT started here any more. It is now started ON DEMAND (see
     // viz_analyzer_tick in the pump) only while its output is actually on screen, which keeps a
@@ -7018,20 +7022,25 @@ void refresh_bt_route() {
 // boot-to-nothing rule. cinder-probe links it properly; here it is optional by construction.
 enum { USBFN_UAC = 1, USBFN_MSC = 2 };   // read from the cmp #1/#2 switch in UpdateUsbFunction
 
-static bool usb_set_function(unsigned fn) {
-    enum { VIDX_SetUsbFunction = 3, VIDX_GetUsbFunction = 4 };
+static void* usbmgr_client() {
     static void* cli = nullptr;
     static bool tried = false;
     if (!tried) {
         tried = true;
         void* h = dlopen("libUsbMgrServiceFw.so", RTLD_NOW);
-        if (!h) { clog_("usb-fn: libUsbMgrServiceFw.so unavailable — property-only switch"); return false; }
+        if (!h) { clog_("usb-fn: libUsbMgrServiceFw.so unavailable — property-only switch"); return nullptr; }
         typedef void* (*mk)(void);
         mk f = (mk)dlsym(h, "_ZN3pst8services28UsbMgrServiceFwClientFactory14CreateInstanceEv");
-        if (!f) { clog_("usb-fn: UsbMgrServiceFwClientFactory symbol missing"); return false; }
+        if (!f) { clog_("usb-fn: UsbMgrServiceFwClientFactory symbol missing"); return nullptr; }
         try { cli = f(); } catch (...) { cli = nullptr; }
         clog_(cli ? "usb-fn: UsbMgrServiceFwClient ready" : "usb-fn: factory returned null");
     }
+    return cli;
+}
+
+static bool usb_set_function(unsigned fn) {
+    enum { VIDX_SetUsbFunction = 3, VIDX_GetUsbFunction = 4 };
+    void* cli = usbmgr_client();
     if (!cli) return false;
     // ReqMsg_SetUsbFunction is { uint32 function } (SizeOfReqMsg = 4, WriteReqMsg does one Alloc(4)
     // and copies one word from offset 0). The GET reply is EIGHT bytes — { uint32 result; uint32
@@ -7055,6 +7064,37 @@ static bool usb_set_function(unsigned fn) {
     clog_(m);
     return true;
 }
+
+#ifdef CINDER_DEV
+// Dev channel: tell Sony's USB manager that adb is wanted, so ITS cable and resume handling keeps
+// it. Read 2026-10-26 from libUsbMgrServiceFw.so: on every cable event and resume
+// (UsbResumeMonitor, Resume -> UpdateUsbConfig) the service rewrites the gadget itself, and
+// SetMsc writes `mass_storage,adb` when the adb flag (`this[0x38]`) is set and bare
+// `mass_storage` when not; UpdateUsbConfig then starts or stops adbd to match. Stock leaves the
+// flag off, which is why adb died on every cable event and dev_adb_keepalive had to put it back.
+// SetAdbEnabled is client vtable slot 10 (R_ARM_ABS32 relocations; GetAdbEnabled, slot 11, is the
+// one cinder-probe has used since 08-11). The request is one bool (SizeOfReqMsg = 4, one Alloc(1)).
+static void usb_adb_enable_dev() {
+    enum { VIDX_SetAdbEnabled = 10, VIDX_GetAdbEnabled = 11 };
+    void* cli = usbmgr_client();
+    if (!cli) return;
+    typedef void (*fnrr)(void*, const void*, void*);
+    unsigned req[8], rsp[8];
+    void** vt = *(void***)cli;
+    std::memset(req, 0, sizeof req); std::memset(rsp, 0, sizeof rsp);
+    req[0] = 1;
+    try { ((fnrr)vt[VIDX_SetAdbEnabled])(cli, req, rsp); }
+    catch (...) { clog_("usb-adb: SetAdbEnabled threw"); return; }
+    const unsigned set_rc = rsp[0];
+    std::memset(req, 0, sizeof req); std::memset(rsp, 0, sizeof rsp);
+    try { ((fnrr)vt[VIDX_GetAdbEnabled])(cli, req, rsp); }
+    catch (...) { clog_("usb-adb: GetAdbEnabled threw"); }
+    char m[128];
+    std::snprintf(m, sizeof m, "usb-adb: Sony's USB manager told adb is wanted (dev): set result=%u, "
+                  "reads back %u", set_rc, rsp[1]);
+    clog_(m);
+}
+#endif
 
 // ── the THIRD owner, and the only complete one ───────────────────────────────────────────────
 // Recovered 2026-08-11 by RE of libUsbDeviceConnectionService.so, after `--uacgate` measured the
@@ -7513,6 +7553,21 @@ static void llusbdac_publish() {
     }
     cinder_set_usb_dac_low_latency(
         ::access("/system/vendor/cinder/lib/modules/llusbdac.ko", R_OK) == 0 ? 1 : 0, loaded ? 1 : 0);
+}
+
+// Low latency: llusbdac's own numbers for the USB-DAC panel, once a second while DAC mode is on
+// (cinder-llusbdac's /proc/llusbdac; absent until the module is in, which clears the panel).
+static void llusbdac_stats_tick() {
+    static long long next = 0;
+    const long long now = now_ms();
+    if (now < next) return;
+    next = now + 1000;
+    char line[256] = {0};
+    if (FILE* f = std::fopen("/proc/llusbdac", "r")) {
+        if (!std::fgets(line, sizeof line, f)) line[0] = 0;
+        std::fclose(f);
+    }
+    cinder_set_usb_dac_ll_stats(line);
 }
 
 bool gadget_in_dac_mode() {
@@ -13925,6 +13980,7 @@ void* render_driver(void*) {
             // once a real format has been opened, or when not in DAC mode — and is throttled inside
             // (200 ms bridging, 1 s otherwise) for the frames where neither of those is true.
             if (cinder_get_usb_dac()) run_guarded("loop: USB-DAC status", 8, uac_poll_status);
+            if (cinder_get_usb_dac()) llusbdac_stats_tick();   // a /proc read, no Sony IPC
             // What A2DP actually agreed on. Called every frame but THROTTLED INSIDE (2 s, or at once
             // on a connect / codec write) — it is a synchronous IPC round trip, not a scalar read,
             // and the earlier "self-limiting" claim here confused suppressing the log with

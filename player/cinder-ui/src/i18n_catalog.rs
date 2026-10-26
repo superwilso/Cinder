@@ -182,6 +182,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "BT OUT" => Some("蓝牙输出"),
         "BT RECEIVE CODEC" => Some("接收编码"),
         "BT Receiver" => Some("蓝牙接收"),
+        "BUFFER : {:.1} MS" => Some("缓冲：{:.1} 毫秒"),
         "BUTTONS" => Some("实体按键"),
         "BY RULES" => Some("按规则筛选"),
         "BY {}" => Some("歌手：{}"),
@@ -283,7 +284,9 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "DC Phase Linearizer" => Some("直流相位线性器"),
         "DEL" => Some("删除"),
         "DELETE" => Some("删除"),
+        "DISABLED" => Some("已停用"),
         "DISCHARGING" => Some("放电中"),
+        "DISCONNECTED" => Some("未连接"),
         "DISMISS" => Some("关闭"),
         "DOES THE OTHER DEVICE SHOW THIS CODE?" => Some("另一台设备是否显示相同的配对码？"),
         "DONE" => Some("完成"),
@@ -291,6 +294,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "DRAG" => Some("拖动"),
         "DRAG TO REORDER" => Some("拖动调整顺序"),
         "DRAG ≡" => Some("拖动 ≡"),
+        "DROPS  : {} OVER · {} UNDER" => Some("断续：过满 {} · 断流 {}"),
         "DSEE HX Custom" => Some("DSEE HX 定制"),
         "DSEE HX is off" => Some("DSEE HX 已关闭"),
         "DYNAMIC" => Some("动态"),
@@ -416,6 +420,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "History cleared" => Some("播放历史已清空"),
         "Hold a row" => Some("长按列表行"),
         "Hour" => Some("时"),
+        "IDLE" => Some("空闲"),
         "IN ORDER · THEN SHUFFLE" => Some("顺序播放，随后随机"),
         "IN UP NEXT" => Some("待播队列中"),
         "INPUT  : PCM {:.1} KHZ" => Some("输入：PCM {:.1} kHz"),
@@ -828,10 +833,12 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "ST" => Some("立体声"),
         "START" => Some("开始巡听"),
         "START ON" => Some("启动时打开"),
+        "STATE  : {}" => Some("状态：{}"),
         "STATIONS FOUND" => Some("已找到电台"),
         "STEREO FIELD" => Some("立体声场"),
         "STOP" => Some("停止"),
         "STORAGE" => Some("存储空间"),
+        "STREAMING" => Some("传输中"),
         "STYLE · NOW PLAYING" => Some("正在播放的界面风格"),
         "SURE?" => Some("确认删除？"),
         "SWIPE" => Some("滑动"),
@@ -985,6 +992,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "THIS DEVICE" => Some("本机"),
         "THIS PLACE" => Some("当前位置"),
         "THIS STYLE NEEDS LIBRARY PLAYBACK" => Some("此样式需要曲库播放"),
+        "TIME   : {}" => Some("时长：{}"),
         "TITLE" => Some("标题"),
         "TONE" => Some("音调"),
         "TRACK" => Some("曲目"),
@@ -1042,6 +1050,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "UP NEXT" => Some("待播队列"),
         "UP NEXT IS EMPTY" => Some("需要音乐播放队列"),
         "UP NEXT IS SAFE" => Some("巡听中 · 保留原队列"),
+        "USB    : {} ERRORS" => Some("USB：故障 {}"),
         "USB DRIVE" => Some("USB 存储"),
         "USB Storage" => Some("USB 存储"),
         "USB mode" => Some("USB 模式"),
@@ -1278,6 +1287,12 @@ macro_rules! ui_format {
             _ => format!("Audiobook · {}" $(, $($args)*)?),
         }
     };
+    ("BUFFER : {:.1} MS" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("缓冲：{:.1} 毫秒" $(, $($args)*)?),
+            _ => format!("BUFFER : {:.1} MS" $(, $($args)*)?),
+        }
+    };
     ("BY {}" $(, $($args:tt)*)?) => {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("歌手：{}" $(, $($args)*)?),
@@ -1324,6 +1339,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("封面：{label}" $(, $($args)*)?),
             _ => format!("Cover: {label}" $(, $($args)*)?),
+        }
+    };
+    ("DROPS  : {} OVER · {} UNDER" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("断续：过满 {} · 断流 {}" $(, $($args)*)?),
+            _ => format!("DROPS  : {} OVER · {} UNDER" $(, $($args)*)?),
         }
     };
     ("FAULT {}" $(, $($args:tt)*)?) => {
@@ -1560,6 +1581,12 @@ macro_rules! ui_format {
             _ => format!("SORT · {short}" $(, $($args)*)?),
         }
     };
+    ("STATE  : {}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("状态：{}" $(, $($args)*)?),
+            _ => format!("STATE  : {}" $(, $($args)*)?),
+        }
+    };
     ("Save the sound on {} to come back to it" $(, $($args:tt)*)?) => {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("保存 {} 的声音设置，供以后恢复" $(, $($args)*)?),
@@ -1618,6 +1645,18 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("同步歌词，{n} {unit}" $(, $($args)*)?),
             _ => format!("Synced, {n} {unit}" $(, $($args)*)?),
+        }
+    };
+    ("TIME   : {}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("时长：{}" $(, $($args)*)?),
+            _ => format!("TIME   : {}" $(, $($args)*)?),
+        }
+    };
+    ("USB    : {} ERRORS" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("USB：故障 {}" $(, $($args)*)?),
+            _ => format!("USB    : {} ERRORS" $(, $($args)*)?),
         }
     };
     ("{added} ADDED" $(, $($args:tt)*)?) => {

@@ -1929,6 +1929,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     Some((44100, 32, 2)),
                     None,
                     None,
+                    None,
                 )
             }),
             // Library views (the header's view button). Last in the set so the glyph cache order —
@@ -3752,6 +3753,30 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             save(&c, name);
             app.set_big_view(false);
         }
+        base_scale();
+    }
+
+    // Low-latency USB DAC streaming: llusbdac's own numbers in the info box (cinder-llusbdac's
+    // /proc/llusbdac). After the Big view set, for the same glyph-cache reason.
+    {
+        use cinder_ui::nav::Screen;
+        let mut app = new_app();
+        app.set_usb_dac_low_latency(true, true);
+        app.set_usb_dac(true);
+        app.set_usb_dac_ll_stats(
+            "state=streaming rate=96000 bits=32 frames=72576000 buffer_us=4000 overrun=0 underrun=2 usb_errors=0",
+        );
+        app.go_for_preview(Screen::UsbDac);
+        for (name, big) in [
+            ("usbdac_low_latency", false),
+            ("big_usbdac_low_latency", true),
+        ] {
+            app.set_big_view(big);
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, name);
+        }
+        app.set_big_view(false);
         base_scale();
     }
 }

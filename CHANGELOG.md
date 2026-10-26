@@ -16,8 +16,22 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Low-latency USB DAC: its numbers on Cinder's own page.** With Low latency on, the USB-DAC
+  info box shows the module's state, the PC's format, the buffer, the time streamed, dropouts and
+  USB errors, read once a second from `/proc/llusbdac`. Cinder loads the module with `gui=0`, so
+  llusbdac no longer draws its own screen over Cinder. Needs cinder-llusbdac v0.2.0 (its patch adds
+  both); with v0.1.0 the page shows the plain lines and llusbdac's overlay as before.
+  *Device-verified* 10-26 with a local v0.2.0 build (idle state); streaming not yet seen.
+
 ### Fixed
 
+- **USB after a suspend to RAM (dev builds).** Sony's own USB manager rebuilds the gadget on
+  every cable event and resume, and it dropped adb each time because stock tells it adb is not
+  wanted. Dev builds now tell it once at boot (`SetAdbEnabled`), so adb comes back after a
+  resume and a cable plug with nothing else to do. *Device-verified* on stock 1.02
+  (DEVICE_CHECKLIST 33.2). Stable builds have no adb and are unchanged.
 - **The Low-latency USB DAC option can be installed.** The installers up to v0.3.20-rc3 were built
   before cinder-llusbdac's first release, so they had no checksum to accept its module and said so.
   They now pin cinder-llusbdac v0.1.0 (SHA-256 `7fdeddb5…`), checked on the PC and on the player.

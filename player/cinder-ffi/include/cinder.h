@@ -789,6 +789,8 @@ void cinder_set_usb_dac_format(unsigned rate, unsigned bits, unsigned chans);
 /* llusbdac: avail = module installed, loaded = in the kernel. get: 1 = engage loads it. */
 void cinder_set_usb_dac_low_latency(int avail, int loaded);
 int cinder_get_usb_dac_low_latency(void);
+/* llusbdac's /proc/llusbdac line (state, rate, bits, frames, buffer, errors); NULL clears it. */
+void cinder_set_usb_dac_ll_stats(const char* line);
 /* Publish the codec A2DP actually negotiated (raw BtSoundCodec word from GetSoundStatus; 0 = not
    known). The UI shows a neutral label until the enumerators are tied to a real headphone. */
 void cinder_set_bt_negotiated_codec(int raw);

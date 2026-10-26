@@ -90,3 +90,19 @@ stopped and started as a device. The service runs under Cinder but acts only onc
 the role, which Cinder never does. `cinder-msc usb-resume` wrote `0` and never `1`; it now does
 Sony's two writes as its first step. Not yet run on a player. Detail:
 `RE_power_stock_vs_cinder.md` section 4.
+
+## 2026-10-26: Sony's service does it, once it is told adb is wanted
+
+`UsbMgrImplWmport::Resume` (and the `UsbResumeMonitor` on the resume uevent and the USB supply)
+runs `UpdateUsbConfig` on its own thread: re-enable the gadget, `SetOtgIdle` then `1` to
+`mt_usb/mode` (device), then `SetMsc`. `SetMsc` writes `mass_storage,adb` when the service's adb
+flag (`this[0x38]`) is set and bare `mass_storage` when not, and `UpdateUsbConfig` starts or stops
+adbd to match. None of it waits for the app's USB role: the wanted OTG mode defaults to device.
+
+Stock leaves the adb flag off, so on every cable event and resume the service stripped adb from the
+gadget; that was the "dev adb does not come back" half. The dev build now calls
+`UsbMgrServiceFwClient::SetAdbEnabled(true)` (vtable slot 10, a one-bool request) once at boot
+(`usb_adb_enable_dev`, main.cpp). Run on the owner's player, stock 1.02: suspend to RAM at 209 s,
+Power at 211 s, cable in at ~217 s; the gadget was already `CONFIGURED` as `mass_storage,adb`
+(product 0ca0, Sony's), `cinder-msc usb-resume` found a host and did nothing, adbd running.
+Checklist 33.2 passes. The stable channel has no adb and does not set the flag.

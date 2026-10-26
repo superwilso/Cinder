@@ -1303,6 +1303,8 @@ pub struct App {
     usb_dac_ll_avail: bool,
     usb_dac_ll: bool,
     usb_dac_ll_loaded: bool,
+    /// llusbdac's own numbers (`/proc/llusbdac`), while it is loaded.
+    usb_dac_ll_stats: Option<crate::usbdac::LlStats>,
     /// The raw `BtSoundCodec` word A2DP actually negotiated, or 0 for "not known". Everything else
     /// on screen is the user's *preference*; A2DP negotiates, so a sink that cannot do LDAC lands on
     /// SBC while the preference still says LDAC. The enumerators are not mapped yet, so this is
@@ -1951,6 +1953,7 @@ impl Default for App {
             usb_dac_ll_avail: false,
             usb_dac_ll: false,
             usb_dac_ll_loaded: false,
+            usb_dac_ll_stats: None,
             bt_codec_negotiated: 0,
             bt_fine: 0, // OFF: it rides on the EQ, so it is a thing you opt into
             // NOT persisted, and deliberately: a trim is an attenuation the user cannot see in any
@@ -10749,6 +10752,7 @@ impl App {
                     self.negotiated_codec_name(),
                     self.usb_dac_ll_avail
                         .then_some(self.usb_dac_ll || self.usb_dac_ll_loaded),
+                    self.usb_dac_ll_stats.as_ref(),
                 )
             }
             Screen::Receiver => {
@@ -13185,6 +13189,15 @@ impl App {
         } else {
             Some((rate, bits, chans))
         };
+    }
+
+    /// llusbdac's `/proc/llusbdac` line, as read by the shell; an empty or foreign line clears it.
+    /// True when the numbers changed (the panel needs a repaint).
+    pub fn set_usb_dac_ll_stats(&mut self, line: &str) -> bool {
+        let new = crate::usbdac::LlStats::parse(line);
+        let changed = new != self.usb_dac_ll_stats;
+        self.usb_dac_ll_stats = new;
+        changed
     }
 
     /// The raw negotiated-codec word from `GetSoundStatus`. 0 = not known.
