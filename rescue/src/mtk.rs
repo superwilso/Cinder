@@ -6,7 +6,8 @@
 //! Rashid, 2025 unknown321. Notice in `LICENSE-mediatek_flash_tool`. Everything on the wire is
 //! big-endian; the DA file's own header is little-endian.
 //!
-//! There is deliberately no write command here. Nothing in this file can change the eMMC.
+//! `write_user` is the one function here that changes the eMMC. Only `restore` in main.rs calls
+//! it, after checking the backup, the player's identity and its partition layout.
 
 /// Byte stream to the device. `read` fills the whole buffer or fails.
 pub trait Link {
@@ -36,6 +37,9 @@ pub trait Link {
     fn w8(&mut self, v: u8) -> Result<(), String> {
         self.write(&[v])
     }
+    fn w16(&mut self, v: u16) -> Result<(), String> {
+        self.write(&v.to_be_bytes())
+    }
     fn w32(&mut self, v: u32) -> Result<(), String> {
         self.write(&v.to_be_bytes())
     }
@@ -62,6 +66,7 @@ pub trait Link {
 pub const ACK: u8 = 0x5a;
 const SYNC_CHAR: u8 = 0xc0;
 const SOC_OK: u8 = 0xc1;
+const CONT_CHAR: u8 = 0x69;
 const NAND_NOT_FOUND: u32 = 0xbc4;
 const STORAGE_SDMMC: u8 = 2;
 const PART_USER: u8 = 8;
@@ -322,10 +327,7 @@ pub fn read_user(
     len: u64,
     mut sink: impl FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
-    l.w8(0x60)?; // SWITCH_PART
-    ack(l, "SWITCH_PART")?;
-    l.w8(PART_USER)?;
-    ack(l, "SWITCH_PART user")?;
+    switch_to_user(l)?;
 
     l.w8(0xd6)?; // READ
     l.w8(HOST_OS_LINUX)?;
@@ -339,7 +341,7 @@ pub fn read_user(
     while done < len {
         let n = (len - done).min(READ_CHUNK as u64) as usize;
         l.read(&mut buf[..n])?;
-        let sum = buf[..n].iter().fold(0u16, |s, &b| s.wrapping_add(b as u16));
+        let sum = sum16(&buf[..n]);
         let dev = l.r16()?;
         if dev != sum {
             return Err(format!("checksum mismatch at byte {}: device {dev:#06x}, ours {sum:#06x}", addr + done));
@@ -347,6 +349,52 @@ pub fn read_user(
         l.w8(ACK)?;
         sink(&buf[..n])?;
         done += n as u64;
+    }
+    Ok(())
+}
+
+fn switch_to_user(l: &mut impl Link) -> Result<(), String> {
+    l.w8(0x60)?; // SWITCH_PART
+    ack(l, "SWITCH_PART")?;
+    l.w8(PART_USER)?;
+    ack(l, "SWITCH_PART user")
+}
+
+pub fn sum16(b: &[u8]) -> u16 {
+    b.iter().fold(0u16, |s, &x| s.wrapping_add(x as u16))
+}
+
+/// Write `len` bytes from `src` to the eMMC user area at `addr`, in checksummed 1 MiB packets
+/// (SDMMC_WRITE_DATA). The DA answers each packet with CONT_CHAR. The caller reads it back.
+pub fn write_user(
+    l: &mut impl Link,
+    addr: u64,
+    len: u64,
+    src: &mut impl std::io::Read,
+    mut progress: impl FnMut(u64),
+) -> Result<(), String> {
+    switch_to_user(l)?;
+    l.w8(0x62)?;
+    l.w8(STORAGE_SDMMC)?;
+    l.w8(PART_USER)?;
+    l.w64(addr)?;
+    l.w64(len)?;
+    l.w32(READ_CHUNK as u32)?;
+    ack(l, "SDMMC_WRITE_DATA")?;
+    let mut buf = vec![0u8; READ_CHUNK];
+    let mut done = 0u64;
+    while done < len {
+        let n = (len - done).min(READ_CHUNK as u64) as usize;
+        src.read_exact(&mut buf[..n]).map_err(|e| format!("backup file: {e}"))?;
+        l.w8(ACK)?;
+        l.write(&buf[..n])?;
+        l.w16(sum16(&buf[..n]))?;
+        match l.r8()? {
+            CONT_CHAR => {}
+            r => return Err(format!("Download Agent stopped the write at byte {}: {r:#04x}", addr + done)),
+        }
+        done += n as u64;
+        progress(done);
     }
     Ok(())
 }
@@ -405,6 +453,30 @@ mod tests {
         rx.extend_from_slice(&7u16.to_be_bytes());
         let mut f = Fake { rx: rx.into(), tx: vec![] };
         assert!(read_user(&mut f, 0, 3, |_| Ok(())).unwrap_err().contains("checksum"));
+    }
+
+    #[test]
+    fn write_sends_ack_packet_checksum_and_stops_on_anything_but_cont() {
+        let data: Vec<u8> = (0..READ_CHUNK + 5).map(|i| (i * 3) as u8).collect();
+        let mut f = Fake { rx: vec![ACK, ACK, ACK, CONT_CHAR, CONT_CHAR].into(), tx: vec![] };
+        write_user(&mut f, 0x2180000, data.len() as u64, &mut &data[..], |_| {}).unwrap();
+        let t = &f.tx;
+        // switch part, then op, storage, part, addr, len, packet size
+        assert_eq!(&t[..5], &[0x60, PART_USER, 0x62, 2, PART_USER]);
+        assert_eq!(&t[5..13], &0x2180000u64.to_be_bytes());
+        assert_eq!(&t[13..21], &(data.len() as u64).to_be_bytes());
+        assert_eq!(&t[21..25], &(READ_CHUNK as u32).to_be_bytes());
+        // ACK, the packet, its checksum; twice
+        assert_eq!(t[25], ACK);
+        assert_eq!(&t[26..26 + READ_CHUNK], &data[..READ_CHUNK]);
+        let c = 26 + READ_CHUNK;
+        assert_eq!(&t[c..c + 2], &sum16(&data[..READ_CHUNK]).to_be_bytes());
+        assert_eq!(t[c + 2], ACK);
+        assert_eq!(&t[c + 3..c + 8], &data[READ_CHUNK..]);
+        assert_eq!(t.len(), c + 10);
+
+        let mut f = Fake { rx: vec![ACK, ACK, ACK, 0xa5].into(), tx: vec![] };
+        assert!(write_user(&mut f, 0, 4, &mut &[1u8, 2, 3, 4][..], |_| {}).unwrap_err().contains("stopped the write"));
     }
 
     #[test]

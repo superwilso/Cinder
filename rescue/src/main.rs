@@ -1,8 +1,9 @@
 //! cinder-rescue — back up a Sony NW-A50-series Walkman's eMMC over MediaTek's download mode.
 //!
 //! Download mode lives in the preloader, before any kernel, so it still answers on a player that
-//! boot-loops. This first version only READS: `info` proves the link, `dump` copies a range of the
-//! eMMC user area to a new file. No command that writes to the player exists in this program.
+//! boot-loops. `info` proves the link, `dump` copies a range of the eMMC user area to a new file with
+//! a manifest, `verify` re-checks a backup, and `restore` writes chosen partitions back from this
+//! player's own backup (the only command that writes; see `restore` for its guards).
 //!
 //! The Download Agent (DA) is MediaTek's and is not shipped here; pass the one you already have
 //! (wbrt carries `DA.bin`; the flash tool's README names `MTK_AllInOne_DA_5.2136.bin`).
@@ -14,7 +15,7 @@ mod mtk;
 mod sha256;
 
 use mtk::Link;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::{Duration, Instant};
 
 /// What wbrt backs up: the user area from 0 to here (mbr through the first ~400 MB of contents).
@@ -195,6 +196,117 @@ fn verify(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Partitions a boot loop can break, and the only ones restore will write. Everything else (the
+/// partition table, bootloader, nvram, nvp, pro_info, seccfg, tee, contents) is left as it is.
+const RESTORABLE: &[&str] = &["bootimg", "recovery", "android", "usrdata", "cache", "var", "db"];
+
+fn sha_of(src: &mut impl Read, len: u64) -> Result<String, String> {
+    let mut h = sha256::Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut left = len;
+    while left > 0 {
+        let n = left.min(buf.len() as u64) as usize;
+        src.read_exact(&mut buf[..n]).map_err(|e| format!("backup file: {e}"))?;
+        h.update(&buf[..n]);
+        left -= n as u64;
+    }
+    Ok(h.hex())
+}
+
+fn device_sha(usb: &mut Usb, start: u64, len: u64) -> Result<String, String> {
+    let mut h = sha256::Sha256::new();
+    mtk::read_user(usb, start, len, |c| Ok(h.update(c)))?;
+    Ok(h.hex())
+}
+
+/// Write partitions back from a backup. In order, it refuses unless:
+///   1. every chosen partition is in RESTORABLE and wholly inside the backup;
+///   2. the backup's partition table is an A50-series one and the chosen partitions still hash to
+///      what the manifest recorded when they were read off the player;
+///   3. the player's chip and eMMC CID equal the manifest's (a backup only goes back to its player);
+///   4. the player's own partition table passes the same layout check.
+/// Then per partition: read and hash what the player has now; leave it alone if it already
+/// matches; otherwise write it and read it back, which must hash to the manifest's value.
+fn restore(da: &[u8], from: &str, parts: &str, dry_run: bool, even_if_same: bool) -> Result<(), String> {
+    let manifest = format!("{from}.manifest");
+    let m = backup::read_manifest(&manifest)?;
+    let mut chosen = vec![];
+    for name in parts.split(',') {
+        if !RESTORABLE.contains(&name) {
+            return Err(format!("{name} is not restorable; restore writes only {}", RESTORABLE.join(", ")));
+        }
+        let &(_, start, size) = backup::TABLE.iter().find(|t| t.0 == name).expect("RESTORABLE names are in TABLE");
+        let sum = m
+            .sums
+            .iter()
+            .find(|s| s.0 == name && s.1 == start && s.2 == size)
+            .ok_or_else(|| format!("{from} does not hold all of {name}"))?;
+        chosen.push((name, start, size, sum.3.clone()));
+    }
+    if m.addr != 0 {
+        return Err("restore needs a backup that starts at 0, so its partition table can be checked".into());
+    }
+    let mut f = std::fs::File::open(from).map_err(|e| format!("{from}: {e}"))?;
+    let mut head = vec![0u8; 0x500000];
+    f.read_exact(&mut head).map_err(|e| format!("{from}: {e}"))?;
+    backup::check_layout(&head)?;
+    for (name, start, size, want) in &chosen {
+        f.seek(SeekFrom::Start(*start)).map_err(|e| format!("{from}: {e}"))?;
+        if &sha_of(&mut f, *size)? != want {
+            return Err(format!("{name} in {from} no longer matches its manifest; not using it"));
+        }
+        println!("Backup's {name} checks out ({} MiB)", size >> 20);
+    }
+    let field = |k: &str| m.header.iter().find(|h| h.starts_with(k)).cloned();
+    let (Some(chip), Some(cid)) = (field("chip "), field("emmc-cid ")) else {
+        return Err(format!("{manifest} has no chip and eMMC CID, so nothing proves it came from this player"));
+    };
+
+    let (mut usb, header) = connect(da)?;
+    let stuck = "
+The player is still in download mode: unplug it and hold power about 10 s.";
+    if header[0] != chip || header[1] != cid {
+        return Err(format!("this player is not the one {from} came from:
+  player {} / {}
+  backup {chip} / {cid}{stuck}", header[0], header[1]));
+    }
+    let mut dev_head = Vec::with_capacity(0x500000);
+    mtk::read_user(&mut usb, 0, 0x500000, |c| Ok(dev_head.extend_from_slice(c)))?;
+    backup::check_layout(&dev_head).map_err(|e| format!("the player's own partition table: {e}{stuck}"))?;
+    println!("Same player as the backup, same partition layout");
+
+    for (name, start, size, want) in &chosen {
+        let now = device_sha(&mut usb, *start, *size).map_err(|e| format!("{e}{stuck}"))?;
+        if &now == want && !even_if_same {
+            println!("{name}: already the same as the backup, left alone");
+            continue;
+        }
+        let what = if &now == want { "the same as the backup (rewriting it anyway)" } else { "different from the backup" };
+        if dry_run {
+            println!("{name}: {what}; would write {} MiB", size >> 20);
+            continue;
+        }
+        println!("{name}: {what}; writing {} MiB", size >> 20);
+        f.seek(SeekFrom::Start(*start)).map_err(|e| format!("{from}: {e}"))?;
+        let t = Instant::now();
+        mtk::write_user(&mut usb, *start, *size, &mut (&mut f).take(*size), |done| {
+            if done % (16 << 20) == 0 || done == *size {
+                print!("\r  {} / {} MiB   ", done >> 20, size >> 20);
+                let _ = std::io::stdout().flush();
+            }
+        })
+        .map_err(|e| format!("{e}{stuck}"))?;
+        println!("in {:.0} s; reading it back", t.elapsed().as_secs_f64());
+        let after = device_sha(&mut usb, *start, *size).map_err(|e| format!("{e}{stuck}"))?;
+        if &after != want {
+            return Err(format!("{name} read back differently from the backup. Run restore again, or restore with wbrt.{stuck}"));
+        }
+        println!("{name}: written and read back, matches the backup");
+    }
+    println!("Restarting the player.");
+    mtk::reboot(&mut usb)
+}
+
 fn num(s: &str) -> Result<u64, String> {
     match s.strip_prefix("0x") {
         Some(h) => u64::from_str_radix(h, 16),
@@ -212,8 +324,14 @@ fn help() {
     println!("  cinder-rescue verify FILE                       re-read a backup against FILE.manifest,");
     println!("                                                  or write one (for a wbrt backup)");
     println!();
+    println!("  cinder-rescue restore --da DA.bin --from FILE --parts bootimg[,android,...]");
+    println!("                [--dry-run]                     check everything, write nothing");
+    println!("                [--even-if-same]                rewrite partitions that already match");
+    println!("      writes only {} from this player's own backup;", RESTORABLE.join(", "));
+    println!("      anything that already matches is left alone, and every write is read back");
+    println!();
     println!("A dump writes FILE.manifest (chip, eMMC CID, SHA-256 per partition) and verifies itself.");
-    println!("Read-only: nothing here writes to the player.");
+    println!("Only restore writes to the player.");
 }
 
 fn run() -> Result<(), String> {
@@ -223,7 +341,7 @@ fn run() -> Result<(), String> {
     if cmd == "verify" {
         return verify(args.get(1).ok_or("verify needs a FILE")?);
     }
-    if !matches!(cmd, "info" | "dump") {
+    if !matches!(cmd, "info" | "dump" | "restore") {
         help();
         return Ok(());
     }
@@ -233,6 +351,12 @@ fn run() -> Result<(), String> {
         let (mut usb, _) = connect(&da)?;
         println!("Download mode works. Restarting the player.");
         return mtk::reboot(&mut usb);
+    }
+    if cmd == "restore" {
+        let from = opt("--from").ok_or("--from FILE is required")?;
+        let parts = opt("--parts").ok_or("--parts is required, e.g. --parts bootimg")?;
+        let flag = |f: &str| args.iter().any(|a| a == f);
+        return restore(&da, from, parts, flag("--dry-run"), flag("--even-if-same"));
     }
     let out = opt("--out").ok_or("--out FILE is required")?;
     let addr = opt("--addr").map(num).transpose()?.unwrap_or(0);
