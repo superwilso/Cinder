@@ -29,13 +29,40 @@ The self-test checks this in two ways rather than assuming it:
 | White noise | Flat spectrum (measured slope −0.1 dB/octave) |
 | Pink noise | Paul Kellet's three-pole filter, poles moved to the engine rate (−3.2 dB/octave) |
 | Dark noise | A leaky integrator, −6 dB/octave above 18 Hz, with a DC block (−6.2 dB/octave) |
-| Rain | A band-limited bed whose intensity wanders, a dense patter of noise bursts (300/s) and pitched drops (1.7–6 kHz resonators) |
-| Storm | Heavier, brighter rain, plus distant thunder every 20–70 s: low-passed brown noise with a slow attack, a long decay and a rolling modulation. Distance sets its brightness and loudness |
+| Rain | A band-limited bed whose intensity wanders, a dense patter of noise bursts (300/s) and pitched drops (1.2–4 kHz resonators) |
+| Storm | Heavier rain, plus distant thunder every 20–70 s: low-passed brown noise with a slow attack, a long decay and a rolling modulation. Distance sets its brightness and loudness |
 | Beach | A low sea roar that never stops, and waves that each have their own size, pace, brightness and place. Each one swells (rising low-pass), breaks and washes up the sand (foam hiss). The next starts while the last is still washing in |
 | Stream | Minnaert bubbles (sines that rise in pitch as they shrink, 520 Hz–2.5 kHz) over the band-limited rush of the water |
 | Wind | Noise through a band-pass whose centre and level follow the gusts, higher and louder as the wind picks up. Each ear's band wanders on its own. A faint whistle comes in on the strongest gusts |
 | Fire | A flickering low roar, a soft hiss, crackles in bursts of one to five snaps, and the odd pitched pop |
 | Night | Five crickets, each with its own pitch, pace and distance. They chirp out of step and now and then fall silent, over the faintest movement of air |
+
+## Checked against real recordings
+
+On 2026-10-27 each sound was measured against field recordings from Wikimedia Commons: two to three
+each of rain, a storm, a beach, a brook, wind, a fire and a cricket. These were used for measurement
+only and are not shipped. Every recording of rain, a storm, a beach and a fire falls away above
+2 kHz: the 8 kHz octave sits 1 to 16 dB under the 1 kHz one. Those four sounds here rose 6 to 8 dB
+instead, which is the high, glittery edge that made them sound synthetic.
+
+| Sound | 4 kHz | 8 kHz | 12.5 kHz | Recordings at 8 kHz |
+|---|---|---|---|---|
+| Rain | +6.5 → −1.1 | +7.2 → −3.7 | +7.7 → −5.7 | −5 to −16 |
+| Storm | +5.6 → −0.2 | +6.9 → −2.3 | +7.6 → −4.2 | −1 to −4 |
+| Beach | +0.8 → −6.0 | +6.0 → −4.8 | +8.4 → −5.0 | −10 to +6 |
+| Fire | −2.6 → −9.1 | +1.6 → −9.4 | +4.0 → −9.6 | −10 |
+
+*Octave-band level relative to 1 kHz, before → after.*
+
+Each of the four now ends in the air between the listener and the sound: a high shelf above
+1–1.5 kHz, and a further −6 dB per octave above 6 kHz (`ss_tilt_hz`, `ss_tilt_g`). Rain's drops
+are lower and softer. The fire's low roar is 4 dB down, because the recording's roar is far weaker
+than ours was. Stream, wind and night already matched and are unchanged. Apple's Background Sounds
+take the same line: they are there to mask, so they are dark and steady, without a bright
+foreground. The self-test now fails if any of the four rises above 8 kHz again.
+
+What still differs: ours are more widely spread across the two ears than a stereo recording of the
+same thing (left/right correlation about 0 against 0.3–0.8).
 
 The sounds are level-matched by K-weighted loudness (ITU-R BS.1770, the curve loudness meters use)
 to within 5 dB of each other, so switching sound at the same setting does not jump. Night sits 4 dB

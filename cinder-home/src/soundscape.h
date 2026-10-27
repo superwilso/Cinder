@@ -189,6 +189,7 @@ typedef struct {
     float next_wave;                       /* seconds until the next wave starts */
     ss_thunder thunder;
     float next_thunder;
+    ss_lp tilt[2][2];                      /* the air between the listener and the sound */
     unsigned long long frames;             /* engine frames since the sound started */
 } ss_state;
 
@@ -462,8 +463,8 @@ static void ss_block_rain(ss_state* s, int n)
     int nd = ss_events(s, 1, (storm ? 16.0f : 11.0f) * inten);
     for (int k = 0; k < nd; k++) {
         const float u = ss_rand01(s);
-        const float hz = 1700.0f * ss_exp(ss_rand01(s) * 1.25f);     /* 1.7 .. 6 kHz, log */
-        ss_ring_spawn(s, 0.02f + 0.16f * u * u * u, hz, ss_uniform(s, 0.003f, 0.011f),
+        const float hz = 1200.0f * ss_exp(ss_rand01(s) * 1.2f);      /* 1.2 .. 4 kHz, log */
+        ss_ring_spawn(s, 0.015f + 0.10f * u * u * u, hz, ss_uniform(s, 0.003f, 0.011f),
                       ss_rand01(s), (int)(ss_rand01(s) * n));
     }
 
@@ -526,8 +527,8 @@ static void ss_block_rain(ss_state* s, int n)
             th->brown[1] = 0.9985f * th->brown[1] + f * 0.05f;
             const float x = ss_lp_run(&th->b[0], th->ca, ss_lp_run(&th->a[0], th->ca, th->brown[0]));
             const float y = ss_lp_run(&th->b[1], th->ca, ss_lp_run(&th->a[1], th->ca, th->brown[1]));
-            l += x * th_env * tl * 2.2f;
-            r += y * th_env * tr * 2.2f;
+            l += x * th_env * tl * 1.4f;
+            r += y * th_env * tr * 1.4f;
             th_env += th_step;
         }
         s->blk[0][i] = l;
@@ -716,7 +717,7 @@ static void ss_block_fire(ss_state* s, int n)
         ss_ring_spawn(s, ss_uniform(s, 0.12f, 0.35f), ss_uniform(s, 700.0f, 2400.0f),
                       ss_uniform(s, 0.008f, 0.022f), ss_rand01(s), (int)(ss_rand01(s) * n));
     float st, sh;
-    float roar = ss_ctl_from(s, 0, 0.55f * flick * heat, &st, n);
+    float roar = ss_ctl_from(s, 0, 0.35f * flick * heat, &st, n);
     float hiss = ss_ctl_from(s, 1, 0.022f * (0.4f + 0.6f * flick), &sh, n);
     const float a_roar = ss_lp_coef(s, 260.0f), a_hiss = ss_hp_coef(s, 3000.0f), a_snap = ss_hp_coef(s, 1400.0f);
     for (int i = 0; i < n; i++) {
@@ -807,6 +808,14 @@ static void ss_block_night(ss_state* s, int n)
     }
 }
 
+/* Air absorption: a high shelf, `ss_tilt_g` above `ss_tilt_hz`, and above 6 kHz a further
+ * -6 dB/octave, after each sound. Real recordings of
+ * rain, a storm, a beach and a fire all fall away above 2 kHz (8 kHz sits 1 to 16 dB under 1 kHz);
+ * without this the sources here rose 6 to 8 dB instead, which is the "glittery" top the owner heard
+ * on 2026-10-26. Fitted to Wikimedia Commons recordings (docs/SPEC_soundscapes.md). 1 = untouched. */
+static const float ss_tilt_hz[SS_COUNT] = { 0, 0, 0, 0, 1000, 1500, 1500, 0, 0, 1200, 0 };
+static const float ss_tilt_g[SS_COUNT] = { 1, 1, 1, 1, 0.15f, 0.2f, 0.12f, 1, 1, 0.1f, 1 };
+
 static void ss_engine_block(ss_state* s)
 {
     const int n = SS_CTL;
@@ -819,6 +828,15 @@ static void ss_engine_block(ss_state* s)
     case SS_FIRE: ss_block_fire(s, n); break;
     case SS_NIGHT: ss_block_night(s, n); break;
     default: memset(s->blk, 0, sizeof s->blk); break;
+    }
+    const float g = ss_tilt_g[s->sound];
+    if (g < 1.0f) {
+        const float a = ss_lp_coef(s, ss_tilt_hz[s->sound]), a_air = ss_lp_coef(s, 6000.0f);
+        for (int c = 0; c < 2; c++)
+            for (int i = 0; i < n; i++) {
+                const float lo = ss_lp_run(&s->tilt[c][0], a, s->blk[c][i]);
+                s->blk[c][i] = lo + g * ss_lp_run(&s->tilt[c][1], a_air, s->blk[c][i] - lo);
+            }
     }
     s->blk_n = n;
     s->blk_pos = 0;
@@ -846,6 +864,7 @@ static inline void ss_reset_voices(ss_state* s)
     memset(s->cri, 0, sizeof s->cri);
     memset(s->wave, 0, sizeof s->wave);
     memset(&s->thunder, 0, sizeof s->thunder);
+    memset(s->tilt, 0, sizeof s->tilt);
     s->next_wave = 0.5f;
     s->next_thunder = 8.0f + 20.0f * ss_rand01(s);
     /* drifts start mid-range rather than at zero, so a sound does not fade up from nothing over its
@@ -941,7 +960,7 @@ static inline int ss_active(const ss_state* s)
  * relative to full scale, the night 4 dB quieter because it IS the quiet one. Measured and asserted
  * by tools/soundscape_selftest.cpp. */
 static const float ss_makeup[SS_COUNT] = {
-    0.0f, 0.37f, 0.49f, 0.69f, 1.74f, 0.93f, 2.07f, 2.43f, 1.33f, 2.37f, 3.9f
+    0.0f, 0.37f, 0.49f, 0.69f, 4.31f, 1.51f, 3.31f, 2.43f, 1.33f, 4.08f, 3.9f
 };
 
 /* A soft limit well below full scale: tanh's Pade form, flat for the levels sounds sit at. */

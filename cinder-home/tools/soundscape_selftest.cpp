@@ -1,8 +1,8 @@
 // soundscape_selftest — host test for the procedural soundscapes in src/soundscape.h.
 //
 // What a listener would catch, measured instead: each sound has a level in a sane window and no
-// peak that reaches full scale; the three noises have the slopes their names promise; rain is
-// bright, wind and the fire's roar are dark, crickets sit where crickets sing; a beach comes in
+// peak that reaches full scale; the three noises have the slopes their names promise; nothing has a
+// glittery top; wind and the fire's roar are dark, crickets sit where crickets sing; a beach comes in
 // waves, and they are not the same wave every time. Then what a listener would only catch too late:
 // silence is bit-exact silence (the music is untouched while it is off), a level change or a
 // switch of sound is a ramp and not a click, a full-scale sample saturates instead of wrapping,
@@ -287,9 +287,16 @@ int main() {
         checkf(std::fabs(sd + 6.0) < 1.0, "dark falls 6 dB/octave: %.2f", sd);
     }
     {
-        const auto rain = spectrum(render(SS_RAIN, R, 30.0));
-        const double hi = band(rain, R, 1000, 12000), lo = band(rain, R, 20, 1000);
-        checkf(hi > lo, "rain is bright: %.1f dB more energy above 1 kHz than below", 10 * std::log10(hi / lo));
+        // No glittery top. Real recordings of each (Wikimedia Commons, docs/SPEC_soundscapes.md) put
+        // the 8-16 kHz octave 1 to 16 dB under the 1 kHz one; before 2026-10-27 these sat 6-8 dB OVER.
+        for (int snd : { SS_RAIN, SS_STORM, SS_BEACH, SS_FIRE }) {
+            const auto p = spectrum(render(snd, R, 30.0));
+            const double top = 10 * std::log10(band(p, R, 8000, 16000) / band(p, R, 707, 1414));
+            char m[160];
+            std::snprintf(m, sizeof m, "%s: the 8-16 kHz octave sits under the 1 kHz one, like a recording (%.1f dB)",
+                          NAMES[snd], top);
+            check(top < -1.5, m);
+        }
         const auto wind = spectrum(render(SS_WIND, R, 30.0));
         const double whi = band(wind, R, 1500, 20000), wlo = band(wind, R, 20, 1500);
         checkf(wlo > 10 * whi, "wind is dark: %.1f dB more below 1.5 kHz", 10 * std::log10(wlo / whi));

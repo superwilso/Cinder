@@ -40,6 +40,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Soundscapes: Rain, Storm, Beach and Fire had a high, glittery edge.** Measured against field
+  recordings, real rain, storms, surf and fires all fall away above 2 kHz. These four rose 6 to 8 dB
+  instead. Each now ends with a gentle roll-off for the air between you and the sound. Rain's drops
+  are lower and softer, and the fire's roar is quieter. Levels stay matched across the sounds.
+  Details in `docs/SPEC_soundscapes.md`.
 - **Settings ▸ Storage had no status bar, and said "Not read yet" for internal storage** while the
   Settings row beside it read 3.3 / 56 GB. The page left its scroll clip set, which hid the bar
   (now cleared for every screen before the bar is drawn), and its figures were only read while
