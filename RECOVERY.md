@@ -154,9 +154,9 @@ The next boot enters the Sony updater (which never runs the wrapper), so this br
 
 ## Step 3 — cinder-rescue: put back only what broke
 `cinder-rescue` (in `rescue/`) talks to the same MediaTek download mode wbrt uses, so it works
-on a player that will not boot. It is not in a release yet: build it with
-`cargo build --release` in `rescue/` (for Windows from Linux, add
-`--target x86_64-pc-windows-gnu`). Verified on an A55 on 2026-10-26.
+on a player that will not boot. From v0.3.21-rc1 it is on the Releases page for Windows, Linux and
+macOS; or build it with `cargo build --release` in `rescue/`. Verified on an A55 under Windows on
+2026-10-26; not yet run on Linux or a Mac.
 
 **Take its backup while the player still works.** A restore only accepts a backup of the same
 player, proven by the eMMC serial the backup records.

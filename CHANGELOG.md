@@ -26,8 +26,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   `usrdata`, `cache`, `var` or `db`, only to the player the backup came from, skips what already
   matches and reads back every write. *Device-verified on the A55 under Windows: a full dump
   matched the player's own reads of every partition the running system leaves alone, and a
-  restore of `bootimg`, then of `cache` (contents really different), read back and booted.* Not in a release yet; [`RECOVERY.md`](RECOVERY.md)
-  Step 3 has the steps.
+  restore of `bootimg`, then of `cache` (contents really different), read back and booted.* Ships
+  as `cinder-rescue-windows-x64.exe`, `cinder-rescue-linux-x64` and `cinder-rescue-macos`
+  (experimental; not yet run on Linux or a Mac). [`RECOVERY.md`](RECOVERY.md) Step 3 has the steps.
 - **Low-latency USB DAC: its numbers on Cinder's own page.** With Low latency on, the USB-DAC
   info box shows the module's state, the PC's format, the buffer, the time streamed, dropouts and
   USB errors, read once a second from `/proc/llusbdac`. Cinder loads the module with `gui=0`, so
@@ -43,8 +44,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Soundscapes: Rain, Storm, Beach and Fire had a high, glittery edge.** Measured against field
   recordings, real rain, storms, surf and fires all fall away above 2 kHz. These four rose 6 to 8 dB
   instead. Each now ends with a gentle roll-off for the air between you and the sound. Rain's drops
-  are lower and softer, and the fire's roar is quieter. Levels stay matched across the sounds.
-  Details in `docs/SPEC_soundscapes.md`.
+  are lower and softer, the fire's crackles less hard and its roar quieter. Levels stay matched
+  across the sounds. Details in `docs/SPEC_soundscapes.md`. *Device-checked by ear* after the first
+  pass ("much better, still slightly sharp for some"); a second, gentler pass followed.
 - **Settings ▸ Storage had no status bar, and said "Not read yet" for internal storage** while the
   Settings row beside it read 3.3 / 56 GB. The page left its scroll clip set, which hid the bar
   (now cleared for every screen before the bar is drawn), and its figures were only read while
@@ -74,7 +76,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **The Low-latency USB DAC option can be installed.** The installers up to v0.3.20-rc3 were built
   before cinder-llusbdac's first release, so they had no checksum to accept its module and said so.
   They now pin cinder-llusbdac v0.2.0 (SHA-256 `e4b8dadf…`), checked on the PC and on the player.
-  The first load is still to be done with the owner present (DEVICE_CHECKLIST §41.1).
+  Loading and unloading the module were *device-verified* 10-26 (see Added).
 
 ## [0.3.20] — 2026-10-26
 

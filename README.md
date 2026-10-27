@@ -92,7 +92,7 @@ it has run on hardware (*device-verified*). Per-feature state: [`cinder-home/STA
 
 1. **Back up the player** with [wbrt](https://github.com/unknown321/wbrt) (Windows), or with
    Cinder's own `cinder-rescue dump`, which can later put back just the partitions a boot loop
-   broke ([`RECOVERY.md`](RECOVERY.md) Step 3; build it from `rescue/`, not in a release yet).
+   broke ([`RECOVERY.md`](RECOVERY.md) Step 3; on the [Releases](../../releases) page from v0.3.21-rc1).
    Either one saves a player that no longer starts.
 2. Download the installer from [Releases](../../releases):
    - **Windows:** `cinder-installer-windows-x64.exe`. Accept the administrator prompt; the last step

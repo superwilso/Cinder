@@ -463,8 +463,8 @@ static void ss_block_rain(ss_state* s, int n)
     int nd = ss_events(s, 1, (storm ? 16.0f : 11.0f) * inten);
     for (int k = 0; k < nd; k++) {
         const float u = ss_rand01(s);
-        const float hz = 1200.0f * ss_exp(ss_rand01(s) * 1.2f);      /* 1.2 .. 4 kHz, log */
-        ss_ring_spawn(s, 0.015f + 0.10f * u * u * u, hz, ss_uniform(s, 0.003f, 0.011f),
+        const float hz = 1000.0f * ss_exp(ss_rand01(s) * 1.1f);      /* 1 .. 3 kHz, log */
+        ss_ring_spawn(s, 0.012f + 0.07f * u * u * u, hz, ss_uniform(s, 0.003f, 0.011f),
                       ss_rand01(s), (int)(ss_rand01(s) * n));
     }
 
@@ -707,7 +707,7 @@ static void ss_block_fire(ss_state* s, int n)
         int at = (int)(ss_rand01(s) * n);
         for (int j = 0; j < snaps; j++) {
             const float u = ss_rand01(s);
-            ss_grain_spawn(s, 0.08f + 0.75f * u * u * u, ss_uniform(s, 0.0001f, 0.0007f),
+            ss_grain_spawn(s, 0.06f + 0.55f * u * u * u, ss_uniform(s, 0.0001f, 0.0007f),
                            pan + ss_uniform(s, -0.08f, 0.08f), at);
             at += (int)(ss_uniform(s, 0.001f, 0.014f) * s->er);
         }
@@ -813,8 +813,8 @@ static void ss_block_night(ss_state* s, int n)
  * rain, a storm, a beach and a fire all fall away above 2 kHz (8 kHz sits 1 to 16 dB under 1 kHz);
  * without this the sources here rose 6 to 8 dB instead, which is the "glittery" top the owner heard
  * on 2026-10-26. Fitted to Wikimedia Commons recordings (docs/SPEC_soundscapes.md). 1 = untouched. */
-static const float ss_tilt_hz[SS_COUNT] = { 0, 0, 0, 0, 1000, 1500, 1500, 0, 0, 1200, 0 };
-static const float ss_tilt_g[SS_COUNT] = { 1, 1, 1, 1, 0.15f, 0.2f, 0.12f, 1, 1, 0.1f, 1 };
+static const float ss_tilt_hz[SS_COUNT] = { 0, 0, 0, 0, 900, 1200, 1200, 0, 0, 1200, 0 };
+static const float ss_tilt_g[SS_COUNT] = { 1, 1, 1, 1, 0.12f, 0.15f, 0.1f, 1, 1, 0.25f, 1 };
 
 static void ss_engine_block(ss_state* s)
 {
@@ -960,7 +960,7 @@ static inline int ss_active(const ss_state* s)
  * relative to full scale, the night 4 dB quieter because it IS the quiet one. Measured and asserted
  * by tools/soundscape_selftest.cpp. */
 static const float ss_makeup[SS_COUNT] = {
-    0.0f, 0.37f, 0.49f, 0.69f, 4.31f, 1.51f, 3.31f, 2.43f, 1.33f, 4.08f, 3.9f
+    0.0f, 0.37f, 0.49f, 0.69f, 4.57f, 1.74f, 3.42f, 2.43f, 1.33f, 4.69f, 3.9f
 };
 
 /* A soft limit well below full scale: tanh's Pade form, flat for the levels sounds sit at. */
