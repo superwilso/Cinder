@@ -143,7 +143,7 @@ pub const BT_IDLE_OFF_SUB: &str = "Sleeps after 10 min idle, wakes on use";
 // One line, and rustfmt must leave it so: `tools/release.sh` finds and rewrites it by its shape.
 #[macro_export]
 #[rustfmt::skip]
-macro_rules! cinder_version { () => { "0.3.20" } }
+macro_rules! cinder_version { () => { "0.3.21" } }
 
 /// Firmware/build label shown on the Settings "Firmware" row. The `dev` feature (development
 /// channel, built from the same tree) makes the two builds visually distinguishable on-device.
