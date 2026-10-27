@@ -814,10 +814,21 @@ pub fn screenshots(dir: &std::path::Path) -> i32 {
             InvalidateRect(hwnd, std::ptr::null(), 1);
             UpdateWindow(hwnd);
         }
-        pump(std::time::Duration::from_millis(400));
+        // Capture until two in a row match. A fixed wait was not enough: on a slow repaint the
+        // Confirm shot still had the Options page's "Continue" button over a half-drawn summary
+        // (v0.3.20-rc1, v0.3.21-rc1), so release.sh's second run saw a different picture.
+        let mut shot = None;
+        for _ in 0..10 {
+            pump(std::time::Duration::from_millis(400));
+            let now = capture(hwnd);
+            if now.is_some() && now == shot {
+                break;
+            }
+            shot = now;
+        }
         // PPM: a one-line header and the pixels. render_installer_screenshots.sh makes the PNG.
         let path = dir.join(format!("{name}.ppm"));
-        match capture(hwnd) {
+        match shot {
             Some((wd, ht, rgb)) => match std::fs::write(
                 &path,
                 [format!("P6\n{wd} {ht}\n255\n").as_bytes(), &rgb].concat(),
