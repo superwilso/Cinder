@@ -705,7 +705,9 @@ fi
 #      (tools/test_preload.sh) and this only decides whether to call it. The script is installed
 #      whenever it is staged, selected or not, because it is also what takes the wrapper OFF: an
 #      install with the component turned off, and the uninstaller, both run its `remove`.
-#      Needs `mono` too (the shim is that component's file). Non-fatal throughout: every failure
+#      Needs the shim staged ($SRC_MONO, which the PC installer stages for `mono` or `preload`),
+#      NOT `mono` itself: the installer offers this option instead of `mono` on a player without
+#      Wampy, and asking for both dropped preload and everything after it (2026-10-28). Non-fatal throughout: every failure
 #      in there leaves Sony's hagodaemon running.
 PRELOAD_SH=$BIN/cinder-preload.sh
 if [ -s "$SRC_PRELOAD" ]; then
@@ -719,7 +721,7 @@ if [ -s "$SRC_PRELOAD" ]; then
         echo "WARN: preload — cinder-preload.sh did not copy whole; the one on the player (if any) is kept."
     fi
 fi
-if [ "$WANT_PRELOAD" = 1 ] && [ "$WANT_MONO" = 1 ]; then
+if [ "$WANT_PRELOAD" = 1 ] && [ -s "$SRC_MONO" ]; then
     if [ -s "$PRELOAD_SH" ] && [ -s "$SRC_PRELOAD" ]; then
         sh "$PRELOAD_SH" install "$SRC_HAGOWRAP" "$SRC_MONO" "$SRC_GUARD" \
             || echo "WARN: preload — not installed (see the line above); Sony's hagodaemon is unchanged."
@@ -727,7 +729,7 @@ if [ "$WANT_PRELOAD" = 1 ] && [ "$WANT_MONO" = 1 ]; then
         echo "WARN: preload selected but $SRC_PRELOAD is not staged — nothing installed."
     fi
 else
-    [ "$WANT_PRELOAD" = 1 ] && echo "components: preload needs 'mono' as well — not installed."
+    [ "$WANT_PRELOAD" = 1 ] && echo "WARN: preload selected but $SRC_MONO is not staged — not installed."
     if [ -s "$PRELOAD_SH" ]; then
         sh "$PRELOAD_SH" remove || echo "WARN: preload — could not be removed cleanly (see the line above)."
     fi

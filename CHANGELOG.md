@@ -48,6 +48,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
     it now says so within two seconds instead of waiting five minutes. Without USB access at all
     (WSL), it reports an error instead of crashing.
 
+### Fixed
+
+- **"Mono and soundscapes over music (without Wampy)" installed nothing when "with Wampy" was
+  off**, which is what the option's own text suggests on a player without Wampy. The library both
+  options use was only copied for "with Wampy", so the player skipped this option and, with it,
+  Bluetooth AAC, SBC XQ and FM recording, saying only so in its install log. The installer now
+  copies it for either, and the player needs the file, not the other option. *Found installing
+  v0.3.21-rc1 through the window on the owner's A55; the fix device-verified with the same choices
+  (all five installed).*
+
 ## [0.3.21] — 2026-10-27
 
 ### Added

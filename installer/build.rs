@@ -58,13 +58,14 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     // Always staged, like the signature switcher: `chain` is an enum, and `default` must be able
     // to undo an earlier `clearbass`.
     ("dist/{ch}/cinder-chain.sh", "cinder-chain.sh", "", true),
-    // The mono shim (cinder-home/src/cinder-mono.c). Staged only when `mono` is selected; the
-    // device installer then puts it in place of Wampy's preloaded library, or skips it when Wampy
-    // is not installed.
+    // The mono shim (cinder-home/src/cinder-mono.c). Staged when `mono` or `preload` is selected:
+    // `mono` puts it in place of Wampy's preloaded library (and skips it without Wampy), `preload`
+    // loads it through the hagodaemon wrapper. The installer text offers `preload` INSTEAD of
+    // `mono` on a player without Wampy, so `preload` alone must be enough (10-28: it was not).
     (
         "dist/{ch}/libcinder_mono.so",
         "libcinder_mono.so",
-        "mono",
+        "mono|preload",
         true,
     ),
     // The `preload` component: the hagodaemon wrapper, the boot guard it is never installed

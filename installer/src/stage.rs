@@ -60,11 +60,14 @@ pub fn selected(comps: &[Comp], owner: &str) -> bool {
     if owner.is_empty() {
         return true;
     }
-    comps
-        .iter()
-        .find(|c| c.id == owner)
-        .map(Comp::is_on)
-        .unwrap_or(true)
+    // `a|b`: a file two components share, staged when either is on.
+    owner.split('|').any(|o| {
+        comps
+            .iter()
+            .find(|c| c.id == o)
+            .map(Comp::is_on)
+            .unwrap_or(true)
+    })
 }
 
 /// Is this payload file staged? A `fw:<model>` owner is the install package sealed for that
@@ -1045,6 +1048,21 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
             c[1].value = v.into();
             assert!(selected(&c, "signature"), "signature={v}");
         }
+    }
+
+    /// The mono shim belongs to `mono` and `preload`. The installer offers `preload` instead of
+    /// `mono` on a player without Wampy, and with only `preload` ticked the shim was not staged, so
+    /// preload and everything after it (AAC, FM recording) were silently not installed (10-28).
+    #[test]
+    fn a_shared_file_stages_when_either_owner_is_on() {
+        let mut c = parse_catalogue(
+            "mono | CINDER_MONO | bool | 1 | Mono\npreload | CINDER_PRELOAD | bool | 0 | Preload\n",
+        )
+        .unwrap();
+        c[0].value = "0".into();
+        assert!(!selected(&c, "mono|preload"));
+        c[1].value = "1".into();
+        assert!(selected(&c, "mono|preload"), "preload alone needs the shim");
     }
 
     /// A component the catalogue does not know is staged rather than dropped. The alternative —
