@@ -96,12 +96,12 @@ Final ARM link, dependency/GLIBC, loader and ABI checks were performed separatel
 The committed `dist/` release payload is not changed by this source PR; a release still requires the
 maintainer's normal rebuild and payload-verification process.
 
-Hosted [CI for the feature commit `7654287`](https://github.com/superwilso/Cinder/actions/runs/39709040673) passed all 6 jobs, including the full
+Hosted [CI for the feature commit `35b11c3`](https://github.com/superwilso/Cinder/actions/runs/39709040673) passed all 6 jobs, including the full
 native harness, player tests, both installer platforms, dependency advisories and payload checks.
 The ARM link and device checks above were separate checks, not capabilities of that hosted runner.
 
 In my earlier local VM run, the full native harness was not green: Bluetooth assertion failures and timeouts
-also reproduced on unmodified v0.3.19 (`43abfbb6`), without track previews, under the same harness/VM.
+also reproduced on unmodified v0.3.19 (`2877c84e`), without track previews, under the same harness/VM.
 Paired reruns reproduced the initially candidate-only failing names on the baseline as well. These
 observations are not attributed to this preview change. The affected upstream Bluetooth scenarios,
 service fakes and VM timeout behaviour should be investigated separately; this does not turn the
@@ -175,11 +175,11 @@ or additional runtime library is bundled. I have not separately benchmarked RAM 
 
 ## 验证与边界
 
-已完成的本地记录包括：42 项相关主程序场景；ARM FFI 179 项（仓库测试 178 项及独立探针 1 项）；UI 652、字体 2、布局 13、host 4、数据库 36 项；格式、翻译生成、规定 Clippy 组和差异检查。最终 ARM 主程序完成链接、依赖／GLIBC、隔离加载及 Sony ABI 预检。这些为本地检查记录。正式 [GitHub CI（功能提交 `7654287`）](https://github.com/superwilso/Cinder/actions/runs/39709040673) 的 6 项作业也已全部通过，包括完整 native 场景、播放器测试、Linux／Windows 安装器、依赖审计和载荷检查；ARM 链接与真机验证另行完成。
+已完成的本地记录包括：42 项相关主程序场景；ARM FFI 179 项（仓库测试 178 项及独立探针 1 项）；UI 652、字体 2、布局 13、host 4、数据库 36 项；格式、翻译生成、规定 Clippy 组和差异检查。最终 ARM 主程序完成链接、依赖／GLIBC、隔离加载及 Sony ABI 预检。这些为本地检查记录。正式 [GitHub CI（功能提交 `35b11c3`）](https://github.com/superwilso/Cinder/actions/runs/39709040673) 的 6 项作业也已全部通过，包括完整 native 场景、播放器测试、Linux／Windows 安装器、依赖审计和载荷检查；ARM 链接与真机验证另行完成。
 
 **我已在自己的 Sony NW-A55 上实机试用，测试中没有发现问题。** 我也确认重复来源提示已消失、起点显示正常。《1619khz》页面显示“副歌起点 0:50”，设备日志定位为 50,838 毫秒，确认已有 SABI 被读取和使用；没有直接导出数据库做 SQL 核对，也没有独立听评副歌标记的语义准确性，不声称设备清单每项都单独验证过。
 
-此前本地虚拟环境检查没有全绿：蓝牙场景断言失败和超时，已在未加入巡听的原版 v0.3.19（`43abfbb6`）同环境复现；配对复验也复现了首次候选独有的失败场景名称。这些现象不是本 PR 独有的问题，不应归因于本次巡听改动。**建议单独核查上游相关蓝牙场景、服务模拟及虚拟环境超时原因**；保留原始失败结果，不将全量检查记作通过，也不直接认定是真机故障。
+此前本地虚拟环境检查没有全绿：蓝牙场景断言失败和超时，已在未加入巡听的原版 v0.3.19（`2877c84e`）同环境复现；配对复验也复现了首次候选独有的失败场景名称。这些现象不是本 PR 独有的问题，不应归因于本次巡听改动。**建议单独核查上游相关蓝牙场景、服务模拟及虚拟环境超时原因**；保留原始失败结果，不将全量检查记作通过，也不直接认定是真机故障。
 
 此前声景性能／响度检查及 installer、sim／workspace 的本地验证有环境限制；正式 CI 的相关作业随后通过，不能将旧本地环境限制当作当前 CI 失败。源码 PR 没有替换仓库内 `dist/` 发布载荷；正式发布仍需要维护者按原流程重建并核验。
 

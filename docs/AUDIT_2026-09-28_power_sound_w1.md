@@ -1,6 +1,6 @@
 # Cinder — battery, performance and sound audit on Walkman One, 2026-09-28
 
-*Against `9128329` plus this change. Every device number below was read off the owner's NW-A55
+*Against `5e7dea3` plus this change. Every device number below was read off the owner's NW-A55
 running **Walkman One 3.02** over adb on this date — the first power audit on W1; the earlier ones
 (`AUDIT_BATTERY_PERF_2026-09-05.md`, `analysis/RE_early_suspend.md`) ran on stock 1.02. Method:
 cumulative counters (`/proc/stat`, per-thread `stat` + `sched`, `/proc/interrupts`, `time_in_state`,

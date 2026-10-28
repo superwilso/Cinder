@@ -7,7 +7,7 @@ one line?* Correctness, security and boot safety were never on the table (Part F
 
 | Repository | Tree audited | Changed here |
 |---|---|---|
-| Cinder | `a8cf697` | Part B — **−678 / +69 lines** of code, scripts and config; 9 build outputs and 2 stray gitlinks untracked |
+| Cinder | `d6e9578` | Part B — **−678 / +69 lines** of code, scripts and config; 9 build outputs and 2 stray gitlinks untracked |
 | Flint | `f6ab2ca` | Nothing. Dead-code scan is clean; findings D1, D2 are merges, not deletions |
 | cinder-sony-analysis | `1d7a894` | `ui/walkman_one/_superseded_2026-09-22/` deleted (26 PNGs, 1.3 MB, nothing links to it) |
 | cinder-themes | `deae0f0` | `layouts/` deleted: a folder whose only file said "empty on purpose, don't send anything" |
