@@ -111,10 +111,11 @@ You don't need to uninstall Wampy first.
 
 ## Install
 
-1. **Back up the player** with [wbrt](https://github.com/unknown321/wbrt) (Windows), or with
-   Cinder's own `cinder-rescue dump`, which can later put back just the partitions a boot loop
-   broke ([`RECOVERY.md`](RECOVERY.md) Step 3; on the [Releases](../../releases) page from v0.3.21-rc1).
-   Either one saves a player that no longer starts.
+1. **Back up the player with [wbrt](https://github.com/unknown321/wbrt)** (Windows). It is the
+   proven way back for a player that no longer starts. Cinder's own `cinder-rescue` (on the
+   [Releases](../../releases) page from v0.3.21-rc1) can take a second backup and put back only the
+   partitions a boot loop broke ([`RECOVERY.md`](RECOVERY.md) Step 3), but it has run on one player
+   so far. Until it has run on more, keep a wbrt backup as well.
 2. Download the installer from [Releases](../../releases):
    - **Windows:** `cinder-installer-windows-x64.exe`. Accept the administrator prompt; the last step
      needs raw drive access.
@@ -141,7 +142,8 @@ Each way back to Sony's player depends on less than the one before:
   `cinderhome_clear` clears a latched failure and tries Cinder again.
 - **A build that fails to start** reverts to Sony's player by itself after four boots.
 - **A player that doesn't start at all** still has MediaTek's download mode, before any of its
-  software: restore your backup with `cinder-rescue restore` or wbrt.
+  software: restore your wbrt backup, or put back just the broken partitions with
+  `cinder-rescue restore`.
 
 Read [`RECOVERY.md`](RECOVERY.md) **before** you need it. Attach `cinderhome.log` (root of the
 drive) to any issue.
