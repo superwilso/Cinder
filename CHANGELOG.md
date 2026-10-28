@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.22] — 2026-10-28
+
 ### Changed
 
 - **Fewer files on the release page.** The install and uninstall `.UPG` packages and libusb's
@@ -3269,7 +3271,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.21-rc1...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.22-rc1...HEAD
+[0.3.22]: https://github.com/superwilso/Cinder/compare/v0.3.21...v0.3.22-rc1
 [0.3.21]: https://github.com/superwilso/Cinder/compare/v0.3.20...v0.3.21-rc1
 [0.3.20]: https://github.com/superwilso/Cinder/compare/v0.3.19...v0.3.20-rc3
 [0.3.19]: https://github.com/superwilso/Cinder/compare/v0.3.18...v0.3.19
