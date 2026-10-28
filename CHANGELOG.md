@@ -16,6 +16,23 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **Fewer files on the release page.** The install and uninstall `.UPG` packages and libusb's
+  licence are now one download, `cinder-extras.zip`, beside the installer and cinder-rescue for
+  each system. Most people need none of it: every installer carries both packages. The zip also
+  holds the packages for a player running Walkman One (`.nw-wm1a.upg`), which no release had
+  attached before, and a README saying which is which.
+
+### Fixed
+
+- **A release cut after an rc kept the newest changelog entries under [Unreleased].** rc1 made
+  the version's section and `tools/release.sh` then left later entries where they were, so
+  v0.3.21's section was missing cinder-rescue's page, the full restore and the preload fix (now
+  filed under it). Later runs merge them into the version's section.
+
+## [0.3.21] — 2026-10-28
+
 ### Added
 
 - **`cinder-rescue` has a window on Windows, Linux and macOS.** Double-click it and it opens a page
@@ -47,21 +64,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   - **`cinder-rescue driver`** (Windows) installs the USB driver as wbrt does. Without a driver,
     it now says so within two seconds instead of waiting five minutes. Without USB access at all
     (WSL), it reports an error instead of crashing.
-
-### Fixed
-
-- **"Mono and soundscapes over music (without Wampy)" installed nothing when "with Wampy" was
-  off**, which is what the option's own text suggests on a player without Wampy. The library both
-  options use was only copied for "with Wampy", so the player skipped this option and, with it,
-  Bluetooth AAC, SBC XQ and FM recording, saying only so in its install log. The installer now
-  copies it for either, and the player needs the file, not the other option. *Found installing
-  v0.3.21-rc1 through the window on the owner's A55; the fix device-verified with the same choices
-  (all five installed).*
-
-## [0.3.21] — 2026-10-27
-
-### Added
-
 - **`cinder-rescue`: back up the player and get it out of a boot loop.** A new tool in `rescue/`
   that talks to MediaTek's download mode, which the player enters before any of its software
   runs (hold Play and Volume Down while plugging in). `dump` copies the same range as wbrt, in the
@@ -85,6 +87,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **"Mono and soundscapes over music (without Wampy)" installed nothing when "with Wampy" was
+  off**, which is what the option's own text suggests on a player without Wampy. The library both
+  options use was only copied for "with Wampy", so the player skipped this option and, with it,
+  Bluetooth AAC, SBC XQ and FM recording, saying only so in its install log. The installer now
+  copies it for either, and the player needs the file, not the other option. *Found installing
+  v0.3.21-rc1 through the window on the owner's A55; the fix device-verified with the same choices
+  (all five installed).*
 - **Soundscapes: Rain, Storm, Beach and Fire had a high, glittery edge.** Measured against field
   recordings, real rain, storms, surf and fires all fall away above 2 kHz. These four rose 6 to 8 dB
   instead. Each now ends with a gentle roll-off for the air between you and the sound. Rain's drops

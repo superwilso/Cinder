@@ -66,16 +66,16 @@ Step 3. Run on Windows with an NW-A55; not yet run on Linux or a Mac. `cinder-re
 prints the notices it carries.
 
 The Mac installer and all three cinder-rescue builds contain [libusb](https://libusb.info)
-1.0.27, linked statically. libusb is licensed under the GNU LGPL 2.1; its licence is attached as
-`LICENSE-libusb.txt`. Its source is at <https://github.com/libusb/libusb/tree/v1.0.27>. To
+1.0.27, linked statically. libusb is licensed under the GNU LGPL 2.1; its licence is
+`LICENSE-libusb.txt` in `cinder-extras.zip`. Its source is at <https://github.com/libusb/libusb/tree/v1.0.27>. To
 relink either program against a different libusb, build it from this release's tagged source
 (`installer/` or `rescue/`, `cargo build --release`) with your own libusb.
 
 > **The player has no update option in its own menus.** This generation never had one —
 > the upgrade is always triggered by the host over USB.
 
-`cinder-home-install.upg` and `cinder-home-uninstall.upg` are attached for that route
-and for advanced recovery use. On Windows, the one-click executable is the recommended
+`cinder-extras.zip` holds the install and uninstall `.UPG` packages for that route and for
+advanced recovery use (`.nw-wm1a.upg` for a player running Walkman One; its README says which). On Windows, the one-click executable is the recommended
 path — it does the handoff for you.
 
 **Read [RECOVERY.md](../blob/main/RECOVERY.md) first.** This device has no public

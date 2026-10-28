@@ -111,11 +111,46 @@ fi
 # mechanical — a heading, a date and two link definitions — which is exactly the kind of step that
 # gets forgotten at the end of a release rather than the kind worth doing by hand.
 #
-# Only ever rolled ONCE: on the second run the [X.Y.Z] heading already exists and this is a no-op,
-# the same way the version bump above is.
+# Rolled ONCE per version. On a later run the [X.Y.Z] heading already exists (rc1 made it), and
+# whatever has gone under [Unreleased] since is MERGED into it, subsection by subsection, newest
+# first. Before 2026-10-28 that run was a no-op, and everything added between rc1 and the release
+# shipped in v0.3.21 still filed under [Unreleased].
 CL=CHANGELOG.md
-if grep -q "^## \[$VER\]" "$CL"; then
+# fold_into VER FILE: move [Unreleased]'s entries into the existing [VER] section, on stdout.
+fold_into() {
+    awk -v ver="$1" '
+        function trim(s) { sub(/^\n+/, "", s); sub(/\n+$/, "\n", s); return s }
+        function rest(   i, h) {
+            for (i = 1; i <= n; i++) { h = order[i]; if (!(h in used)) { print h; print ""; printf "%s", trim(body[h]); print ""; used[h] = 1 } }
+        }
+        NR == FNR {
+            if ($0 ~ /^## \[Unreleased\]/) { inU = 1; next }
+            if (inU && $0 ~ /^## \[/) inU = 0
+            if (inU && $0 ~ /^### /) { h = $0; order[++n] = h; next }
+            if (inU) body[h] = body[h] $0 "\n"
+            next
+        }
+        /^## \[Unreleased\]/ { print; print ""; skipU = 1; next }
+        skipU && /^## \[/ { skipU = 0 }
+        skipU { next }
+        index($0, "## [" ver "]") == 1 {
+            print; inV = 1
+            if (trim(body[""]) != "") { print ""; printf "%s", trim(body[""]) }
+            used[""] = 1; next
+        }
+        inV && /^## \[/ { rest(); inV = 0 }
+        inV && /^### / && ($0 in body) { print; pend = $0; used[$0] = 1; next }
+        pend != "" && /^$/ { print; printf "%s", trim(body[pend]); pend = ""; next }
+        { print }
+        END { if (inV) rest() }
+    ' "$2" "$2"
+}
+UNREL="$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' "$CL" | tr -d '[:space:]')"
+if grep -q "^## \[$VER\]" "$CL" && [ -z "$UNREL" ]; then
     ok "changelog already has a [$VER] section"
+elif grep -q "^## \[$VER\]" "$CL"; then
+    fold_into "$VER" "$CL" > "$CL.tmp" && mv "$CL.tmp" "$CL"
+    ok "changelog: [Unreleased] merged into the existing [$VER] section"
 elif ! grep -q '^## \[Unreleased\]' "$CL"; then
     note "changelog has no [Unreleased] section — leaving it alone"
 else

@@ -126,8 +126,9 @@ our code:
 tools/flash.sh uninstall
 ```
 
-That is the shortcut for `cinder-home/dist/dev/cinder_home_uninstall.upg`. The same package is
-attached to every release as **`cinder-home-uninstall.upg`** if you are not working from a
+That is the shortcut for `cinder-home/dist/dev/cinder_home_uninstall.upg`. The same package is in
+every release's **`cinder-extras.zip`** as `cinder-home-uninstall.upg` (or
+`cinder-home-uninstall.nw-wm1a.upg` on a player running Walkman One) if you are not working from a
 checkout.
 
 If the device will not enter mass-storage mode either, you are below the escape ladder and into

@@ -216,10 +216,23 @@ jobs:
           merge-multiple: true
           path: dist
 
+      # Beside the programs, ONE more download: the .UPG packages (already inside every installer;
+      # these are for flashing by hand) and libusb's licence, so the release page lists the
+      # programs and little else.
+      - name: Pack cinder-extras.zip
+        run: |
+          mkdir extras
+          for k in install uninstall; do
+            cp cinder-home/dist/stable/cinder_home_$k.upg extras/cinder-home-$k.upg
+            cp cinder-home/dist/stable/cinder_home_$k.nw-wm1a.upg extras/cinder-home-$k.nw-wm1a.upg
+          done
+          mv dist/LICENSE-libusb.txt extras/
+          cp .github/extras-readme.txt extras/README.txt
+          ( cd extras && zip -X -9 ../dist/cinder-extras.zip * )
+          unzip -l dist/cinder-extras.zip
+
       - name: List what is being published, with checksums
         run: |
-          cp cinder-home/dist/stable/cinder_home_install.upg dist/cinder-home-install.upg
-          cp cinder-home/dist/stable/cinder_home_uninstall.upg dist/cinder-home-uninstall.upg
           ls -lR dist
           # A published binary nobody can verify is a binary nobody should run.
           ( cd dist && sha256sum -- * | tee SHA256SUMS )
@@ -230,8 +243,8 @@ jobs:
       # with the run's own OIDC identity (repository, workflow file, commit), so it can be checked
       # with `gh attestation verify <file> -R superwilso/Cinder` and cannot be minted outside a run.
       #
-      # One step over SHA256SUMS rather than one per build job: every published file, the two
-      # .UPGs included, is covered by the same list attached as SHA256SUMS. It says nothing about
+      # One step over SHA256SUMS rather than one per build job: every published file, the extras
+      # zip included, is covered by the same list attached as SHA256SUMS. It says nothing about
       # where the committed ARM payload came from — that is D4's manifest, checked above.
       - name: Attest build provenance for every published file
         uses: actions/attest-build-provenance@v4
