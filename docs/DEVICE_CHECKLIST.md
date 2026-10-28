@@ -1021,7 +1021,7 @@ start of Sony's services, which is a restart of the player.
 | 41.3 | **Swap prev/next** | Add `swap_prev_next` to `/contents/cinder_advanced.conf`, press the side ⏭ | It goes to the previous track; without the line, the next | |
 | 41.4 | **Drag the Winamp title** | Winamp view with a long title; drag along the title, then press it without moving | The title follows the finger and scrolls on from there; the still press opens Track information | |
 | 41.5 | **Your own font** | Copy a Latin TTF under 2 MB to the top of the drive as `cinder_font.ttf`, restart | Log `cinder_font.ttf: in use for the UI's text`; the Library and Settings text is in it; Chinese or other scripts still draw | Log says "not used" = not a font or over 2 MB |
-| 41.6 | **Bluetooth sleeps and wakes** | Bluetooth on, headphones off, screen off for 10 minutes; then press any button | Log `radio off (Turn off when idle)` then `the player is in use again -> radio on`; turn the headphones on and they connect | |
+| 41.6 | **Bluetooth sleeps and wakes** | Bluetooth on, headphones off, screen off for 10 minutes; then press any button | Log `radio off (Turn off when idle)` then `the player is in use again -> radio on`; turn the headphones on and they connect | **PASS** 10-28 (dev, owner's A55): see 43.11 |
 
 ## 42 — 2026-10-28 — cinder-rescue: full restore, wbrt backups, the DA download and the driver
 
@@ -1050,9 +1050,15 @@ Sony's USB manager still has it.
 |---|---|---|
 | 43.1 | Update from v0.3.19 stable to rc1 | **PASS**: see 39.11 |
 | 43.2 | rc1 stable first boot | **PASS**: library, suspend on by default, auto USB storage, the USB keepalive re-drove the gadget once by itself |
-| 43.3 | Uninstall (rc1's package) | **PASS**: Sony's `.appcfg`, `hagodaemon` and boot script back, guard and binaries gone; booted into Sony's player. The bad-backup case (a `.appcfg.real` naming Cinder) stays host-tested only |
+| 43.3 | Uninstall (rc1's package) | **PASS**: Sony's `.appcfg`, `hagodaemon` and boot script back, guard and binaries gone; booted into Sony's player. The bad-backup case: 43.8 |
 | 43.4 | Install through the rc1 window's guided pages (owner) | **Installed, with a bug**: `mono` off + `preload` on (what the option text suggests without Wampy) dropped preload, AAC, SBC XQ and FM recording ("preload needs 'mono' as well"). **Fixed 10-28** (the shim stages for either; the device checks the file, not `mono`) and **device-verified** with the owner's same choices through a dev Update: all five installed |
 | 43.5 | USB after a suspend, stable rc1 | **PASS**: see 33.2 |
+| 43.7 | A playlist over 4,096 songs (dev, owner's A55) | **PASS**: a 9,010-line `.m3u8` (the library twice, absolute `/contents_ext` paths) in `cinder_playlists`; 11 playlists read in 89 ms at boot; the Playlists grid shows "zz Long test 9010 tracks" (fb0 capture). Removed after |
+| 43.8 | Uninstall when the launcher backup names Cinder (the 09-22 state; the 10-24 fix) | **PASS**: `.appcfg.real` set to Cinder's own launcher lines, then rc1's uninstall package: `the .appcfg.real backup is missing or names Cinder's launcher - writing Sony's own`, `restored stock .appcfg`, full removal; booted into Sony's player in USB storage (owner) |
+| 43.9 | The WM1A curve with no file copying (installer fetches Sony's tables) | **PASS** in a real install from the window (dev installer, owner): `installed ov_127x.tbl … (SHA-256 matches Sony's)`, the DSD table the same, `volume curve: wm1a applied` at boot |
+| 43.10 | **v0.3.21-rc2's own release**, Update with `mono` off and `preload` on | **PASS**: rc2's installer staged `libcinder_mono.so` for `preload` alone; the player: `preload: installed`, `bt-aac: installed`, `fmrec: installed`, `llusbdac: installed`, `sbc xq: on` |
+| 43.11 | Bluetooth sleeps and wakes (41.6), dev | **PASS**, twice: `idle 10 min with the screen off -> radio off` at 1175 s and 1828 s; a button press gave `the player is in use again -> radio on` within 4 s; on the second wake the headphones came back by themselves, `link is up again — ladder disarmed` 16 s after the press |
+| 43.12 | Low-latency USB DAC, switched on from the player (dev, Windows 11 host) | **PASS** (owner listened, wired headphones): Windows lists the audio function as `LLUSBDAC (WALKMAN)` (PID 0B8B, MI_00), so llusbdac owns the gadget; plays cleanly. adb was not reachable from Windows in this mode (its interface had no adb driver), so llusbdac's own counters were not read |
 | 43.6 | Back to the owner's dev build (dev Update, same choices) | Done; `cable_escape_off` re-armed |
 
 Also seen: the window lets `Clear Bass (Walkman One 3.02 only)` be picked on stock; the device skips
