@@ -246,6 +246,7 @@ fn carry_out(action: Action, comps: &[Comp], target: &Path, dry: bool) -> i32 {
         if dry { "would write to" } else { "writing to" },
         target.display()
     );
+    println!("    {}", device::package_line(target));
     let r = stage::write_payload(action, comps, crate::CHANNEL, target, dry, |name, n| {
         println!("    {name:<22} {n:>9} bytes");
     });

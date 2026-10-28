@@ -23,6 +23,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   each system. Most people need none of it: every installer carries both packages. The zip also
   holds the packages for a player running Walkman One (`.nw-wm1a.upg`), which no release had
   attached before, and a README saying which is which.
+- **The installer says which package it put on the player, and why**: `Package: Walkman One's
+  (nw-wm1a key) (the player reports Walkman One's key)`, or what it could not read and what it went
+  by instead. Sony's updater drops a package sealed for the wrong key without a word, so a report
+  of an install that "restarted after a few seconds" (#41) could not say which one it had been
+  given.
 
 ### Fixed
 

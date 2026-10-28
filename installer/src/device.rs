@@ -44,10 +44,45 @@ const HOME_LIB_LINE: &str = "sound: Clear Bass";
 /// KAS read over USB ([`crate::stage::read_kas`]), when this system and these rights can ask for
 /// it; otherwise [`w1_from_files`].
 pub fn running_walkman_one(root: &Path) -> bool {
-    match crate::stage::read_kas(root) {
-        Ok(kas) if !kas.is_empty() => kas == crate::stage::W1_KAS,
-        _ => w1_from_files(root),
-    }
+    walkman_one_why(root).0
+}
+
+/// [`running_walkman_one`], with the reason in words for the install log. A report of an install
+/// the updater dropped (issue #41) is only answerable if it says which package went on the player.
+pub fn walkman_one_why(root: &Path) -> (bool, String) {
+    let asked = match crate::stage::read_kas(root) {
+        Ok(kas) if !kas.is_empty() => {
+            let w1 = kas == crate::stage::W1_KAS;
+            let whose = if w1 {
+                "Walkman One's"
+            } else {
+                "its own model's"
+            };
+            return (w1, format!("the player reports {whose} key"));
+        }
+        Ok(_) => "the player gave an empty key".to_string(),
+        Err(e) => format!("could not ask the player for its key: {e}"),
+    };
+    let w1 = w1_from_files(root);
+    let files = if w1 {
+        "Walkman One logged a boot this week"
+    } else {
+        "no recent Walkman One boot log"
+    };
+    (w1, format!("{asked}; {files}"))
+}
+
+/// The install log's line for that decision.
+pub fn package_line(root: &Path) -> String {
+    let (w1, why) = walkman_one_why(root);
+    format!(
+        "Package: {} ({why})",
+        if w1 {
+            "Walkman One's (nw-wm1a key)"
+        } else {
+            "stock firmware's"
+        }
+    )
 }
 
 /// Walkman One read from the drive alone: it wrote its boot log within [`W1_FRESH`], and Cinder's

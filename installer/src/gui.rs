@@ -2188,6 +2188,8 @@ fn carry_out(
     push_log(String::new());
     tick();
 
+    push_log(format!("  {}", crate::device::package_line(target)));
+    tick();
     let verb = if dry { "would write" } else { "wrote" };
     let r = stage::write_payload(action, comps, crate::CHANNEL, target, dry, |name, n| {
         push_log(format!("  {verb} {name:<24} {n:>9} bytes"));
