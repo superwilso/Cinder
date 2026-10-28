@@ -82,11 +82,32 @@ it has run on hardware (*device-verified*). Per-feature state: [`cinder-home/STA
 
 ## Supported players
 
-| Model | State |
-|---|---|
-| NW-A55 / A56 / A57 (NW-A50 series) | **The target.** Developed on one 64 GB A55. Other models should work; a [device report](../../issues/new/choose) either way helps. |
-| NW-A50 series on Walkman One 3.02 | **Supported.** The developer's own player ran it daily until October 2026, then went back to stock. A few things differ; see [Walkman One](#walkman-one). |
-| A40 / A30 series, ZX300, WM1A/Z, DMP-Z1 | **Not supported.** Use [Wampy](https://github.com/unknown321/wampy), which covers the whole MT8590 family. If you own one and can test, get in touch through GitHub. |
+| Player | Already on it | Cinder | Run on the developer's A55 |
+|---|---|---|---|
+| NW-A55 | Sony stock 1.02 | **Supported.** The main target. | Daily, now |
+| NW-A55 | Stock 1.02 + Wampy | **Supported.** Install over it; Wampy can stay ([below](#with-wampy-installed)). | Daily, July–September 2026 |
+| NW-A55 | Walkman One 3.02 | **Supported.** A few sound features differ ([Walkman One](#walkman-one)). | Daily, September–October 2026 |
+| NW-A55 | Walkman One 3.02 + Wampy | **Supported.** Install over it; Wampy can stay. | Late September 2026 |
+| NW-A55 | Other stock or Walkman One versions | **Not tried.** | — |
+| NW-A56 / A57 | Any of the above | **Should work.** Same firmware as the A55; no reports yet. | — |
+| A40 / A30 series, ZX300, WM1A/Z, DMP-Z1 | Anything | **Not supported.** Use [Wampy](https://github.com/unknown321/wampy), which covers the whole MT8590 family. If you own one and can test, get in touch through GitHub. | — |
+
+A [device report](../../issues/new/choose) for a row marked "should work" or "not tried" helps,
+whether it works or not.
+
+### With Wampy installed
+
+You don't need to uninstall Wampy first.
+
+- **Files:** Cinder keeps its files in its own folder and leaves Wampy's alone.
+- **Wampy's screen:** it doesn't appear while Cinder runs. Wampy draws over Sony's music app, and
+  Cinder takes that app's place.
+- **Uninstalling Cinder** brings Sony's app back, and Wampy works over it as before.
+- **Mono and soundscapes over music:** the `mono` install option loads through the same slot in
+  Sony's sound service that Wampy uses, and Wampy's library still loads. On a player without Wampy,
+  the `preload` option does this job.
+- **Scrobbling:** Wampy's scrobbler keeps running. Cinder writes no `.scrobbler.log` of its own
+  while Wampy's scrobbler is running, so no play is counted twice.
 
 ## Install
 
