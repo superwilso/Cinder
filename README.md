@@ -113,9 +113,10 @@ You don't need to uninstall Wampy first.
 
 1. **Back up the player with [wbrt](https://github.com/unknown321/wbrt)** (Windows). It is the
    proven way back for a player that no longer starts. Cinder's own `cinder-rescue` (on the
-   [Releases](../../releases) page from v0.3.21-rc1) can take a second backup and put back only the
-   partitions a boot loop broke ([`RECOVERY.md`](RECOVERY.md) Step 3), but it has run on one player
-   so far. Until it has run on more, keep a wbrt backup as well.
+   [Releases](../../releases) page from v0.3.21-rc1; double-click it for a page with every step on
+   buttons) can take a second backup and put back only the partitions a boot loop broke
+   ([`RECOVERY.md`](RECOVERY.md) Step 3), but it has run on one player so far. Until it has run on
+   more, keep a wbrt backup as well.
 2. Download the installer from [Releases](../../releases):
    - **Windows:** `cinder-installer-windows-x64.exe`. Accept the administrator prompt; the last step
      needs raw drive access.

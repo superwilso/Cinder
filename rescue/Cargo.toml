@@ -1,6 +1,6 @@
 [package]
 name = "cinder-rescue"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Back up a Sony NW-A50-series Walkman's eMMC over MediaTek's download mode, even when it boot-loops"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -9,6 +9,8 @@ license = "PolyForm-Noncommercial-1.0.0"
 # trusts for macOS (installer/Cargo.toml), so nothing to install beyond the WinUSB driver.
 [dependencies]
 rusb = { version = "0.9", features = ["vendored"] }
+# Inflates the DA out of wbrt's NSIS release (fetch.rs). Pure Rust; brings only adler2.
+miniz_oxide = "0.8"
 
 [profile.release]
 opt-level = "z"

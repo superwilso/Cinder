@@ -17,7 +17,7 @@ the whole design: the 2026-07-26 brick happened because every escape that existe
 | 2 | `/contents/cinderhome_off` over USB-MSC → stock. | A mountable `/contents` + a PC. |
 | 3 | `/contents/cinderhome_clear` over USB-MSC → clears the latch, tries again. | Same. |
 | 4 | Flash `cinder_home_uninstall.upg`. | The Sony updater boots. |
-| 5 | `cinder-rescue restore` of the broken partitions from your own backup (Step 3). | Nothing but the preloader in boot0; leaves `/contents` and everything else alone. Needs a `cinder-rescue` backup of this player. |
+| 5 | `cinder-rescue restore` from your own backup (Step 3): the broken partitions, or `--parts all`. | Nothing but the preloader in boot0. Never touches `/contents`. Takes a `cinder-rescue` backup or a wbrt one, but only of this player. |
 | 6 | `wbrt` eMMC restore (Step 4). | Nothing — but it rolls back `/contents` too. |
 
 ### What survives kernel work (audited 2026-08-18)
@@ -155,37 +155,58 @@ The next boot enters the Sony updater (which never runs the wrapper), so this br
 ## Step 3 — cinder-rescue: put back only what broke
 `cinder-rescue` (in `rescue/`) talks to the same MediaTek download mode wbrt uses, so it works
 on a player that will not boot. From v0.3.21-rc1 it is on the Releases page for Windows, Linux and
-macOS; or build it with `cargo build --release` in `rescue/`. Verified on an A55 under Windows on
-2026-10-26; not yet run on Linux or a Mac.
+macOS; or build it with `cargo build --release` in `rescue/`. Verified on an A55 under Windows:
+backup and restores of `bootimg` and `cache` on 2026-10-26, then on 2026-10-28 the DA download, a
+full compare, the serial check a wbrt backup uses, and a full restore, all from the page. Not yet
+run on Linux or a Mac. Until it has run on more players, keep a wbrt backup as well (Step 4).
 
-**Take its backup while the player still works.** A restore only accepts a backup of the same
-player, proven by the eMMC serial the backup records.
+**Double-click it** and it opens a page in your browser with everything below on buttons: Back up,
+Restore (Compare first, then Restore), Backups (Check) and Connection (Test, and on Windows the USB
+driver). The page is served by cinder-rescue to this PC only, and its window has to stay open while
+you use it. On Linux, run it with `sudo` (USB access); the page still opens as you. Everything below
+also works from a terminal, with the same commands.
+
+**Take its backup while the player still works.**
 ```
-cinder-rescue dump --da DA.bin --out a55-backup.bin     # about 21 minutes, read-only
+cinder-rescue dump --out a55-backup.bin     # about 21 minutes, read-only
 ```
 That writes `a55-backup.bin` (the same range and raw format as a wbrt backup) and
-`a55-backup.bin.manifest` (chip, eMMC serial, a SHA-256 for each partition), then reads the file
+`a55-backup.bin.manifest` (chip, eMMC ID, a SHA-256 for each partition), then reads the file
 back against the manifest. `cinder-rescue verify a55-backup.bin` repeats that check any time.
-Keep both files together.
+Keep both files together. **A wbrt backup works too:** run `cinder-rescue verify` on it once to
+give it a manifest.
 
 **When it loops**, put back the partitions that broke, usually `bootimg` (kernel work) or
-`android` (the system partition):
+`android` (the system partition), or everything:
 ```
-cinder-rescue restore --da DA.bin --from a55-backup.bin --parts bootimg --dry-run   # writes nothing
-cinder-rescue restore --da DA.bin --from a55-backup.bin --parts bootimg
+cinder-rescue restore --from a55-backup.bin --parts bootimg --dry-run   # compares, writes nothing
+cinder-rescue restore --from a55-backup.bin --parts bootimg
+cinder-rescue restore --from a55-backup.bin --parts all                 # every partition but your music
 ```
-It writes only `bootimg`, `recovery`, `android`, `usrdata`, `cache`, `var` and `db`, never the
-partition table, bootloader, `nvram`, `nvp` or your music. Before writing it checks the backup
-against its manifest, that the player's chip and eMMC serial match the backup's, and that both
-partition tables have the A50-series layout. A partition that already matches is left alone, and
-every write is read back. `usrdata` is `/data`: restoring it rolls Cinder's settings back too.
+Before writing anything it checks:
+- the backup against its manifest;
+- that the player is the one the backup came from: the same chip and eMMC ID, or for a wbrt
+  backup, which records neither, the same serial number (in `nvp`);
+- that the backup's partition table has the A50-series layout, and the player's too unless the
+  table itself is being put back.
+
+Then it compares the player with the backup 64 MiB at a time, writes only the 1 MiB pieces that
+differ, and reads every written piece back. A `--dry-run` says how much of each partition differs.
+`contents` (your music) is never written: a backup holds only its first ~400 MB, and putting that
+back over a drive whose files have moved on would corrupt it. `usrdata` is `/data`: restoring it
+rolls Cinder's settings back too. After a restore that wrote anything before `bootimg` (the
+partition table, `nvram`, the bootloader), unplug the cable and hold POWER to start the player;
+otherwise it restarts by itself.
 
 **What it needs:**
-- **The Download Agent**, MediaTek's file, which is not shipped here. wbrt's installer carries one:
-  open `walkman-backup-restore-tool.*.exe` with 7-Zip and take `$PLUGINSDIR/DA.bin`.
-- **On Windows, a WinUSB driver** for `VID_0E8D&PID_2000` ("MT65xx Preloader"). wbrt installs
-  one; without wbrt, Zadig can (Device ▸ Create New Device, that VID and PID, WinUSB). On Linux it
-  needs root or a udev rule for that device.
+- **The Download Agent**, MediaTek's file, which is not shipped here. Without `--da`, cinder-rescue
+  uses a `DA.bin` beside it, or downloads mtkclient's `MTK_DA_V5.bin` (wbrt's release if that
+  fails) and saves it as `DA.bin`. Whatever the source, it uses a DA only if the two stages it sends
+  the player are byte-for-byte the ones verified on the A55. `--da FILE` uses your own.
+- **On Windows, a WinUSB driver** for `VID_0E8D&PID_2000` ("MT65xx Preloader").
+  `cinder-rescue driver`, from a terminal opened as administrator, installs it the way wbrt does
+  (libwdi's `wdi-simple`, from the same release). wbrt's driver works too. On Linux it needs root
+  or a udev rule for that device.
 - **Download mode**: unplug the cable, switch the player off (hold POWER about 10 s if it is
   looping), hold **Play + Volume Down**, plug the cable in, and let go when the tool moves on. A
   normal reboot never offers it. If the tool stops with an error, the player stays in download

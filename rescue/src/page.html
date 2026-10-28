@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cinder-rescue</title>
+<style>
+/* Flint's palette: a near-black band, warm greys, one ember for "the next thing to do". */
+:root {
+  --bg: #F2F3F6; --band: #1A1818; --band-text: #F2EFEC; --band-dim: #8E8884;
+  --panel: #FFFFFF; --border: #E3E4EA; --text: #191A1E; --heading: #3A3B44; --dim: #5F6069;
+  --accent: #E0551B; --accent-down: #B8441A; --button: #ECECF1; --button-border: #D3D4DC;
+  --trough: #E4E5EB; --log-bg: #1A1818; --log-text: #CFCBC7; --warn: #B32E14; --ok: #2E7D4F;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1B1A19; --band: #0E0D0D; --panel: #232120; --border: #332F2D; --text: #EDE9E5;
+    --heading: #CFC9C3; --dim: #9A938D; --button: #2B2826; --button-border: #3D3936;
+    --trough: #2E2B29; --log-bg: #121110; --warn: #E0664A; --ok: #5DBB83;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif; }
+header { background: var(--band); color: var(--band-text); padding: 14px 24px;
+  display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+header h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+#status { color: var(--band-dim); }
+#status.busy { color: var(--band-text); }
+#status.busy::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); margin-right: 8px; vertical-align: 1px; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+main { max-width: 1040px; margin: 0 auto; padding: 20px 16px 40px;
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+@media (max-width: 820px) { main { grid-template-columns: minmax(0, 1fr); } }
+nav { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+nav button { background: none; border: 0; padding: 8px 12px; border-radius: 6px; color: var(--dim);
+  font: inherit; cursor: pointer; }
+nav button[aria-selected="true"] { color: var(--text); background: var(--panel); box-shadow: inset 0 -2px 0 var(--accent); }
+section.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+section.panel[hidden] { display: none; }
+h2 { font-size: 15px; font-weight: 600; color: var(--heading); margin: 0 0 6px; }
+p { margin: 0 0 12px; }
+.dim { color: var(--dim); }
+.btn { font: inherit; border-radius: 6px; padding: 8px 16px; cursor: pointer;
+  border: 1px solid var(--button-border); background: var(--button); color: var(--text); }
+.btn.go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.go:active { background: var(--accent-down); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:focus-visible, nav button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+label { display: flex; gap: 8px; align-items: baseline; }
+select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--button-border);
+  background: var(--panel); color: var(--text); max-width: 100%; }
+fieldset { border: 0; padding: 0; margin: 14px 0 0; }
+legend { font-weight: 600; color: var(--heading); margin-bottom: 6px; }
+.parts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 12px;
+  margin: 6px 0 0 26px; }
+.parts code { color: var(--dim); font-size: 13px; }
+.danger { margin-top: 14px; padding: 10px 12px; border-left: 3px solid var(--warn); background: var(--bg); }
+table { width: 100%; border-collapse: collapse; }
+td { padding: 8px 6px; border-top: 1px solid var(--border); vertical-align: baseline; }
+td.n { word-break: break-all; }
+.ok { color: var(--ok); } .warn { color: var(--warn); }
+
+/* The one moment that matters: getting the player into download mode. */
+#wait { grid-column: 1 / -1; background: var(--band); color: var(--band-text); border-radius: 8px;
+  padding: 22px 24px; display: grid; grid-template-columns: auto 1fr auto; gap: 24px; align-items: center; }
+#wait[hidden] { display: none; }
+#wait ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; counter-reset: s; }
+#wait li { counter-increment: s; display: flex; gap: 12px; align-items: baseline; font-size: 16px; }
+#wait li::before { content: counter(s); flex: none; width: 24px; height: 24px; border-radius: 50%;
+  border: 1px solid var(--band-dim); display: grid; place-items: center; font-size: 13px; color: var(--band-dim); }
+#wait b { color: #fff; }
+#wait .btn { background: transparent; color: var(--band-text); border-color: var(--band-dim); }
+@media (max-width: 820px) { #wait { grid-template-columns: 1fr; } #wait svg { display: none; } }
+
+#progress { grid-column: 1 / -1; }
+#progress[hidden] { display: none; }
+.bar { height: 8px; background: var(--trough); border-radius: 4px; overflow: hidden; margin-top: 6px; }
+.bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+#log { background: var(--log-bg); color: var(--log-text); border-radius: 8px; padding: 14px 16px; margin: 0;
+  font: 12.5px/1.55 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; white-space: pre-wrap;
+  word-break: break-word; min-height: 320px; max-height: 70vh; overflow: auto; }
+@media (prefers-reduced-motion: reduce) { #status.busy::before { animation: none; } .bar i { transition: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>cinder-rescue</h1>
+  <span id="status" role="status" aria-live="polite">Ready</span>
+</header>
+<main>
+  <section id="wait" hidden aria-live="assertive">
+    <svg width="120" height="120" viewBox="0 0 120 120" aria-hidden="true">
+      <rect x="34" y="8" width="52" height="96" rx="8" fill="none" stroke="#8E8884" stroke-width="2"/>
+      <rect x="40" y="16" width="40" height="44" rx="2" fill="#2A2727"/>
+      <rect x="86" y="30" width="5" height="14" rx="2" fill="#E0551B"/>
+      <rect x="86" y="52" width="5" height="10" rx="2" fill="#E0551B"/>
+      <path d="M60 104 v12" stroke="#F2EFEC" stroke-width="3"/>
+      <text x="96" y="40" fill="#F2EFEC" font-size="10" font-family="sans-serif">▶‖</text>
+      <text x="96" y="61" fill="#F2EFEC" font-size="10" font-family="sans-serif">−</text>
+    </svg>
+    <ol>
+      <li><span>Unplug the cable and switch the player off. If it keeps restarting, hold <b>Power</b> about 10 seconds.</span></li>
+      <li><span>Hold <b>Play</b> and <b>Volume −</b> together.</span></li>
+      <li><span>Plug the cable in, and let go when this box disappears.</span></li>
+    </ol>
+    <button class="btn" id="cancel">Stop waiting</button>
+  </section>
+
+  <div>
+    <nav role="tablist">
+      <button role="tab" aria-selected="true" data-tab="backup">Back up</button>
+      <button role="tab" aria-selected="false" data-tab="restore">Restore</button>
+      <button role="tab" aria-selected="false" data-tab="files">Backups</button>
+      <button role="tab" aria-selected="false" data-tab="conn">Connection</button>
+    </nav>
+
+    <section class="panel" id="backup" role="tabpanel">
+      <h2>Back up the player</h2>
+      <p>Copies everything a broken update can damage (2.7 GB, about 21 minutes) into a new file next to
+        this program. It only reads; nothing on the player changes. Take one while the player works,
+        and keep it.</p>
+      <p class="dim">Saved in <span class="where"></span></p>
+      <div class="row"><button class="btn go" id="dump">Back up the player</button></div>
+    </section>
+
+    <section class="panel" id="restore" role="tabpanel" hidden>
+      <h2>Put a backup back</h2>
+      <p>Only onto the player the backup came from, and never your music. It compares first and writes
+        only what differs, then reads every piece back.</p>
+      <label for="from">Backup</label>
+      <select id="from"></select>
+      <p class="dim" id="nofiles" hidden>No backup here yet. Make one under Back up, or put a backup (and
+        its .manifest) next to this program.</p>
+      <fieldset>
+        <legend>What to put back</legend>
+        <label><input type="radio" name="what" value="all" checked> Everything except your music</label>
+        <label><input type="radio" name="what" value="some"> Only these:</label>
+        <div class="parts" id="parts">
+          <label><input type="checkbox" value="bootimg"> Kernel <code>bootimg</code></label>
+          <label><input type="checkbox" value="android"> System <code>android</code></label>
+          <label><input type="checkbox" value="usrdata"> Settings, Cinder <code>usrdata</code></label>
+          <label><input type="checkbox" value="recovery"> Updater <code>recovery</code></label>
+          <label><input type="checkbox" value="db"> Music library index <code>db</code></label>
+          <label><input type="checkbox" value="var"> Logs and state <code>var</code></label>
+          <label><input type="checkbox" value="cache"> Cache <code>cache</code></label>
+        </div>
+      </fieldset>
+      <div class="row"><button class="btn" id="compare">Compare with the player</button>
+        <span class="dim">Writes nothing.</span></div>
+      <div class="danger">
+        <label><input type="checkbox" id="sure"> I want to write this backup to the player. What it holds
+          replaces what the player has now.</label>
+        <div class="row"><button class="btn go" id="write" disabled>Restore</button></div>
+      </div>
+    </section>
+
+    <section class="panel" id="files" role="tabpanel" hidden>
+      <h2>Backups next to this program</h2>
+      <p class="dim">Check re-reads a backup and compares it with its manifest. A wbrt backup gets a manifest
+        the first time it is checked.</p>
+      <table><tbody id="filelist"></tbody></table>
+    </section>
+
+    <section class="panel" id="conn" role="tabpanel" hidden>
+      <h2>Connection</h2>
+      <p>Test that this computer can reach the player in download mode. It reads the chip and the memory's
+        ID, then restarts the player.</p>
+      <div class="row"><button class="btn go" id="info">Test the connection</button></div>
+      <div id="drv" hidden>
+        <h2 style="margin-top:20px">USB driver (Windows)</h2>
+        <p>Windows needs a driver for the player in download mode. If the test says the player
+          "cannot be opened", install it here; Windows asks for permission. wbrt's driver works too.</p>
+        <div class="row"><button class="btn" id="driver">Install the USB driver</button></div>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section id="progress" hidden>
+      <div class="dim" id="ptext"></div>
+      <div class="bar"><i id="pbar"></i></div>
+    </section>
+    <pre id="log" aria-label="What cinder-rescue is doing"></pre>
+  </div>
+</main>
+<script>
+const T = new URLSearchParams(location.search).get('t');
+const $ = id => document.getElementById(id);
+let busy = false, files = [];
+
+async function run(...args) {
+  const r = await fetch('/run?t=' + T, { method: 'POST', body: args.join('\n') });
+  if (!r.ok) alert(await r.text());
+  poll();
+}
+$('cancel').onclick = () => fetch('/cancel?t=' + T, { method: 'POST' });
+$('info').onclick = () => run('info');
+$('driver').onclick = () => run('driver');
+$('dump').onclick = () => {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  run('dump', '--out', `a55-backup-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.bin`);
+};
+function restoreArgs() {
+  const parts = document.querySelector('[name=what]:checked').value === 'all' ? 'all'
+    : [...document.querySelectorAll('#parts input:checked')].map(i => i.value).join(',');
+  if (!parts) { alert('Choose at least one part to put back.'); return null; }
+  return ['restore', '--from', $('from').value, '--parts', parts];
+}
+$('compare').onclick = () => { const a = restoreArgs(); if (a) run(...a, '--dry-run'); };
+$('write').onclick = () => { const a = restoreArgs(); if (a) { $('sure').checked = false; run(...a); } };
+$('sure').onchange = draw;
+document.querySelectorAll('#parts input').forEach(i => i.onchange = () =>
+  document.querySelector('[name=what][value=some]').checked = true);
+
+function tab(name) {
+  document.querySelectorAll('nav button').forEach(x => x.setAttribute('aria-selected', x.dataset.tab === name));
+  document.querySelectorAll('section.panel').forEach(s => s.hidden = s.id !== name);
+}
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => tab(b.dataset.tab));
+if (document.getElementById(location.hash.slice(1))?.matches('section.panel')) tab(location.hash.slice(1));
+
+function mib(n) { return n >= 1 << 30 ? (n / (1 << 30)).toFixed(2) + ' GB' : Math.round(n / (1 << 20)) + ' MB'; }
+
+function draw() {
+  document.querySelectorAll('.btn').forEach(b => { if (b.id !== 'cancel') b.disabled = busy; });
+  const usable = files.filter(f => f.manifest && f.whole);
+  $('nofiles').hidden = usable.length > 0;
+  $('compare').disabled = busy || !usable.length;
+  $('write').disabled = busy || !usable.length || !$('sure').checked;
+}
+
+async function poll() {
+  let s;
+  try { s = await (await fetch('/state?t=' + T)).json(); }
+  catch { $('status').textContent = 'cinder-rescue has closed. Start it again to carry on.'; $('status').className = ''; return; }
+  busy = s.busy;
+  document.querySelectorAll('.where').forEach(e => e.textContent = s.dir);
+  $('drv').hidden = s.os !== 'windows';
+
+  // The log: a "\r" rewrites its line, as in a terminal.
+  const lines = s.log.split('\n').map(l => l.split('\r').filter(Boolean).pop() || '');
+  const atEnd = $('log').scrollHeight - $('log').scrollTop - $('log').clientHeight < 40;
+  $('log').textContent = lines.join('\n').trim() || 'Nothing yet. What cinder-rescue does shows here.';
+  if (atEnd) $('log').scrollTop = $('log').scrollHeight;
+  const tail = lines.filter(l => l.trim()).slice(-1)[0] || '';
+  const last = re => lines.findLastIndex(l => re.test(l));
+  const waiting = busy && last(/^Waiting for the player/) > last(/^(Chip |> cinder-rescue)/);
+  $('wait').hidden = !waiting;
+  const m = busy && tail.match(/(?:(\w+): )?(\d+) \/ (\d+) MiB/);
+  $('progress').hidden = !m;
+  if (m) { $('ptext').textContent = (m[1] ? m[1] + ': ' : '') + m[2] + ' of ' + m[3] + ' MB';
+    $('pbar').style.width = (100 * m[2] / m[3]) + '%'; }
+  $('status').className = busy ? 'busy' : '';
+  $('status').textContent = waiting ? 'Waiting for the player in download mode'
+    : busy ? 'Working. Leave the cable in.'
+    : s.last === 'ok' ? 'Done' : s.last === 'failed' ? 'Stopped: see the last lines of the log' : 'Ready';
+
+  // The backups, for both the Restore list and the Backups table.
+  if (JSON.stringify(s.files) !== JSON.stringify(files)) {
+    files = s.files;
+    const keep = $('from').value;
+    $('from').innerHTML = '';
+    for (const f of files.filter(f => f.manifest && f.whole)) {
+      const o = new Option(`${f.name} (${f.id ? 'this player\'s ID' : 'wbrt backup, checked by serial'})`, f.name);
+      $('from').add(o);
+    }
+    if (keep) $('from').value = keep;
+    $('filelist').innerHTML = '';
+    for (const f of files) {
+      const tr = $('filelist').insertRow();
+      tr.insertCell().textContent = f.name; tr.cells[0].className = 'n';
+      tr.insertCell().textContent = mib(f.size);
+      const st = tr.insertCell();
+      st.innerHTML = f.manifest ? '<span class="ok">has a manifest</span>' : '<span class="warn">not checked yet</span>';
+      const b = document.createElement('button'); b.className = 'btn'; b.textContent = 'Check';
+      b.onclick = () => run('verify', f.name); tr.insertCell().append(b);
+    }
+    if (!files.length) $('filelist').innerHTML = '<tr><td class="dim">None yet.</td></tr>';
+  }
+  draw();
+}
+poll();
+setInterval(poll, 700);
+</script>
+</body>
+</html>

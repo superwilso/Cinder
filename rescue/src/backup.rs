@@ -51,6 +51,17 @@ pub const TABLE: &[(&str, u64, u64)] = &[
     ("contents", 0x92f80000, 0xdfc880000),
 ];
 
+/// Sony's serial number: NUL-padded ASCII at `nvp` + 0x1c000 (the A55's own dump, 2026-10-26).
+/// What proves a wbrt backup, which records no eMMC ID, belongs to the player it goes back to.
+pub const SERIAL_AT: u64 = 0x39e9c000;
+
+/// The serial in the 16 bytes at `SERIAL_AT`, if they hold one.
+pub fn serial(b: &[u8]) -> Option<String> {
+    let s = b.get(..16)?.split(|&c| c == 0).next()?;
+    (!s.is_empty() && s.iter().all(u8::is_ascii_alphanumeric))
+        .then(|| String::from_utf8_lossy(s).into_owned())
+}
+
 /// Table index of p2 (`pro_info`); p2..p29 follow in table order.
 const FIRST_NUMBERED: usize = 10;
 
@@ -356,6 +367,16 @@ mod tests {
         assert_eq!(check_layout(&b), Ok(()));
         b[0x80000 + 446 + 8] ^= 1; // nudge p5 (protect_s) by a sector
         assert!(check_layout(&b).unwrap_err().contains("p5 (protect_s)"));
+    }
+
+    #[test]
+    fn serial_is_the_ascii_before_the_padding() {
+        assert_eq!(
+            serial(b"5194859\0\0\0\0\0\0\0\0\0").as_deref(),
+            Some("5194859")
+        );
+        assert_eq!(serial(&[0; 16]), None);
+        assert_eq!(serial(&[0xff; 16]), None);
     }
 
     #[test]

@@ -16,6 +16,38 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **`cinder-rescue` has a window on Windows, Linux and macOS.** Double-click it and it opens a page
+  in your browser: Back up, Restore (compare first, then a restore you confirm), Backups (check
+  one, or give a wbrt backup its manifest) and Connection (test, and on Windows install the USB
+  driver, which asks Windows for permission itself). A dark box shows the Play + Volume − steps
+  while it waits for the player, with Stop waiting, and a bar follows a backup or a restore. The
+  page is served only to this PC: a random port and token, and any other address or host name is
+  refused. Every button runs the same command the terminal takes. *Device-verified 10-28 on
+  Windows: a backup, a compare, a wbrt-style compare and a full restore were all run from the
+  page. Not yet run on Linux or a Mac; the driver button not yet tried.*
+- **`cinder-rescue` restores everything wbrt restores, more safely.** *Device-verified 10-28 on the
+  A55 (DEVICE_CHECKLIST §42): the DA from mtkclient loaded; a 21-minute backup verified; a full
+  compare an hour later found 30 of 2,351 MiB different; the same check passed by serial number
+  alone; and a full restore wrote and read back those 31 MiB, left the rest alone, and the player
+  started into Cinder with its library.*
+  - **`--parts all`** puts back every partition in the backup but your music, including the
+    partition table, bootloader, `nvram` and `nvp`. `contents` is never written: a backup holds
+    only its first ~400 MB, and writing that over a drive that has changed since would corrupt it.
+  - **Only what differs is written.** It compares the player with the backup 64 MiB at a time,
+    writes only the 1 MiB pieces that differ, and reads each one back. `--dry-run` says how much
+    of each partition differs.
+  - **wbrt backups restore too**, proven to be this player's by the serial number in them (they
+    record no eMMC ID). A backup of another player is refused; wbrt has no such check.
+  - **No DA.bin to find.** Without `--da` it downloads mtkclient's `MTK_DA_V5.bin`, pinned to a
+    commit, with wbrt's v1.0.9 release as the fallback, and saves it as `DA.bin`. A DA is used only
+    if the two stages sent to the player hash to the ones verified on 10-26; mtkclient's 2023 file
+    and wbrt's 2021 one carry the same stages.
+  - **`cinder-rescue driver`** (Windows) installs the USB driver as wbrt does. Without a driver,
+    it now says so within two seconds instead of waiting five minutes. Without USB access at all
+    (WSL), it reports an error instead of crashing.
+
 ## [0.3.21] — 2026-10-27
 
 ### Added
