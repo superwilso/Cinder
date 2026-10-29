@@ -9,8 +9,10 @@ body:
         This device has no public DFU or EDL recovery path, and the wrong next step is the one that
         turns a recoverable boot loop into a brick.
 
-        A report with a log attached is worth ten without one. `/contents/cinderhome.log` is on the
-        music volume — plug the player in as mass storage and copy it off.
+        A report with logs attached is worth ten without one. Plug the player in, open the Cinder
+        installer and press **Save a report** (or run `cinder-installer --report`), then drag the
+        `cinder-report.txt` it saves into the box at the bottom of this form. It holds every log the
+        player keeps on its drive, and no music.
 
   - type: input
     id: version
@@ -82,8 +84,9 @@ body:
     attributes:
       label: Log
       description: >
-        Paste or attach `/contents/cinderhome.log`. If the app died and came back, the interesting
-        part is the last ~50 lines before the restart. Rendered as a code block — no backticks needed.
+        If you could not attach `cinder-report.txt`, paste `cinderhome.log` from the top of the
+        player's drive. If the app died and came back, the interesting part is the last ~50 lines
+        before the restart. Rendered as a code block — no backticks needed.
       render: text
 
   - type: dropdown

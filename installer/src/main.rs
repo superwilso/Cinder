@@ -29,6 +29,7 @@ mod device;
 mod llusbdac;
 mod payload;
 mod release;
+mod report;
 mod sony_tables;
 mod stage;
 
@@ -53,6 +54,7 @@ fn help() {
     println!("  --uninstall      put the stock Sony player back");
     println!("  --check          ask GitHub whether a newer release exists, then exit");
     println!("  --clean          delete the staged payload files left in the player's root");
+    println!("  --report         save cinder-report.txt (the player's logs) to attach to an issue");
     println!("  --dry-run        walk the whole flow, write nothing, flash nothing");
     println!("  -y, --yes        no questions: take the saved or default answers and go");
     println!("  --console        force the text interface");
@@ -141,6 +143,7 @@ fn main() {
     let mut force_console = false;
     let mut force_gui = false;
     let mut clean = false;
+    let mut report = false;
     let mut dry = false;
 
     for a in &args {
@@ -148,6 +151,7 @@ fn main() {
             "-y" | "--yes" => assume_yes = true,
             "--console" | "--text" => force_console = true,
             "--clean" => clean = true,
+            "--report" => report = true,
             "--dry-run" | "--dry" => dry = true,
             "--gui" => force_gui = true,
             "--install" => action = Some(Action::Install),
@@ -176,7 +180,12 @@ fn main() {
     // apart: a double-click gets a console created for it and nothing else in it.
     #[cfg(windows)]
     let want_gui = force_gui
-        || (!force_console && !assume_yes && !clean && action.is_none() && gui::owns_its_console());
+        || (!force_console
+            && !assume_yes
+            && !clean
+            && !report
+            && action.is_none()
+            && gui::owns_its_console());
     // Both only steer the Windows front-end choice; off Windows there is one front end.
     #[cfg(not(windows))]
     let _ = (force_console, force_gui);
@@ -234,6 +243,9 @@ fn main() {
 
     if clean {
         std::process::exit(console::clean(&target));
+    }
+    if report {
+        std::process::exit(report::cli(&target));
     }
 
     // With no explicit action, do what the player's state implies: update what is there, install

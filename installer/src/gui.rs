@@ -362,6 +362,7 @@ const ID_BODY: usize = 110;
 const ID_HINT: usize = 111;
 const ID_CLEAN: usize = 112;
 const ID_LANGS: usize = 113;
+const ID_REPORT: usize = 114;
 const ID_START_BASE: usize = 120;
 const ID_COMP_BASE: usize = 200;
 
@@ -408,6 +409,7 @@ struct App {
     b_uninstall: HWND,
     b_check: HWND,
     b_clean: HWND,
+    b_report: HWND,
     log: HWND,
     /// Everything the worker has printed, kept OUTSIDE the control.
     ///
@@ -671,6 +673,7 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
             b_uninstall: std::ptr::null_mut(),
             b_check: std::ptr::null_mut(),
             b_clean: std::ptr::null_mut(),
+            b_report: std::ptr::null_mut(),
             log: std::ptr::null_mut(),
             log_text: String::new(),
             body: std::ptr::null_mut(),
@@ -1021,6 +1024,40 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 }
                 return 0;
             }
+            // Gathered under a short borrow and shown after it, for the reason Clean up gives.
+            if id == ID_REPORT {
+                let (target, log) =
+                    with_app(|a| (a.target.clone(), a.log_text.clone())).unwrap_or_default();
+                let text = crate::report::build(target.as_deref(), &log);
+                let (msg, saved) = match crate::report::save(&text) {
+                    Ok(p) => (
+                        format!(
+                            "Saved {}\n\nAttach it to your GitHub issue. It holds the player's logs, no music.",
+                            p.display()
+                        ),
+                        Some(p),
+                    ),
+                    Err(e) => (format!("Could not write the report: {e}"), None),
+                };
+                let (t, c) = (w(&msg), w("Cinder installer"));
+                MessageBoxW(h, t.as_ptr(), c.as_ptr(), 0);
+                if let Some(p) = saved {
+                    let (verb, file, args) = (
+                        w("open"),
+                        w("explorer.exe"),
+                        w(&format!("/select,\"{}\"", p.display())),
+                    );
+                    ShellExecuteW(
+                        h,
+                        verb.as_ptr(),
+                        file.as_ptr(),
+                        args.as_ptr(),
+                        std::ptr::null(),
+                        SW_SHOW,
+                    );
+                }
+                return 0;
+            }
             with_app(|a| a.on_command(id));
             0
         }
@@ -1151,6 +1188,7 @@ impl App {
             &mut self.b_uninstall,
             &mut self.b_check,
             &mut self.b_clean,
+            &mut self.b_report,
         ] {
             *h = std::ptr::null_mut();
         }
@@ -1240,6 +1278,8 @@ impl App {
                     ID_CHECK,
                     f,
                 );
+                // Works with no player too: the report then says none was found.
+                self.b_report = self.mk("BUTTON", "Save a report", WS_TABSTOP, ID_REPORT, f);
                 if !self.state.leftovers.is_empty() {
                     let n = self.state.leftovers.len();
                     self.b_clean = self.mk(
@@ -1916,7 +1956,8 @@ impl App {
                 let cards_end = y + 3 * (card + self.s(10));
                 let bottom = ht - pad - btn_h;
                 mv(self.b_check, pad, bottom, self.s(220), btn_h);
-                mv(self.b_clean, pad + self.s(230), bottom, self.s(200), btn_h);
+                mv(self.b_report, pad + self.s(230), bottom, self.s(120), btn_h);
+                mv(self.b_clean, pad + self.s(360), bottom, self.s(200), btn_h);
                 // The footer sits above the bottom row, but never on top of the Uninstall card:
                 // at the old minimum window size it was drawn across it, which put grey body text
                 // over a button's own label and made both unreadable.

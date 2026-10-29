@@ -328,8 +328,21 @@ pub const FW_UPGRADE_CDB: [u8; 12] = [0xfc, 0, 0x04, b'd', b'b', b'm', b'n', 0, 
 /// Read the player's KAS, the key Sony's updater decrypts a package with: DNK property 0x23,
 /// entry 22, 64 bytes of hex text (Rockbox `scsitool get_dnk_prop kas`). Walkman One rewrites it,
 /// so it says which package this player takes. Bytes 8-9 are the length, 7 must be 0xbc.
-#[cfg(any(target_os = "linux", windows, test))]
 pub const KAS_CDB: [u8; 12] = [0xdd, 0, 0, 0, 0, 0, 0, 0xbc, 0, 64, 0x23, 22];
+
+/// Entry 21 of the same property, 8 bytes: `ufn`, the name Sony's updater looks for on the drive
+/// (`<ufn>.UPG`). Anything but `NW_WM_FW` and it never finds the package this installer stages.
+pub const UFN_CDB: [u8; 12] = [0xdd, 0, 0, 0, 0, 0, 0, 0xbc, 0, 8, 0x23, 21];
+
+/// The player's KAS ([`KAS_CDB`]).
+pub fn read_kas(target: &Path) -> io::Result<String> {
+    read_prop(target, &KAS_CDB)
+}
+
+/// The player's update filename ([`UFN_CDB`]).
+pub fn read_ufn(target: &Path) -> io::Result<String> {
+    read_prop(target, &UFN_CDB)
+}
 
 /// The KAS an NW-A50-series player reports under Walkman One: the NW-WM1A's (`upgtool -m ?`).
 pub const W1_KAS: &str = "e8d171a5d92f35eed9658c03fb9f86a169591659851fd7c49525f587a70b526c";
@@ -520,10 +533,10 @@ fn send_cdb(vol: scsi::Handle, cdb12: &[u8; 12]) -> io::Result<[u8; 128]> {
     Ok(buf.0)
 }
 
-/// The player's KAS ([`KAS_CDB`]), read through the volume behind `target`. Needs administrator,
-/// as the upgrade command does.
+/// A DNK property as text ([`KAS_CDB`], [`UFN_CDB`]), read through the volume behind `target`.
+/// Needs administrator, as the upgrade command does.
 #[cfg(windows)]
-pub fn read_kas(target: &Path) -> io::Result<String> {
+fn read_prop(target: &Path, cdb: &[u8; 12]) -> io::Result<String> {
     let name = volume_device_path(target)?;
     // SAFETY: name is NUL-terminated and lives across the call.
     let vol = unsafe {
@@ -540,7 +553,7 @@ pub fn read_kas(target: &Path) -> io::Result<String> {
     if vol == usize::MAX as scsi::Handle {
         return Err(io::Error::last_os_error());
     }
-    let r = send_cdb(vol, &KAS_CDB);
+    let r = send_cdb(vol, cdb);
     // SAFETY: vol was opened above and is closed exactly once.
     unsafe { scsi::CloseHandle(vol) };
     Ok(kas_text(&r?[..64]))
@@ -737,13 +750,13 @@ fn send_fw_upgrade(dev: &Path, flag: u8) -> io::Result<()> {
     send_cdb(dev, &cdb).map(|_| ())
 }
 
-/// The player's KAS ([`KAS_CDB`]), read from the block device behind `target`. Needs root, as the
-/// upgrade command does.
+/// A DNK property as text ([`KAS_CDB`], [`UFN_CDB`]), read from the block device behind `target`.
+/// Needs root, as the upgrade command does.
 #[cfg(target_os = "linux")]
-pub fn read_kas(target: &Path) -> io::Result<String> {
+fn read_prop(target: &Path, cdb: &[u8; 12]) -> io::Result<String> {
     let dev = block_device_for(target)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no block device"))?;
-    Ok(kas_text(&send_cdb(&dev, &KAS_CDB)?[..64]))
+    Ok(kas_text(&send_cdb(&dev, cdb)?[..64]))
 }
 
 /// Send one 12-byte vendor CDB that reads from `dev`, and return what it sent back.
@@ -845,13 +858,13 @@ pub fn trigger_fw_upgrade(target: &Path, mut log: impl FnMut(&str)) -> io::Resul
     }
 }
 
-/// The key is not read on macOS: taking the player's USB interface (below) ejects its volume, and
-/// the key is wanted before the files are staged onto it.
+/// Properties are not read on macOS: taking the player's USB interface (below) ejects its volume,
+/// and the key is wanted before the files are staged onto it.
 #[cfg(all(unix, not(target_os = "linux")))]
-pub fn read_kas(_target: &Path) -> io::Result<String> {
+fn read_prop(_target: &Path, _cdb: &[u8; 12]) -> io::Result<String> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "the key is not read on this system",
+        "the player's properties are not read on this system",
     ))
 }
 
