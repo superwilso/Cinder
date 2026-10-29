@@ -16,14 +16,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Added
-
-- **Save a report.** One button in the installer window (`cinder-installer --report` on the
-  command line) saves `cinder-report.txt`, to attach to an issue: the player's install log,
-  `exec.txt`, `cinderhome.log`, the component choices, Walkman One's boot log and settings, a
-  listing of the top of the drive, which package `NW_WM_FW.UPG` is, the key the player reports and
-  the filename its updater looks for, plus the window's own log. No music. *Device-unverified.*
-
 ## [0.3.22] — 2026-10-28
 
 ### Changed
@@ -45,6 +37,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   the version's section and `tools/release.sh` then left later entries where they were, so
   v0.3.21's section was missing cinder-rescue's page, the full restore and the preload fix (now
   filed under it). Later runs merge them into the version's section.
+
+### Added
+
+- **Save a report.** One button in the installer window (`cinder-installer --report` on the
+  command line) saves `cinder-report.txt`, to attach to an issue: the player's install log,
+  `exec.txt`, `cinderhome.log`, the component choices, Walkman One's boot log and settings, a
+  listing of the top of the drive, which package `NW_WM_FW.UPG` is, the key the player reports and
+  the filename its updater looks for, plus the window's own log. No music. *Device-unverified.*
 
 ## [0.3.21] — 2026-10-28
 
