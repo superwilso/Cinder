@@ -144,13 +144,23 @@ pub fn render(
     let scroll = scroll_px.clamp(0, max_scroll_px(lib));
     c.fill(t.bg);
     let sub = subtitle(lib);
+    // With books the title is the Music | Books switch, as on the Library; a list with none keeps
+    // its own title.
+    let books = !lib.books.is_empty();
     let y0 = crate::chrome::header(
         c,
         t,
         f,
-        crate::i18n::text("Audiobooks"),
-        (!lib.books.is_empty()).then_some(&*sub),
+        if books {
+            ""
+        } else {
+            crate::i18n::text("Audiobooks")
+        },
+        books.then_some(&*sub),
     );
+    if books {
+        crate::chrome::mode_switch(c, t, f, true);
+    }
     c.set_clip_y(y0, LIST_BOTTOM);
 
     if lib.books.is_empty() {

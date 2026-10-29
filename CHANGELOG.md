@@ -16,6 +16,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **Audiobooks: a Music | Books switch in place of the book button.** With audiobooks in the library
+  the Library's title is a two-word switch, and the Audiobooks list carries the same one: the word
+  of the screen you are on is lit, a tap on the other goes there (Music returns to the Library on
+  the tab it was left on). The small book icon in the Library header is gone, which gives the
+  caption back its room. A library with no audiobooks looks as before.
+
 ### Fixed
 
 - **The Audiobooks list could not be pinned to the Shelf.** The bookmark sheet answered "Nothing to

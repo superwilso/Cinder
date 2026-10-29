@@ -207,6 +207,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Bluetooth is off. Turn it on first." => Some("蓝牙已关闭，请先开启。"),
         "Boot to stock" => Some("启动原厂播放器"),
         "Boot to stock, in Settings" => Some("设置中的“启动原厂播放器”"),
+        "Books" => Some("书籍"),
         "Brightness" => Some("亮度"),
         "Built in" => Some("内置"),
         "Buttons" => Some("实体按键"),

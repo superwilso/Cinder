@@ -549,6 +549,60 @@ fn header_impl(
     HEADER_BOTTOM
 }
 
+// ── The Library's Music | Books switch ──────────────────────────────────────────────────────────
+// With audiobooks in the library the Library and the Audiobooks list share one header, and its
+// title is this switch: the word of the screen you are on is lit, the other is a tap away. The two
+// zones lie between the back target and the view button of a Library with search installed (x 192),
+// the same on both screens and with or without search, so the switch does not move when it is
+// tapped. They start where the back target ends, so at the larger text sizes they narrow.
+const MODE_END: i32 = 188;
+
+/// The `(x0, x1)` of the Music (`books == false`) or Books zone.
+pub fn mode_zone(books: bool) -> (i32, i32) {
+    let x0 = back_hit_w() + 4;
+    let w = (MODE_END - x0) / 2;
+    let start = x0 + if books { w } else { 0 };
+    (start, start + w)
+}
+
+/// Which side of the switch `(x, y)` is on: `Some(true)` for Books.
+pub fn mode_hit(x: i32, y: i32) -> Option<bool> {
+    if !(STATUS_H..HEADER_BOTTOM).contains(&y) {
+        return None;
+    }
+    [false, true].into_iter().find(|b| {
+        let (x0, x1) = mode_zone(*b);
+        (x0..x1).contains(&x)
+    })
+}
+
+/// Draw the switch, `books` being the side that is lit.
+pub fn mode_switch(c: &mut Canvas, t: &Theme, f: &FontSet, books: bool) {
+    for side in [false, true] {
+        let (x0, x1) = mode_zone(side);
+        let lit = side == books;
+        let st = sty(
+            Family::Mono,
+            Weight::SemiBold,
+            13.0,
+            if lit { t.ink } else { t.dim },
+            0.04,
+        );
+        let word = crate::widgets::fit(
+            f,
+            crate::i18n::text(if side { "Books" } else { "Music" }),
+            &st,
+            (x1 - x0 - 4) as f32,
+        );
+        let w = text::measure(f, &word, &st);
+        let x = x0 as f32 + ((x1 - x0) as f32 - w) / 2.0;
+        text::draw(c, f, x, 67.0, &word, &st);
+        if lit {
+            fill_rect(c, x0 + 4, 76, x1 - x0 - 8, 3, t.acc);
+        }
+    }
+}
+
 /// The chip's box `(x, y, w, h)` around a label `text_w` wide.
 fn chip_box(text_w: f32) -> (i32, i32, i32, i32) {
     let h = CHIP_H * text::touch_scale();
