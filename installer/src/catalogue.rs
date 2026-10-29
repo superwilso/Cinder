@@ -63,7 +63,7 @@ impl Start {
     pub fn help(self) -> &'static str {
         match self {
             Start::Cinder => "The player, with the options most people want. Add more later with Update.",
-            Start::Sound => "Adds the equalizer over Bluetooth, mono without Wampy, and the AAC and SBC XQ codecs.",
+            Start::Sound => "Adds the equalizer over Bluetooth, mono, and the AAC and SBC XQ codecs.",
             Start::Everything => "Every option that is new as well. The pages after this still let you take any of them off.",
         }
     }

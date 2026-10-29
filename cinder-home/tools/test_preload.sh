@@ -85,9 +85,10 @@ check "…Sony's hagodaemon untouched" "$(same "$(H)" "$T/sony")" same
 check "…the boot script untouched" "$(same "$(BS)" "$T/bs.other")" same
 check "…and nothing else written" "$(has "$(H).real")$(has "$(G)")$(has "$(SH)")" absentabsentabsent
 
+# Wampy's own LD_PRELOAD stays; the wrapper adds the shim after it (cinder-hagowrap.c).
 fresh; mkdir -p "$R/system/vendor/unknown321/lib"; echo wampy > "$R/system/vendor/unknown321/lib/libsound_service_fw.so"; install; rc=$?
-check "Wampy is installed: nothing to do, exit 0" "$rc$(has "$(H).real")$(has "$(G)")" 0absentabsent
-check "…the boot script is still Sony's" "$(same "$(BS)" "$T/bs.stock")" same
+check "Wampy is installed: installs beside it, exit 0" "$rc$(has "$(H).real")$(has "$(G)")" 0therethere
+check "…Wampy's library untouched" "$(cat "$R/system/vendor/unknown321/lib/libsound_service_fw.so")" wampy
 
 fresh; : > "$T/empty"; run install "$T/empty" "$T/shim" "$T/guard"; rc=$?
 check "a staged file is empty: exit 1, nothing written" "$rc$(has "$(H).real")$(has "$(G)")" 1absentabsent

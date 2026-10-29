@@ -16,17 +16,19 @@ research behind it is [`analysis/RE_mono_audio.md`](../analysis/RE_mono_audio.md
 
 The same library also lets soundscapes play over music (Menu ▸ Soundscapes).
 
-## The two ways it installs
+## How it installs
 
 Both jack and Bluetooth audio come out of one Sony service, `SoundServiceFw`, so the summing has to
 run inside it: a small library, `libcinder_mono.so`, loaded into that service when it starts.
-Cinder never edits the player's boot image, so it needs an existing way in. There are two, and the
-installer offers both:
+Cinder never edits the player's boot image, so it brings its own way in: the install option
+**Mono and soundscapes over music** (`preload`). A small program takes the place of Sony's
+`hagodaemon`, starts every Sony service exactly as before, and adds the library for the sound
+service alone. It is installed with a boot guard and stays on trial until the player has played
+five seconds of music; see `deploy/components.conf`.
 
-| Install option | Use it when | How the library gets in |
-|---|---|---|
-| Mono and soundscapes over music (with Wampy), `mono` | Wampy is installed | Wampy's installer already preloads a library into the sound service. Cinder takes that slot, keeps Wampy's file beside it as `libsound_service_fw.wampy.so`, and loads it straight back, so Wampy keeps working. Turning the option off puts Wampy's file back |
-| Mono and soundscapes over music (without Wampy), `preload` | Nothing else is installed (stock firmware, or Walkman One) | A small program takes the place of Sony's `hagodaemon`, starts every Sony service exactly as before, and adds the library for the sound service alone. It is installed with a boot guard and stays on trial until the player has played five seconds of music; see `deploy/components.conf` |
+With Wampy installed, Wampy's own library still loads first and Cinder's after it. Until 0.3.22 a
+second option, `mono`, used Wampy's slot instead; an Update now puts Wampy's file back and ticks
+`preload` on a player where `mono` was working.
 
 ## Safety
 

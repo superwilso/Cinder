@@ -103,9 +103,8 @@ You don't need to uninstall Wampy first.
 - **Wampy's screen:** it doesn't appear while Cinder runs. Wampy draws over Sony's music app, and
   Cinder takes that app's place.
 - **Uninstalling Cinder** brings Sony's app back, and Wampy works over it as before.
-- **Mono and soundscapes over music:** the `mono` install option loads through the same slot in
-  Sony's sound service that Wampy uses, and Wampy's library still loads. On a player without Wampy,
-  the `preload` option does this job.
+- **Mono and soundscapes over music:** the `preload` install option loads Cinder's library into
+  Sony's sound service after Wampy's, and Wampy's library still loads.
 - **Scrobbling:** Wampy's scrobbler keeps running. Cinder writes no `.scrobbler.log` of its own
   while Wampy's scrobbler is running, so no play is counted twice.
 

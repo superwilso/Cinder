@@ -16,6 +16,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **One install option for mono, with or without Wampy.** "Mono and soundscapes over music"
+  (`preload`) now installs beside Wampy too: Wampy's library still loads first and Cinder's after
+  it. The old `mono` option, which took the place of Wampy's library in Sony's sound service, is
+  gone. Every install puts Wampy's file back where Wampy put it, and an Update ticks the remaining
+  option on a player where the old one was working, so mono keeps working there.
+  *Device-unverified* (checklist 43.13; the Wampy half needs a player with Wampy).
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed

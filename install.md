@@ -161,8 +161,7 @@ clicked underneath.
     6  [x]  Scrobble log (for Last.fm)
     7       Headphone volume curve: Sony standard (default)
     8       Sound signature (Walkman One modes): Sony standard (default)
-    9  [x]  Mono and soundscapes over music (with Wampy)
-   10  [ ]  Mono and soundscapes over music (without Wampy, new)
+    9  [ ]  Mono and soundscapes over music
   ------------------------------------------------------------
 
    <number> switch on/off or change   ?<number> read about it   i install   q quit
@@ -238,8 +237,7 @@ removes something the player cannot do without (`components.conf` explains the d
 | Scrobble log (`scrobble`) | on | Logs the songs you finish to `.scrobbler.log` for a Last.fm uploader | Nothing logged; an existing log is kept. **Leave it on with Wampy's scrobbler**: Cinder steps aside while that one runs, so nothing is logged twice |
 | Headphone volume curve (`voltable`) | Sony standard | How much each volume step changes the loudness. See [The volume curve tables](#the-volume-curve-tables) | — |
 | Sound signature (`signature`) | Sony standard | Walkman One's Plus modes, to compare by ear. See [below](#the-sound-signature) | — |
-| Mono and soundscapes over music, with Wampy (`mono`) | on | The Mono switch works on the jack and Bluetooth, and soundscapes play over music. **Needs Wampy**; reinstalling Wampy removes it, so install Cinder again afterwards | Mono works only for USB-DAC → Bluetooth, and a soundscape pauses while music plays |
-| Mono and soundscapes over music, without Wampy (`preload`) | **off** | The same, on a player without Wampy. It puts a small program in front of Sony's audio services and edits Sony's start-up script, with a guard that undoes it if a start fails | As above |
+| Mono and soundscapes over music (`preload`) | **off** | The Mono switch works on the jack and Bluetooth, and soundscapes play over music, with or without Wampy. It puts a small program in front of Sony's audio services and edits Sony's start-up script, with a guard that undoes it if a start fails. An Update ticks it on a player where the old `mono` option was working | Mono works only for USB-DAC → Bluetooth, and a soundscape pauses while music plays |
 
 How each one works, and why it is optional, is in the `#` notes in
 [`components.conf`](cinder-home/deploy/components.conf).
