@@ -18,6 +18,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **The Audiobooks list could not be pinned to the Shelf.** The bookmark sheet answered "Nothing to
+  pin here" on it. It is a place now: it pins as "Audiobooks", is kept across a restart, and a pin
+  goes back to it (at the top of the list).
 - **A series name with an umlaut printed as "fu¨r".** A tagger on macOS writes "ü" as a "u" and a
   separate accent mark, and the font draws the mark after the letter. The series name read from a
   book's tags now has each such pair joined into the one letter (Latin-1 and Latin Extended-A).

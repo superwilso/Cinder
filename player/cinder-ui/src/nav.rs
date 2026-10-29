@@ -846,6 +846,7 @@ fn pinnable(s: Screen) -> bool {
             | Screen::Album
             | Screen::Artist
             | Screen::Playlist
+            | Screen::Books
             | Screen::UpNext
             | Screen::Eq
             | Screen::Sound
@@ -931,6 +932,7 @@ fn screen_token(s: Screen) -> &'static str {
         Screen::Album => "album",
         Screen::Artist => "artist",
         Screen::Playlist => "playlist",
+        Screen::Books => "books",
         Screen::UpNext => "queue",
         Screen::Eq => "eq",
         Screen::Tone => "tone",
@@ -955,6 +957,7 @@ fn screen_from_token(t: &str) -> Option<Screen> {
         "album" => Screen::Album,
         "artist" => Screen::Artist,
         "playlist" => Screen::Playlist,
+        "books" => Screen::Books,
         "queue" => Screen::UpNext,
         "eq" => Screen::Eq,
         "sound" => Screen::Sound,
@@ -2826,6 +2829,10 @@ impl App {
                 ),
                 None => (crate::i18n::text("Playlist").into(), String::new()),
             },
+            Screen::Books => (
+                crate::i18n::text("Audiobooks").into(),
+                crate::audiobooks::subtitle(&self.lib),
+            ),
             s => (screen_title(s).into(), String::new()),
         }
     }
@@ -23294,6 +23301,41 @@ mod tests {
         a.fling(2000.0);
         a.tick();
         assert_eq!(a.lib_scroll_px, before, "the sheet must own the gesture");
+    }
+
+    #[test]
+    fn the_audiobooks_screen_can_be_pinned_and_a_pin_goes_back_to_it() {
+        let mut a = unlocked();
+        a.set_library(Library {
+            books: (0..3)
+                .map(|i| crate::model::BookRow {
+                    title: format!("Book {i}"),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        });
+        a.go(Screen::Library);
+        a.open_books();
+        a.open_shelf();
+        let (pbx, pby) = crate::shelf::pin_button_center();
+        a.tap(pbx, pby);
+        let pin = a.pins[0]
+            .as_ref()
+            .expect("the Audiobooks screen is a place");
+        assert_eq!(pin.screen, Screen::Books);
+        assert_eq!(
+            (pin.title.as_str(), pin.sub.as_str()),
+            ("Audiobooks", "3 BOOKS")
+        );
+        // It survives a reboot, and from anywhere the pin goes back to it.
+        let mut b = unlocked();
+        b.shelf_pin_decode(0, &a.shelf_pin_encode(0));
+        assert_eq!(b.pins[0], a.pins[0]);
+        a.go(Screen::Settings);
+        a.open_shelf();
+        a.tap(100, crate::shelf::slot_center_y(0));
+        assert_eq!(a.current(), Screen::Books);
     }
 
     #[test]
