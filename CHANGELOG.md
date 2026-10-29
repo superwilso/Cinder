@@ -16,6 +16,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **A series name with an umlaut printed as "fu¨r".** A tagger on macOS writes "ü" as a "u" and a
+  separate accent mark, and the font draws the mark after the letter. The series name read from a
+  book's tags now has each such pair joined into the one letter (Latin-1 and Latin Extended-A).
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed
