@@ -25,12 +25,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   with no audiobooks looks as before.
   The switch replaces the screen rather than stacking on it, and the Library button on Now
   Playing opens whichever of the two you last browsed.
-- **One install option for mono, with or without Wampy.** "Mono and soundscapes over music"
-  (`preload`) now installs beside Wampy too: Wampy's library still loads first and Cinder's after
-  it. The old `mono` option, which took the place of Wampy's library in Sony's sound service, is
-  gone. Every install puts Wampy's file back where Wampy put it, and an Update ticks the remaining
-  option on a player where the old one was working, so mono keeps working there.
-  *Device-unverified* (checklist 43.13; the Wampy half needs a player with Wampy).
 
 ### Fixed
 
@@ -45,6 +39,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **One install option for mono, with or without Wampy.** "Mono and soundscapes over music"
+  (`preload`) now installs beside Wampy too: Wampy's library still loads first and Cinder's after
+  it. The old `mono` option, which took the place of Wampy's library in Sony's sound service, is
+  gone. Every install puts Wampy's file back where Wampy put it, and an Update ticks the remaining
+  option on a player where the old one was working, so mono keeps working there.
+  *Device-verified on a stock player without Wampy*, on the jack and over Bluetooth (a
+  left-only/right-only test track, Mono on and off); a player with Wampy is not yet (checklist
+  43.13).
 - **Fewer files on the release page.** The install and uninstall `.UPG` packages and libusb's
   licence are now one download, `cinder-extras.zip`, beside the installer and cinder-rescue for
   each system. Most people need none of it: every installer carries both packages. The zip also
@@ -58,6 +60,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Installing on a player running Walkman One did nothing (#41).** Since 0.3.19 the installer
+  has picked the Walkman One package on those players, but that package was sealed with the
+  `nw-wm1a` key alone, and Walkman One's updater also wants Walkman One's own passkey. It refused
+  the package at its signature check and restarted after a few seconds, with no message. The
+  package is now sealed the way Walkman One's own packages are. *Device-verified* on a Walkman One
+  A55: the old package was refused (`failed to check md5 & signature`), the new one installed
+  Cinder (checklist 18.1).
 - **A release cut after an rc kept the newest changelog entries under [Unreleased].** rc1 made
   the version's section and `tools/release.sh` then left later entries where they were, so
   v0.3.21's section was missing cinder-rescue's page, the full restore and the preload fix (now

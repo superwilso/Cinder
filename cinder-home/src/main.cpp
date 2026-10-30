@@ -11785,6 +11785,10 @@ void carry_out(int act) {
             // Repeat-one → NodeTrackSequence::SetOneTrackMode on the pinned sequence. Guarded:
             // it is a call into Sony-constructed object layout, and a wedge here must not take
             // the frame loop with it.
+            // Named on every change: run_guarded logs its label only once a boot, so a log could
+            // not say which mode was on when a track ended (2026-10-30). "album" is neither flag.
+            clog_(cinder_get_repeat_one() ? "repeat: one"
+                  : cinder_get_repeat_all() ? "repeat: all" : "repeat: off or album");
             run_guarded("repeat: set one-track mode", 4,
                         []() { cinder_audio_set_repeat_one(cinder_get_repeat_one()); });
             break;
