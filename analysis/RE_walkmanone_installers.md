@@ -197,7 +197,21 @@ the KAS from a file. `-c` is exactly the updater's "CHECK MD5 & SIGNATURE" step.
 * The updater mounts `/contents` with `mount_partition contents` (plain `vfat`, no fsck), the
   same binary a normal boot uses. `linear_contents` only matters with a second eMMC (`mmcblk3`).
 
-**What #41's symptom (a few seconds, no text, no `exec.txt`) still allows:** the updater stopped
-at the fup-flag check, `/contents` mount, or "UPG not found". Not the key. The updater's own
-`/var/update.log` names the step and survives the reboot; Walkman One's undocumented
-`ADB=1` line in `CFW/settings.txt` turns adb on without flashing.
+**What #41's symptom (a few seconds, no text, no `exec.txt`) points at.** The update background
+with its progress bar is drawn by `fwpchk -c` itself (`fu_fb_show_screen_info`, `FN_IMG_BG`),
+after the fup flag, `/contents` mount, `ufn` and "UPG exists" steps have all passed. On failure the
+updater runs `fwfb /root/fwup_err.rgb`, but `fwup_bg.tgz` carries only `fwup_bg.rgb`: there is no
+error picture, so a failed check leaves the background up until the reboot. "The update page for a
+few seconds, then a restart" would fit **`fwpchk -c` refusing the package**, with our first
+script (which clears the screen and prints at once) never starting.
+
+That would contradict the key the installer read over SCSI, and the SCSI read is not a copy:
+`icx_usbscsi.ko` answers DNK property 22 with `icx_nvp_read_data(11, buf, 64)` (`0x10f0`) and the
+`ufn` property with node 10, 8 bytes (`0x1234`), the same node `fwpchk` opens, and `fwpchk` takes
+no other input for its key (only nodes 011 and 075, no model ID). So on Ivan's player node 011
+was `e8d171a5…`, under which this package passes. The likelier reading is that the background he
+saw was not `fwpchk`'s, and the updater stopped earlier (fup flag, `/contents` mount, "UPG not
+found"). Settle it with adb on the player: `/var/update.log` names the step, and
+`cat /dev/icx_nvp/011` shows the key (Walkman One's undocumented `ADB=1` line in
+`CFW/settings.txt` turns adb on without flashing). Still unexplained: how `-w` packages (Wampy's
+W1 build, MrWalkman's tunings) install on a player whose node 011 is `e8d171a5…`.

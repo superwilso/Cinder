@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.22] — 2026-10-28
+
 ### Changed
 
 - **One install option for mono, with or without Wampy.** "Mono and soundscapes over music"
@@ -23,12 +25,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   it. The old `mono` option, which took the place of Wampy's library in Sony's sound service, is
   gone. Every install puts Wampy's file back where Wampy put it, and an Update ticks the remaining
   option on a player where the old one was working, so mono keeps working there.
-  *Device-unverified* (checklist 43.13; the Wampy half needs a player with Wampy).
-
-## [0.3.22] — 2026-10-28
-
-### Changed
-
+  *Device-verified on a stock player without Wampy*, on the jack and over Bluetooth (a
+  left-only/right-only test track, Mono on and off); a player with Wampy is not yet (checklist
+  43.13).
 - **Fewer files on the release page.** The install and uninstall `.UPG` packages and libusb's
   licence are now one download, `cinder-extras.zip`, beside the installer and cinder-rescue for
   each system. Most people need none of it: every installer carries both packages. The zip also
