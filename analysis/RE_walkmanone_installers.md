@@ -215,3 +215,14 @@ found"). Settle it with adb on the player: `/var/update.log` names the step, and
 `cat /dev/icx_nvp/011` shows the key (Walkman One's undocumented `ADB=1` line in
 `CFW/settings.txt` turns adb on without flashing). Still unexplained: how `-w` packages (Wampy's
 W1 build, MrWalkman's tunings) install on a player whose node 011 is `e8d171a5…`.
+
+**SETTLED ON A WALKMAN ONE PLAYER, 2026-10-30.** Everything above that reasons from the running
+system's `fwpchk` was wrong about the updater. On a Walkman One 3.02 A55 (node 011 `e8d171a5…`,
+read both by `nvpstr kas` and over SCSI), Sony's updater refused Cinder's plain nw-wm1a package at
+`CHECK MD5 & SIGNATURE` (`/var/update.log`: `failed to check md5 & signature`, fur `0x47505545`
+EUPG), and ran the same payload sealed with `upgtool -w` to `COMPLETE` (fur `0x4C504D43`). On that
+same player, booted normally, `/bin/fwpchk -c` accepted the plain package and refused the `-w`
+one. So the updater checks with Walkman One's passkey/IV and the normal system's `fwpchk` does not;
+where the updater's differs was not traced (not needed). Consequences: `pack_upg.sh` seals the
+nw-wm1a package with `-w`; a Walkman One package is tested through the updater only, never with
+`fwpchk` on a booted player; and the table above describes the booted system, not the updater.

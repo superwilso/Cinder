@@ -28,6 +28,17 @@ EXECFILE="$REPO/artifacts/repos/rockbox/utils/nwztools/scripts/exec_file.sh"
 #
 # Read a player's own key with `nvpstr kas` over adb, or `upgtool -m ?` to see which model it is.
 MODEL="${2:-nw-a50}"
+# WALKMAN ONE'S UPDATER WANTS ITS OWN PASSKEY, NOT JUST THE nw-wm1a KAS. Measured 2026-10-30 on a
+# Walkman One A55 (#41): a plain nw-wm1a package was refused at "CHECK MD5 & SIGNATURE" (fur EUPG),
+# and the same payload sealed with Walkman One's AES passkey/IV (`upgtool -w`, the seal its own
+# tunings and Wampy's W1 build use) ran to COMPLETE. The running system's /bin/fwpchk takes the
+# plain one and refuses -w, so test a W1 package through the updater, never with fwpchk alone.
+# Rockbox's upgtool has no -w; nw-installer's build of it does (a build tool only, nothing shipped).
+SEAL=("$REPO/artifacts/upgtool")
+if [ "$MODEL" = nw-wm1a ]; then
+    SEAL=("$REPO/artifacts/repos/nw-installer/tools/upgtool/upgtools/upgtool" -w)
+    [ -x "${SEAL[0]}" ] || { echo "ERR: the Walkman One package needs nw-installer's upgtool (-w) at ${SEAL[0]}"; exit 1; }
+fi
 # Channel: stable (default) | dev. Artifacts go to dist/<channel>/ so the two builds never clobber.
 # The install/uninstall .UPGs are channel-agnostic (they push whatever binary is at /contents/
 # cinder-home); only the staged binary differs (dev = "CINDER DEV" marker + self-enables adb).
@@ -56,11 +67,11 @@ pack() {  # pack <payload.sh> <out.upg>
     # create: `upgtool -c <OUTPUT.UPG> <file0> <file1>` — first positional is the OUTPUT file,
     # then the two members in index order (0 = exec_file bootstrap, 1 = payload). (-o is for
     # extract only; create needs ≥2 input files or it dereferences files[1] and crashes.)
-    "$UPGTOOL" -m "$MODEL" --create "$tmp/fw.UPG" "$tmp/exec_file.sh" "$tmp/payload.sh" >/dev/null
+    "${SEAL[@]}" -m "$MODEL" --create "$tmp/fw.UPG" "$tmp/exec_file.sh" "$tmp/payload.sh" >/dev/null
     [ -f "$tmp/fw.UPG" ] || { echo "ERR: upgtool produced no .UPG for $payload"; ls -la "$tmp"; exit 1; }
     cp "$tmp/fw.UPG" "$out"
     # round-trip verify: extract (-n no-color) and confirm both members come back intact
-    "$UPGTOOL" -n -e -m "$MODEL" -o "$tmp/rt" "$out" >/dev/null 2>&1 || true
+    "${SEAL[@]}" -n -e -m "$MODEL" -o "$tmp/rt" "$out" >/dev/null 2>&1 || true
     { [ -f "$tmp/rt0.bin" ] && [ -f "$tmp/rt1.bin" ]; } \
         || { echo "ERR: round-trip verify failed for $out"; ls -la "$tmp"; exit 1; }
     # extracted members are block-padded; compare only the original payload length

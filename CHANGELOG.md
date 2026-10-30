@@ -16,6 +16,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Installing on a player running Walkman One did nothing (#41).** Since 0.3.19 the installer
+  has picked the Walkman One package on those players, but that package was sealed with the
+  `nw-wm1a` key alone, and Walkman One's updater also wants Walkman One's own passkey. It refused
+  the package at its signature check and restarted after a few seconds, with no message. The
+  package is now sealed the way Walkman One's own packages are. *Device-verified* on a Walkman One
+  A55: the old package was refused (`failed to check md5 & signature`), the new one installed
+  Cinder (checklist 18.1).
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed
