@@ -59,7 +59,7 @@ pub fn clean_part(raw: &str) -> String {
 
 /// Letter plus a separate accent mark, and the one letter they make: the Latin letters of Latin-1
 /// and Latin Extended-A. Taggers on macOS write names in this decomposed form.
-const COMPOSED: [(char, u32, char); 136] = [
+const COMPOSED: [(char, u32, char); 161] = [
     ('A', 0x300, '\u{c0}'),
     ('A', 0x301, '\u{c1}'),
     ('A', 0x302, '\u{c2}'),
@@ -115,24 +115,36 @@ const COMPOSED: [(char, u32, char); 136] = [
     ('y', 0x308, '\u{ff}'),
     ('A', 0x304, '\u{100}'),
     ('a', 0x304, '\u{101}'),
+    ('A', 0x306, '\u{102}'),
+    ('a', 0x306, '\u{103}'),
     ('A', 0x328, '\u{104}'),
     ('a', 0x328, '\u{105}'),
     ('C', 0x301, '\u{106}'),
     ('c', 0x301, '\u{107}'),
     ('C', 0x302, '\u{108}'),
     ('c', 0x302, '\u{109}'),
+    ('C', 0x307, '\u{10a}'),
+    ('c', 0x307, '\u{10b}'),
     ('C', 0x30c, '\u{10c}'),
     ('c', 0x30c, '\u{10d}'),
     ('D', 0x30c, '\u{10e}'),
     ('d', 0x30c, '\u{10f}'),
     ('E', 0x304, '\u{112}'),
     ('e', 0x304, '\u{113}'),
+    ('E', 0x306, '\u{114}'),
+    ('e', 0x306, '\u{115}'),
+    ('E', 0x307, '\u{116}'),
+    ('e', 0x307, '\u{117}'),
     ('E', 0x328, '\u{118}'),
     ('e', 0x328, '\u{119}'),
     ('E', 0x30c, '\u{11a}'),
     ('e', 0x30c, '\u{11b}'),
     ('G', 0x302, '\u{11c}'),
     ('g', 0x302, '\u{11d}'),
+    ('G', 0x306, '\u{11e}'),
+    ('g', 0x306, '\u{11f}'),
+    ('G', 0x307, '\u{120}'),
+    ('g', 0x307, '\u{121}'),
     ('G', 0x327, '\u{122}'),
     ('g', 0x327, '\u{123}'),
     ('H', 0x302, '\u{124}'),
@@ -141,8 +153,11 @@ const COMPOSED: [(char, u32, char); 136] = [
     ('i', 0x303, '\u{129}'),
     ('I', 0x304, '\u{12a}'),
     ('i', 0x304, '\u{12b}'),
+    ('I', 0x306, '\u{12c}'),
+    ('i', 0x306, '\u{12d}'),
     ('I', 0x328, '\u{12e}'),
     ('i', 0x328, '\u{12f}'),
+    ('I', 0x307, '\u{130}'),
     ('J', 0x302, '\u{134}'),
     ('j', 0x302, '\u{135}'),
     ('K', 0x327, '\u{136}'),
@@ -161,6 +176,10 @@ const COMPOSED: [(char, u32, char); 136] = [
     ('n', 0x30c, '\u{148}'),
     ('O', 0x304, '\u{14c}'),
     ('o', 0x304, '\u{14d}'),
+    ('O', 0x306, '\u{14e}'),
+    ('o', 0x306, '\u{14f}'),
+    ('O', 0x30b, '\u{150}'),
+    ('o', 0x30b, '\u{151}'),
     ('R', 0x301, '\u{154}'),
     ('r', 0x301, '\u{155}'),
     ('R', 0x327, '\u{156}'),
@@ -183,8 +202,12 @@ const COMPOSED: [(char, u32, char); 136] = [
     ('u', 0x303, '\u{169}'),
     ('U', 0x304, '\u{16a}'),
     ('u', 0x304, '\u{16b}'),
+    ('U', 0x306, '\u{16c}'),
+    ('u', 0x306, '\u{16d}'),
     ('U', 0x30a, '\u{16e}'),
     ('u', 0x30a, '\u{16f}'),
+    ('U', 0x30b, '\u{170}'),
+    ('u', 0x30b, '\u{171}'),
     ('U', 0x328, '\u{172}'),
     ('u', 0x328, '\u{173}'),
     ('W', 0x302, '\u{174}'),
@@ -194,6 +217,8 @@ const COMPOSED: [(char, u32, char); 136] = [
     ('Y', 0x308, '\u{178}'),
     ('Z', 0x301, '\u{179}'),
     ('z', 0x301, '\u{17a}'),
+    ('Z', 0x307, '\u{17b}'),
+    ('z', 0x307, '\u{17c}'),
     ('Z', 0x30c, '\u{17d}'),
     ('z', 0x30c, '\u{17e}'),
 ];
@@ -660,6 +685,18 @@ mod tests {
             Some("x\u{308} \u{308}"),
             "a mark with no composed form, or no letter, stays"
         );
+    }
+
+    /// The double acute (Hungarian), breve and dot above joined too, not only the marks a French or
+    /// German name needs.
+    #[test]
+    fn a_series_name_with_a_double_acute_breve_or_dot_above_is_read_as_the_one_letter() {
+        let mut f = Found::default();
+        f.set_name(
+            "o\u{30b} u\u{30b} O\u{30b} U\u{30b} a\u{306} g\u{306} U\u{306} \
+             c\u{307} e\u{307} I\u{307} z\u{307} Z\u{307}",
+        );
+        assert_eq!(f.name.as_deref(), Some("ő ű Ő Ű ă ğ Ŭ ċ ė İ ż Ż"));
     }
 
     #[test]
