@@ -21,7 +21,7 @@ The four documents that are always current live outside this directory:
 | Document | What it is |
 |---|---|
 | [`ROADMAP.md`](ROADMAP.md) | **What is planned, and where help is wanted:** what is being built next, testers with a Mac, device tests grouped by setup, open research, other models and translations. |
-| [`MONO.md`](MONO.md) | **Mono, and why Cinder stands on its own.** What Sound ▸ MONO does, the two install options that put it in Sony's sound service (with or without Wampy), its safety, and how it led to Cinder needing nothing else installed. |
+| [`MONO.md`](MONO.md) | **Mono, and why Cinder stands on its own.** What Sound ▸ MONO does, the install option that puts it in Sony's sound service, its safety, and how it led to Cinder needing nothing else installed. |
 | [`PLAN_big_view.md`](PLAN_big_view.md) | **Big view.** Bigger text and controls in one switch; the pages still to redesign for it. |
 | [`COMPARE_cinder_sony.md`](COMPARE_cinder_sony.md) | **Cinder against Sony's firmware, in pictures:** what Cinder replaces, the effect chain by firmware, what Clear Bass does at the jack, what the effects cost the processor, and what Bluetooth costs during jack playback. Measured 2026-10-11 on one Walkman One player. |
 | [`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md) | **The redesign ledger.** Every screen in the 2026-09 design handoff (Cinder, Flint, the installer) and every promised feature the handoff does not draw — the goals, Walkman One parity, the community's requests — each with a state and a phase. What landed first, and where the build departs from the mock on purpose. |

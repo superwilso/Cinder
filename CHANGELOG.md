@@ -25,6 +25,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   with no audiobooks looks as before.
   The switch replaces the screen rather than stacking on it, and the Library button on Now
   Playing opens whichever of the two you last browsed.
+- **One install option for mono, with or without Wampy.** "Mono and soundscapes over music"
+  (`preload`) now installs beside Wampy too: Wampy's library still loads first and Cinder's after
+  it. The old `mono` option, which took the place of Wampy's library in Sony's sound service, is
+  gone. Every install puts Wampy's file back where Wampy put it, and an Update ticks the remaining
+  option on a player where the old one was working, so mono keeps working there.
+  *Device-unverified* (checklist 43.13; the Wampy half needs a player with Wampy).
 
 ### Fixed
 
@@ -56,6 +62,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   the version's section and `tools/release.sh` then left later entries where they were, so
   v0.3.21's section was missing cinder-rescue's page, the full restore and the preload fix (now
   filed under it). Later runs merge them into the version's section.
+
+### Added
+
+- **Save a report.** One button in the installer window (`cinder-installer --report` on the
+  command line) saves `cinder-report.txt`, to attach to an issue: the player's install log,
+  `exec.txt`, `cinderhome.log`, the component choices, Walkman One's boot log and settings, a
+  listing of the top of the drive, which package `NW_WM_FW.UPG` is, the key the player reports and
+  the filename its updater looks for, plus the window's own log. No music. *Device-unverified.*
 
 ## [0.3.21] — 2026-10-28
 

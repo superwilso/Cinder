@@ -113,7 +113,6 @@ WANT_SENSME="$(comp_bool CINDER_SENSME 0)"
 WANT_AUDIOBOOKS="$(comp_bool CINDER_AUDIOBOOKS 0)"
 WANT_PREVIEW="$(comp_bool CINDER_PREVIEW 0)"
 WANT_SCROBBLE="$(comp_bool CINDER_SCROBBLE 1)"
-WANT_MONO="$(comp_bool CINDER_MONO 1)"
 WANT_PRELOAD="$(comp_bool CINDER_PRELOAD 0)"
 WANT_BT_AAC="$(comp_bool CINDER_BT_AAC 0)"
 WANT_ATRAC="$(comp_bool CINDER_ATRAC 0)"
@@ -129,7 +128,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC"
+echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC"
 
 # ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
 # Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
@@ -640,14 +639,11 @@ elif [ "$WANT_CHAIN" != default ]; then
     echo "WARN: $SRC_CHAIN not staged but chain=$WANT_CHAIN requested — NOT applied."
 fi
 
-# 1g2) system-wide mono: libcinder_mono.so inside Sony's SoundServiceFw (src/cinder-mono.c).
-#      The jack and Bluetooth are both fed from that one service, and Cinder never edits the boot
-#      image, so it has no preload of its own to get in there. Wampy's installer put one in:
-#      `setenv LD_PRELOAD $MONO_PATH` on the service. The shim takes that path, keeps Wampy's file
-#      byte for byte at $MONO_WAMPY, and dlopens it back (RTLD_GLOBAL) before anything else, so
-#      Wampy's hooks keep working. No Wampy library here = no preload = nothing installed.
-#      Wampy's file is COPIED aside before the shim is renamed over the path, so a failure at any
-#      step leaves Wampy's library where Wampy put it. Non-fatal throughout.
+# 1g2) the retired `mono` component (retired in 0.3.22). Until then the shim could also reach Sony's
+#      sound service by taking the place of Wampy's preloaded library, kept byte for byte at
+#      $MONO_WAMPY and loaded back from there. `preload` (1g3) now carries it on every player,
+#      Wampy or not, so every install gives Wampy its library back if the shim still holds its
+#      place. Done before 1g3, so the wrapper's LD_PRELOAD finds Wampy's file where Wampy put it.
 MONO_PATH=/system/vendor/unknown321/lib/libsound_service_fw.so   # Wampy's library, in Wampy's folder
 MONO_WAMPY=/system/vendor/unknown321/lib/libsound_service_fw.wampy.so
 is_mono_shim() { "$BB" grep -q libcinder_mono.so "$1" 2>/dev/null; }
@@ -660,55 +656,16 @@ mono_restore() {   # give Wampy its library back, if the shim holds its place
     fi
     "$BB" rm -f /data/cinder/mono_shim_boots 2>/dev/null
 }
-if [ "$WANT_MONO" != 1 ]; then
-    echo "components: mono NOT selected — mono reaches USB-DAC -> LDAC only."
-    mono_restore
-elif [ ! -s "$SRC_MONO" ]; then
-    echo "WARN: $SRC_MONO not staged — mono reaches USB-DAC -> LDAC only."
-elif [ ! -f "$MONO_PATH" ]; then
-    echo "mono: Wampy is not installed ($MONO_PATH absent), so Sony's sound service has no preload to"
-    echo "      carry the shim — the 'preload' component (step 1g3) is the way in without Wampy."
-else
-    mono_ok=1
-    if ! is_mono_shim "$MONO_PATH"; then
-        "$BB" cat "$MONO_PATH" > "$MONO_WAMPY.tmp" 2>/dev/null
-        if [ -s "$MONO_WAMPY.tmp" ] && "$BB" cmp -s "$MONO_PATH" "$MONO_WAMPY.tmp"; then
-            "$BB" chmod 755 "$MONO_WAMPY.tmp"
-            "$BB" mv -f "$MONO_WAMPY.tmp" "$MONO_WAMPY"
-            echo "mono: kept Wampy's library as $MONO_WAMPY"
-        else
-            "$BB" rm -f "$MONO_WAMPY.tmp" 2>/dev/null
-            mono_ok=0
-            echo "WARN: mono — could not keep a copy of Wampy's library; left as found, mono not installed."
-        fi
-    fi
-    if [ "$mono_ok" = 1 ]; then
-        "$BB" cat "$SRC_MONO" > "$MONO_PATH.tmp" 2>/dev/null
-        if [ -s "$MONO_PATH.tmp" ] && "$BB" cmp -s "$SRC_MONO" "$MONO_PATH.tmp" && is_mono_shim "$MONO_PATH.tmp"; then
-            "$BB" chown 0:0 "$MONO_PATH.tmp" 2>/dev/null
-            "$BB" chmod 755 "$MONO_PATH.tmp"
-            # rename, never write in place: on a live system the running service has this file mapped
-            "$BB" mv -f "$MONO_PATH.tmp" "$MONO_PATH"
-            # a new build starts with a clean load count (the shim's safe-mode counter)
-            "$BB" rm -f /data/cinder/mono_shim_boots 2>/dev/null
-            echo "installed: $MONO_PATH (mono shim, $("$BB" wc -c < "$MONO_PATH" | "$BB" tr -cd '0-9') bytes; chains $MONO_WAMPY)"
-        else
-            "$BB" rm -f "$MONO_PATH.tmp" 2>/dev/null
-            echo "WARN: mono — the staged shim failed verification; the library there is unchanged."
-        fi
-    fi
-fi
+mono_restore
 
-# 1g3) the same shim on a player with NO Wampy: the `preload` component (deploy/cinder-preload.sh).
+# 1g3) the shim, on any player: the `preload` component (deploy/cinder-preload.sh).
 #      Off by default. It puts a wrapper in front of Sony's hagodaemon and a guard in the boot
 #      script, so the whole of it lives in one script with its own host test
 #      (tools/test_preload.sh) and this only decides whether to call it. The script is installed
 #      whenever it is staged, selected or not, because it is also what takes the wrapper OFF: an
 #      install with the component turned off, and the uninstaller, both run its `remove`.
-#      Needs the shim staged ($SRC_MONO, which the PC installer stages for `mono` or `preload`),
-#      NOT `mono` itself: the installer offers this option instead of `mono` on a player without
-#      Wampy, and asking for both dropped preload and everything after it (2026-10-28). Non-fatal throughout: every failure
-#      in there leaves Sony's hagodaemon running.
+#      Needs the shim staged ($SRC_MONO, which the PC installer stages with `preload`).
+#      Non-fatal throughout: every failure in there leaves Sony's hagodaemon running.
 PRELOAD_SH=$BIN/cinder-preload.sh
 if [ -s "$SRC_PRELOAD" ]; then
     "$BB" cat "$SRC_PRELOAD" > "$PRELOAD_SH.tmp" 2>/dev/null

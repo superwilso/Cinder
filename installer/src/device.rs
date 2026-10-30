@@ -270,15 +270,22 @@ impl Installed {
 pub fn read_installed(root: &Path, payload_names: &[&str]) -> Installed {
     let mut st = Installed::default();
 
+    let mut mono_live = false;
     if let Ok(text) = fs::read_to_string(root.join(LOG_NAME)) {
         let (last, when) = parse_log(&text);
         st.last = last;
         st.when = when;
+        mono_live = mono_was_live(&text);
     }
-    if let Ok(text) = fs::read_to_string(root.join(CONF_NAME)) {
+    if let Ok(mut text) = fs::read_to_string(root.join(CONF_NAME)) {
         let (ch, ver) = crate::catalogue::saved_stamp(&text);
         st.channel = ch;
         st.installer_version = ver;
+        // `mono` is retired (0.3.22) and `preload` carries mono on every player now. Where mono
+        // was working, an Update keeps it working; a later line wins in `apply_saved`.
+        if mono_live {
+            text.push_str("\nCINDER_PRELOAD=1\n");
+        }
         st.conf = Some(text);
     }
     for name in payload_names {
@@ -293,6 +300,15 @@ pub fn read_installed(root: &Path, payload_names: &[&str]) -> Installed {
         st.last_boot_stock = last_boot_to_stock(&String::from_utf8_lossy(&bytes));
     }
     st
+}
+
+/// Did the last install session put the retired `mono` shim in Wampy's slot? Its success line,
+/// `installed: …libsound_service_fw.so (mono shim, N bytes; …)`, is the only proof it was working:
+/// the saved `CINDER_MONO=1` was the default, so it is on players where it never installed.
+fn mono_was_live(log: &str) -> bool {
+    log.rsplit("== cinder-home ")
+        .next()
+        .is_some_and(|last| last.contains("(mono shim, "))
 }
 
 /// Reduce the log to the outcome of its LAST session.
@@ -336,6 +352,19 @@ pub fn parse_log(text: &str) -> (Option<LastRun>, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_working_mono_ticks_preload_on_update() {
+        let live = "== cinder-home installer  Mon\ninstalled: /system/vendor/unknown321/lib/libsound_service_fw.so (mono shim, 57636 bytes; chains x)\n== done.\n";
+        assert!(mono_was_live(live));
+        // A later session without it (an uninstall, or a player with no Wampy) is what counts.
+        assert!(!mono_was_live(&format!(
+            "{live}== cinder-home UNINSTALL  Tue\n== done.\n"
+        )));
+        assert!(!mono_was_live(
+            "== cinder-home installer  Mon\nmono: Wampy is not installed\n"
+        ));
+    }
 
     #[test]
     fn walkman_detection_needs_the_markers() {

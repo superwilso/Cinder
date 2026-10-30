@@ -1,5 +1,5 @@
 #!/bin/sh
-# cinder-preload.sh — mono, and soundscapes over music, on a player with NO Wampy.
+# cinder-preload.sh — mono, and soundscapes over music, on any player (Wampy or not).
 #
 #   cinder-preload.sh install <cinder-hagowrap> <libcinder_mono.so> <cinder-guard.sh>
 #   cinder-preload.sh remove
@@ -36,7 +36,6 @@ SONYBIN=/system/vendor/sony/bin
 HAGO=$SONYBIN/hagodaemon
 LIBDIR=/system/vendor/cinder/lib
 SHIM=$LIBDIR/libcinder_mono.so
-WAMPY=/system/vendor/unknown321/lib/libsound_service_fw.so   # Wampy's, in Wampy's folder
 BS=/system/bin/bootswitcher.sh
 GUARD=/system/bin/cinder-guard.sh
 BS_STOCK=7675f7d234b0abadf2909f2e9a274d51fe1d02620d776c4ac6d2ce865ecac358
@@ -141,10 +140,6 @@ install)
         if [ ! -s "$f" ]; then say "'$f' is not staged - nothing installed"; exit 1; fi
     done
     if ! is_wrapper "$WRAP"; then say "'$WRAP' is not the wrapper - nothing installed"; exit 1; fi
-    if [ -e "$WAMPY" ]; then
-        say "Wampy is installed: the mono component already reaches the sound service - nothing to do"
-        exit 0
-    fi
     if [ ! -s "$HAGO" ]; then say "$HAGO not found - nothing installed"; exit 1; fi
     # A wrapper with no Sony binary kept beside it, or a kept copy that is itself a wrapper: the
     # one state this cannot repair, because the only copy of Sony's binary is gone.
@@ -180,7 +175,7 @@ install)
 remove)
     # The wrapper first and the guard last: while a wrapper is in place, so is what removes it.
     wrapper_remove || exit 1
-    if [ -f "$SHIM" ] && [ ! -e "$WAMPY" ]; then "$BB" rm -f "$SHIM" && say "shim removed"; fi
+    if [ -f "$SHIM" ]; then "$BB" rm -f "$SHIM" && say "shim removed"; fi
     hook_remove
     if [ "$(sha "$BS")" != "$BS_HOOKED" ] && [ -f "$GUARD" ]; then "$BB" rm -f "$GUARD" && say "guard removed"; fi
     ;;
