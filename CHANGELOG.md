@@ -18,6 +18,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **Big view: bigger covers in lists.** The Albums, Artists and Playlists lists, an artist's
+  albums, a playlist's songs and Up Next draw their covers at 60 px instead of 48 in Big view,
+  to match the taller rows. Grid covers grow from 96 px to 132, three across. With Big view off
+  nothing changes. *Device-unverified.*
+- **Albums grid: three packed looks on the ORDER chip.** In grid view, ORDER now steps ARTIST →
+  PACKED → PINNED → EDGE → A-Z → ADDED → YEAR. All three keep artist order but drop the header
+  lines, so the covers fill every row the way A-Z does. PACKED leaves the artist on each cover's
+  second line; PINNED keeps the artist of the top row in a band above the grid as you scroll;
+  EDGE marks each artist's first cover with an accent bar and its name in the accent colour. The
+  list views keep their four steps. *Device-unverified.*
 - **Audiobooks: a Music/Books switch in place of the book button.** With audiobooks in the library
   the Library's title spells "Music" and a tap on it opens the audiobooks, whose list spells
   "Books" in the same place; a tap there returns to the Library on the tab it was left on. The
@@ -28,6 +38,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Library: tapping the view or search button no longer opens the Menu.** A tap landing a
+  little high on either button reached the status bar above it. They now claim the bar's bottom
+  edge, as the ORDER chip already did.
 - **The Audiobooks list could not be pinned to the Shelf.** The bookmark sheet answered "Nothing to
   pin here" on it. It is a place now: it pins as "Audiobooks", is kept across a restart, and a pin
   goes back to it (at the top of the list).

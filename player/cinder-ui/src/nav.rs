@@ -4597,10 +4597,12 @@ impl App {
         // tapping anywhere else on the bar opens the **Menu** — the rest of the strip stays one big
         // forgiving Menu target. Both zones come from `chrome::status_hit`, which is built from the
         // same constants that place the glyphs. Header back chevron → Back (below).
-        // The Library's SORT/ORDER chip claims the strip's bottom edge above it — see
-        // `library::SORT_HIT_TOP`. Only there: `tap_library` handles it.
+        // The Library's SORT/ORDER chip, view button and search button claim the strip's bottom
+        // edge above them — see `library::SORT_HIT_TOP`. Only there: `tap_library` handles them.
         let sort_chip = self.current() == Screen::Library
-            && library::hit_sort_chip(self.lib_tab, x, y, self.search_enabled);
+            && (library::hit_sort_chip(self.lib_tab, x, y, self.search_enabled)
+                || library::hit_view_button(x, y, self.search_enabled)
+                || (self.search_enabled && library::hit_search(x, y)));
         match crate::chrome::status_hit(x, y).filter(|_| !sort_chip && !self.landscape()) {
             Some(crate::chrome::StatusTap::Shelf) => {
                 self.open_shelf();
@@ -7030,7 +7032,7 @@ impl App {
     /// Advance the Albums ORDER chip and collapse any open accordion (its identity is still valid,
     /// but the position shift is less confusing when it re-opens deliberately).
     fn cycle_album_sort(&mut self) {
-        self.album_sort = (self.album_sort + 1) % library::ALBUM_SORTS.len();
+        self.album_sort = library::next_album_sort(&self.lib, self.album_sort);
         self.album_expanded = None;
     }
 
@@ -23715,6 +23717,13 @@ mod tests {
         a.lib_tab = Tab::Artists;
         a.tap(344, y);
         assert_eq!(a.current(), Screen::Menu);
+        // The view button sits under the strip too, on every tab.
+        a.go(Screen::Library);
+        let view0 = library::view_of(&a.lib, a.lib_tab);
+        let (vx0, vx1) = library::view_button_x(a.search_enabled);
+        a.tap((vx0 + vx1) / 2, y);
+        assert_eq!(a.current(), Screen::Library, "the view button, not the Menu");
+        assert_ne!(library::view_of(&a.lib, a.lib_tab), view0, "the tap cycled the view");
     }
 
     /// The tab strip draws 35 px; with the band in place its target runs down to the band.

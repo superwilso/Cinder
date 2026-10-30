@@ -50,6 +50,18 @@ pub(crate) const LIST_BOTTOM: i32 = H as i32 - crate::chrome::NP_BAR_H;
 /// row is far more expensive than blitting two cached images.
 pub const THUMB_PX: i32 = 48;
 
+/// A list row's cover edge now: [`THUMB_PX`], and 60 in Big view, whose rows grew by the same
+/// quarter. Big view's size is not a cache size: [`thumb`] scales the cached 48 up once per album
+/// (`art::scaled_cached`). A quarter up stays sharp enough, as a third does for the playlist page.
+pub fn list_thumb_px() -> i32 {
+    crate::scale::ctl(THUMB_PX)
+}
+
+/// How far the text beside a list cover moves right with it: 0, or 12 in Big view.
+pub fn thumb_dx() -> i32 {
+    list_thumb_px() - THUMB_PX
+}
+
 /// The album drill-in's cover edge — the cache's other stored size.
 pub const COVER_PX: i32 = 96;
 
@@ -75,6 +87,10 @@ pub(crate) fn thumb(
     match lib.thumbs.get(&album_id) {
         Some(img) if img.w == size as usize && img.h == size as usize => {
             art::draw_image(c, t, x, y, img, op)
+        }
+        // Big view's bigger rows: the cached 48, scaled once and kept.
+        Some(img) if size == list_thumb_px() && img.w == THUMB_PX as usize && img.h == img.w => {
+            art::scaled_cached(c, t, x, y, album_id, img, size, op)
         }
         _ => art::block_cached(c, t, x, y, size, size, name, op),
     }
@@ -209,6 +225,22 @@ fn grid_text_w() -> f32 {
     }
 }
 
+/// A grid cover's edge now: 132 in Big view, so three covers fill the width (22 + 2 x 144 + 132 =
+/// 442, clear of the rail at 454). The cache stores 96, so Big view draws it scaled through
+/// `art::scaled_cached` — once per cover, not per frame.
+pub fn grid_tile_px() -> i32 {
+    if crate::scale::large() {
+        132
+    } else {
+        GRID_TILE
+    }
+}
+
+/// One line of grid tiles now: `GRID_ROW_H`, grown by however much the cover grew.
+pub fn grid_row_h() -> i32 {
+    GRID_ROW_H + grid_tile_px() - GRID_TILE
+}
+
 /// A compact row: one line of text, no art.
 pub const COMPACT_ROW_H: i32 = 44;
 
@@ -217,7 +249,7 @@ pub const COMPACT_ROW_H: i32 = 44;
 pub fn line_h(tab: Tab, lib: &Library) -> i32 {
     match view_of(lib, tab) {
         LibView::List => row_h(tab),
-        LibView::Grid => GRID_ROW_H,
+        LibView::Grid => grid_row_h(),
         LibView::Compact => COMPACT_ROW_H,
     }
 }
@@ -267,9 +299,11 @@ pub fn view_button_x(search: bool) -> (i32, i32) {
     }
 }
 
+/// From [`SORT_HIT_TOP`], like the chip: the button sits under the Menu end of the status strip, and
+/// a tap a little high opened the Menu instead (reported 2026-10-30).
 pub fn hit_view_button(x: i32, y: i32, search: bool) -> bool {
     let (x0, x1) = view_button_x(search);
-    (34..91).contains(&y) && (x0..x1).contains(&x)
+    (SORT_HIT_TOP..crate::chrome::HEADER_BOTTOM).contains(&y) && (x0..x1).contains(&x)
 }
 
 /// The view button's icon: the layout the tab is in NOW, so the button reads as a label of the
@@ -282,15 +316,20 @@ fn view_icon(c: &mut Canvas, cx: f32, cy: f32, v: LibView, col: Rgb888) {
     }
 }
 
-/// Draw a grid cover: the 96 px cover when the shell has loaded it, else the gradient. The 48 px
-/// thumbnail is NOT stretched in the meantime — a doubled 48 is visibly soft, and the 96 arrives
-/// within a frame or two of the tile scrolling into view.
+/// Draw a grid cover: the 96 px cover when the shell has loaded it (scaled to 132 in Big view),
+/// else the gradient. The 48 px thumbnail is NOT stretched in the meantime — a doubled 48 is
+/// visibly soft, and the 96 arrives within a frame or two of the tile scrolling into view.
 fn grid_cover(c: &mut Canvas, t: &Theme, lib: &Library, album_id: i64, name: &str, x: i32, y: i32) {
+    let px = grid_tile_px();
     match lib.covers.get(&album_id) {
         Some(img) if img.w == GRID_TILE as usize && img.h == GRID_TILE as usize => {
-            art::draw_image(c, t, x, y, img, artdim(t))
+            if px == GRID_TILE {
+                art::draw_image(c, t, x, y, img, artdim(t))
+            } else {
+                art::scaled_cached(c, t, x, y, album_id, img, px, artdim(t))
+            }
         }
-        _ => art::block_cached(c, t, x, y, GRID_TILE, GRID_TILE, name, artdim(t)),
+        _ => art::block_cached(c, t, x, y, px, px, name, artdim(t)),
     }
 }
 
@@ -308,21 +347,23 @@ fn grid_tile(
     title: &str,
     sub: &str,
     now: bool,
+    sub_acc: bool,
 ) {
     let x = grid_x(col);
+    let tile = grid_tile_px();
     grid_cover(c, t, lib, album_id, art_name, x, y + GRID_TILE_TOP);
     if now {
         stroke_rect(
             c,
             x - 3,
             y + GRID_TILE_TOP - 3,
-            GRID_TILE + 6,
-            GRID_TILE + 6,
+            tile + 6,
+            tile + 6,
             t.acc,
             2,
         );
     }
-    let base = y + GRID_TILE_TOP + GRID_TILE;
+    let base = y + GRID_TILE_TOP + tile;
     let tst = body_label(
         Family::Sans,
         Weight::SemiBold,
@@ -337,7 +378,12 @@ fn grid_tile(
         &crate::widgets::fit(f, title, &tst, grid_text_w()),
         &tst,
     );
-    let sst = body_label(Family::Sans, Weight::Regular, 12.0, t.dim);
+    let sst = body_label(
+        Family::Sans,
+        Weight::Regular,
+        12.0,
+        if sub_acc { t.acc } else { t.dim },
+    );
     text::draw(
         c,
         f,
@@ -406,10 +452,10 @@ pub fn grid_cover_ids(tab: Tab, lib: &Library, album_sort: usize, scroll_px: i32
     // Distance from the screen, 0 on it: a line above the screen sorts after one below, because
     // lists are read downwards.
     let dist = |vy: i32| -> Option<i32> {
-        let top = vy + GRID_ROW_H;
+        let top = vy + grid_row_h();
         if top <= scroll_px - vh || vy >= scroll_px + 2 * vh {
             None
-        } else if vy + GRID_ROW_H <= scroll_px {
+        } else if vy + grid_row_h() <= scroll_px {
             Some(2 * vh + (scroll_px - vy))
         } else {
             Some((vy - scroll_px - vh).max(0))
@@ -922,7 +968,7 @@ pub fn albums_row_h(row: &AlbumsRow, view: LibView) -> i32 {
         AlbumsRow::Album { .. } if view == LibView::Compact => COMPACT_ROW_H,
         AlbumsRow::Album { .. } => ALBUM_ROW_H(),
         AlbumsRow::Track { .. } => ALBUM_CHILD_H,
-        AlbumsRow::Tiles { .. } => GRID_ROW_H,
+        AlbumsRow::Tiles { .. } => grid_row_h(),
     }
 }
 
@@ -975,6 +1021,7 @@ pub fn album_display_order(lib: &Library, sort: usize) -> Vec<usize> {
 /// each artist header, and only the list has the accordion — in the grid and the compact list a
 /// tap opens the album's page, so `expanded` is ignored there.
 pub fn albums_build(lib: &Library, sort: usize, expanded: Option<usize>) -> AlbumsLayout {
+    let sort = album_sort_now(lib, sort);
     let flat = lib.albums_flat();
     let order = album_display_order(lib, sort);
     let grouped = sort == 0;
@@ -985,6 +1032,10 @@ pub fn albums_build(lib: &Library, sort: usize, expanded: Option<usize>) -> Albu
     if view == LibView::Grid {
         let mut line = [0usize; GRID_COLS];
         let mut n = 0usize;
+        // PINNED: the band covers the first ALBUM_HDR_H of the list, so the grid starts under it.
+        if sort == ALBUM_PINNED {
+            vy = ALBUM_HDR_H;
+        }
         for &fi in &order {
             let al = flat[fi];
             let new_group = grouped && prev_artist != Some(al.artist.as_str());
@@ -996,7 +1047,7 @@ pub fn albums_build(lib: &Library, sort: usize, expanded: Option<usize>) -> Albu
                         n: n as u8,
                     },
                 ));
-                vy += GRID_ROW_H;
+                vy += grid_row_h();
                 n = 0;
             }
             if new_group {
@@ -1015,7 +1066,7 @@ pub fn albums_build(lib: &Library, sort: usize, expanded: Option<usize>) -> Albu
                     n: n as u8,
                 },
             ));
-            vy += GRID_ROW_H;
+            vy += grid_row_h();
         }
         return AlbumsLayout {
             rows,
@@ -1097,6 +1148,9 @@ pub fn albums_hit_at(
     if y < top - hide || y >= LIST_BOTTOM {
         return None;
     }
+    if album_sort_now(lib, sort) == ALBUM_PINNED && y < top - hide + ALBUM_HDR_H {
+        return None;
+    }
     let cy = y - top + scroll_px.max(0);
     let layout = albums_build(lib, sort, expanded);
     let view = view_of(lib, Tab::Albums);
@@ -1160,6 +1214,11 @@ pub fn az_scroll_for(
                 AlbumsRow::Group { flat: fi } if key == AzKey::Artist => {
                     (az_letter(lib, key, &flat[*fi].artist) == letter).then_some(*vy)
                 }
+                // The packed looks have no headers: the line holding the artist's first cover.
+                AlbumsRow::Tiles { flats, n } if key == AzKey::Artist => flats[..*n as usize]
+                    .iter()
+                    .any(|fi| az_letter(lib, key, &flat[*fi].artist) == letter)
+                    .then_some(*vy),
                 AlbumsRow::Album { flat: fi, .. } if key == AzKey::AlbumName => {
                     (az_letter(lib, key, &flat[*fi].name) == letter).then_some(*vy)
                 }
@@ -1226,7 +1285,7 @@ pub fn az_key_for(tab: Tab, sort: usize, album_sort: usize) -> Option<AzKey> {
         // Indexes into ALBUM_SORTS: ARTIST groups by artist, A-Z is by album name, ADDED and YEAR
         // are not alphabetical.
         Tab::Albums => match album_sort {
-            0 => Some(AzKey::Artist),
+            0 | ALBUM_PACKED | ALBUM_PINNED | ALBUM_EDGE => Some(AzKey::Artist),
             1 => Some(AzKey::AlbumName),
             _ => None,
         },
@@ -1651,7 +1710,7 @@ fn art_stack(
     // Both squares at THUMB_PX — see the constant. The stack reads as two covers through the
     // OFFSET and the dimming of the one behind, not through drawing them at different sizes,
     // because any size but this one silently loses the real artwork.
-    let s = THUMB_PX;
+    let s = list_thumb_px();
     let top = cy - s / 2;
     if arts.len() == 1 {
         thumb(c, t, lib, id_at(0), arts[0], x, top, s, op);
@@ -1888,7 +1947,40 @@ pub const SORTS: [&str; 7] = [
 
 /// Albums-tab ORDER chip labels. Index 0 = the classic artist-grouped view (with section
 /// headers); 1-3 are flat lists in the named order. `album_display_order` implements each.
-pub const ALBUM_SORTS: [&str; 4] = ["ARTIST", "A-Z", "ADDED", "YEAR"];
+///
+/// 4-6 are artist order too, for the GRID only (owner, 2026-10-30): the covers packed with no
+/// header lines, so it reads like A-Z. PACKED leaves the artist to each tile's second line, PINNED
+/// keeps the top line's artist in a band over the grid, EDGE marks each artist's first cover with
+/// an accent bar and its name in accent. Appended rather than inserted so a saved index keeps its
+/// meaning; `next_album_sort` puts them after ARTIST on the chip.
+pub const ALBUM_SORTS: [&str; 7] = ["ARTIST", "A-Z", "ADDED", "YEAR", "PACKED", "PINNED", "EDGE"];
+pub const ALBUM_PACKED: usize = 4;
+pub const ALBUM_PINNED: usize = 5;
+pub const ALBUM_EDGE: usize = 6;
+
+/// The ORDER `sort` draws as now. The packed looks are grid layouts: in the list and the compact
+/// list they are plain ARTIST, headers and all.
+pub fn album_sort_now(lib: &Library, sort: usize) -> usize {
+    if sort >= ALBUM_PACKED && view_of(lib, Tab::Albums) != LibView::Grid {
+        0
+    } else {
+        sort.min(ALBUM_SORTS.len() - 1)
+    }
+}
+
+/// The ORDER chip's next step. The grid offers the packed looks straight after ARTIST.
+pub fn next_album_sort(lib: &Library, sort: usize) -> usize {
+    const GRID: [usize; 7] = [0, ALBUM_PACKED, ALBUM_PINNED, ALBUM_EDGE, 1, 2, 3];
+    const LIST: [usize; 4] = [0, 1, 2, 3];
+    let cycle: &[usize] = if view_of(lib, Tab::Albums) == LibView::Grid {
+        &GRID
+    } else {
+        &LIST
+    };
+    let cur = album_sort_now(lib, sort);
+    let i = cycle.iter().position(|v| *v == cur).unwrap_or(0);
+    cycle[(i + 1) % cycle.len()]
+}
 
 fn dur_secs(d: &str) -> i32 {
     let mut it = d.split(':');
@@ -2049,7 +2141,7 @@ pub fn controls_x1(search: bool) -> i32 {
 }
 
 pub fn hit_search(x: i32, y: i32) -> bool {
-    (34..91).contains(&y) && (SEARCH_X0..SEARCH_X1).contains(&x)
+    (SORT_HIT_TOP..crate::chrome::HEADER_BOTTOM).contains(&y) && (SEARCH_X0..SEARCH_X1).contains(&x)
 }
 
 pub fn render(
@@ -2074,7 +2166,7 @@ pub fn render(
     // Songs shows a tappable SORT chip; Albums an ORDER chip; the others show their count.
     let short = match tab {
         Tab::Songs => crate::i18n::text(SORTS[sort.min(SORTS.len() - 1)]),
-        Tab::Albums => crate::i18n::text(ALBUM_SORTS[album_sort.min(ALBUM_SORTS.len() - 1)]),
+        Tab::Albums => crate::i18n::text(ALBUM_SORTS[album_sort_now(lib, album_sort)]),
         _ => "",
     };
     let rc = match tab {
@@ -2152,8 +2244,8 @@ pub fn render(
                     sgn.album_id,
                     &sgn.art,
                     22,
-                    y + (rh - THUMB_PX) / 2,
-                    THUMB_PX,
+                    y + (rh - list_thumb_px()) / 2,
+                    list_thumb_px(),
                     artdim(t),
                 );
                 let tcol = if now { t.acc } else { t.ink };
@@ -2161,18 +2253,18 @@ pub fn render(
                 text::draw(
                     c,
                     f,
-                    78.0,
+                    78.0 + thumb_dx() as f32,
                     (cy - 2) as f32,
-                    &crate::widgets::fit(f, &sgn.title, &tst, 300.0),
+                    &crate::widgets::fit(f, &sgn.title, &tst, 300.0 - thumb_dx() as f32),
                     &tst,
                 );
                 let ast = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
                 text::draw(
                     c,
                     f,
-                    78.0,
+                    78.0 + thumb_dx() as f32,
                     (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
-                    &crate::widgets::fit(f, &sgn.artist, &ast, 320.0),
+                    &crate::widgets::fit(f, &sgn.artist, &ast, 320.0 - thumb_dx() as f32),
                     &ast,
                 );
                 if now {
@@ -2209,15 +2301,22 @@ pub fn render(
             let flat = lib.albums_flat();
             let layout = albums_build(lib, album_sort, album_expanded);
             let view = view_of(lib, Tab::Albums);
+            let sort_now = album_sort_now(lib, album_sort);
             c.set_clip_y(top - hide, LIST_BOTTOM);
             let mut rank = 0; // album display rank (skips headers/tracks) — matches the button cursor
+            // EDGE marks the first cover of each artist, so it carries the artist of the cover
+            // before, through the lines above the window as well.
+            let mut prev_artist: Option<&str> = None;
             for (vy, row) in &layout.rows {
                 let h = albums_row_h(row, view);
                 let y = top + *vy - scroll_px;
                 if y + h <= top - hide {
                     match row {
                         AlbumsRow::Album { .. } => rank += 1,
-                        AlbumsRow::Tiles { n, .. } => rank += *n as usize,
+                        AlbumsRow::Tiles { flats, n } => {
+                            rank += *n as usize;
+                            prev_artist = Some(flat[flats[*n as usize - 1]].artist.as_str());
+                        }
                         _ => {}
                     }
                     continue; // fully above the window
@@ -2241,7 +2340,22 @@ pub fn render(
                     AlbumsRow::Tiles { flats, n } => {
                         for (col, &fi) in flats[..n as usize].iter().enumerate() {
                             let al = flat[fi];
-                            let sub = if al.year.is_empty() {
+                            let edge = sort_now == ALBUM_EDGE
+                                && prev_artist != Some(al.artist.as_str());
+                            prev_artist = Some(al.artist.as_str());
+                            if edge {
+                                fill_rect(
+                                    c,
+                                    grid_x(col) - 7,
+                                    y + GRID_TILE_TOP,
+                                    3,
+                                    grid_tile_px(),
+                                    t.acc,
+                                );
+                            }
+                            let sub = if edge {
+                                al.artist.clone()
+                            } else if al.year.is_empty() {
                                 al.artist.clone()
                             } else {
                                 format!("{} · {}", al.year, al.artist)
@@ -2258,6 +2372,7 @@ pub fn render(
                                 &al.name,
                                 &sub,
                                 rank == current,
+                                edge,
                             );
                             rank += 1;
                         }
@@ -2271,7 +2386,7 @@ pub fn render(
                             swipe_reveal(c, t, f, y, COMPACT_ROW_H, dx, SwipeIntent::Queue);
                         }
                         // Grouped by artist, the header already names them; the other orders need it.
-                        let rest = if album_sort == 0 {
+                        let rest = if album_sort_now(lib, album_sort) == 0 {
                             ""
                         } else {
                             al.artist.as_str()
@@ -2300,8 +2415,8 @@ pub fn render(
                             al.album_id,
                             &al.art,
                             22,
-                            y + (ALBUM_ROW_H() - THUMB_PX) / 2,
-                            THUMB_PX,
+                            y + (ALBUM_ROW_H() - list_thumb_px()) / 2,
+                            list_thumb_px(),
                             artdim(t),
                         );
                         let tcol = if now { t.acc } else { t.ink };
@@ -2313,9 +2428,9 @@ pub fn render(
                         text::draw(
                             c,
                             f,
-                            80.0,
+                            80.0 + thumb_dx() as f32,
                             (cy - 2) as f32,
-                            &crate::widgets::fit(f, &al.name, &tst, 356.0),
+                            &crate::widgets::fit(f, &al.name, &tst, 356.0 - thumb_dx() as f32),
                             &tst,
                         );
                         let sub = if al.year.is_empty() {
@@ -2327,9 +2442,9 @@ pub fn render(
                         text::draw(
                             c,
                             f,
-                            80.0,
+                            80.0 + thumb_dx() as f32,
                             (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
-                            &crate::widgets::fit(f, &sub, &sst, 356.0),
+                            &crate::widgets::fit(f, &sub, &sst, 356.0 - thumb_dx() as f32),
                             &sst,
                         );
                         // Accordion caret (right): points down when open, right when closed.
@@ -2384,6 +2499,32 @@ pub fn render(
                     }
                 }
             }
+            // PINNED: the artist of the top line of covers, in a band the grid scrolls under.
+            if sort_now == ALBUM_PINNED {
+                let band_y = top - hide;
+                let under = layout.rows.iter().find_map(|(vy, row)| match row {
+                    AlbumsRow::Tiles { flats, .. }
+                        if top + vy - scroll_px + grid_row_h() > band_y + ALBUM_HDR_H + 40 =>
+                    {
+                        Some(flats[0])
+                    }
+                    _ => None,
+                });
+                if let Some(fi) = under {
+                    fill_rect(c, 0, band_y, W as i32 - az_w(), ALBUM_HDR_H, t.bg);
+                    let label = flat[fi].artist.to_uppercase();
+                    let gst = sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.16);
+                    text::draw(
+                        c,
+                        f,
+                        22.0,
+                        (band_y + 20) as f32,
+                        &crate::widgets::fit(f, &label, &gst, 436.0),
+                        &gst,
+                    );
+                    hline(c, band_y + ALBUM_HDR_H - 1, t.line);
+                }
+            }
             c.clear_clip();
             draw_empty_note(c, t, f, top, tab, lib);
             scrollbar(
@@ -2428,6 +2569,7 @@ pub fn render(
                             &ar.name,
                             &n_albums(ar.albums),
                             idx == current,
+                            false,
                         );
                     }
                     line += 1;
@@ -2454,7 +2596,7 @@ pub fn render(
                 art_stack(c, t, lib, 22, cy, &arts, &ar.album_ids);
                 let tcol = if now { t.acc } else { t.ink };
                 // Text clears the cover stack: it is 22 + STACK_OFFSET + THUMB_PX wide.
-                let tx = (22 + ART_STACK_W + 10) as f32;
+                let tx = (22 + ART_STACK_W + thumb_dx() + 10) as f32;
                 let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                 text::draw(
                     c,
@@ -2519,6 +2661,7 @@ pub fn render(
                             &pl.name,
                             &n_tracks(pl.tracks),
                             idx == current,
+                            false,
                         );
                     }
                     line += 1;
@@ -2541,7 +2684,16 @@ pub fn render(
                     fill_rect(c, 22, y + (rh - 48) / 2, 48, 48, t.panel);
                     icons::diamond(c, 46.0, cy as f32, 22.0, t.acc);
                 } else {
-                    playlist_thumb(c, t, lib, pl, 22, y + (rh - 48) / 2, 48, artdim(t));
+                    playlist_thumb(
+                        c,
+                        t,
+                        lib,
+                        pl,
+                        22,
+                        y + (rh - list_thumb_px()) / 2,
+                        list_thumb_px(),
+                        artdim(t),
+                    );
                 }
                 let tcol = if now { t.acc } else { t.ink };
                 // An EDITED tag (handoff 5g) sits before the chevron on a list changed on the
@@ -2570,9 +2722,9 @@ pub fn render(
                 text::draw(
                     c,
                     f,
-                    80.0,
+                    80.0 + thumb_dx() as f32,
                     (cy - 2) as f32,
-                    &crate::widgets::fit(f, &pl.name, &nst, 356.0 - tag_w),
+                    &crate::widgets::fit(f, &pl.name, &nst, 356.0 - tag_w - thumb_dx() as f32),
                     &nst,
                 );
                 // No "· YOURS" suffix. It used to mark Cinder's own playlists so the edit bar's
@@ -2589,9 +2741,9 @@ pub fn render(
                 text::draw(
                     c,
                     f,
-                    80.0,
+                    80.0 + thumb_dx() as f32,
                     (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
-                    &crate::widgets::fit(f, &sub, &sst, 356.0 - tag_w),
+                    &crate::widgets::fit(f, &sub, &sst, 356.0 - tag_w - thumb_dx() as f32),
                     &sst,
                 );
                 icons::chevron(c, 456.0, cy as f32, 14.0, t.faint);
@@ -3227,17 +3379,17 @@ pub fn artist_view(
                     al.album_id,
                     &al.art,
                     22,
-                    y + (ARTIST_ALBUM_RH() - THUMB_PX) / 2,
-                    THUMB_PX,
+                    y + (ARTIST_ALBUM_RH() - list_thumb_px()) / 2,
+                    list_thumb_px(),
                     artdim(t),
                 );
                 let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink);
                 text::draw(
                     c,
                     f,
-                    80.0,
+                    80.0 + thumb_dx() as f32,
                     (cy - 2) as f32,
-                    &crate::widgets::fit(f, &al.name, &tst, 340.0),
+                    &crate::widgets::fit(f, &al.name, &tst, 340.0 - thumb_dx() as f32),
                     &tst,
                 );
                 let sub = if al.year.is_empty() {
@@ -3253,9 +3405,9 @@ pub fn artist_view(
                 text::draw(
                     c,
                     f,
-                    80.0,
+                    80.0 + thumb_dx() as f32,
                     (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
-                    &crate::widgets::fit(f, &sub, &sst, sub_w),
+                    &crate::widgets::fit(f, &sub, &sst, sub_w - thumb_dx() as f32),
                     &sst,
                 );
                 if let Some(r) = rating {
@@ -3785,8 +3937,8 @@ pub fn playlist_view(
             sgn.album_id,
             &sgn.art,
             52,
-            y + (PLAYLIST_TRACK_RH() - THUMB_PX) / 2,
-            THUMB_PX,
+            y + (PLAYLIST_TRACK_RH() - list_thumb_px()) / 2,
+            list_thumb_px(),
             artdim(t),
         );
         let tcol = if now { t.acc } else { t.ink };
@@ -3794,18 +3946,18 @@ pub fn playlist_view(
         text::draw(
             c,
             f,
-            110.0,
+            110.0 + thumb_dx() as f32,
             (cy - 2) as f32,
-            &crate::widgets::fit(f, &sgn.title, &tst, 268.0),
+            &crate::widgets::fit(f, &sgn.title, &tst, 268.0 - thumb_dx() as f32),
             &tst,
         );
         let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
         text::draw(
             c,
             f,
-            110.0,
+            110.0 + thumb_dx() as f32,
             (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
-            &crate::widgets::fit(f, &sgn.artist, &ast, 268.0),
+            &crate::widgets::fit(f, &sgn.artist, &ast, 268.0 - thumb_dx() as f32),
             &ast,
         );
         // The duration moves left on a user playlist to make room for the × column.
@@ -3884,6 +4036,51 @@ mod tests {
             px, 0x00c8_0a0a,
             "the thumbnail's red, not a gradient: {px:06x}"
         );
+    }
+
+    /// Big view's list covers are 60 px, a size the art cache does not hold: the cached 48 is
+    /// scaled up and drawn, not the gradient, and with Big view off the 48 is drawn as it was.
+    #[test]
+    fn big_view_list_covers_scale_the_cached_thumbnail() {
+        let mut lib = Library::default();
+        lib.thumbs.insert(
+            5,
+            art::Image {
+                w: THUMB_PX as usize,
+                h: THUMB_PX as usize,
+                rgb: [200, 10, 10].repeat((THUMB_PX * THUMB_PX) as usize),
+            },
+        );
+        let t = crate::theme::Theme::day();
+        let red_at = |size: i32, x: usize, y: usize| {
+            let mut c = Canvas::new();
+            thumb(&mut c, &t, &lib, 5, "Mix", 22, 74, size, 1.0);
+            c.buf[y * crate::canvas::W + x]
+        };
+        assert_eq!(
+            list_thumb_px(),
+            THUMB_PX,
+            "Big view off: the cache's own size"
+        );
+        crate::scale::set_large(true);
+        assert_eq!(list_thumb_px(), 60);
+        assert_eq!(thumb_dx(), 12, "the text beside it moves by what it grew");
+        // 22 + 59 is the cover's last column, 74 + 59 its last row: both inside a 60 px cover only.
+        assert_eq!(
+            red_at(60, 22 + 59, 74 + 59),
+            0x00c8_0a0a,
+            "the thumbnail's red at 60 px"
+        );
+        assert_eq!(
+            red_at(60, 22 + 59, 74 + 59),
+            0x00c8_0a0a,
+            "…and again from the memo"
+        );
+        // Grid covers: 132 in Big view, three across and clear of the rail.
+        assert_eq!(grid_tile_px(), 132);
+        assert!(grid_x(grid_cols() - 1) + grid_tile_px() < W as i32 - AZ_W);
+        assert_eq!(grid_row_h(), GRID_ROW_H + 36);
+        crate::scale::set_large(false);
     }
 
     /// One of anything is singular (a Bookmark List of one song read "1 tracks"), and Chinese
@@ -4381,6 +4578,50 @@ mod tests {
         }
     }
 
+    /// The packed looks (owner, 2026-10-30): artist order with no header lines, so 9 albums by 3
+    /// artists fill 4 + 4 + 1. They are grid layouts — the list draws them as ARTIST — and the
+    /// chip offers them after ARTIST only in the grid.
+    #[test]
+    fn packed_orders_fill_every_line_and_exist_only_in_the_grid() {
+        let g = viewed(lib_grid(), Tab::Albums, LibView::Grid);
+        for sort in [ALBUM_PACKED, ALBUM_PINNED, ALBUM_EDGE] {
+            let shape: Vec<u8> = albums_build(&g, sort, None)
+                .rows
+                .iter()
+                .map(|(_, r)| match r {
+                    AlbumsRow::Tiles { n, .. } => *n,
+                    _ => 0,
+                })
+                .collect();
+            assert_eq!(shape, [4, 4, 1], "{}", ALBUM_SORTS[sort]);
+        }
+        let first_vy = |sort| albums_build(&g, sort, None).rows[0].0;
+        assert_eq!(first_vy(ALBUM_PACKED), 0);
+        assert_eq!(first_vy(ALBUM_PINNED), ALBUM_HDR_H, "the grid starts under the band");
+        // A tap on the band is not the cover scrolled under it.
+        let top = list_top(Tab::Albums);
+        assert_eq!(albums_hit_at(&g, ALBUM_PINNED, None, 40, 40, top + 5, 0), None);
+        assert!(albums_hit_at(&g, ALBUM_PACKED, None, 40, 40, top + 5, 0).is_some());
+        // The rail still jumps by artist: B's first cover is on the second line.
+        let b = az_scroll_for(Tab::Albums, &g, b'B', 0, ALBUM_PACKED, None);
+        assert_eq!(b, Some(grid_row_h().min(max_scroll_px(Tab::Albums, &g, ALBUM_PACKED, None))));
+
+        let l = viewed(lib_grid(), Tab::Albums, LibView::List);
+        assert_eq!(album_sort_now(&l, ALBUM_PINNED), 0, "the list draws it as ARTIST");
+        let walk = |lib: &Library| {
+            let mut s = 0;
+            let mut seen = vec![s];
+            for _ in 0..7 {
+                s = next_album_sort(lib, s);
+                seen.push(s);
+            }
+            seen
+        };
+        assert_eq!(walk(&g), [0, 4, 5, 6, 1, 2, 3, 0]);
+        assert_eq!(walk(&l), [0, 1, 2, 3, 0, 1, 2, 3]);
+        assert_eq!(next_album_sort(&l, ALBUM_EDGE), 1, "a saved grid look steps on from ARTIST");
+    }
+
     /// The grid under ARTIST order: a header per artist, a fresh line under each, four to a line.
     #[test]
     fn the_album_grid_packs_four_to_a_line_and_breaks_at_each_artist() {
@@ -4738,7 +4979,7 @@ mod tests {
             }
         }
         for (album_sort, name) in ALBUM_SORTS.iter().enumerate() {
-            let alphabetical = matches!(*name, "ARTIST" | "A-Z");
+            let alphabetical = matches!(*name, "ARTIST" | "A-Z" | "PACKED" | "PINNED" | "EDGE");
             assert_eq!(
                 az_key_for(Tab::Albums, 0, album_sort).is_some(),
                 alphabetical,
