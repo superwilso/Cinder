@@ -16,16 +16,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Fixed
-
-- **Installing on a player running Walkman One did nothing (#41).** Since 0.3.19 the installer
-  has picked the Walkman One package on those players, but that package was sealed with the
-  `nw-wm1a` key alone, and Walkman One's updater also wants Walkman One's own passkey. It refused
-  the package at its signature check and restarted after a few seconds, with no message. The
-  package is now sealed the way Walkman One's own packages are. *Device-verified* on a Walkman One
-  A55: the old package was refused (`failed to check md5 & signature`), the new one installed
-  Cinder (checklist 18.1).
-
 ## [0.3.22] — 2026-10-28
 
 ### Changed
@@ -51,6 +41,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Installing on a player running Walkman One did nothing (#41).** Since 0.3.19 the installer
+  has picked the Walkman One package on those players, but that package was sealed with the
+  `nw-wm1a` key alone, and Walkman One's updater also wants Walkman One's own passkey. It refused
+  the package at its signature check and restarted after a few seconds, with no message. The
+  package is now sealed the way Walkman One's own packages are. *Device-verified* on a Walkman One
+  A55: the old package was refused (`failed to check md5 & signature`), the new one installed
+  Cinder (checklist 18.1).
 - **A release cut after an rc kept the newest changelog entries under [Unreleased].** rc1 made
   the version's section and `tools/release.sh` then left later entries where they were, so
   v0.3.21's section was missing cinder-rescue's page, the full restore and the preload fix (now
