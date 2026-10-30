@@ -1367,6 +1367,8 @@ pub struct App {
     /// `apply_home`, or when the first library arrives if that is later (the place may name an
     /// album, which only resolves against a loaded library).
     home_last: Option<ShelfPin>,
+    /// The last of Library and Audiobooks you were on: what the Now Playing Library button opens.
+    browse_books: bool,
     /// `apply_home` asked for `home_last` before a library was there to resolve it against.
     home_pending: bool,
     /// The volume readout: 0 = Full (the pill), 1 = Minimal (a 3 px bar under the status bar).
@@ -1980,6 +1982,7 @@ impl Default for App {
             display_sel: 0,
             home_screen: HOME_LIBRARY,
             home_last: None,
+            browse_books: false,
             home_pending: false,
             volume_hud: 0,
             style: crate::style::Style::Cinder,
@@ -3553,6 +3556,29 @@ impl App {
     }
 
     fn push(&mut self, s: Screen) {
+        self.push_screen(s);
+        self.note_browse();
+    }
+
+    /// Remember whether Library or Audiobooks is the one you are on; other screens leave it be.
+    fn note_browse(&mut self) {
+        match self.current() {
+            Screen::Books => self.browse_books = true,
+            Screen::Library => self.browse_books = false,
+            _ => {}
+        }
+    }
+
+    /// The Now Playing Library button: the Audiobooks list when that is where you last browsed.
+    fn open_browse(&mut self) {
+        if self.browse_books && !self.lib.books.is_empty() {
+            self.open_books();
+        } else {
+            self.push(Screen::Library);
+        }
+    }
+
+    fn push_screen(&mut self, s: Screen) {
         if self.current() != s {
             self.boot_stock_armed = false; // never leave a restart armed across a screen change
                                            // Arriving at Up Next always shows you the current track. Scrolling hands the list to
@@ -3578,6 +3604,11 @@ impl App {
         }
     }
     fn pop(&mut self) {
+        self.pop_screen();
+        self.note_browse();
+    }
+
+    fn pop_screen(&mut self) {
         // Back inside the folder tree means UP ONE LEVEL, not "leave the library". Only at the
         // top of the tree does it pop the screen — which is the whole reason folder browse is its
         // own screen rather than a fifth Library tab.
@@ -3752,16 +3783,23 @@ impl App {
         self.push(Screen::Books);
     }
 
-    /// The Music side of the switch on the Audiobooks list: back to the Library when it is what
-    /// the list was opened from, else the Library in its place (a pinned list has no Library under
-    /// it).
+    /// The Books side of the switch on the Library: the Audiobooks list in the Library's place, so
+    /// Back leaves for where the Library was opened from.
+    fn library_to_books(&mut self) {
+        self.books_scroll_px = 0;
+        self.fling_v = 0.0;
+        if let Some(top) = self.stack.last_mut() {
+            *top = Screen::Books;
+        }
+        self.note_browse();
+    }
+
+    /// The Music side of the switch on the Audiobooks list: the Library in its place.
     fn books_to_music(&mut self) {
-        let n = self.stack.len();
-        if n >= 2 && self.stack[n - 2] == Screen::Library {
-            self.pop();
-        } else if let Some(top) = self.stack.last_mut() {
+        if let Some(top) = self.stack.last_mut() {
             *top = Screen::Library;
         }
+        self.note_browse();
     }
 
     /// Tap on the Audiobooks screen: a book plays from its place.
@@ -4683,7 +4721,7 @@ impl App {
                     Some(Hit::Repeat) => vec![Action::RepeatCycle],
                     Some(Hit::Toolbar(slot)) => {
                         match slot {
-                            0 => self.push(Screen::Library),
+                            0 => self.open_browse(),
                             1 if self.zappin_active => self.push(Screen::Zappin),
                             1 => self.push(Screen::UpNext),
                             2 => self.push(Screen::Bluetooth),
@@ -5654,7 +5692,7 @@ impl App {
             return vec![];
         }
         if !self.lib.books.is_empty() && crate::chrome::mode_hit(x, y) {
-            self.open_books();
+            self.library_to_books();
             return vec![];
         }
         if library::hit_view_button(x, y, self.search_enabled) {
@@ -17629,6 +17667,33 @@ mod tests {
                 "the switch left no history"
             );
         }
+    }
+
+    /// The Library button on Now Playing returns to whichever of Music and Books you last browsed.
+    #[test]
+    fn the_now_playing_library_button_opens_the_last_browsed_side() {
+        let tap_library_button = |a: &mut App| {
+            a.tap(
+                crate::now_playing::TOOLBAR_CX[0],
+                crate::now_playing::TOOLBAR_TOP + 20,
+            );
+        };
+        let mut a = unlocked();
+        a.set_library(books_lib(3));
+        tap_library_button(&mut a);
+        assert_eq!(a.current(), Screen::Library, "music is the default");
+        let (x0, x1) = crate::chrome::mode_zone();
+        a.tap((x0 + x1) / 2, 62);
+        assert_eq!(a.current(), Screen::Books);
+        a.press(Button::Back);
+        assert_eq!(a.current(), Screen::NowPlaying);
+        tap_library_button(&mut a);
+        assert_eq!(a.current(), Screen::Books, "back where the books were");
+        a.tap((x0 + x1) / 2, 62);
+        assert_eq!(a.current(), Screen::Library);
+        a.press(Button::Back);
+        tap_library_button(&mut a);
+        assert_eq!(a.current(), Screen::Library, "and back to music again");
     }
 
     /// Without audiobooks there is no switch: those taps are the title's and must open nothing.
