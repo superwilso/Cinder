@@ -20,8 +20,8 @@ upgtool    -m nw-a50  -e -o out/ WalkmanOne.UPG                   # the installe
 ```
 
 Every W1 package except the installer shares one decrypted header signature (`GC..yZ.$..+.~..#`).
-Cinder's own on-device UPG (built by `upgtool -w`) carries the same one, which is why the player
-accepts both.
+An earlier line here said a `-w` package is accepted by a Walkman One player. Sony's own updater
+says otherwise; see "Which packages Sony's updater accepts" below.
 
 ## The Windows side is all Sony
 
@@ -170,3 +170,34 @@ mode measured the same. Everything that measures different is a runtime table lo
    library `c8de2a65…` (stock), `boot_log.txt` "Normal (no tuning) mode initialized". The original
    note: the Plus-mode gap on W1, if anyone wants it: point `cinder-signature.sh` at W1's source copy
    (`/system/etc/.mod/adler/normal_nt/`) as well as the live library.
+
+## Which packages Sony's updater accepts (2026-10-30, issue #41)
+
+Measured with Sony's own `fwpchk` (`675d6700…`, byte-identical in the stock and W1 system images
+and on the A55), run on a stock A55 with its two `/dev/icx_nvp/0xx` path strings patched to read
+the KAS from a file. `-c` is exactly the updater's "CHECK MD5 & SIGNATURE" step.
+
+| KAS in node 11 | stock nw-a50 package | Cinder nw-wm1a package (plain `upgtool`) | `-w` package (MrWalkman's WM1Z tuning, Wampy's W1 build) |
+|---|---|---|---|
+| `dd49de9d…` (stock A50) | OK | Invalid signature | Invalid signature |
+| `e8d171a5…` (W1, all three `conf_*` images and the 09-21 player) | Invalid signature | **OK** | **Invalid signature** |
+| `308212ff…` (computed: what a stock-passkey `fwpchk` needs to open `-w` packages) | Invalid signature | Invalid signature | OK |
+
+* The `-w` passkey/IV only decrypt the KAS into key+sig; `fwpchk` always uses the stock
+  `…488c`/`…543a`. Nothing in W1 patches `fwpchk` (not the ramdisk, not `boot_complete.sh`), and
+  `308212ff…` appears in no W1 image. So on a W1 player reporting `e8d171a5…`, `-w` packages are
+  refused. This matches the 09-28 WM1Z tuning flash dropped in 4.5 s on the owner's W1 player.
+* Cinder's plain nw-wm1a package (`b98faf64…`, v0.3.22-rc1/rc2) passes `-c`, `-0 update.sh`,
+  `-1 md5.txt` and `-c -1 exec` under `e8d171a5…`. If the updater finds it, our first script runs
+  and draws "Contents partition: …" on screen.
+* The `0x80` flag of the `fc 00 04 'dbmn'` command is refused on every A50 kernel: the gadget
+  handler calls `check_command(…, 12, DATA_DIR_NONE, mask 0x7c, …)`, so only CDB bytes 2-6 may be
+  nonzero (`fsg_main_thread` @ `0xc053015c`). The `0x00` retry is the normal path. A match on
+  `dbmn` flushes and calls `ext_access[1](2)`.
+* The updater mounts `/contents` with `mount_partition contents` (plain `vfat`, no fsck), the
+  same binary a normal boot uses. `linear_contents` only matters with a second eMMC (`mmcblk3`).
+
+**What #41's symptom (a few seconds, no text, no `exec.txt`) still allows:** the updater stopped
+at the fup-flag check, `/contents` mount, or "UPG not found". Not the key. The updater's own
+`/var/update.log` names the step and survives the reboot; Walkman One's undocumented
+`ADB=1` line in `CFW/settings.txt` turns adb on without flashing.
