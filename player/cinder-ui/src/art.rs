@@ -436,35 +436,81 @@ pub fn block_cached(
     let key: GradKey = (name_key(name), w, (op * 1000.0) as u16, bg);
     GRAD_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        // EVICT THE OLDEST HALF, DON'T EMPTY THE CACHE. This used to `clear()` on overflow, which
-        // threw away the entries for the rows CURRENTLY ON SCREEN along with everything else —
-        // roughly 14 of them, all of which the very next frame had to bake again. Scrolling steadily
-        // past 64 distinct album names triggered that, so it recurred every 64 rows.
-        //
-        // Each entry carries the tick it was last drawn at, so the rows on screen are by definition
-        // the most recently used and survive; what gets dropped is what has scrolled away. The cap
-        // is unchanged and is still the contract — this only decides WHICH entries live.
-        //
-        // The sort is over at most GRAD_CACHE_MAX (64) keys and runs once per 32 inserts, which is
-        // nothing against a bake (~85 us for a 48x48).
-        if cache.len() >= GRAD_CACHE_MAX && !cache.contains_key(&key) {
-            let mut by_age: Vec<(u64, GradKey)> = cache.iter().map(|(k, v)| (v.0, *k)).collect();
-            by_age.sort_unstable();
-            for (_, k) in by_age.iter().take(GRAD_CACHE_MAX / 2) {
-                cache.remove(k);
-            }
+        let img = cached(&mut cache, key, || gradient_image(t, w, h, name, op));
+        // The opacity is already baked in, so blit at 1.0 — blending again would darken it twice.
+        draw_image(c, t, x0, y0, img, 1.0);
+    });
+}
+
+/// `key` from a tick-evicted image cache, baked with `make` on a miss.
+///
+/// EVICT THE OLDEST HALF, DON'T EMPTY THE CACHE. This used to `clear()` on overflow, which threw
+/// away the entries for the rows CURRENTLY ON SCREEN along with everything else — roughly 14 of
+/// them, all of which the very next frame had to bake again. Scrolling steadily past 64 distinct
+/// album names triggered that, so it recurred every 64 rows.
+///
+/// Each entry carries the tick it was last drawn at, so the rows on screen are by definition the
+/// most recently used and survive; what gets dropped is what has scrolled away. The cap is
+/// unchanged and is still the contract — this only decides WHICH entries live.
+///
+/// The sort is over at most GRAD_CACHE_MAX (64) keys and runs once per 32 inserts, which is
+/// nothing against a bake (~85 us for a 48x48).
+fn cached<K: std::hash::Hash + Eq + Ord + Copy>(
+    cache: &mut std::collections::HashMap<K, (u64, Image)>,
+    key: K,
+    make: impl FnOnce() -> Image,
+) -> &Image {
+    if cache.len() >= GRAD_CACHE_MAX && !cache.contains_key(&key) {
+        let mut by_age: Vec<(u64, K)> = cache.iter().map(|(k, v)| (v.0, *k)).collect();
+        by_age.sort_unstable();
+        for (_, k) in by_age.iter().take(GRAD_CACHE_MAX / 2) {
+            cache.remove(k);
         }
-        let tick = GRAD_TICK.with(|t| {
-            let n = t.get() + 1;
-            t.set(n);
-            n
+    }
+    let tick = GRAD_TICK.with(|t| {
+        let n = t.get() + 1;
+        t.set(n);
+        n
+    });
+    let e = cache.entry(key).or_insert_with(|| (tick, make()));
+    e.0 = tick; // touch: this key is in the visible set as of this frame
+    &e.1
+}
+
+/// Draw `src` at `edge` × `edge`, resampled ONCE per (`id`, edge, picture) and kept, so a row drawn
+/// every frame pays a blit and not a resample. Big view's list covers are the case: the art cache
+/// holds 48 px thumbnails and Big view's rows want 60. Same cap and eviction as the gradients.
+///
+/// The picture is in the key (a sample of its bytes) because an album's cover can be rebuilt under
+/// the same id; without it the old scaled copy would stay until it aged out.
+pub fn scaled_cached(
+    c: &mut Canvas,
+    t: &Theme,
+    x0: i32,
+    y0: i32,
+    id: i64,
+    src: &Image,
+    edge: i32,
+    opacity: f32,
+) {
+    if edge <= 0 || edge > CACHE_MAX_EDGE {
+        let e = edge.max(0) as usize;
+        draw_image(c, t, x0, y0, &src.scaled_to(e, e), opacity);
+        return;
+    }
+    let sample = src
+        .rgb
+        .iter()
+        .step_by(7)
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ *b as u64).wrapping_mul(0x100_0000_01b3)
         });
-        let e = cache
-            .entry(key)
-            .or_insert_with(|| (tick, gradient_image(t, w, h, name, op)));
-        e.0 = tick; // touch: this key is in the visible set as of this frame
-                    // The opacity is already baked in, so blit at 1.0 — blending again would darken it twice.
-        draw_image(c, t, x0, y0, &e.1, 1.0);
+    let key: ScaleKey = (id, edge, src.w, sample);
+    SCALED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let e = edge as usize;
+        let img = cached(&mut cache, key, || src.scaled_to(e, e));
+        draw_image(c, t, x0, y0, img, opacity);
     });
 }
 
@@ -515,9 +561,12 @@ thread_local! {
 /// (name hash, edge, opacity ×1000, background) — everything the baked pixels depend on.
 type GradKey = (u32, i32, u16, u32);
 
-/// Largest square this will cache. 96×96×3 B is 27 KB; 128 is the ceiling for anything that is
-/// drawn per frame on this device. Bigger art is a real cover's job.
-const CACHE_MAX_EDGE: i32 = 128;
+/// (album id, edge, source edge, sample of the source's bytes) — see `scaled_cached`.
+type ScaleKey = (i64, i32, usize, u64);
+
+/// Largest square this will cache. 96×96×3 B is 27 KB; 132 (Big view's grid cover, 52 KB) is the
+/// ceiling for anything that is drawn per frame on this device. Bigger art is a real cover's job.
+const CACHE_MAX_EDGE: i32 = 132;
 
 /// Cap on cached swatches. A 48×48 entry is ~6.9 KB and a 96×96 one ~27 KB, so 64 entries is
 /// bounded at a few hundred KB — deliberately modest, for the allocator reason above. ~13 rows are
@@ -528,6 +577,9 @@ thread_local! {
     /// Value is `(last-used tick, baked pixels)` — the tick is what makes eviction keep the
     /// rows that are actually on screen. See `block_cached`.
     static GRAD_CACHE: std::cell::RefCell<std::collections::HashMap<GradKey, (u64, Image)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// `scaled_cached`'s entries: 64 at 60 px is ~0.7 MB.
+    static SCALED: std::cell::RefCell<std::collections::HashMap<ScaleKey, (u64, Image)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Monotonic per-thread counter for the above. Wrapping is not a concern: at one tick per
     /// cached swatch per frame it would take longer than the device's battery lasts by a wide

@@ -54,6 +54,8 @@ measure.
 | Menu | Its rows were squeezed to fit the glass, so Big view left them at 63 px. Now they keep the full 80, START ON follows them with its chips two to a line ("Now Playing" was cut four across), and the page scrolls under the fixed strip. |
 | Display | Scrolls (the Style chips ran off the bottom). |
 | Bluetooth | Shows four paired devices instead of five (four Big view rows are the height of five), so THIS DEVICE no longer runs into the footer; the NFC hint gets its own line above RECEIVER MODE. |
+| Lists with covers | Albums, Artists, Playlists, an artist's albums, a playlist's songs and Up Next draw their covers at 60 px instead of 48, and the text beside them moves over by the difference. The art cache keeps only 48 px thumbnails, so each is scaled up once and kept (64 at most, about 0.7 MB). *Device-unverified.* |
+| Grid covers | The Albums, Artists and Playlists grids draw covers at 132 px instead of 96, three across, scaled once from the 96 px cover and kept. *Device-unverified.* |
 | Lock | The footer splits at its last " · " onto two lines whenever it does not fit, at any size. |
 | Intro pages | Each key sits above its description instead of in a 130 px column beside it. |
 | Soundscapes | The level's name sits above a full-width slider. |

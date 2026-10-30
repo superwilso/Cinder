@@ -1972,6 +1972,63 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     true,
                 )
             }),
+            ("library_albums_grid_packed", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Albums, library::LibView::Grid);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    99,
+                    0,
+                    0,
+                    library::ALBUM_PACKED,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    true,
+                )
+            }),
+            ("library_albums_grid_pinned", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Albums, library::LibView::Grid);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    99,
+                    0,
+                    0,
+                    library::ALBUM_PINNED,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    true,
+                )
+            }),
+            ("library_albums_grid_edge", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Albums, library::LibView::Grid);
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    99,
+                    0,
+                    0,
+                    library::ALBUM_EDGE,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    true,
+                )
+            }),
             ("library_albums_compact", &|c: &mut Canvas| {
                 let l = with_view(&lib, Tab::Albums, library::LibView::Compact);
                 library::render(

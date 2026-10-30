@@ -783,8 +783,8 @@ fn track_row(
         song.album_id,
         &song.art,
         46,
-        y + (RH() - 48) / 2,
-        48,
+        y + (RH() - crate::library::list_thumb_px()) / 2,
+        crate::library::list_thumb_px(),
         dim,
     );
     let title_col = if now {
@@ -810,9 +810,9 @@ fn track_row(
     text::draw(
         c,
         f,
-        100.0,
+        100.0 + crate::library::thumb_dx() as f32,
         cy - 2.0,
-        &crate::widgets::fit(f, &song.title, &tst, tw),
+        &crate::widgets::fit(f, &song.title, &tst, tw - crate::library::thumb_dx() as f32),
         &tst,
     );
     let ast = sty(
@@ -825,9 +825,14 @@ fn track_row(
     text::draw(
         c,
         f,
-        100.0,
+        100.0 + crate::library::thumb_dx() as f32,
         cy + 16.0,
-        &crate::widgets::fit(f, &song.artist, &ast, aw),
+        &crate::widgets::fit(
+            f,
+            &song.artist,
+            &ast,
+            aw - crate::library::thumb_dx() as f32,
+        ),
         &ast,
     );
     right(
