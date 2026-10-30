@@ -205,6 +205,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Bluetooth headphones do not reconnect while it is on." => Some("开启时不会重新连接蓝牙耳机。"),
         "Bluetooth is off" => Some("蓝牙已关闭"),
         "Bluetooth is off. Turn it on first." => Some("蓝牙已关闭，请先开启。"),
+        "Books" => Some("图书"),
         "Boot to stock" => Some("启动原厂播放器"),
         "Boot to stock, in Settings" => Some("设置中的“启动原厂播放器”"),
         "Brightness" => Some("亮度"),

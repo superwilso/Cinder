@@ -57,6 +57,194 @@ pub fn clean_part(raw: &str) -> String {
     }
 }
 
+/// Letter plus a separate accent mark, and the one letter they make: the Latin letters of Latin-1
+/// and Latin Extended-A. Taggers on macOS write names in this decomposed form.
+const COMPOSED: [(char, u32, char); 161] = [
+    ('A', 0x300, '\u{c0}'),
+    ('A', 0x301, '\u{c1}'),
+    ('A', 0x302, '\u{c2}'),
+    ('A', 0x303, '\u{c3}'),
+    ('A', 0x308, '\u{c4}'),
+    ('A', 0x30a, '\u{c5}'),
+    ('C', 0x327, '\u{c7}'),
+    ('E', 0x300, '\u{c8}'),
+    ('E', 0x301, '\u{c9}'),
+    ('E', 0x302, '\u{ca}'),
+    ('E', 0x308, '\u{cb}'),
+    ('I', 0x300, '\u{cc}'),
+    ('I', 0x301, '\u{cd}'),
+    ('I', 0x302, '\u{ce}'),
+    ('I', 0x308, '\u{cf}'),
+    ('N', 0x303, '\u{d1}'),
+    ('O', 0x300, '\u{d2}'),
+    ('O', 0x301, '\u{d3}'),
+    ('O', 0x302, '\u{d4}'),
+    ('O', 0x303, '\u{d5}'),
+    ('O', 0x308, '\u{d6}'),
+    ('U', 0x300, '\u{d9}'),
+    ('U', 0x301, '\u{da}'),
+    ('U', 0x302, '\u{db}'),
+    ('U', 0x308, '\u{dc}'),
+    ('Y', 0x301, '\u{dd}'),
+    ('a', 0x300, '\u{e0}'),
+    ('a', 0x301, '\u{e1}'),
+    ('a', 0x302, '\u{e2}'),
+    ('a', 0x303, '\u{e3}'),
+    ('a', 0x308, '\u{e4}'),
+    ('a', 0x30a, '\u{e5}'),
+    ('c', 0x327, '\u{e7}'),
+    ('e', 0x300, '\u{e8}'),
+    ('e', 0x301, '\u{e9}'),
+    ('e', 0x302, '\u{ea}'),
+    ('e', 0x308, '\u{eb}'),
+    ('i', 0x300, '\u{ec}'),
+    ('i', 0x301, '\u{ed}'),
+    ('i', 0x302, '\u{ee}'),
+    ('i', 0x308, '\u{ef}'),
+    ('n', 0x303, '\u{f1}'),
+    ('o', 0x300, '\u{f2}'),
+    ('o', 0x301, '\u{f3}'),
+    ('o', 0x302, '\u{f4}'),
+    ('o', 0x303, '\u{f5}'),
+    ('o', 0x308, '\u{f6}'),
+    ('u', 0x300, '\u{f9}'),
+    ('u', 0x301, '\u{fa}'),
+    ('u', 0x302, '\u{fb}'),
+    ('u', 0x308, '\u{fc}'),
+    ('y', 0x301, '\u{fd}'),
+    ('y', 0x308, '\u{ff}'),
+    ('A', 0x304, '\u{100}'),
+    ('a', 0x304, '\u{101}'),
+    ('A', 0x306, '\u{102}'),
+    ('a', 0x306, '\u{103}'),
+    ('A', 0x328, '\u{104}'),
+    ('a', 0x328, '\u{105}'),
+    ('C', 0x301, '\u{106}'),
+    ('c', 0x301, '\u{107}'),
+    ('C', 0x302, '\u{108}'),
+    ('c', 0x302, '\u{109}'),
+    ('C', 0x307, '\u{10a}'),
+    ('c', 0x307, '\u{10b}'),
+    ('C', 0x30c, '\u{10c}'),
+    ('c', 0x30c, '\u{10d}'),
+    ('D', 0x30c, '\u{10e}'),
+    ('d', 0x30c, '\u{10f}'),
+    ('E', 0x304, '\u{112}'),
+    ('e', 0x304, '\u{113}'),
+    ('E', 0x306, '\u{114}'),
+    ('e', 0x306, '\u{115}'),
+    ('E', 0x307, '\u{116}'),
+    ('e', 0x307, '\u{117}'),
+    ('E', 0x328, '\u{118}'),
+    ('e', 0x328, '\u{119}'),
+    ('E', 0x30c, '\u{11a}'),
+    ('e', 0x30c, '\u{11b}'),
+    ('G', 0x302, '\u{11c}'),
+    ('g', 0x302, '\u{11d}'),
+    ('G', 0x306, '\u{11e}'),
+    ('g', 0x306, '\u{11f}'),
+    ('G', 0x307, '\u{120}'),
+    ('g', 0x307, '\u{121}'),
+    ('G', 0x327, '\u{122}'),
+    ('g', 0x327, '\u{123}'),
+    ('H', 0x302, '\u{124}'),
+    ('h', 0x302, '\u{125}'),
+    ('I', 0x303, '\u{128}'),
+    ('i', 0x303, '\u{129}'),
+    ('I', 0x304, '\u{12a}'),
+    ('i', 0x304, '\u{12b}'),
+    ('I', 0x306, '\u{12c}'),
+    ('i', 0x306, '\u{12d}'),
+    ('I', 0x328, '\u{12e}'),
+    ('i', 0x328, '\u{12f}'),
+    ('I', 0x307, '\u{130}'),
+    ('J', 0x302, '\u{134}'),
+    ('j', 0x302, '\u{135}'),
+    ('K', 0x327, '\u{136}'),
+    ('k', 0x327, '\u{137}'),
+    ('L', 0x301, '\u{139}'),
+    ('l', 0x301, '\u{13a}'),
+    ('L', 0x327, '\u{13b}'),
+    ('l', 0x327, '\u{13c}'),
+    ('L', 0x30c, '\u{13d}'),
+    ('l', 0x30c, '\u{13e}'),
+    ('N', 0x301, '\u{143}'),
+    ('n', 0x301, '\u{144}'),
+    ('N', 0x327, '\u{145}'),
+    ('n', 0x327, '\u{146}'),
+    ('N', 0x30c, '\u{147}'),
+    ('n', 0x30c, '\u{148}'),
+    ('O', 0x304, '\u{14c}'),
+    ('o', 0x304, '\u{14d}'),
+    ('O', 0x306, '\u{14e}'),
+    ('o', 0x306, '\u{14f}'),
+    ('O', 0x30b, '\u{150}'),
+    ('o', 0x30b, '\u{151}'),
+    ('R', 0x301, '\u{154}'),
+    ('r', 0x301, '\u{155}'),
+    ('R', 0x327, '\u{156}'),
+    ('r', 0x327, '\u{157}'),
+    ('R', 0x30c, '\u{158}'),
+    ('r', 0x30c, '\u{159}'),
+    ('S', 0x301, '\u{15a}'),
+    ('s', 0x301, '\u{15b}'),
+    ('S', 0x302, '\u{15c}'),
+    ('s', 0x302, '\u{15d}'),
+    ('S', 0x327, '\u{15e}'),
+    ('s', 0x327, '\u{15f}'),
+    ('S', 0x30c, '\u{160}'),
+    ('s', 0x30c, '\u{161}'),
+    ('T', 0x327, '\u{162}'),
+    ('t', 0x327, '\u{163}'),
+    ('T', 0x30c, '\u{164}'),
+    ('t', 0x30c, '\u{165}'),
+    ('U', 0x303, '\u{168}'),
+    ('u', 0x303, '\u{169}'),
+    ('U', 0x304, '\u{16a}'),
+    ('u', 0x304, '\u{16b}'),
+    ('U', 0x306, '\u{16c}'),
+    ('u', 0x306, '\u{16d}'),
+    ('U', 0x30a, '\u{16e}'),
+    ('u', 0x30a, '\u{16f}'),
+    ('U', 0x30b, '\u{170}'),
+    ('u', 0x30b, '\u{171}'),
+    ('U', 0x328, '\u{172}'),
+    ('u', 0x328, '\u{173}'),
+    ('W', 0x302, '\u{174}'),
+    ('w', 0x302, '\u{175}'),
+    ('Y', 0x302, '\u{176}'),
+    ('y', 0x302, '\u{177}'),
+    ('Y', 0x308, '\u{178}'),
+    ('Z', 0x301, '\u{179}'),
+    ('z', 0x301, '\u{17a}'),
+    ('Z', 0x307, '\u{17b}'),
+    ('z', 0x307, '\u{17c}'),
+    ('Z', 0x30c, '\u{17d}'),
+    ('z', 0x30c, '\u{17e}'),
+];
+
+/// `s` with each letter followed by an accent mark replaced by the one letter. The font draws a
+/// separate mark after its letter, so "für" came out as "fu¨r". A mark with nothing to join stays.
+fn compose(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let joined = out.chars().last().and_then(|last| {
+            COMPOSED
+                .iter()
+                .find(|(b, m, _)| *b == last && *m == c as u32)
+                .map(|(_, _, one)| *one)
+        });
+        match joined {
+            Some(one) => {
+                out.pop();
+                out.push(one);
+            }
+            None => out.push(c),
+        }
+    }
+    out
+}
+
 /// Collects what a tag says and turns it into a [`Series`].
 #[derive(Default)]
 struct Found {
@@ -68,7 +256,7 @@ impl Found {
     fn set_name(&mut self, v: &str) {
         let v = v.trim();
         if !v.is_empty() && self.name.is_none() {
-            self.name = Some(v.to_string());
+            self.name = Some(compose(v));
         }
     }
     fn set_part(&mut self, v: &str) {
@@ -472,6 +660,43 @@ mod tests {
     }
     fn parse(bytes: Vec<u8>) -> Option<Series> {
         read(&mut Cursor::new(bytes))
+    }
+
+    #[test]
+    fn a_series_name_with_a_separate_umlaut_mark_is_read_as_the_one_letter() {
+        // "Für Elise" as macOS taggers write it: u, then U+0308. The font draws the mark after the
+        // letter, so it printed as "fu¨r".
+        let t = id3(
+            4,
+            &[frame(
+                4,
+                "TXXX",
+                &txxx(3, "series", "Fu\u{308}r Elise \u{c4}rzte A\u{308}"),
+            )],
+        );
+        assert_eq!(parse(t), series("Für Elise Ärzte Ä", ""));
+        let mut f = Found::default();
+        f.set_name("Cre\u{300}me bru\u{302}le\u{301}e n\u{303} c\u{327} s\u{30c} a\u{30a}");
+        assert_eq!(f.name.as_deref(), Some("Crème brûlée ñ ç š å"));
+        let mut g = Found::default();
+        g.set_name("x\u{308} \u{308}");
+        assert_eq!(
+            g.name.as_deref(),
+            Some("x\u{308} \u{308}"),
+            "a mark with no composed form, or no letter, stays"
+        );
+    }
+
+    /// The double acute (Hungarian), breve and dot above joined too, not only the marks a French or
+    /// German name needs.
+    #[test]
+    fn a_series_name_with_a_double_acute_breve_or_dot_above_is_read_as_the_one_letter() {
+        let mut f = Found::default();
+        f.set_name(
+            "o\u{30b} u\u{30b} O\u{30b} U\u{30b} a\u{306} g\u{306} U\u{306} \
+             c\u{307} e\u{307} I\u{307} z\u{307} Z\u{307}",
+        );
+        assert_eq!(f.name.as_deref(), Some("ő ű Ő Ű ă ğ Ŭ ċ ė İ ż Ż"));
     }
 
     #[test]
