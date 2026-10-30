@@ -846,6 +846,7 @@ fn pinnable(s: Screen) -> bool {
             | Screen::Album
             | Screen::Artist
             | Screen::Playlist
+            | Screen::Books
             | Screen::UpNext
             | Screen::Eq
             | Screen::Sound
@@ -931,6 +932,7 @@ fn screen_token(s: Screen) -> &'static str {
         Screen::Album => "album",
         Screen::Artist => "artist",
         Screen::Playlist => "playlist",
+        Screen::Books => "books",
         Screen::UpNext => "queue",
         Screen::Eq => "eq",
         Screen::Tone => "tone",
@@ -955,6 +957,7 @@ fn screen_from_token(t: &str) -> Option<Screen> {
         "album" => Screen::Album,
         "artist" => Screen::Artist,
         "playlist" => Screen::Playlist,
+        "books" => Screen::Books,
         "queue" => Screen::UpNext,
         "eq" => Screen::Eq,
         "sound" => Screen::Sound,
@@ -1364,6 +1367,8 @@ pub struct App {
     /// `apply_home`, or when the first library arrives if that is later (the place may name an
     /// album, which only resolves against a loaded library).
     home_last: Option<ShelfPin>,
+    /// The last of Library and Audiobooks you were on: what the Now Playing Library button opens.
+    browse_books: bool,
     /// `apply_home` asked for `home_last` before a library was there to resolve it against.
     home_pending: bool,
     /// The volume readout: 0 = Full (the pill), 1 = Minimal (a 3 px bar under the status bar).
@@ -1977,6 +1982,7 @@ impl Default for App {
             display_sel: 0,
             home_screen: HOME_LIBRARY,
             home_last: None,
+            browse_books: false,
             home_pending: false,
             volume_hud: 0,
             style: crate::style::Style::Cinder,
@@ -2826,6 +2832,10 @@ impl App {
                 ),
                 None => (crate::i18n::text("Playlist").into(), String::new()),
             },
+            Screen::Books => (
+                crate::i18n::text("Audiobooks").into(),
+                crate::audiobooks::subtitle(&self.lib),
+            ),
             s => (screen_title(s).into(), String::new()),
         }
     }
@@ -3546,6 +3556,29 @@ impl App {
     }
 
     fn push(&mut self, s: Screen) {
+        self.push_screen(s);
+        self.note_browse();
+    }
+
+    /// Remember whether Library or Audiobooks is the one you are on; other screens leave it be.
+    fn note_browse(&mut self) {
+        match self.current() {
+            Screen::Books => self.browse_books = true,
+            Screen::Library => self.browse_books = false,
+            _ => {}
+        }
+    }
+
+    /// The Now Playing Library button: the Audiobooks list when that is where you last browsed.
+    fn open_browse(&mut self) {
+        if self.browse_books && !self.lib.books.is_empty() {
+            self.open_books();
+        } else {
+            self.push(Screen::Library);
+        }
+    }
+
+    fn push_screen(&mut self, s: Screen) {
         if self.current() != s {
             self.boot_stock_armed = false; // never leave a restart armed across a screen change
                                            // Arriving at Up Next always shows you the current track. Scrolling hands the list to
@@ -3571,6 +3604,11 @@ impl App {
         }
     }
     fn pop(&mut self) {
+        self.pop_screen();
+        self.note_browse();
+    }
+
+    fn pop_screen(&mut self) {
         // Back inside the folder tree means UP ONE LEVEL, not "leave the library". Only at the
         // top of the tree does it pop the screen — which is the whole reason folder browse is its
         // own screen rather than a fifth Library tab.
@@ -3743,6 +3781,25 @@ impl App {
         self.books_scroll_px = 0;
         self.fling_v = 0.0;
         self.push(Screen::Books);
+    }
+
+    /// The Books side of the switch on the Library: the Audiobooks list in the Library's place, so
+    /// Back leaves for where the Library was opened from.
+    fn library_to_books(&mut self) {
+        self.books_scroll_px = 0;
+        self.fling_v = 0.0;
+        if let Some(top) = self.stack.last_mut() {
+            *top = Screen::Books;
+        }
+        self.note_browse();
+    }
+
+    /// The Music side of the switch on the Audiobooks list: the Library in its place.
+    fn books_to_music(&mut self) {
+        if let Some(top) = self.stack.last_mut() {
+            *top = Screen::Library;
+        }
+        self.note_browse();
     }
 
     /// Tap on the Audiobooks screen: a book plays from its place.
@@ -4543,13 +4600,7 @@ impl App {
         // The Library's SORT/ORDER chip claims the strip's bottom edge above it — see
         // `library::SORT_HIT_TOP`. Only there: `tap_library` handles it.
         let sort_chip = self.current() == Screen::Library
-            && library::hit_sort_chip(
-                self.lib_tab,
-                x,
-                y,
-                self.search_enabled,
-                !self.lib.books.is_empty(),
-            );
+            && library::hit_sort_chip(self.lib_tab, x, y, self.search_enabled);
         match crate::chrome::status_hit(x, y).filter(|_| !sort_chip && !self.landscape()) {
             Some(crate::chrome::StatusTap::Shelf) => {
                 self.open_shelf();
@@ -4670,7 +4721,7 @@ impl App {
                     Some(Hit::Repeat) => vec![Action::RepeatCycle],
                     Some(Hit::Toolbar(slot)) => {
                         match slot {
-                            0 => self.push(Screen::Library),
+                            0 => self.open_browse(),
                             1 if self.zappin_active => self.push(Screen::Zappin),
                             1 => self.push(Screen::UpNext),
                             2 => self.push(Screen::Bluetooth),
@@ -4726,7 +4777,13 @@ impl App {
                 _ => vec![],
             },
             Screen::Folders => self.tap_folders(y),
-            Screen::Books => self.tap_books(y),
+            Screen::Books => {
+                if !self.lib.books.is_empty() && crate::chrome::mode_hit(x, y) {
+                    self.books_to_music();
+                    return vec![];
+                }
+                self.tap_books(y)
+            }
             Screen::SensMe => self.tap_sensme(x, y),
             Screen::Library => self.tap_library(x, y),
             Screen::Album => {
@@ -5634,8 +5691,8 @@ impl App {
             self.open_search();
             return vec![];
         }
-        if library::hit_books_button(x, y, self.search_enabled, !self.lib.books.is_empty()) {
-            self.open_books();
+        if !self.lib.books.is_empty() && crate::chrome::mode_hit(x, y) {
+            self.library_to_books();
             return vec![];
         }
         if library::hit_view_button(x, y, self.search_enabled) {
@@ -5644,13 +5701,7 @@ impl App {
         }
         // SORT/ORDER chip in the header's right slot (right of the back chevron's x<80 band).
         // Songs cycles the SORT chip; Albums cycles the ORDER chip. Both reset the list position.
-        if library::hit_sort_chip(
-            self.lib_tab,
-            x,
-            y,
-            self.search_enabled,
-            !self.lib.books.is_empty(),
-        ) {
+        if library::hit_sort_chip(self.lib_tab, x, y, self.search_enabled) {
             match self.lib_tab {
                 Tab::Songs => self.lib_sort = (self.lib_sort + 1) % library::SORTS.len(),
                 Tab::Albums => self.cycle_album_sort(),
@@ -17557,39 +17608,140 @@ mod tests {
         }
     }
 
-    /// The header's book button is right of the lens and opens the Audiobooks list; Back returns to
-    /// the Library on the tab it was left on.
+    fn bare_np() -> NowPlaying<'static> {
+        NowPlaying {
+            skin: None,
+            tape: None,
+            title: "t",
+            artist: "a",
+            codec: "",
+            badge: "",
+            clock: "21:07",
+            battery: 50,
+            elapsed: "",
+            remaining: "",
+            progress: 0.0,
+            art: "x",
+            art_full: None,
+            art_thumb: None,
+            liked: false,
+            playing: false,
+            shuffle: false,
+            repeat: 0,
+            viz_seed: 0.0,
+            viz_kind: 0,
+            viz_size: 0,
+            viz_levels: None,
+            viz_peaks: None,
+            viz_sig: None,
+            page: 0,
+            scrubbing: false,
+            lyrics: false,
+        }
+    }
+
+    /// With audiobooks the Library header carries a switch spelling "Music"; a tap opens the Books
+    /// list, where it spells "Books" and a tap goes back to the Library, on the tab it was left on.
     #[test]
-    fn the_header_book_button_opens_the_audiobooks_and_back_returns() {
+    fn the_music_books_switch_moves_between_the_library_and_the_audiobooks() {
         for search in [false, true] {
             let mut a = unlocked();
             a.search_enabled = search;
             a.set_library(books_lib(3));
             a.push_for_test(Screen::Library);
             a.lib_tab = Tab::Artists;
-            let (x0, x1) = library::book_button_x(search);
+            let (x0, x1) = crate::chrome::mode_zone();
             assert_eq!(
                 a.tap((x0 + x1) / 2, 62),
                 vec![],
                 "opening a list plays nothing"
             );
             assert_eq!(a.current(), Screen::Books, "search {search}");
-            a.press(Button::Back);
+            a.tap((x0 + x1) / 2, 62);
             assert_eq!(a.current(), Screen::Library);
             assert_eq!(a.lib_tab, Tab::Artists, "the tab is where it was");
+            a.press(Button::Back);
+            assert_eq!(
+                a.current(),
+                Screen::NowPlaying,
+                "the switch left no history"
+            );
         }
     }
 
-    /// No audiobooks, no button: that spot is the caption's, and a tap there must not open an
-    /// empty screen.
+    /// The Library button on Now Playing returns to whichever of Music and Books you last browsed.
     #[test]
-    fn without_audiobooks_the_header_has_no_book_button() {
+    fn the_now_playing_library_button_opens_the_last_browsed_side() {
+        let tap_library_button = |a: &mut App| {
+            a.tap(
+                crate::now_playing::TOOLBAR_CX[0],
+                crate::now_playing::TOOLBAR_TOP + 20,
+            );
+        };
+        let mut a = unlocked();
+        a.set_library(books_lib(3));
+        tap_library_button(&mut a);
+        assert_eq!(a.current(), Screen::Library, "music is the default");
+        let (x0, x1) = crate::chrome::mode_zone();
+        a.tap((x0 + x1) / 2, 62);
+        assert_eq!(a.current(), Screen::Books);
+        a.press(Button::Back);
+        assert_eq!(a.current(), Screen::NowPlaying);
+        tap_library_button(&mut a);
+        assert_eq!(a.current(), Screen::Books, "back where the books were");
+        a.tap((x0 + x1) / 2, 62);
+        assert_eq!(a.current(), Screen::Library);
+        a.press(Button::Back);
+        tap_library_button(&mut a);
+        assert_eq!(a.current(), Screen::Library, "and back to music again");
+    }
+
+    /// Without audiobooks there is no switch: those taps are the title's and must open nothing.
+    #[test]
+    fn without_audiobooks_the_library_header_has_no_switch() {
         let mut a = unlocked();
         a.set_library(books_lib(0));
         a.push_for_test(Screen::Library);
-        let (x0, x1) = library::book_button_x(a.search_enabled);
+        let (x0, x1) = crate::chrome::mode_zone();
         a.tap((x0 + x1) / 2, 62);
         assert_eq!(a.current(), Screen::Library);
+    }
+
+    /// A pinned Audiobooks list has Library under it no longer, so Music on it still lands on the
+    /// Library.
+    #[test]
+    fn music_on_a_restored_audiobooks_pin_lands_on_the_library() {
+        let mut a = unlocked();
+        a.set_library(books_lib(2));
+        a.push_for_test(Screen::Books);
+        let (m0, m1) = crate::chrome::mode_zone();
+        a.tap((m0 + m1) / 2, 62);
+        assert_eq!(a.current(), Screen::Library);
+    }
+
+    /// Both screens draw the switch, each spelling its own word.
+    #[test]
+    fn both_screens_draw_the_switch_with_their_own_word() {
+        let _scale = lock_scale();
+        let fonts = crate::text::FontSet::load();
+        let band = |screen: Screen, books: usize| {
+            let mut a = unlocked();
+            a.set_library(books_lib(books));
+            a.go_for_preview(screen);
+            let mut c = Canvas::new();
+            a.render(&mut c, &fonts, &bare_np());
+            let rgb = c.to_rgb_bytes();
+            let (x0, x1) = crate::chrome::mode_zone();
+            (46..90usize)
+                .flat_map(|y| {
+                    rgb[(y * 480 + x0 as usize) * 3..(y * 480 + x1 as usize) * 3].to_vec()
+                })
+                .collect::<Vec<u8>>()
+        };
+        let lib = band(Screen::Library, 3);
+        let books = band(Screen::Books, 3);
+        assert_ne!(lib, band(Screen::Library, 0), "the Library gains a switch");
+        assert_ne!(lib, books, "the word differs");
     }
 
     /// A tap on a row asks the shell to play THAT book.
@@ -23294,6 +23446,41 @@ mod tests {
         a.fling(2000.0);
         a.tick();
         assert_eq!(a.lib_scroll_px, before, "the sheet must own the gesture");
+    }
+
+    #[test]
+    fn the_audiobooks_screen_can_be_pinned_and_a_pin_goes_back_to_it() {
+        let mut a = unlocked();
+        a.set_library(Library {
+            books: (0..3)
+                .map(|i| crate::model::BookRow {
+                    title: format!("Book {i}"),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        });
+        a.go(Screen::Library);
+        a.open_books();
+        a.open_shelf();
+        let (pbx, pby) = crate::shelf::pin_button_center();
+        a.tap(pbx, pby);
+        let pin = a.pins[0]
+            .as_ref()
+            .expect("the Audiobooks screen is a place");
+        assert_eq!(pin.screen, Screen::Books);
+        assert_eq!(
+            (pin.title.as_str(), pin.sub.as_str()),
+            ("Audiobooks", "3 BOOKS")
+        );
+        // It survives a reboot, and from anywhere the pin goes back to it.
+        let mut b = unlocked();
+        b.shelf_pin_decode(0, &a.shelf_pin_encode(0));
+        assert_eq!(b.pins[0], a.pins[0]);
+        a.go(Screen::Settings);
+        a.open_shelf();
+        a.tap(100, crate::shelf::slot_center_y(0));
+        assert_eq!(a.current(), Screen::Books);
     }
 
     #[test]

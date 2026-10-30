@@ -549,6 +549,41 @@ fn header_impl(
     HEADER_BOTTOM
 }
 
+// ── The Library's Music | Books switch ──────────────────────────────────────────────────────────
+// With audiobooks in the library the Library and the Audiobooks list share one header, and its
+// title is this switch: it spells the one you are in, and a tap goes to the other. The zone lies
+// between the back target and the view button of a Library with search installed (x 192), the same
+// on both screens and with or without search. It starts where the back target ends.
+const MODE_END: i32 = 188;
+
+/// The `(x0, x1)` of the switch.
+pub fn mode_zone() -> (i32, i32) {
+    (back_hit_w() + 4, MODE_END)
+}
+
+/// Whether `(x, y)` is on the switch.
+pub fn mode_hit(x: i32, y: i32) -> bool {
+    let (x0, x1) = mode_zone();
+    (STATUS_H..HEADER_BOTTOM).contains(&y) && (x0..x1).contains(&x)
+}
+
+/// Draw the switch: the word of the library you are in (`books` for Books, else Music), underlined
+/// in the accent; a tap on it goes to the other one.
+pub fn mode_switch(c: &mut Canvas, t: &Theme, f: &FontSet, books: bool) {
+    let (x0, x1) = mode_zone();
+    let st = sty(Family::Mono, Weight::SemiBold, 15.0, t.ink, 0.04);
+    let word = crate::widgets::fit(
+        f,
+        crate::i18n::text(if books { "Books" } else { "Music" }),
+        &st,
+        (x1 - x0) as f32,
+    );
+    let w = text::measure(f, &word, &st);
+    let x = x0 as f32 + ((x1 - x0) as f32 - w) / 2.0;
+    text::draw(c, f, x, 67.0, &word, &st);
+    fill_rect(c, x.round() as i32, 76, w.round() as i32, 3, t.acc);
+}
+
 /// The chip's box `(x, y, w, h)` around a label `text_w` wide.
 fn chip_box(text_w: f32) -> (i32, i32, i32, i32) {
     let h = CHIP_H * text::touch_scale();

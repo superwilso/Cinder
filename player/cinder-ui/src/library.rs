@@ -2034,38 +2034,14 @@ pub const SORT_HIT_TOP: i32 = 32;
 /// Is `(x, y)` on the SORT/ORDER chip's target? Everything right of the header controls, from
 /// [`SORT_HIT_TOP`] to the header rule. `chrome::header_chip` never starts the box left of that x.
 /// Checked by the navigator BEFORE the status strip, because it claims the strip's bottom edge.
-pub fn hit_sort_chip(tab: Tab, x: i32, y: i32, search: bool, books: bool) -> bool {
-    let x1 = controls_x1(search, books);
+pub fn hit_sort_chip(tab: Tab, x: i32, y: i32, search: bool) -> bool {
+    let x1 = controls_x1(search);
     has_sort_chip(tab) && (SORT_HIT_TOP..crate::chrome::HEADER_BOTTOM).contains(&y) && x >= x1
 }
 
-/// The Audiobooks button: the last of the header's controls, right of the lens (or of the view
-/// button when search is not installed) and left of the caption. Drawn only when the library has
-/// audiobooks, so a player with none gives the caption its room back.
-///
-/// 44 wide, a little under the others: the caption's SHORT form ("ARTIST") still fits beside it at
-/// the largest text size, which is what the chip falls back to when it cannot show its whole label.
-pub const BOOK_W: i32 = 44;
-
-pub fn book_button_x(search: bool) -> (i32, i32) {
-    let x0 = if search {
-        SEARCH_X1
-    } else {
-        view_button_x(false).1
-    };
-    (x0, x0 + BOOK_W)
-}
-
-pub fn hit_books_button(x: i32, y: i32, search: bool, books: bool) -> bool {
-    let (x0, x1) = book_button_x(search);
-    books && (34..91).contains(&y) && (x0..x1).contains(&x)
-}
-
 /// Where the header's controls end and the caption may begin.
-pub fn controls_x1(search: bool, books: bool) -> i32 {
-    if books {
-        book_button_x(search).1
-    } else if search {
+pub fn controls_x1(search: bool) -> i32 {
+    if search {
         SEARCH_X1
     } else {
         view_button_x(false).1
@@ -2109,38 +2085,26 @@ pub fn render(
     // The view button, and the search button right of it when search is installed. The title ends
     // before the first and the caption starts after the last.
     let (vx0, vx1) = view_button_x(search);
+    let x1 = controls_x1(search);
+    // With audiobooks the title gives way to the Music/Books switch.
     let books = !lib.books.is_empty();
-    let x1 = controls_x1(search, books);
+    let title = if books {
+        ""
+    } else {
+        crate::i18n::text("Library")
+    };
     // The title may come to 8 px short of the button's zone: its icon is centred in it, so that
     // still leaves a 20 px gap to the drawn glyph.
     let y0 = if has_sort_chip(tab) {
-        crate::chrome::header_chip(
-            c,
-            t,
-            f,
-            crate::i18n::text("Library"),
-            &rc,
-            short,
-            (vx0 + 8) as f32,
-            x1 as f32,
-        )
+        crate::chrome::header_chip(c, t, f, title, &rc, short, (vx0 + 8) as f32, x1 as f32)
     } else {
-        crate::chrome::header_around(
-            c,
-            t,
-            f,
-            crate::i18n::text("Library"),
-            Some(&rc),
-            (vx0 + 8) as f32,
-            x1 as f32,
-        )
+        crate::chrome::header_around(c, t, f, title, Some(&rc), (vx0 + 8) as f32, x1 as f32)
     };
     if search {
         crate::icons::search(c, ((SEARCH_X0 + SEARCH_X1) / 2) as f32, 62.0, 24.0, t.dim);
     }
     if books {
-        let (bx0, bx1) = book_button_x(search);
-        crate::icons::book(c, ((bx0 + bx1) / 2) as f32, 62.0, 24.0, t.dim);
+        crate::chrome::mode_switch(c, t, f, false);
     }
     view_icon(c, ((vx0 + vx1) / 2) as f32, 62.0, view_of(lib, tab), t.dim);
     let yt = tabs(c, t, f, y0, tab);
@@ -4612,10 +4576,8 @@ mod tests {
         assert!(ids.len() <= GRID_COVERS_MAX);
     }
 
-    /// At every text size, with search installed or not and with the Audiobooks button or not,
-    /// "Library" fits before the controls and the caption is whole beside them: the full label
-    /// when there is no Audiobooks button, and at least the label's SHORT form ("ARTIST") when
-    /// there is, which is what the chip shows when the full one cannot fit.
+    /// At every text size, with search installed or not, "Library" fits before the controls and
+    /// the caption is whole beside them.
     #[test]
     fn the_header_buttons_leave_the_title_and_the_caption_whole_at_every_size() {
         let _g = crate::text::scale_guard();
@@ -4630,54 +4592,22 @@ mod tests {
         for idx in 0..crate::text::SCALE_STEPS.len() {
             crate::text::set_scale_idx(idx);
             for search in [false, true] {
-                for books in [false, true] {
-                    let (x0, _) = view_button_x(search);
-                    let x1 = controls_x1(search, books);
-                    let title_end = crate::chrome::header_title_end(&f, "Library");
-                    assert!(
-                        title_end <= (x0 + 8 - 16) as f32,
-                        "{}%: title ends at {title_end} (search {search})",
-                        crate::text::scale_pct()
-                    );
-                    let label = if books {
-                        "ARTIST"
-                    } else {
-                        "ORDER \u{00b7} ARTIST"
-                    };
-                    let cap = text::measure(&f, label, &rs);
-                    assert!(
-                        458.0 - cap >= x1 as f32,
-                        "{}%: caption starts at {} (search {search}, books {books})",
-                        crate::text::scale_pct(),
-                        458.0 - cap
-                    );
-                }
+                let (x0, _) = view_button_x(search);
+                let x1 = controls_x1(search);
+                let title_end = crate::chrome::header_title_end(&f, "Library");
+                assert!(
+                    title_end <= (x0 + 8 - 16) as f32,
+                    "{}%: title ends at {title_end} (search {search})",
+                    crate::text::scale_pct()
+                );
+                let cap = text::measure(&f, "ORDER \u{00b7} ARTIST", &rs);
+                assert!(
+                    458.0 - cap >= x1 as f32,
+                    "{}%: caption starts at {} (search {search})",
+                    crate::text::scale_pct(),
+                    458.0 - cap
+                );
             }
-        }
-    }
-
-    #[test]
-    fn the_audiobooks_button_sits_between_the_lens_and_the_caption() {
-        for search in [false, true] {
-            let (b0, b1) = book_button_x(search);
-            let (v0, v1) = view_button_x(search);
-            assert!(b0 >= v1, "right of the view button");
-            if search {
-                assert_eq!(b0, SEARCH_X1, "right of the lens");
-            }
-            assert_eq!(controls_x1(search, true), b1);
-            assert!(controls_x1(search, false) < b1);
-            let mid = (b0 + b1) / 2;
-            assert!(hit_books_button(mid, 62, search, true));
-            assert!(
-                !hit_books_button(mid, 62, search, false),
-                "no button, no target"
-            );
-            assert!(!hit_books_button(b0 - 1, 62, search, true));
-            assert!(!hit_books_button(b1, 62, search, true));
-            assert!(!hit_search(mid, 62), "the targets do not overlap");
-            assert!(!hit_view_button(mid, 62, search));
-            let _ = v0;
         }
     }
 
