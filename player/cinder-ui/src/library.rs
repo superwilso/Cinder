@@ -2086,7 +2086,7 @@ pub fn render(
     // before the first and the caption starts after the last.
     let (vx0, vx1) = view_button_x(search);
     let x1 = controls_x1(search);
-    // With audiobooks the title gives way to the Music | Books switch.
+    // With audiobooks the title gives way to the Music/Books switch.
     let books = !lib.books.is_empty();
     let title = if books {
         ""

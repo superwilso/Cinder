@@ -4740,7 +4740,7 @@ impl App {
             },
             Screen::Folders => self.tap_folders(y),
             Screen::Books => {
-                if !self.lib.books.is_empty() && crate::chrome::mode_hit(x, y) == Some(false) {
+                if !self.lib.books.is_empty() && crate::chrome::mode_hit(x, y) {
                     self.books_to_music();
                     return vec![];
                 }
@@ -5653,7 +5653,7 @@ impl App {
             self.open_search();
             return vec![];
         }
-        if !self.lib.books.is_empty() && crate::chrome::mode_hit(x, y) == Some(true) {
+        if !self.lib.books.is_empty() && crate::chrome::mode_hit(x, y) {
             self.open_books();
             return vec![];
         }
@@ -17602,8 +17602,8 @@ mod tests {
         }
     }
 
-    /// With audiobooks the Library header carries a Music | Books switch. Books opens the list;
-    /// Music on that list goes back to the Library, on the tab it was left on.
+    /// With audiobooks the Library header carries a switch spelling "Music"; a tap opens the Books
+    /// list, where it spells "Books" and a tap goes back to the Library, on the tab it was left on.
     #[test]
     fn the_music_books_switch_moves_between_the_library_and_the_audiobooks() {
         for search in [false, true] {
@@ -17612,15 +17612,14 @@ mod tests {
             a.set_library(books_lib(3));
             a.push_for_test(Screen::Library);
             a.lib_tab = Tab::Artists;
-            let (x0, x1) = crate::chrome::mode_zone(true);
+            let (x0, x1) = crate::chrome::mode_zone();
             assert_eq!(
                 a.tap((x0 + x1) / 2, 62),
                 vec![],
                 "opening a list plays nothing"
             );
             assert_eq!(a.current(), Screen::Books, "search {search}");
-            let (m0, m1) = crate::chrome::mode_zone(false);
-            a.tap((m0 + m1) / 2, 62);
+            a.tap((x0 + x1) / 2, 62);
             assert_eq!(a.current(), Screen::Library);
             assert_eq!(a.lib_tab, Tab::Artists, "the tab is where it was");
             a.press(Button::Back);
@@ -17638,7 +17637,7 @@ mod tests {
         let mut a = unlocked();
         a.set_library(books_lib(0));
         a.push_for_test(Screen::Library);
-        let (x0, x1) = crate::chrome::mode_zone(true);
+        let (x0, x1) = crate::chrome::mode_zone();
         a.tap((x0 + x1) / 2, 62);
         assert_eq!(a.current(), Screen::Library);
     }
@@ -17650,14 +17649,14 @@ mod tests {
         let mut a = unlocked();
         a.set_library(books_lib(2));
         a.push_for_test(Screen::Books);
-        let (m0, m1) = crate::chrome::mode_zone(false);
+        let (m0, m1) = crate::chrome::mode_zone();
         a.tap((m0 + m1) / 2, 62);
         assert_eq!(a.current(), Screen::Library);
     }
 
-    /// Both screens draw the switch, and the word of the screen you are on is the lit one.
+    /// Both screens draw the switch, each spelling its own word.
     #[test]
-    fn both_screens_draw_the_switch_with_their_own_side_lit() {
+    fn both_screens_draw_the_switch_with_their_own_word() {
         let _scale = lock_scale();
         let fonts = crate::text::FontSet::load();
         let band = |screen: Screen, books: usize| {
@@ -17667,8 +17666,7 @@ mod tests {
             let mut c = Canvas::new();
             a.render(&mut c, &fonts, &bare_np());
             let rgb = c.to_rgb_bytes();
-            let (x0, _) = crate::chrome::mode_zone(false);
-            let (_, x1) = crate::chrome::mode_zone(true);
+            let (x0, x1) = crate::chrome::mode_zone();
             (46..90usize)
                 .flat_map(|y| {
                     rgb[(y * 480 + x0 as usize) * 3..(y * 480 + x1 as usize) * 3].to_vec()
@@ -17678,7 +17676,7 @@ mod tests {
         let lib = band(Screen::Library, 3);
         let books = band(Screen::Books, 3);
         assert_ne!(lib, band(Screen::Library, 0), "the Library gains a switch");
-        assert_ne!(lib, books, "the lit side differs");
+        assert_ne!(lib, books, "the word differs");
     }
 
     /// A tap on a row asks the shell to play THAT book.
