@@ -990,10 +990,11 @@ fn tab_from_token(t: &str) -> Tab {
     }
 }
 
-/// Which library tab is at screen-x `x`, using the strip as it was last drawn? Splits the gaps
-/// between labels down the middle, so no pixel of the strip is dead. `None` only when nothing has
-/// been rendered yet, which a real tap can't precede.
-fn tab_zone_at(zones: &[(Tab, f32, f32)], x: i32) -> Option<Tab> {
+/// Which slot of the library's tab strip is at screen-x `x`, using the strip as it was last drawn?
+/// `Some(None)` is the FOLDERS link. Splits the gaps between labels down the middle, so no pixel
+/// of the strip is dead. `None` only when nothing has been rendered yet, which a real tap can't
+/// precede.
+fn tab_zone_at(zones: &[(Option<Tab>, f32, f32)], x: i32) -> Option<Option<Tab>> {
     let xf = x as f32;
     for (i, &(tab, tx, tw)) in zones.iter().enumerate() {
         let left = if i == 0 {
@@ -1699,6 +1700,8 @@ pub struct App {
     shelf_open: bool,
     /// The pull-down panel (`quick.rs`) is switched on in Settings. OFF by default: see `quick.rs`.
     quick_enabled: bool,
+    /// Settings ▸ Folders tab: the FOLDERS link on the Library's tab strip. OFF by default.
+    folders_tab: bool,
     /// The pull-down panel is showing. Its own flag, not the Shelf's: the two never share state.
     quick_open: bool,
     pins: [Option<ShelfPin>; crate::shelf::SLOTS],
@@ -1746,7 +1749,7 @@ pub struct App {
     /// The library tab strip as last DRAWN: (tab, x, width). Taps resolve through this, so the
     /// zones always match the labels on screen. (`render` takes `&self`, hence the interior
     /// mutability — the same render-mirrors-hit rule the lists already follow.)
-    lib_tab_zones: std::cell::RefCell<Vec<(Tab, f32, f32)>>,
+    lib_tab_zones: std::cell::RefCell<Vec<(Option<Tab>, f32, f32)>>,
     /// Object ids of the Up Next rows the last render actually drew, in drawn order. The window
     /// auto-scrolls to follow playback, so the renderer (which knows `np`) publishes this for the
     /// hit test instead of `tap` trying to recompute it.
@@ -2131,6 +2134,7 @@ impl Default for App {
             lib: Library::sample(),
             shelf_open: false,
             quick_enabled: false,
+            folders_tab: false,
             quick_open: false,
             pins: std::array::from_fn(|_| None),
             history: Vec::new(),
@@ -2710,6 +2714,16 @@ impl App {
     /// Is the pull-down panel switched on (Settings ▸ Pull-down panel)?
     pub fn quick_enabled(&self) -> bool {
         self.quick_enabled
+    }
+
+    /// Is the Library's FOLDERS link switched on (Settings ▸ Folders tab)?
+    pub fn folders_tab(&self) -> bool {
+        self.folders_tab
+    }
+
+    pub fn set_folders_tab(&mut self, on: bool) {
+        self.folders_tab = on;
+        self.lib.folders_tab = on;
     }
 
     pub fn set_quick_enabled(&mut self, on: bool) {
@@ -4130,6 +4144,11 @@ impl App {
             }
             crate::settings::ROW_QUICK => {
                 self.set_quick_enabled(!self.quick_enabled);
+                vec![]
+            }
+            crate::settings::ROW_FOLDERS_TAB => {
+                // Render-only, like the pull-down panel: the shell's save path writes the file.
+                self.set_folders_tab(!self.folders_tab);
                 vec![]
             }
             crate::settings::ROW_SHUFFLE => {
@@ -5720,7 +5739,12 @@ impl App {
             // drawn at x≈94..154, so tapping its left half selected SONGS, and the same drift ran
             // down the rest of the strip. Fixed thresholds could not have followed the UI scale
             // either. See `library::tab_layout`.
-            let Some(tab) = self.tab_at_cached(x) else {
+            let Some(slot) = self.tab_at_cached(x) else {
+                return vec![];
+            };
+            // FOLDERS (Settings ▸ Folders tab) opens the folder browser; Back comes back here.
+            let Some(tab) = slot else {
+                self.open_folders();
                 return vec![];
             };
             self.lib_tab = tab;
@@ -6961,15 +6985,15 @@ impl App {
     /// Which library tab is at screen-x `x`, from the strip as last rendered. Falls back to an
     /// even quarter split if nothing has been drawn yet (unreachable in practice — a tap cannot
     /// precede the first paint).
-    fn tab_at_cached(&self, x: i32) -> Option<Tab> {
+    fn tab_at_cached(&self, x: i32) -> Option<Option<Tab>> {
         let zones = self.lib_tab_zones.borrow();
         if zones.is_empty() {
-            return Some(match x * 4 / crate::canvas::W as i32 {
+            return Some(Some(match x * 4 / crate::canvas::W as i32 {
                 0 => Tab::Songs,
                 1 => Tab::Albums,
                 2 => Tab::Artists,
                 _ => Tab::Playlists,
-            });
+            }));
         }
         tab_zone_at(&zones, x)
     }
@@ -9087,6 +9111,7 @@ impl App {
         // order here, so a reload can never quietly drop the Ignore "The" setting.
         lib.ignore_the = self.ignore_the;
         lib.views = self.lib_views;
+        lib.folders_tab = self.folders_tab;
         lib.prepare_order();
         self.lib = lib;
         self.az_memo = None; // a new library is a new set of letters
@@ -10064,7 +10089,8 @@ impl App {
             }
             Screen::Library => {
                 // Record the tab strip exactly as drawn, so `tap` hits the labels the user sees.
-                *self.lib_tab_zones.borrow_mut() = crate::library::tab_layout(fonts);
+                *self.lib_tab_zones.borrow_mut() =
+                    crate::library::tab_layout(fonts, self.lib.folders_tab);
                 crate::library::render(
                     c,
                     &theme,
@@ -10679,6 +10705,7 @@ impl App {
                     big_view: crate::scale::large(),
                     ignore_the: self.ignore_the,
                     quick: self.quick_enabled,
+                    folders_tab: self.folders_tab,
                     shuffle_by: self.shuffle_by.label(),
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
@@ -23743,10 +23770,10 @@ mod tests {
         a.lib_tab = Tab::Songs;
         let bottom = library::tab_hit_bottom(0);
         assert!(bottom > library::TAB_BOT && bottom < library::library_shuffle_band().1);
-        let zones = library::tab_layout(&FontSet::load());
+        let zones = library::tab_layout(&FontSet::load(), false);
         let x = zones
             .iter()
-            .find(|z| z.0 == Tab::Albums)
+            .find(|z| z.0 == Some(Tab::Albums))
             .map(|z| (z.1 + z.2 / 2.0) as i32)
             .unwrap();
         *a.lib_tab_zones.borrow_mut() = zones;
@@ -23795,9 +23822,20 @@ mod tests {
         // x≈94..154, so tapping its left half selected SONGS. Checked at three UI scales, since
         // the labels move with the scale and fixed thresholds could not have followed.
         let fonts = FontSet::load();
-        for pct in [80u32, 100, 140] {
+        for (pct, folders) in [80u32, 100, 140]
+            .iter()
+            .flat_map(|&p| [(p, false), (p, true)])
+        {
             crate::text::set_scale_pct(pct);
-            let zones = library::tab_layout(&fonts);
+            let zones = library::tab_layout(&fonts, folders);
+            assert_eq!(zones.len(), if folders { 5 } else { 4 });
+            // The strip fits between the 22 px margins, FOLDERS and all.
+            let (_, lx, lw) = zones[zones.len() - 1];
+            assert!(
+                lx + lw <= crate::canvas::W as f32 - 21.0,
+                "scale {pct}%, folders {folders}: strip runs to {}",
+                lx + lw
+            );
             for (tab, x, w) in &zones {
                 let mid = (x + w / 2.0) as i32;
                 assert_eq!(
@@ -23814,6 +23852,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_folders_link_is_off_until_switched_on_and_opens_the_folder_browser() {
+        let _scale = lock_scale();
+        let mut a = unlocked();
+        assert!(!a.folders_tab(), "off by default");
+        a.go(Screen::Library);
+        let fonts = FontSet::load();
+        a.render(&mut Canvas::new(), &fonts, &bare_np());
+        assert_eq!(
+            a.lib_tab_zones.borrow().len(),
+            4,
+            "off: the four tabs, nothing else"
+        );
+
+        a.set_folders_tab(true);
+        a.render(&mut Canvas::new(), &fonts, &bare_np());
+        let (slot, x, w) = *a.lib_tab_zones.borrow().last().unwrap();
+        assert_eq!(slot, None, "FOLDERS is the last slot");
+        let tab = a.lib_tab;
+        a.tap((x + w / 2.0) as i32, library::TAB_TOP + 10);
+        assert_eq!(a.current(), Screen::Folders);
+        assert_eq!(a.lib_tab, tab, "the list behind it keeps its tab");
+        a.folder_stack.clear(); // at the top of the tree, Back leaves it
+        a.pop();
+        assert_eq!(a.current(), Screen::Library);
+
+        // A reloaded library keeps the switch.
+        a.set_library(Library::sample());
+        assert!(a.lib.folders_tab);
     }
 
     // ── Brightness: level 0 is transient, never a trap ──────────────────────────────────────

@@ -526,6 +526,10 @@ pub struct Library {
     /// the render, the hit test, the scroll range and the A-Z jump all already take `&Library`.
     /// `App` owns the preference and copies it in, as it does `ignore_the`.
     pub views: [LibView; 4],
+    /// Settings ▸ Folders tab: a FOLDERS link at the end of the tab strip that opens the folder
+    /// browser (#45). On the library because the strip's layout reads it. `App` owns it and copies it
+    /// in, as it does `views`. Off by default.
+    pub folders_tab: bool,
     /// 96x96 covers for the grid view, keyed by `album_id` like `thumbs`, but only for albums on or
     /// near the screen. The shell fills it from its art cache as the grid scrolls and drops what
     /// scrolled away ([`crate::library::GRID_COVERS_MAX`]), because every cover at this size would
@@ -862,6 +866,7 @@ impl Library {
             channels: Vec::new(),
             sensme_tracks: 0,
             views: Default::default(),
+            folders_tab: false,
             covers: Default::default(),
             stats: Default::default(),
             // Two sample books so the Audiobooks screen has something to draw on the host: one

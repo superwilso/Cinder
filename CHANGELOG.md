@@ -16,6 +16,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Library: an opt-in FOLDERS tab** (#45). Settings ▸ More settings ▸ Folders tab puts FOLDERS
+  at the end of the Library's tab strip; a tap opens the folder browser and Back comes back to the
+  Library. Off by default. The strip fits itself to the width: the gaps close first, then the text
+  shrinks, which also stops PLAYLISTS running to the edge at the largest text sizes.
+  *Device-unverified.*
+
 ### Changed
 
 - **Big view: bigger covers in lists.** The Albums, Artists and Playlists lists, an artist's
@@ -38,6 +46,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Folders listed their tracks by tag, not by file name** (#45). A folder is meant to show its
+  files in the order they are on the drive, as Sony's folder view does; it sorted by track number
+  and title instead, so an album whose tags have no track numbers came out A-Z by title. It sorts
+  by file name now. *Device-unverified.*
 - **Library: tapping the view or search button no longer opens the Menu.** A tap landing a
   little high on either button reached the status bar above it. They now claim the bar's bottom
   edge, as the ORDER chip already did.
