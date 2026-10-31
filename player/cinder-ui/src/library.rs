@@ -1208,6 +1208,11 @@ pub fn az_scroll_for(
         Tab::Albums => {
             let flat = lib.albums_flat();
             let layout = albums_build(lib, album_sort, album_expanded);
+            let pin = if album_sort_now(lib, album_sort) == ALBUM_PINNED {
+                ALBUM_HDR_H
+            } else {
+                0
+            };
             // Grouped sort indexes by ARTIST (that's the visible ordering); A-Z indexes by album
             // name. `az_key_for` already rejected the orderings that are neither.
             layout.rows.iter().find_map(|(vy, row)| match row {
@@ -1215,10 +1220,11 @@ pub fn az_scroll_for(
                     (az_letter(lib, key, &flat[*fi].artist) == letter).then_some(*vy)
                 }
                 // The packed looks have no headers: the line holding the artist's first cover.
+                // PINNED's band covers the list top, so the line lands just under it.
                 AlbumsRow::Tiles { flats, n } if key == AzKey::Artist => flats[..*n as usize]
                     .iter()
                     .any(|fi| az_letter(lib, key, &flat[*fi].artist) == letter)
-                    .then_some(*vy),
+                    .then_some(*vy - pin),
                 AlbumsRow::Album { flat: fi, .. } if key == AzKey::AlbumName => {
                     (az_letter(lib, key, &flat[*fi].name) == letter).then_some(*vy)
                 }
@@ -2304,8 +2310,8 @@ pub fn render(
             let sort_now = album_sort_now(lib, album_sort);
             c.set_clip_y(top - hide, LIST_BOTTOM);
             let mut rank = 0; // album display rank (skips headers/tracks) — matches the button cursor
-            // EDGE marks the first cover of each artist, so it carries the artist of the cover
-            // before, through the lines above the window as well.
+                              // EDGE marks the first cover of each artist, so it carries the artist of the cover
+                              // before, through the lines above the window as well.
             let mut prev_artist: Option<&str> = None;
             for (vy, row) in &layout.rows {
                 let h = albums_row_h(row, view);
@@ -2340,8 +2346,8 @@ pub fn render(
                     AlbumsRow::Tiles { flats, n } => {
                         for (col, &fi) in flats[..n as usize].iter().enumerate() {
                             let al = flat[fi];
-                            let edge = sort_now == ALBUM_EDGE
-                                && prev_artist != Some(al.artist.as_str());
+                            let edge =
+                                sort_now == ALBUM_EDGE && prev_artist != Some(al.artist.as_str());
                             prev_artist = Some(al.artist.as_str());
                             if edge {
                                 fill_rect(
@@ -4597,17 +4603,37 @@ mod tests {
         }
         let first_vy = |sort| albums_build(&g, sort, None).rows[0].0;
         assert_eq!(first_vy(ALBUM_PACKED), 0);
-        assert_eq!(first_vy(ALBUM_PINNED), ALBUM_HDR_H, "the grid starts under the band");
+        assert_eq!(
+            first_vy(ALBUM_PINNED),
+            ALBUM_HDR_H,
+            "the grid starts under the band"
+        );
         // A tap on the band is not the cover scrolled under it.
         let top = list_top(Tab::Albums);
-        assert_eq!(albums_hit_at(&g, ALBUM_PINNED, None, 40, 40, top + 5, 0), None);
+        assert_eq!(
+            albums_hit_at(&g, ALBUM_PINNED, None, 40, 40, top + 5, 0),
+            None
+        );
         assert!(albums_hit_at(&g, ALBUM_PACKED, None, 40, 40, top + 5, 0).is_some());
         // The rail still jumps by artist: B's first cover is on the second line.
         let b = az_scroll_for(Tab::Albums, &g, b'B', 0, ALBUM_PACKED, None);
-        assert_eq!(b, Some(grid_row_h().min(max_scroll_px(Tab::Albums, &g, ALBUM_PACKED, None))));
+        assert_eq!(
+            b,
+            Some(grid_row_h().min(max_scroll_px(Tab::Albums, &g, ALBUM_PACKED, None)))
+        );
+        // PINNED lands that line under the band, not behind it.
+        let p = az_scroll_for(Tab::Albums, &g, b'B', 0, ALBUM_PINNED, None);
+        assert_eq!(
+            p,
+            Some(grid_row_h().min(max_scroll_px(Tab::Albums, &g, ALBUM_PINNED, None)))
+        );
 
         let l = viewed(lib_grid(), Tab::Albums, LibView::List);
-        assert_eq!(album_sort_now(&l, ALBUM_PINNED), 0, "the list draws it as ARTIST");
+        assert_eq!(
+            album_sort_now(&l, ALBUM_PINNED),
+            0,
+            "the list draws it as ARTIST"
+        );
         let walk = |lib: &Library| {
             let mut s = 0;
             let mut seen = vec![s];
@@ -4619,7 +4645,11 @@ mod tests {
         };
         assert_eq!(walk(&g), [0, 4, 5, 6, 1, 2, 3, 0]);
         assert_eq!(walk(&l), [0, 1, 2, 3, 0, 1, 2, 3]);
-        assert_eq!(next_album_sort(&l, ALBUM_EDGE), 1, "a saved grid look steps on from ARTIST");
+        assert_eq!(
+            next_album_sort(&l, ALBUM_EDGE),
+            1,
+            "a saved grid look steps on from ARTIST"
+        );
     }
 
     /// The grid under ARTIST order: a header per artist, a fresh line under each, four to a line.

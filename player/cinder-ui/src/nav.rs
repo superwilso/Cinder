@@ -23722,8 +23722,16 @@ mod tests {
         let view0 = library::view_of(&a.lib, a.lib_tab);
         let (vx0, vx1) = library::view_button_x(a.search_enabled);
         a.tap((vx0 + vx1) / 2, y);
-        assert_eq!(a.current(), Screen::Library, "the view button, not the Menu");
-        assert_ne!(library::view_of(&a.lib, a.lib_tab), view0, "the tap cycled the view");
+        assert_eq!(
+            a.current(),
+            Screen::Library,
+            "the view button, not the Menu"
+        );
+        assert_ne!(
+            library::view_of(&a.lib, a.lib_tab),
+            view0,
+            "the tap cycled the view"
+        );
     }
 
     /// The tab strip draws 35 px; with the band in place its target runs down to the band.
