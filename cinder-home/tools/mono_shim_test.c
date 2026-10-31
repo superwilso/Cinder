@@ -69,7 +69,7 @@ int snd_pcm_hw_params_get_rate(const void* params, unsigned int* val, int* dir)
 }
 long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
 {
-    (void)pcm;
+    if (pcm == (void*)0xBAD) return -32;   /* a write the codec refuses */
     size_t n = frames * 4 < sizeof g_last ? frames * 4 : sizeof g_last;
     memcpy(g_last, buf, n);
     g_last_frames = frames;
@@ -179,6 +179,8 @@ int main(int argc, char** argv)
     const char* ex = getenv("MONO_EXPECT");
     const int expect_active = argc > 1 && strcmp(argv[1], "SoundServiceFw") == 0
                            && !(ex && strcmp(ex, "inactive") == 0);
+    /* The sound service itself, active or not: safe mode and the off switch still say what fails. */
+    const int is_ssfw = argc > 1 && strcmp(argv[1], "SoundServiceFw") == 0;
     const char* dir = getenv("MONO_TEST_DIR");
     if (!dir) { fprintf(stderr, "MONO_TEST_DIR not set\n"); return 2; }
     flag(dir, 0);
@@ -297,6 +299,24 @@ int main(int argc, char** argv)
     flag(dir, 0);
     snd_pcm_writei(pcmh, pcm, 100);
     check(memcmp(fake_last(), pcm, 400) == 0, "jack: mono OFF: untouched");
+
+    /* #43: a failed write is said, with its code, and so is where the write came from. */
+    {
+        char lp[600], ln[400];
+        snprintf(lp, sizeof lp, "%s/cinder_mono.log", dir);
+        for (int k = 0; k < 5; k++) snd_pcm_writei((void*)0xBAD, pcm, 100);
+        int failed = 0, from = 0;
+        FILE* lf = fopen(lp, "r");
+        if (lf) {
+            while (fgets(ln, sizeof ln, lf)) {
+                failed += strstr(ln, "write of 100 frames failed: -32") != NULL;
+                from += strstr(ln, "alsa: snd_pcm_writei from ") != NULL;
+            }
+            fclose(lf);
+        }
+        if (is_ssfw) check(failed == 3 && from == 1, "jack: the first three failed writes and the library are logged");
+        else check(failed == 0 && from == 0, "jack: in any other process nothing is logged");
+    }
 
     /* the soundscape on the jack: needs the rate, which comes from the hw_params commit */
     {

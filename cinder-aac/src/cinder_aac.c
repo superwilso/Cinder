@@ -40,6 +40,7 @@
 #define _GNU_SOURCE
 #endif
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -77,8 +78,13 @@ enum { SBC_DUAL = 4, SBC_XQ_BITPOOL = 47 };
 
 static void logf_(const char* fmt, ...)
 {
-    FILE* f = fopen(kLog, "a");
-    if (!f) return;
+    /* Readable and writable by everyone: the service starts as root and carries on as `system`,
+     * root's umask here is 077, and cinder-home (uid 100) copies these lines into its own log. */
+    int fd = open(kLog, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666);
+    if (fd < 0) return;
+    if (geteuid() == 0) fchmod(fd, 0666);
+    FILE* f = fdopen(fd, "a");
+    if (!f) { close(fd); return; }
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     fprintf(f, "%ld.%03ld ", (long)ts.tv_sec, ts.tv_nsec / 1000000);
@@ -272,6 +278,9 @@ static struct {
     uint8_t out[2048];
     struct timespec t0;      /* pacing: when frame 0 was due */
     unsigned long frames, dropped, failed, waits;
+    unsigned long bursts;    /* times it fell behind and sent back to back to catch up (#44) */
+    long worst_ms;           /* the furthest behind it has been, in ms */
+    int behind;              /* behind on the last frame: a burst is under way */
 } g = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
 static void* g_cb_copy[16];  /* libBtMw's table is 0x40 bytes: 16 slots */
@@ -357,6 +366,9 @@ EXPORT int btmtk_a2dp_stream_data_encoder_init(int codec, int a, int b, int c, i
         g.enc = aac_enc_open(g.cfg_rate, br, AAC_LATM, &why);
         g.fill = 0;
         g.frames = g.dropped = g.failed = g.waits = 0;
+        g.bursts = 0;
+        g.worst_ms = 0;
+        g.behind = 0;
         g.t0.tv_sec = 0;
         logf_("encoder start: %d Hz, %d bit/s, payload %d (mtu arg %d, limit %d): %s (%s, peak cap %d)",
               g.cfg_rate, br, g.payload, mtu, lim, g.enc ? "ok" : why,
@@ -380,8 +392,10 @@ EXPORT void btmtk_a2dp_stream_data_encoder_deinit(int x)
     pthread_mutex_lock(&g.lock);
     int ours = g.enc != NULL;
     if (ours) {
-        logf_("encoder stop: %lu frames, %lu too big, %lu failed, %lu waits, ended at %d bit/s",
-              g.frames, g.dropped, g.failed, g.waits, aac_enc_bitrate(g.enc));
+        logf_("encoder stop: %lu frames, %lu too big, %lu failed, %lu waits, %lu catch-up bursts "
+              "(worst %ld ms behind), ended at %d bit/s",
+              g.frames, g.dropped, g.failed, g.waits, g.bursts, g.worst_ms,
+              aac_enc_bitrate(g.enc));
         aac_enc_close(g.enc);
         g.enc = NULL;
         char s[32];
@@ -401,12 +415,22 @@ static long ms_since(const struct timespec* a, const struct timespec* b)
  * PCM arrives as fast as the socket is read, so without this mtkbt's queue overflows. */
 static void pace(void)
 {
-    enum { LEAD_MS = 60, RESET_MS = 300 };
+    enum { LEAD_MS = 60, RESET_MS = 300, BURST_MS = 25 };
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     if (!g.t0.tv_sec) { g.t0 = now; return; }
     long due = (long)((long long)g.frames * AAC_FRAME_SAMPLES * 1000 / g.cfg_rate);
     long ahead = due - ms_since(&g.t0, &now);
+    /* Behind by more than a frame (~21 ms) means the frames that follow go out back to back: a
+     * burst the headphones may answer by changing their playback speed (#44). Counted, not
+     * changed, until a log shows how often and how far. */
+    if (ahead < -BURST_MS) {
+        if (-ahead > g.worst_ms) g.worst_ms = -ahead;
+        if (!g.behind && ahead >= -RESET_MS) g.bursts++;   /* once per fall, not per frame */
+        g.behind = 1;
+    } else {
+        g.behind = 0;
+    }
     if (ahead < -RESET_MS) {
         /* Fell behind (a pause, an underrun): restart the clock instead of bursting. */
         g.t0 = now;

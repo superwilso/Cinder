@@ -289,6 +289,12 @@ jack measurement of the two ALSA paths agrees
 ([`analysis/RE_headphone_amp_modes.md`](analysis/RE_headphone_amp_modes.md)). The variants are here
 so you can hear that for yourself without flashing anything.
 
+**On Walkman One with an external tuning installed, this setting does nothing.** Walkman One's boot
+script replaces the audio HAL on every boot with its own Normal, Plus v1 or Plus v2 copy, chosen by
+`PMV`/`PMD` in `CFW/settings.txt` and the Hold switch at power-on, so Walkman One's own modes stay
+yours to pick exactly as before. Check `CFW/boot_log.txt` for "external tuning is installed" and
+"Using the … mode". On Walkman One without an external tuning, Cinder's choice is kept.
+
 Change it later on the device, without reinstalling:
 
 ```sh

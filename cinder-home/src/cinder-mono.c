@@ -65,19 +65,25 @@ static const char kAmbient[] = CINDER_MONO_DIR "/cinder_ambient";
 static const char kBtName[] = "pst::services::bttransmitterservice";
 
 /* ── how it is loaded, and how it gets out of the way ─────────────────────────────────────────
- * Cinder never edits the boot image, so it cannot add an LD_PRELOAD of its own. What it can use is
- * the one Wampy's installer already put there: `setenv LD_PRELOAD <kWampyPath>` on SoundServiceFw.
- * The installer moves Wampy's library to kWampyOrig and puts this one at kWampyPath; this one then
- * loads Wampy's with RTLD_GLOBAL before hagodaemon dlopens libSoundServiceFw.so, so Wampy's
- * FilterChain hooks still come first in the global scope and its dlsym(RTLD_NEXT) still finds
- * Sony's originals after it.
+ * Cinder never edits the boot image. The hagodaemon wrapper (cinder-hagowrap.c) adds this library
+ * to SoundServiceFw's LD_PRELOAD, after Wampy's when Wampy's installer put one there, so Wampy's
+ * hooks come first and reach Sony's through this one.
+ *
+ * WAMPY'S LIBRARY IS NEVER LOADED FROM HERE (#43). Until 0.3.22 the retired `mono` component put
+ * this library in Wampy's place and moved Wampy's to kWampyOrig, and this one loaded it back. Every
+ * install now undoes that before this library goes in, so a kWampyOrig that is still there is a
+ * stale copy: left behind when Wampy was installed again over the swap, which the undo cannot see.
+ * Loading it put a second Wampy in the sound service, and the active one on a player whose boot
+ * image does not preload Wampy: the leading suspect for #43, a jack silent under Sony's player too
+ * for exactly as long as the wrapper is installed (not proven on a device). It is named in the log
+ * and left alone.
  *
  * A SoundServiceFw that dies takes the whole player down — stopping it at runtime POWERED THE
  * DEVICE OFF on 2026-09-16 — so a library that crashed it at load would do that on every boot, and
  * no escape in the launcher runs early enough to help. Hence kBoots: every load counts itself
  * BEFORE doing anything else, the count is cleared once audio has gone through a hook (and by
  * cinder-home once the boot is healthy), and a library that finds kMaxBoots uncleared loads in SAFE
- * MODE: no hooks, no Wampy, exactly stock. kOff is the manual switch for the hooks alone. */
+ * MODE: no hooks, exactly stock. kOff is the manual switch for the hooks alone. */
 #ifndef CINDER_MONO_DATA
 #define CINDER_MONO_DATA "/data/cinder"
 #endif
@@ -90,6 +96,7 @@ static const char kWampyOrig[] = CINDER_WAMPY_LIB ".wampy.so";
 enum { kMaxBoots = 2 };
 
 static int g_active = 0;   /* this process is SoundServiceFw (or a test that says it is) */
+static int g_ssfw = 0;     /* the same, set before safe mode and the off switch: what the log is for */
 
 static ssize_t (*real_write)(int, const void*, size_t);
 static ssize_t (*real_send)(int, const void*, size_t, int);
@@ -264,10 +271,21 @@ static void* lib_sym(const char* lib_name, void** lib, const char* name)
     if (!*lib) *lib = dlopen(lib_name, RTLD_NOW | RTLD_NOLOAD);
     return *lib ? dlsym(*lib, name) : NULL;
 }
+/* SAY WHERE EACH ONE CAME FROM (#43). A hook whose original is missing answers -ENOSYS, and one
+ * that reaches the wrong libasound fails every write: either way the jack is silent while
+ * Bluetooth, which only goes through libc, plays on, and nothing said why. One line per function,
+ * as it is resolved; a miss is retried on every call, so only the first few are said. */
 static void* alsa_sym(const char* name)
 {
     static void* lib;
-    return lib_sym(CINDER_ASOUND_LIB, &lib, name);
+    static int missed;
+    void* p = lib_sym(CINDER_ASOUND_LIB, &lib, name);
+    if (g_ssfw) {
+        Dl_info di;
+        if (!p) { if (missed++ < 3) mlog("alsa: %s not found — the jack gets ENOSYS", name); }
+        else if (dladdr(p, &di) && di.dli_fname) mlog("alsa: %s from %s", name, di.dli_fname);
+    }
+    return p;
 }
 #define RESOLVE_ALSA(var, name) do { if (!(var)) (var) = alsa_sym(name); } while (0)
 
@@ -293,6 +311,7 @@ __attribute__((constructor)) static void cinder_mono_init(void)
     if (strstr(cmd, "logwrapper")) return;   /* argv[0], before the NULs become spaces */
     for (ssize_t i = 0; i < n; i++) if (cmd[i] == '\0') cmd[i] = ' ';
     if (!strstr(cmd, "SoundServiceFw")) return;
+    g_ssfw = 1;
 
     /* Count this load first; everything after it is what could fail. */
     int boots = 0;
@@ -311,15 +330,11 @@ __attribute__((constructor)) static void cinder_mono_init(void)
         (void)syscall(SYS_close, bf);
     }
     if (boots >= kMaxBoots) {
-        mlog("SAFE MODE: %d loads in a row never reached audio — no hooks, no Wampy chain", boots);
+        mlog("SAFE MODE: %d loads in a row never reached audio — no hooks", boots);
         return;
     }
 
-    if (access(kWampyOrig, F_OK) == 0) {
-        void* h = dlopen(kWampyOrig, RTLD_NOW | RTLD_GLOBAL);
-        mlog(h ? "chained Wampy's library (%s)" : "could not chain Wampy's library (%s): %s",
-             kWampyOrig, h ? "" : dlerror());
-    }
+    if (access(kWampyOrig, F_OK) == 0) mlog("a stale copy of Wampy's library is left alone: %s", kWampyOrig);
     if (access(kOff, F_OK) == 0) {
         mlog("hooks off (%s exists)", kOff);
         return;
@@ -474,18 +489,28 @@ int snd_pcm_close(void* pcm)
     return real_pcm_close ? real_pcm_close(pcm) : -ENOSYS;
 }
 
+/* The write itself, and the first few that fail, with the code: an underrun says -32, a missing or
+ * foreign libasound says something else, and a jack that is silent for good says it every time. */
+static int g_wfail = 0;
+static long jack_write(void* pcm, const void* buf, unsigned long frames)
+{
+    const long r = real_writei(pcm, buf, frames);
+    if (r > 0) { if (g_active) load_proved_good(); }
+    else if (r < 0 && g_ssfw && g_wfail < 3) {
+        g_wfail++;
+        mlog("jack: pcm %p write of %lu frames failed: %ld", pcm, frames, r);
+    }
+    return r;
+}
+
 long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
 {
     RESOLVE_ALSA(real_writei, "snd_pcm_writei");
     if (!real_writei) return -ENOSYS;
-    if (!g_active || !buf || frames == 0) return real_writei(pcm, buf, frames);
+    if (!g_active || !buf || frames == 0) return jack_write(pcm, buf, frames);
     const int mono = mono_on();
     const int amb = amb_poll();
-    if (!mono && !amb) {
-        const long r = real_writei(pcm, buf, frames);
-        if (r > 0) load_proved_good();
-        return r;
-    }
+    if (!mono && !amb) return jack_write(pcm, buf, frames);
 
     pcm_info info = { NULL, 0, 0, 0, 1 };
     int said = 1;
@@ -493,16 +518,16 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     pcm_info* s = pcm_slot(pcm, 0);
     if (s) { info = *s; said = s->said; s->said = 1; }
     pthread_mutex_unlock(&g_pcm_lock);
-    if (!s) return real_writei(pcm, buf, frames);
+    if (!s) return jack_write(pcm, buf, frames);
 
     const int sb = cm_sample_bytes(info.fmt);
     if ((info.ch != 2 && !(info.ch == 1 && !mono)) || sb == 0) {
         if (!said) mlog("jack: pcm %p fmt %d ch %d — not ours to change, left alone", pcm, info.fmt, info.ch);
-        return real_writei(pcm, buf, frames);
+        return jack_write(pcm, buf, frames);
     }
     const size_t bytes = (size_t)frames * (size_t)info.ch * (size_t)sb;
     uint8_t* out = scratch(bytes);
-    if (!out) return real_writei(pcm, buf, frames);
+    if (!out) return jack_write(pcm, buf, frames);
     memcpy(out, buf, bytes);
     /* DSD over PCM is never touched, by either: its markers are not samples. */
     const int dop = info.ch == 2 && cm_looks_like_dop(out, frames, info.fmt);
@@ -510,9 +535,7 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     const int mixed = amb && !dop && amb_mix(&g_amb_jack, out, frames, info.fmt, info.ch, info.rate, "jack");
     if (!said && mono) mlog("jack: pcm %p fmt %d — %s", pcm, info.fmt, summed ? "summing" : "DSD over PCM, left alone");
     if (!said && amb && !info.rate) mlog("jack: pcm %p — rate never seen, no soundscape on it", pcm);
-    const long r = real_writei(pcm, (summed || mixed) ? out : buf, frames);
-    if (r > 0) load_proved_good();
-    return r;
+    return jack_write(pcm, (summed || mixed) ? out : buf, frames);
 }
 
 /* ── Bluetooth: the transmitter socket ───────────────────────────────────────────────────────── */
