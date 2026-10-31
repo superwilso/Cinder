@@ -533,13 +533,17 @@ static void s_profile_follows_the_route(void) {
           "the read-back never runs ahead of the apply");
 }
 
+// #43: losing the sink rebuilds the jack's chain whether or not a profile changed, so the
+// disconnect edge re-asserts it and reads it back every time — as the connect edge always has.
 static void s_profile_same_on_both_outputs(void) {
     profile_route_run(0);
     check(cinder_harness_count("cinder_take_profile_apply") >= 2, "both edges asked");
-    check_eq(cinder_harness_count("cinder_effects_is_dsee_hx_on"), 0,
-             "no switch, no read-back: the getters are not polled");
-    check_eq(cinder_harness_count_between("cinder_effects_set_tone_system", 18000, 19000), 0,
-             "…and the disconnect edge re-applies nothing when the profile did not change");
+    check(cinder_harness_count_between("cinder_effects_set_tone_system", 18000, 19000) >= 1,
+          "the disconnect edge re-applies the chain with no profile switch");
+    check(cinder_harness_count_between("cinder_effects_is_dsee_hx_on", 18000, 19000) >= 1,
+          "…and reads it back for the log");
+    check(cinder_harness_before("cinder_effects_set_tone_system", "cinder_effects_is_dsee_hx_on") == 1,
+          "the read-back never runs ahead of the apply");
 }
 
 // ── the codec preference reaches a radio restored at boot ────────────────────────────────────
@@ -2894,7 +2898,7 @@ static const Scenario kScenarios[] = {
     {"stop-after-paused", s_stop_after_paused,       "…and a paused song is left alone"},
     {"clock-steps-back",  s_clock_steps_back,        "a wall clock stepping back (2038) still marks the boot good"},
     {"profile-route",     s_profile_follows_the_route, "a route change that switches the sound profile re-applies the chain"},
-    {"profile-same",      s_profile_same_on_both_outputs, "…and one that does not, re-applies nothing"},
+    {"profile-same",      s_profile_same_on_both_outputs, "…and one that does not still re-applies on disconnect (#43)"},
     {"ambient-alone",     s_ambient_alone,           "a soundscape with nothing playing: its level, and an honest route"},
     {"ambient-music",     s_ambient_over_music,      "…over music: the other level, and silent without the hook"},
     {"ambient-off",       s_ambient_off,             "…switched off: the line and the page follow"},

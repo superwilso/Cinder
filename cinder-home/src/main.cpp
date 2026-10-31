@@ -988,6 +988,41 @@ void bt_trim_tick() {
     run_guarded("bt-vol: fine trim", 6, []() { apply_eq_fn(); });
 }
 
+// The helpers inside Sony's services keep their own logs in /tmp, which a restart clears and which
+// need adb to read: so a report never had them. The AAC encoder's start, stop and link lines (#44)
+// and every line of the mono shim's (#43: which libasound the jack's writes went to, and the first
+// that failed — it writes at most 200 a boot) are copied in here as they appear, a stat a second and
+// a read only when the file grew.
+static void log_mirror(const char* path, long long& off, const char* prefix, const char* const* keep) {
+    struct stat st;
+    if (::stat(path, &st) != 0) return;
+    if (st.st_size < off) off = 0;                // a new boot's or a rotated file
+    if (st.st_size == off) return;
+    FILE* f = std::fopen(path, "r");
+    if (!f) return;
+    if (std::fseek(f, (long)off, SEEK_SET) == 0) {
+        char line[320];
+        while (std::fgets(line, sizeof line, f)) {
+            bool want = !keep;
+            for (const char* const* k = keep; k && *k && !want; ++k) want = std::strstr(line, *k);
+            if (!want) continue;
+            if (char* nl = std::strchr(line, '\n')) *nl = 0;
+            char m[352];
+            std::snprintf(m, sizeof m, "%s%s", prefix, line);
+            clog_(m);
+        }
+    }
+    off = std::ftell(f);
+    std::fclose(f);
+}
+
+void helper_log_mirror_tick() {
+    static long long aac_off = 0, mono_off = 0;
+    static const char* const kAac[] = {"encoder st", "link is", nullptr};
+    log_mirror("/tmp/cinder_aac.log", aac_off, "aac: ", kAac);
+    log_mirror("/tmp/cinder_mono.log", mono_off, "mono-shim: ", nullptr);
+}
+
 // Stop the analyzer stream (guarded — Stop() is a Sony-service call). No-op if it was never
 // started, so it's safe to call unconditionally from the lifecycle hooks.
 void stop_analyzer() {
@@ -6984,15 +7019,25 @@ void refresh_bt_route() {
     // link source this firmware has. There is no /sys/class/bluetooth, no hcitool and no
     // /var/lib/bluetooth on it (checked on device 2026-08-10 — all three absent), so a sysfs or
     // BlueZ-shaped detector would simply never fire here.
-    if (on) {
-        // Guarded individually: each is either a shell-out or a Sony IPC call, on the render
-        // thread. Verify-first, so a resync can never fight a level the user just set.
-        // NOT the volume — that is the walk above, and bt_resync_volume drives the JACK's
-        // attenuator, which is not the output while a sink is connected.
-        write_bt_pref();
-        fx_cache_drop();   // a reconnect is exactly when the service may have moved under us
-        run_guarded("bt: re-apply EQ after reconnect", 6, apply_eq_fn);
-        run_guarded("bt: re-apply sound after reconnect", 6, apply_sound_fn);
+    //
+    // …AND ON THE DISCONNECT EDGE, for the same reason (#43). Losing the sink moves the sound
+    // service back to the jack, which builds the jack's chain again, and nothing re-sent what
+    // Cinder had set on it: the warm caches still said "already sent". Reported on Walkman One
+    // with Clear Bass on (the six-band, patched into its chain): after Bluetooth, no sound on the
+    // jack, and the stock player silent too once the Bluetooth services had flushed the settings.
+    // The read-back afterwards puts what the service really holds in the log, so the next report
+    // shows it either way.
+    // Guarded individually: each is either a shell-out or a Sony IPC call, on the render thread.
+    // NOT the volume — that is the walk / resync above.
+    if (on) write_bt_pref();
+    fx_cache_drop();   // an output change is exactly when the service may have moved under us
+    run_guarded(on ? "bt: re-apply EQ after reconnect" : "jack: re-apply EQ after Bluetooth", 6,
+                apply_eq_fn);
+    run_guarded(on ? "bt: re-apply sound after reconnect" : "jack: re-apply sound after Bluetooth", 6,
+                apply_sound_fn);
+    if (!on) {
+        g_fx_verify_why = "bt disconnect";
+        run_guarded("jack: read the chain back", 6, fx_verify_thunk);
     }
 }
 
@@ -14938,6 +14983,7 @@ void* render_driver(void*) {
             }
             viz_analyzer_tick();              // analyzer runs only while its output is visible
             bt_trim_tick();                   // Bluetooth fine volume, applied off the press path
+            helper_log_mirror_tick();            // the AAC encoder's and the mono shim's lines, into this log (#43, #44)
             volume_limit_tick();              // the safe-listening cap, applied when it is flipped
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
             // Screenshot-on-demand: drop /tmp/cinder_screenshot.req and the next frame is written

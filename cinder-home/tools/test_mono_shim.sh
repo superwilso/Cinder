@@ -31,7 +31,7 @@ run_all() {  # run_all <label> <runner...>
     local label="$1"; shift
     rm -rf "$S"; mkdir -p "$S"; cp "$WAMPY" "$S/libsound_service_fw.wampy.so"
     run_one "$label" SoundServiceFw active "$@"
-    expect "$label" "Wampy's library was chained"                    test -e "$S/wampy_loaded"
+    expect "$label" "a stale Wampy copy is never loaded (#43)"        test ! -e "$S/wampy_loaded"
     expect "$label" "audio through a hook cleared the load count"    test ! -e "$S/mono_shim_boots"
 
     rm -rf "$S"; mkdir -p "$S"; cp "$WAMPY" "$S/libsound_service_fw.wampy.so"
@@ -40,12 +40,12 @@ run_all() {  # run_all <label> <runner...>
 
     rm -rf "$S"; mkdir -p "$S"; cp "$WAMPY" "$S/libsound_service_fw.wampy.so"; echo 2 > "$S/mono_shim_boots"
     run_one "$label" SoundServiceFw inactive "$@"
-    expect "$label" "two uncleared loads: SAFE MODE, Wampy not chained" test ! -e "$S/wampy_loaded"
+    expect "$label" "two uncleared loads: SAFE MODE, Wampy not loaded" test ! -e "$S/wampy_loaded"
     expect "$label" "…and the count keeps counting (3)"              grep -qx 3 "$S/mono_shim_boots"
 
     rm -rf "$S"; mkdir -p "$S"; cp "$WAMPY" "$S/libsound_service_fw.wampy.so"; touch "$S/mono_shim_off"
     run_one "$label" SoundServiceFw inactive "$@"
-    expect "$label" "mono_shim_off: hooks off, Wampy still chained"  test -e "$S/wampy_loaded"
+    expect "$label" "mono_shim_off: hooks off, Wampy not loaded"     test ! -e "$S/wampy_loaded"
 }
 
 # ── host ──

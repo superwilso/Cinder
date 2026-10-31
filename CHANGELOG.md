@@ -46,6 +46,28 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **The sound settings are re-sent to the jack when Bluetooth disconnects.** When the headphones
+  disconnected, the sound service rebuilt the jack's chain and Cinder sent nothing again, because it
+  believed every setting was already there; it re-sent the chain only on connect. It now re-applies
+  the EQ and effects on the disconnect edge too, and writes what the service reads back into
+  `cinderhome.log`. *Device-unverified.*
+- **No sound on the headphone jack with Mono and soundscapes installed: not fixed yet, now
+  diagnosable** (#43, Walkman One 3.02). With the `preload` component the jack is silent, under
+  Sony's own player too, while Bluetooth plays; without it both work. The mono library inside
+  Sony's sound service now logs which library each of its ALSA calls reaches and the first three
+  jack writes that fail, with their error code, and those lines are copied into `cinderhome.log`.
+  Leading suspect, now removed: the library loaded `libsound_service_fw.wampy.so` whenever that file
+  existed. Only the retired `mono` component (before 0.3.22) made it, by moving Wampy's library
+  aside, and installing Wampy again afterwards leaves it behind where no install undoes it, so the
+  sound service got a stale second copy of Wampy, the active one where Wampy is not preloaded. The
+  file is now named in the log and never loaded. *Not proven on a device.*
+- **The AAC encoder's log reaches the report** (#44). Its start, stop and link lines are copied into
+  `cinderhome.log`, and the stop line now counts how often it fell behind and sent frames back to
+  back to catch up, and how far behind it got. Its own file in `/tmp` is now readable by Cinder.
+  Logging only: no change to how it sends. *Device-unverified.*
+- **install.md: the sound signature has no effect on Walkman One with an external tuning** (#44).
+  Walkman One swaps in its own audio HAL on every boot there, chosen by its settings and the Hold
+  switch, so its Normal and Plus modes are unaffected by Cinder's choice. Documentation only.
 - **Folders listed their tracks by tag, not by file name** (#45). A folder is meant to show its
   files in the order they are on the drive, as Sony's folder view does; it sorted by track number
   and title instead, so an album whose tags have no track numbers came out A-Z by title. It sorts
