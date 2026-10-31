@@ -16,13 +16,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Added
-
-- **Library: an opt-in FOLDERS tab** (#45). Settings ▸ More settings ▸ Folders tab puts FOLDERS
-  at the end of the Library's tab strip; a tap opens the folder browser and Back comes back to the
-  Library. Off by default. The strip fits itself to the width: the gaps close first, then the text
-  shrinks, which also stops PLAYLISTS running to the edge at the largest text sizes.
-  *Device-unverified.*
+## [0.3.22] — 2026-10-28
 
 ### Changed
 
@@ -43,6 +37,24 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   with no audiobooks looks as before.
   The switch replaces the screen rather than stacking on it, and the Library button on Now
   Playing opens whichever of the two you last browsed.
+- **One install option for mono, with or without Wampy.** "Mono and soundscapes over music"
+  (`preload`) now installs beside Wampy too: Wampy's library still loads first and Cinder's after
+  it. The old `mono` option, which took the place of Wampy's library in Sony's sound service, is
+  gone. Every install puts Wampy's file back where Wampy put it, and an Update ticks the remaining
+  option on a player where the old one was working, so mono keeps working there.
+  *Device-verified on a stock player without Wampy*, on the jack and over Bluetooth (a
+  left-only/right-only test track, Mono on and off); a player with Wampy is not yet (checklist
+  43.13).
+- **Fewer files on the release page.** The install and uninstall `.UPG` packages and libusb's
+  licence are now one download, `cinder-extras.zip`, beside the installer and cinder-rescue for
+  each system. Most people need none of it: every installer carries both packages. The zip also
+  holds the packages for a player running Walkman One (`.nw-wm1a.upg`), which no release had
+  attached before, and a README saying which is which.
+- **The installer says which package it put on the player, and why**: `Package: Walkman One's
+  (nw-wm1a key) (the player reports Walkman One's key)`, or what it could not read and what it went
+  by instead. Sony's updater drops a package sealed for the wrong key without a word, so a report
+  of an install that "restarted after a few seconds" (#41) could not say which one it had been
+  given.
 
 ### Fixed
 
@@ -81,32 +93,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **A series name with an umlaut printed as "fu¨r".** A tagger on macOS writes "ü" as a "u" and a
   separate accent mark, and the font draws the mark after the letter. The series name read from a
   book's tags now has each such pair joined into the one letter (Latin-1 and Latin Extended-A, so also the Hungarian double acute, breve and dot above).
-
-## [0.3.22] — 2026-10-28
-
-### Changed
-
-- **One install option for mono, with or without Wampy.** "Mono and soundscapes over music"
-  (`preload`) now installs beside Wampy too: Wampy's library still loads first and Cinder's after
-  it. The old `mono` option, which took the place of Wampy's library in Sony's sound service, is
-  gone. Every install puts Wampy's file back where Wampy put it, and an Update ticks the remaining
-  option on a player where the old one was working, so mono keeps working there.
-  *Device-verified on a stock player without Wampy*, on the jack and over Bluetooth (a
-  left-only/right-only test track, Mono on and off); a player with Wampy is not yet (checklist
-  43.13).
-- **Fewer files on the release page.** The install and uninstall `.UPG` packages and libusb's
-  licence are now one download, `cinder-extras.zip`, beside the installer and cinder-rescue for
-  each system. Most people need none of it: every installer carries both packages. The zip also
-  holds the packages for a player running Walkman One (`.nw-wm1a.upg`), which no release had
-  attached before, and a README saying which is which.
-- **The installer says which package it put on the player, and why**: `Package: Walkman One's
-  (nw-wm1a key) (the player reports Walkman One's key)`, or what it could not read and what it went
-  by instead. Sony's updater drops a package sealed for the wrong key without a word, so a report
-  of an install that "restarted after a few seconds" (#41) could not say which one it had been
-  given.
-
-### Fixed
-
 - **Installing on a player running Walkman One did nothing (#41).** Since 0.3.19 the installer
   has picked the Walkman One package on those players, but that package was sealed with the
   `nw-wm1a` key alone, and Walkman One's updater also wants Walkman One's own passkey. It refused
@@ -121,6 +107,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Library: an opt-in FOLDERS tab** (#45). Settings ▸ More settings ▸ Folders tab puts FOLDERS
+  at the end of the Library's tab strip; a tap opens the folder browser and Back comes back to the
+  Library. Off by default. The strip fits itself to the width: the gaps close first, then the text
+  shrinks, which also stops PLAYLISTS running to the edge at the largest text sizes.
+  *Device-unverified.*
 - **Save a report.** One button in the installer window (`cinder-installer --report` on the
   command line) saves `cinder-report.txt`, to attach to an issue: the player's install log,
   `exec.txt`, `cinderhome.log`, the component choices, Walkman One's boot log and settings, a
