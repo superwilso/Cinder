@@ -68,11 +68,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Sony's own player too, while Bluetooth plays; without it both work. The mono library inside
   Sony's sound service now logs which library each of its ALSA calls reaches and the first three
   jack writes that fail, with their error code, and those lines are copied into `cinderhome.log`.
-  Leading suspect, now removed: the library loaded `libsound_service_fw.wampy.so` whenever that file
-  existed. Only the retired `mono` component (before 0.3.22) made it, by moving Wampy's library
-  aside, and installing Wampy again afterwards leaves it behind where no install undoes it, so the
-  sound service got a stale second copy of Wampy, the active one where Wampy is not preloaded. The
-  file is now named in the log and never loaded. *Not proven on a device.*
+  The library also no longer loads a leftover `libsound_service_fw.wampy.so` (only the retired
+  `mono` component made one, and reinstalling Wampy could strand it). That was the suspect in rc5;
+  the reporter's player has no such file and the jack is still silent there, so the cause is open.
+  On that player the jack wrote audio without an error for two seconds before Bluetooth, and the
+  effects read back as sent after the disconnect; nothing was played after it, so the silent moment
+  is not in a log yet. Besides the mono library, the `preload` wrapper loads the AAC encoder into
+  Sony's Bluetooth service, the ATRAC switch into PlayerService and the FM recorder into
+  AudioInPlayerService, and each of them is a candidate.
 - **The AAC encoder's log reaches the report** (#44). Its start, stop and link lines are copied into
   `cinderhome.log`, and the stop line now counts how often it fell behind and sent frames back to
   back to catch up, and how far behind it got. Its own file in `/tmp` is now readable by Cinder.
