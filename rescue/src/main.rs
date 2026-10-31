@@ -518,7 +518,7 @@ fn restore(
         let mut dev_head = Vec::with_capacity(0x500000);
         mtk::read_user(&mut usb, 0, 0x500000, |c| Ok(dev_head.extend_from_slice(c)))?;
         backup::check_layout(&dev_head)
-            .map_err(|e| format!("the player's own partition table: {e}{stuck}"))?;
+            .map_err(|e| format!("the player's own partition table: {e}\nPut the table back too: restore `all` (Everything except your music).{stuck}"))?;
         sayln!("The player's partition table is an A50-series one");
     }
 
