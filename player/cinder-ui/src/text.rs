@@ -151,6 +151,9 @@ pub enum Weight {
 /// drawn, which is what the cache was always bounded by, and makes the render a pure function of
 /// the screen again. `f32` has no `Eq`/`Hash`, so the bits are the key — sizes come from the same
 /// arithmetic every frame, so equal sizes have equal bits.
+/// Entries before the glyph cache starts over. See `FontSet::glyph`.
+const GLYPH_CACHE_MAX: usize = 8192;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphKey {
     font: u8,
@@ -327,7 +330,7 @@ pub struct FontSet {
     // Rasterising a glyph allocates + does real work; the UI re-draws the same glyphs every frame
     // (especially while scrolling / the visualiser animates), so we cache (metrics, coverage
     // bitmap) per glyph. Single-threaded access (render runs under the cinder-ffi mutex), so a
-    // RefCell suffices. Bounded: ~ASCII × a handful of sizes × weights.
+    // RefCell suffices. Capped at GLYPH_CACHE_MAX.
     glyph_cache: RefCell<HashMap<GlyphKey, (Metrics, std::sync::Arc<Vec<u8>>)>>,
 }
 
@@ -536,7 +539,14 @@ impl FontSet {
         }
         let (m, bitmap) = font.rasterize(ch, size);
         let rc = std::sync::Arc::new(bitmap);
-        self.glyph_cache.borrow_mut().insert(key, (m, rc.clone()));
+        let mut cache = self.glyph_cache.borrow_mut();
+        // ponytail: drop-all at the cap, not LRU. Latin chrome is a few hundred entries; only a
+        // library full of distinct CJK titles gets here (~4 MB), and a redraw re-rasterises the
+        // same pixels because the key is the exact size.
+        if cache.len() >= GLYPH_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(key, (m, rc.clone()));
         (m, rc)
     }
 

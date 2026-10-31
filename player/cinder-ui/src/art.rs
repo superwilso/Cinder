@@ -578,7 +578,7 @@ thread_local! {
     /// rows that are actually on screen. See `block_cached`.
     static GRAD_CACHE: std::cell::RefCell<std::collections::HashMap<GradKey, (u64, Image)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
-    /// `scaled_cached`'s entries: 64 at 60 px is ~0.7 MB.
+    /// `scaled_cached`'s entries: 64 at 60 px is ~0.7 MB; at Big view's 132 px grid cover, ~3.3 MB.
     static SCALED: std::cell::RefCell<std::collections::HashMap<ScaleKey, (u64, Image)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Monotonic per-thread counter for the above. Wrapping is not a concern: at one tick per
