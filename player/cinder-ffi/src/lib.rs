@@ -1311,6 +1311,7 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("ignore_the={}\n", r.app.ignore_the() as u8));
     // The pull-down panel (Settings ▸ Pull-down panel), OFF unless switched on.
     body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
+    body.push_str(&format!("folders_tab={}\n", r.app.folders_tab() as u8));
     // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
     body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
     body.push_str(&format!(
@@ -2273,6 +2274,7 @@ fn build_library_with(
         sensme_tracks: 0,
         // The App's layouts, applied by `set_library` like `ignore_the`.
         views: Default::default(),
+        folders_tab: false,
         covers: Default::default(),
         books,
     };
@@ -2341,6 +2343,8 @@ fn build_folders(
     // `songs` is built from `tracks` in the same order (see the loop in build_library), so the two
     // index together — which is what lets the tree hold ready-made SongRows instead of rebuilding
     // them, and keeps a folder row identical to the same track's row anywhere else.
+    // Each track with its file name, which is what a folder sorts by (below).
+    let mut files: Vec<Vec<(&str, &cinder_ui::model::SongRow)>> = Vec::new();
     for (t, row) in tracks.iter().zip(songs.iter()) {
         let Some(cut) = t.filename.rfind('/') else {
             continue;
@@ -2349,7 +2353,15 @@ fn build_folders(
             continue; // a bare "/name" — no directory to file it under
         }
         let dir = intern(&t.filename[..cut], &mut idx, &mut out);
-        out[dir].tracks.push(row.clone());
+        files.resize_with(out.len(), Vec::new);
+        files[dir].push((&t.filename[cut + 1..], row));
+    }
+    // Tracks in FILE NAME order, as Sony's folder view has them (#45) — on a music folder that is
+    // track order, and it is the order the files are actually in on the volume, which is the whole
+    // point of browsing this way. This said so for months while sorting by track number and title.
+    for (dir, mut f) in files.into_iter().enumerate() {
+        f.sort_by(|a, b| cinder_ui::collate::cmp(a.0, b.0));
+        out[dir].tracks = f.into_iter().map(|(_, row)| row.clone()).collect();
     }
 
     // Totals: every directory counts its own tracks plus everything below. Walked from each
@@ -2372,14 +2384,8 @@ fn build_folders(
         }
     }
 
-    // Tracks in filename order — on a music folder that is track order, and it is the order the
-    // files are actually in on the volume, which is the whole point of browsing this way.
     // Subdirectories alphabetically, in the Library's one collation (case and accents folded).
     let names: Vec<String> = out.iter().map(|f| f.name.clone()).collect();
-    for f in out.iter_mut() {
-        f.tracks
-            .sort_by(|a, b| a.track.cmp(&b.track).then_with(|| a.title.cmp(&b.title)));
-    }
     for i in 0..out.len() {
         let mut subs = std::mem::take(&mut out[i].subdirs);
         subs.sort_by(|a, b| cinder_ui::collate::cmp(&names[*a], &names[*b]));
@@ -8270,6 +8276,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // `set_library` applies it to whatever library comes next.
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
+                    "folders_tab" => r.app.set_folders_tab(v == "1"),
                     "lib_views" => r.app.set_lib_views_str(v),
                     "style" => r.app.set_style_token(v),
                     "wsz" => r.skin_pref = v.to_string(),
@@ -10298,6 +10305,32 @@ mod tests {
     fn global_render() -> std::sync::MutexGuard<'static, ()> {
         static GLOBAL_RENDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
         GLOBAL_RENDER.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn a_folder_lists_its_tracks_in_file_name_order_not_tag_order() {
+        // Tags say B then A (track 1, 2); the files say A then B. A folder follows the files (#45).
+        let t = |name: &str, title: &str, track: i32| {
+            (
+                cinder_db::Track {
+                    filename: format!("/contents/MUSIC/Album/{name}"),
+                    ..Default::default()
+                },
+                cinder_ui::model::SongRow {
+                    title: title.into(),
+                    track,
+                    ..Default::default()
+                },
+            )
+        };
+        let (tracks, songs): (Vec<_>, Vec<_>) = [t("02 b.flac", "Bee", 1), t("01 a.flac", "Ay", 2)]
+            .into_iter()
+            .unzip();
+        let (folders, _) = super::build_folders(&tracks, &songs);
+        let album = folders.iter().find(|f| f.name == "Album").unwrap();
+        let titles: Vec<&str> = album.tracks.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, ["Ay", "Bee"]);
+        assert_eq!(album.total, 2);
     }
 
     /// `cinder_advanced.conf` is read as the shell reads it (main.cpp `adv_on`).

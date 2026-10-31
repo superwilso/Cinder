@@ -899,6 +899,37 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     0.39,
                 );
             }),
+            // Settings ▸ Folders tab on: FOLDERS at the end of the strip, which fits itself to the
+            // width (Big view is the case that has to close the gaps).
+            ("library_folders_tab", &|c: &mut Canvas| {
+                let mut l = lib.clone();
+                l.folders_tab = true;
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Albums,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &l,
+                    None,
+                    false,
+                    0,
+                    false,
+                );
+                cinder_ui::chrome::np_bar(
+                    c,
+                    &theme,
+                    &fonts,
+                    "Atlas Hands",
+                    "Benjamin Francis Leftwich",
+                    true,
+                    0.39,
+                );
+            }),
             // Songs sorted by ADDED (sort chip index 4) — shows the SORT chip label + reorder.
             ("library_songs_added", &|c: &mut Canvas| {
                 library::render(
@@ -1355,6 +1386,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         shuffle_by: "SONGS",
                         ignore_the: false,
                         quick: false,
+                        folders_tab: false,
                         volume_limit: false,
                         big_view: false,
                         usb_dac: false,
@@ -2191,6 +2223,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     shuffle_by: "SONGS",
                     ignore_the: false,
                     quick: false,
+                    folders_tab: false,
                     volume_limit: false,
                     big_view: false,
                     usb_dac: false,
@@ -2228,6 +2261,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     shuffle_by: "SONGS",
                     ignore_the: false,
                     quick: false,
+                    folders_tab: false,
                     volume_limit: false,
                     big_view: false,
                     usb_dac: false,

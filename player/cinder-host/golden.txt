@@ -40,6 +40,7 @@ d32dd86eb5746d53 playlist_pick_day
 4a104027e4326b13 track_pick_search_day
 af41306baad49a63 up_next_remove_day
 8305bed1d5e93388 library_songs_day
+fb0f0d4ec40c8ff8 library_folders_tab_day
 6e1914e41827cbd5 library_songs_added_day
 915da92cdaf0a146 library_songs_band_half_day
 35bef0d2690e2b46 library_songs_band_hidden_day
@@ -150,6 +151,7 @@ b65cc69131d80ea4 track_pick_night
 8c9adbccdab7bd52 track_pick_search_night
 792a1091879c2797 up_next_remove_night
 cc3c5bc4d33ef129 library_songs_night
+fa63628b400e27f6 library_folders_tab_night
 92f7bb4e435ce288 library_songs_added_night
 bb47487baa635a64 library_songs_band_half_night
 0c4a6fd4a0ffb104 library_songs_band_hidden_night
@@ -227,7 +229,7 @@ bd7592573ca3520d library_playlists_grid_night
 2513c2d1b1efb6b5 viz_size_2_full
 100e956cc7eb8de9 confirm_restart
 4deda50c0f517f6d confirm_poweroff
-a1199150b1d665e1 settings_scrolled
+c8595c396d131a08 settings_scrolled
 5dd66b36c95c03b2 device
 7f57e56560f6b8e8 storage
 ee4c891f9f9ade65 storage_end
@@ -348,7 +350,7 @@ d851e59ec26950fd uiscale_120_receiver_auto
 a4b2574ff192c824 uiscale_120_receiver_aac
 3570d285f3cf1e76 uiscale_120_receiver_sbc
 c7018cafb4aaa131 uiscale_120_settings_bottom
-45f020481dd143a9 uiscale_140_library
+5436dee7e83680b5 uiscale_140_library
 6b2c9526e073bd81 uiscale_140_settings
 2aad1fee0b14564b uiscale_140_display
 360c7d3b32c1c645 uiscale_140_bluetooth

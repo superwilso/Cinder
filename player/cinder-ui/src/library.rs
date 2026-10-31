@@ -1762,46 +1762,74 @@ pub fn tab_hit_bottom(hide: i32) -> i32 {
 /// left half selected SONGS; "ARTISTS" (≈176..247) and "PLAYLISTS" (≈269..360) were off in the
 /// same direction. Deriving both from one function fixes that — and keeps it fixed at any UI
 /// text scale, where fixed thresholds would drift much further.
-pub fn tab_layout(f: &FontSet) -> Vec<(Tab, f32, f32)> {
-    let mut out = Vec::with_capacity(TABS.len());
-    let mut x = 22.0;
-    for (tab, label) in TABS {
-        let label = crate::i18n::text(label);
-        let st = sty(
-            Family::Mono,
-            Weight::Regular,
-            14.0,
-            Rgb888::new(0, 0, 0),
-            0.12,
-        );
-        let w = text::measure(f, label, &st);
-        out.push((tab, x, w));
-        x += w + 22.0;
+/// The tab strip's labels: the four tabs, then FOLDERS (`None`) when Settings ▸ Folders tab is on.
+/// FOLDERS is a link, not a tab: it opens the folder browser instead of switching the list.
+fn strip_labels(folders: bool) -> Vec<(Option<Tab>, &'static str)> {
+    let mut v: Vec<_> = TABS
+        .iter()
+        .map(|&(t, l)| (Some(t), crate::i18n::text(l)))
+        .collect();
+    if folders {
+        v.push((None, crate::i18n::text("FOLDERS")));
     }
-    out
+    v
 }
 
-fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab) -> i32 {
-    for (tab, x, w) in tab_layout(f) {
-        let on = tab == active;
+/// The strip's text size and `(slot, x, width)` per label. Four labels fit at 14 px with 22 px
+/// gaps; five may not (Big view, long translations), so the gaps close to 12 and then the text
+/// shrinks until the strip fits between the 22 px margins.
+fn strip_fit(f: &FontSet, folders: bool) -> (f32, Vec<(Option<Tab>, f32, f32)>) {
+    let labels = strip_labels(folders);
+    let st = |size| {
+        sty(
+            Family::Mono,
+            Weight::Regular,
+            size,
+            Rgb888::new(0, 0, 0),
+            0.12,
+        )
+    };
+    let widths: Vec<f32> = labels
+        .iter()
+        .map(|(_, l)| text::measure(f, l, &st(14.0)))
+        .collect();
+    let sum: f32 = widths.iter().sum();
+    let gaps = (labels.len() - 1) as f32;
+    let room = W as f32 - 44.0;
+    let (size, gap, scale) = if sum + 22.0 * gaps <= room {
+        (14.0, 22.0, 1.0)
+    } else if sum + 12.0 * gaps <= room {
+        (14.0, (room - sum) / gaps, 1.0)
+    } else {
+        let k = (room - 12.0 * gaps) / sum;
+        (14.0 * k, 12.0, k)
+    };
+    let mut x = 22.0;
+    let mut out = Vec::with_capacity(labels.len());
+    for ((slot, _), w) in labels.iter().zip(&widths) {
+        let w = w * scale;
+        out.push((*slot, x, w));
+        x += w + gap;
+    }
+    (size, out)
+}
+
+pub fn tab_layout(f: &FontSet, folders: bool) -> Vec<(Option<Tab>, f32, f32)> {
+    strip_fit(f, folders).1
+}
+
+fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab, folders: bool) -> i32 {
+    let (size, layout) = strip_fit(f, folders);
+    for ((tab, x, w), (_, label)) in layout.into_iter().zip(strip_labels(folders)) {
+        let on = tab == Some(active);
         let st = sty(
             Family::Mono,
             Weight::Regular,
-            14.0,
+            size,
             if on { t.acc } else { t.faint },
             0.12,
         );
-        text::draw(
-            c,
-            f,
-            x,
-            (y0 + 20) as f32,
-            TABS.iter()
-                .find(|(tt, _)| *tt == tab)
-                .map(|(_, l)| crate::i18n::text(l))
-                .unwrap_or(""),
-            &st,
-        );
+        text::draw(c, f, x, (y0 + 20) as f32, label, &st);
         if on {
             fill_rect(c, x as i32, y0 + 32, w as i32, 2, t.acc);
         }
@@ -2205,7 +2233,7 @@ pub fn render(
         crate::chrome::mode_switch(c, t, f, false);
     }
     view_icon(c, ((vx0 + vx1) / 2) as f32, 62.0, view_of(lib, tab), t.dim);
-    let yt = tabs(c, t, f, y0, tab);
+    let yt = tabs(c, t, f, y0, tab, lib.folders_tab);
     let total = row_count(tab, lib);
     band_block(c, t, f, tab, lib, yt, hide);
 

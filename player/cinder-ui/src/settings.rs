@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 24;
+pub const ROWS: usize = 25;
 /// Rows shown while the list is folded: the everyday ones and `ROW_MORE` itself.
 pub const EVERYDAY: usize = 11;
 /// More settings: unfolds every row after it, in place, and folds them away again.
@@ -43,7 +43,7 @@ pub const ROW_SCREEN_OFF: usize = 3;
 /// night and the sleep timer. Asked for on the r/walkman thread; OFF by default, because the owner
 /// uses the Shelf and a new gesture must never arrive unasked (`docs/PLAN_community_2026-09-23.md`
 /// B1). With it off there is no gesture and nothing else on any screen changes.
-pub const ROW_QUICK: usize = 16;
+pub const ROW_QUICK: usize = 17;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -53,7 +53,7 @@ pub const ROW_QUICK: usize = 16;
 /// directly; the flag would be a control that accepts a write and changes nothing, which is
 /// exactly what "High gain output" turned out to be (see sound.rs). So the shell reads Sony's
 /// number and clamps in its own `apply_volume`.
-pub const ROW_VOLUME_LIMIT: usize = 15;
+pub const ROW_VOLUME_LIMIT: usize = 16;
 pub const ROW_SLEEP: usize = 4;
 /// What the shuffle button deals: SONGS (every track at random, as always), ALBUMS (whole albums
 /// at random, each in its own order) or ARTISTS. `shuffle.rs`. SONGS by default, so the button
@@ -64,17 +64,21 @@ pub const ROW_SHUFFLE: usize = 5;
 /// sort as written. Titles and album names keep their "The" either way. See `collate`.
 pub const ROW_IGNORE_THE: usize = 11;
 pub const ROW_DATABASE: usize = 12;
+/// Folders tab: a FOLDERS link at the end of the Library's tab strip that opens the folder browser
+/// (#45, asked for on GitHub). OFF by default, like every community-asked UI change: with it off the
+/// strip is exactly the four tabs it always was.
+pub const ROW_FOLDERS_TAB: usize = 13;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. 30 MIN by default since 2026-10-04 (it was OFF): the owner's rule
 /// is that no state may drain a player nobody is using. OFF is one tap away.
-pub const ROW_AUTO_OFF: usize = 13;
+pub const ROW_AUTO_OFF: usize = 14;
 /// Bluetooth auto off: switch the radio off after ten minutes of a dark screen with nothing
 /// playing over it. The radio (and a link carrying nothing) costs power for as long as it is up,
 /// and nothing but the user ever switched it off. ON by default since 2026-10-04, like Auto power
 /// off. It does not come back by itself.
-pub const ROW_BT_IDLE_OFF: usize = 14;
-pub const ROW_STORAGE: usize = 17;
+pub const ROW_BT_IDLE_OFF: usize = 15;
+pub const ROW_STORAGE: usize = 18;
 pub const ROW_BATTERY: usize = 7;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
@@ -84,20 +88,20 @@ pub const ROW_CLOCK: usize = 6;
 pub const ROW_USB_MODE: usize = 8; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 18;
+pub const ROW_BOOT_STOCK: usize = 19;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 19;
+pub const ROW_RESTART: usize = 20;
 pub const ROW_POWER_OFF: usize = 9;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 20;
+pub const ROW_RESET: usize = 21;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_LANGUAGE: usize = 21;
-pub const ROW_FIRMWARE: usize = 22;
-pub const ROW_MODEL: usize = 23;
+pub const ROW_LANGUAGE: usize = 22;
+pub const ROW_FIRMWARE: usize = 23;
+pub const ROW_MODEL: usize = 24;
 
 #[allow(non_snake_case)]
 fn RH() -> i32 {
@@ -109,7 +113,7 @@ fn RH() -> i32 {
 /// The first group is the everyday list and has no label: a list that fits the screen needs none.
 const SECTIONS: [(&str, usize); 5] = [
     ("", EVERYDAY),
-    ("LIBRARY", 2),
+    ("LIBRARY", 3),
     ("POWER SAVING", 2),
     ("SYSTEM", 7),
     ("ABOUT", 2),
@@ -189,6 +193,8 @@ pub struct SettingsView<'a> {
     pub ignore_the: bool,
     /// The pull-down panel is switched on (`ROW_QUICK`).
     pub quick: bool,
+    /// The Library's FOLDERS link is switched on (`ROW_FOLDERS_TAB`).
+    pub folders_tab: bool,
     /// What shuffle deals (`ROW_SHUFFLE`): "SONGS", "ALBUMS" or "ARTISTS".
     pub shuffle_by: &'a str,
     /// More settings is unfolded (`ROW_MORE`).
@@ -280,6 +286,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_BRIGHTNESS => Trail::Value(v.brightness),
         ROW_SCREEN_OFF => Trail::Value(v.screen_off),
         ROW_QUICK => Trail::Switch(v.quick),
+        ROW_FOLDERS_TAB => Trail::Switch(v.folders_tab),
         ROW_BIG => Trail::Switch(v.big_view),
         // The volume limit is a value row rather than a switch because the interesting half is
         // WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number the
@@ -335,6 +342,7 @@ fn title(r: usize) -> &'static str {
         ROW_BRIGHTNESS => crate::i18n::text("Brightness"),
         ROW_SCREEN_OFF => crate::i18n::text("Screen-off timer"),
         ROW_QUICK => crate::i18n::text("Pull-down panel"),
+        ROW_FOLDERS_TAB => crate::i18n::text("Folders tab"),
         ROW_BIG => crate::i18n::text("Big view"),
         ROW_VOLUME_LIMIT => crate::i18n::text("Volume limit"),
         ROW_SLEEP => crate::i18n::text("Sleep timer"),
@@ -433,6 +441,7 @@ mod tests {
         SettingsView {
             volume_limit: false,
             big_view: false,
+            folders_tab: false,
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",
