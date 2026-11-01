@@ -1320,6 +1320,19 @@ fn settings_body(r: &Render) -> String {
         down.token()
     ));
     body.push_str(&format!("np_button={}\n", r.app.np_button().token()));
+    // Night's schedule. Night itself is not saved (every boot starts in day, see "night" in the
+    // loader); with the schedule on, the first clock tick puts it where the hour says.
+    let (on, from, until) = r.app.night_schedule();
+    body.push_str(&format!(
+        "night_sched={}\nnight_from={from}\nnight_until={until}\n",
+        on as u8
+    ));
+    // Big view's two extras (#51): the bigger top bar and bigger icons.
+    body.push_str(&format!(
+        "big_bar={}\nbig_icons={}\n",
+        cinder_ui::scale::big_bar_set() as u8,
+        cinder_ui::scale::big_icons_set() as u8
+    ));
     // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
     body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
     body.push_str(&format!(
@@ -7952,6 +7965,36 @@ pub extern "C" fn cinder_toast_key(key: *const c_char) {
     }
 }
 
+/// Night on a schedule (Settings ▸ Display ▸ Night schedule): call ~1x/sec. Returns
+/// CINDER_ACT_THEME_CHANGED when Night just came on or went off, for the shell to set the
+/// backlight as it does for the switch; CINDER_ACT_NONE otherwise.
+#[no_mangle]
+pub extern "C" fn cinder_night_tick() -> libc::c_int {
+    let minute = unsafe {
+        let mut t: libc::time_t = 0;
+        libc::time(&mut t);
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return 0;
+        }
+        (tm.tm_hour * 60 + tm.tm_min) as u16
+    };
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let actions = r.app.night_schedule_tick(minute);
+    let mut code = 0;
+    for a in &actions {
+        if let Some(c) = carry_action(r, a) {
+            code = c;
+        }
+    }
+    if !actions.is_empty() {
+        r.night = r.app.night;
+        r.dirty = true;
+    }
+    code
+}
+
 /// Refresh the status-bar / lock-screen clock from the system's local time (call ~1x/sec from
 /// the pump). Only repaints when the minute actually changes (dirty-flag friendly).
 #[no_mangle]
@@ -8298,6 +8341,17 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
                     "folders_tab" => r.app.set_folders_tab(v == "1"),
+                    "big_bar" => cinder_ui::scale::set_big_bar(v == "1"),
+                    "big_icons" => cinder_ui::scale::set_big_icons(v == "1"),
+                    "night_sched" | "night_from" | "night_until" => {
+                        let (mut on, mut from, mut until) = r.app.night_schedule();
+                        match k {
+                            "night_sched" => on = v == "1",
+                            "night_from" => from = v.parse().unwrap_or(from),
+                            _ => until = v.parse().unwrap_or(until),
+                        }
+                        r.app.set_night_schedule(on, from, until);
+                    }
                     "np_button" => r
                         .app
                         .set_np_button(cinder_ui::now_playing::NpButton::from_token(v)),

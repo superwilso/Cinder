@@ -159,14 +159,20 @@ fn zone_slab(wx: f32, text_w: f32) -> (i32, i32) {
 }
 
 pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &str, battery: u8) {
+    // Big view ▸ Bigger top bar (#51) grows the clock, the battery, the ☰ and the bookmark by a
+    // quarter; the codec badge keeps its size so the zone left of the ☰ still holds it. The strip
+    // sizes its own glyphs, so Bigger icons is held off here. With it off, `k` is 1 and every
+    // number below is what it always was.
+    let _own_sizes = crate::scale::IconsExempt::new(true);
+    let k = if crate::scale::big_bar() { 1.25 } else { 1.0 };
     // left: clock + codec badge + (NIGHT)
     let cx = text::draw(
         c,
         f,
         18.0,
-        27.0,
+        27.0 + (k - 1.0) * 6.0,
         clock,
-        &sty(Family::Mono, Weight::Regular, 15.0, t.dim, 0.06),
+        &sty(Family::Mono, Weight::Regular, 15.0 * k, t.dim, 0.06),
     );
     // Skip the whole badge when there is no codec string. Drawing it unconditionally left a bare
     // 12px accent-stroked rectangle floating next to the clock whenever nothing was loaded —
@@ -246,23 +252,33 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
     // right: menu ≡, bookmark, bt, [battery].
     // The ≡ sits LEFT of the Shelf zone on purpose: the whole strip opens the Menu, so the glyph
     // only has to be outside SHELF_CX ± SHELF_HALF_W for "tap the ≡" to mean what it looks like.
-    icons::menu(c, MENU_CX, STATUS_MID, MENU_W, t.dim);
-    icons::bookmark(c, SHELF_CX as f32, STATUS_MID, 23.0, t.dim);
+    icons::menu(c, MENU_CX, STATUS_MID, MENU_W * k, t.dim);
+    icons::bookmark(c, SHELF_CX as f32, STATUS_MID, 23.0 * k, t.dim);
     let batt = format!("{}", battery);
-    let bs = sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.04);
+    let bs = sty(Family::Mono, Weight::Regular, 13.0 * k, t.faint, 0.04);
     let bwid = text::measure(f, &batt, &bs);
-    text::draw(c, f, 448.0 - bwid, 27.0, &batt, &bs);
-    Rectangle::new(Point::new(452, 15), Size::new(18, 13))
+    // The battery's outline keeps its right edge at the nub and grows left and both ways in y.
+    let (bw, bh) = ((18.0 * k) as i32, (13.0 * k) as i32);
+    let (bx0, by0) = (470 - bw, 15 + (13 - bh) / 2);
+    text::draw(
+        c,
+        f,
+        (bx0 - 4) as f32 - bwid,
+        27.0 + (k - 1.0) * 6.0,
+        &batt,
+        &bs,
+    );
+    Rectangle::new(Point::new(bx0, by0), Size::new(bw as u32, bh as u32))
         .into_styled(PrimitiveStyle::with_stroke(t.faint, 1))
         .draw(c)
         .ok();
-    fill_rect(c, 470, 19, 2, 5, t.faint); // nub
+    fill_rect(c, 470, by0 + (bh - 5) / 2, 2, 5, t.faint); // nub
     fill_rect(
         c,
-        454,
-        17,
-        (14.0 * battery as f32 / 100.0) as i32,
-        9,
+        bx0 + 2,
+        by0 + 2,
+        ((bw - 4) as f32 * battery as f32 / 100.0) as i32,
+        bh - 4,
         t.faint,
     ); // charge
 }

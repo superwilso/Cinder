@@ -508,23 +508,26 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("onboard_0_welcome", &|c: &mut Canvas| {
                 cinder_ui::onboarding::render(c, &theme, &fonts, 0)
             }),
-            ("onboard_1_getting_around", &|c: &mut Canvas| {
+            ("onboard_1_make_it_yours", &|c: &mut Canvas| {
                 cinder_ui::onboarding::render(c, &theme, &fonts, 1)
             }),
-            ("onboard_2_buttons", &|c: &mut Canvas| {
+            ("onboard_2_getting_around", &|c: &mut Canvas| {
                 cinder_ui::onboarding::render(c, &theme, &fonts, 2)
             }),
-            ("onboard_3_playing", &|c: &mut Canvas| {
+            ("onboard_3_buttons", &|c: &mut Canvas| {
                 cinder_ui::onboarding::render(c, &theme, &fonts, 3)
             }),
-            ("onboard_4_gestures", &|c: &mut Canvas| {
+            ("onboard_4_playing", &|c: &mut Canvas| {
                 cinder_ui::onboarding::render(c, &theme, &fonts, 4)
             }),
-            ("onboard_5_features", &|c: &mut Canvas| {
+            ("onboard_5_gestures", &|c: &mut Canvas| {
                 cinder_ui::onboarding::render(c, &theme, &fonts, 5)
             }),
-            ("onboard_6_done", &|c: &mut Canvas| {
+            ("onboard_6_features", &|c: &mut Canvas| {
                 cinder_ui::onboarding::render(c, &theme, &fonts, 6)
+            }),
+            ("onboard_7_done", &|c: &mut Canvas| {
+                cinder_ui::onboarding::render(c, &theme, &fonts, 7)
             }),
             ("shelf", &|c: &mut Canvas| {
                 now_playing::render(c, &theme, &fonts, &np);
@@ -1392,6 +1395,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         np_button: cinder_ui::now_playing::NpButton::Bluetooth,
                         volume_limit: false,
                         big_view: false,
+                        big_bar: false,
+                        big_icons: false,
                         usb_dac: false,
                         battery_care: true,
                         device: "99% · 34.4 °C",
@@ -1419,6 +1424,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         accent_locked: pal_locked,
                         accent: cinder_ui::Accent::Amber,
                         night: theme.night,
+                        night_sched: false,
+                        night_from: cinder_ui::display::NIGHT_FROM_DEFAULT,
+                        night_until: cinder_ui::display::NIGHT_UNTIL_DEFAULT,
                         volume_hud: 1,
                         viz: "BARS · VEIL",
                         style: cinder_ui::style::Style::Cinder,
@@ -2232,6 +2240,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     np_button: cinder_ui::now_playing::NpButton::Bluetooth,
                     volume_limit: false,
                     big_view: false,
+                    big_bar: false,
+                    big_icons: false,
                     usb_dac: false,
                     battery_care: true,
                     device: "99% · 34.4 °C",
@@ -2273,6 +2283,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     np_button: cinder_ui::now_playing::NpButton::Bluetooth,
                     volume_limit: false,
                     big_view: false,
+                    big_bar: false,
+                    big_icons: false,
                     usb_dac: false,
                     battery_care: true,
                     device: "99% · 34.4 °C",
@@ -2652,6 +2664,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 accent_locked: pal_locked,
                 accent: a,
                 night: false,
+                night_sched: false,
+                night_from: cinder_ui::display::NIGHT_FROM_DEFAULT,
+                night_until: cinder_ui::display::NIGHT_UNTIL_DEFAULT,
                 volume_hud: 0,
                 viz: "BARS · VEIL",
                 style: cinder_ui::style::Style::Cinder,
@@ -3878,6 +3893,41 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         }
         app.set_big_view(false);
         base_scale();
+    }
+
+    // Big view's two extras on (#51): the bigger top bar and bigger icons. LAST, for the
+    // glyph-cache reason above: the bigger clock and battery are sizes nothing else draws.
+    {
+        use cinder_ui::nav::Screen;
+        cinder_ui::scale::set_big_bar(true);
+        cinder_ui::scale::set_big_icons(true);
+        for (name, screen) in [
+            ("big_extras_settings", Screen::Settings),
+            ("big_extras_library", Screen::Library),
+        ] {
+            let mut app = new_app();
+            app.set_big_view(true);
+            app.go_for_preview(screen);
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, name);
+            app.set_big_view(false);
+        }
+        cinder_ui::scale::set_big_bar(false);
+        cinder_ui::scale::set_big_icons(false);
+        base_scale();
+    }
+
+    // Display ▸ Night on Auto: Starts and Ends come onto the page. Last, like the block above.
+    {
+        use cinder_ui::nav::Screen;
+        let mut app = new_app();
+        app.set_night_schedule(true, 21 * 60, 7 * 60);
+        app.go_for_preview(Screen::Display);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "display_night_auto");
+        app.set_night_schedule(false, 21 * 60, 7 * 60);
     }
 }
 

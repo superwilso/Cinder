@@ -1361,6 +1361,12 @@ pub struct App {
     settings_sel: usize,
     /// Settings ▸ Display cursor.
     display_sel: usize,
+    /// Night on a schedule (Settings ▸ Display ▸ Night schedule): on, its times in minutes after
+    /// midnight, and which side of them the last tick found, so it acts only at the two edges.
+    night_sched: bool,
+    night_from: u16,
+    night_until: u16,
+    night_in_window: Option<bool>,
     /// What the player opens on: an index into `menu::HOMES` (Library, Now Playing, Menu, Last
     /// screen). Chosen on the Menu (handoff 5a). Persisted as `home_screen=<word>`.
     home_screen: u8,
@@ -1988,6 +1994,10 @@ impl Default for App {
             np_page: 0,
             settings_sel: 0,
             display_sel: 0,
+            night_sched: false,
+            night_from: crate::display::NIGHT_FROM_DEFAULT,
+            night_until: crate::display::NIGHT_UNTIL_DEFAULT,
+            night_in_window: None,
             home_screen: HOME_LIBRARY,
             home_last: None,
             browse_books: false,
@@ -2770,6 +2780,89 @@ impl App {
             SwipeTo::Folders => self.open_folders(),
         }
         true
+    }
+
+    /// Night's schedule, for the settings file: on, starts, ends (minutes after midnight).
+    pub fn night_schedule(&self) -> (bool, u16, u16) {
+        (self.night_sched, self.night_from, self.night_until)
+    }
+
+    pub fn set_night_schedule(&mut self, on: bool, from: u16, until: u16) {
+        self.night_sched = on;
+        crate::display::set_schedule_shown(on);
+        self.night_from = from.min(24 * 60 - 1);
+        self.night_until = until.min(24 * 60 - 1);
+        self.night_in_window = None;
+    }
+
+    /// Display ▸ Night's chip: 0 Off, 1 On, 2 Auto (the schedule).
+    fn night_mode(&self) -> usize {
+        if self.night_sched {
+            2
+        } else {
+            usize::from(self.night)
+        }
+    }
+
+    /// Pick Off, On or Auto. Auto acts on the next clock tick, within a second.
+    fn set_night_mode(&mut self, mode: usize) -> Vec<Action> {
+        self.night_sched = mode == 2;
+        self.night_in_window = None;
+        crate::display::set_schedule_shown(self.night_sched);
+        let want = mode == 1;
+        if self.night_sched || self.night == want {
+            return vec![];
+        }
+        self.night = want;
+        vec![Action::ThemeChanged(want)]
+    }
+
+    /// The clock reached `minute` (after midnight, local). With the schedule on, Night follows it
+    /// at the two edges only, as a phone's night mode does: on at Starts, off at Ends, and a hand
+    /// on the switch in between holds until the next edge. The first tick after boot, or after the
+    /// schedule changed, counts as an edge, so the player wakes into the right one.
+    pub fn night_schedule_tick(&mut self, minute: u16) -> Vec<Action> {
+        if !self.night_sched {
+            self.night_in_window = None;
+            return vec![];
+        }
+        let inside = crate::display::in_night_window(minute, self.night_from, self.night_until);
+        if self.night_in_window == Some(inside) {
+            return vec![];
+        }
+        self.night_in_window = Some(inside);
+        if self.night == inside {
+            return vec![];
+        }
+        self.night = inside;
+        vec![Action::ThemeChanged(inside)]
+    }
+
+    /// A "Make it yours" row in the introduction: the same switch as its Settings row.
+    fn onboarding_choice(&mut self, choice: crate::onboarding::Choice) -> Vec<Action> {
+        use crate::onboarding::Choice;
+        match choice {
+            Choice::Big => {
+                self.set_big_view(!crate::scale::large());
+                vec![Action::UiScaleChanged]
+            }
+            Choice::Bar => {
+                crate::scale::set_big_bar(!crate::scale::big_bar_set());
+                vec![Action::UiScaleChanged]
+            }
+            Choice::Icons => {
+                crate::scale::set_big_icons(!crate::scale::big_icons_set());
+                vec![Action::UiScaleChanged]
+            }
+            Choice::Quick => {
+                self.set_quick_enabled(!self.quick_enabled);
+                vec![]
+            }
+            Choice::Folders => {
+                self.set_folders_tab(!self.folders_tab);
+                vec![]
+            }
+        }
     }
 
     /// Now Playing's third toolbar button, for the settings file.
@@ -4118,9 +4211,20 @@ impl App {
                 }
                 vec![]
             }
-            crate::display::ROW_NIGHT => {
-                self.night = !self.night;
-                vec![Action::ThemeChanged(self.night)]
+            crate::display::ROW_NIGHT => self.set_night_mode((self.night_mode() + 1) % 3),
+            // The schedule's rows take effect on the next clock tick (within a second): a changed
+            // window is looked at afresh, so a schedule switched on at 22:00 brings Night on now.
+            crate::display::ROW_NIGHT_FROM => {
+                self.night_from =
+                    crate::display::next_time(&crate::display::NIGHT_STARTS, self.night_from);
+                self.night_in_window = None;
+                vec![]
+            }
+            crate::display::ROW_NIGHT_UNTIL => {
+                self.night_until =
+                    crate::display::next_time(&crate::display::NIGHT_ENDS, self.night_until);
+                self.night_in_window = None;
+                vec![]
             }
             crate::display::ROW_VOLUME => {
                 self.volume_hud = (self.volume_hud + 1) % crate::display::VOLUME_HUDS.len() as u8;
@@ -4205,6 +4309,14 @@ impl App {
             crate::settings::ROW_BIG => {
                 let on = !crate::scale::large();
                 self.set_big_view(on);
+                vec![Action::UiScaleChanged]
+            }
+            crate::settings::ROW_BIG_BAR => {
+                crate::scale::set_big_bar(!crate::scale::big_bar_set());
+                vec![Action::UiScaleChanged]
+            }
+            crate::settings::ROW_BIG_ICONS => {
+                crate::scale::set_big_icons(!crate::scale::big_icons_set());
                 vec![Action::UiScaleChanged]
             }
             crate::settings::ROW_QUICK => {
@@ -4666,8 +4778,14 @@ impl App {
             }
             return vec![];
         }
-        // Onboarding owns the screen: right ~60% = next/finish, left = previous page.
+        // Onboarding owns the screen: right ~60% = next/finish, left = previous page. On "Make it
+        // yours" a row is a switch first; the rest of the page still turns it.
         if matches!(self.current(), Screen::Onboarding) {
+            if self.onboarding_page == crate::onboarding::CHOICES_PAGE {
+                if let Some(choice) = crate::onboarding::choice_at(y) {
+                    return self.onboarding_choice(choice);
+                }
+            }
             if x > (W as i32) * 2 / 5 {
                 if self.onboarding_page + 1 < crate::onboarding::PAGES {
                     self.onboarding_page += 1;
@@ -5195,6 +5313,10 @@ impl App {
                     return vec![];
                 }
                 let y = y + self.display_scroll();
+                if let Some(i) = crate::display::night_chip_at(x, y) {
+                    self.display_sel = crate::display::ROW_NIGHT;
+                    return self.set_night_mode(i);
+                }
                 // A swatch tap picks that accent directly. Checked first because it lives inside
                 // the Accent row's band, and falling through to `display_activate` would advance
                 // the cycle by one instead of honouring the colour under the finger. Not while the
@@ -5239,8 +5361,12 @@ impl App {
                         crate::text::set_scale_idx(crate::display::size_idx_at(x));
                         return vec![Action::UiScaleChanged];
                     }
-                    // The chips ARE the Volume and Style rows; a tap on a margin chooses nothing.
-                    if row == crate::display::ROW_VOLUME || row == crate::display::ROW_STYLE {
+                    // The chips ARE the Night, Volume and Style rows; a tap on a margin chooses
+                    // nothing.
+                    if row == crate::display::ROW_NIGHT
+                        || row == crate::display::ROW_VOLUME
+                        || row == crate::display::ROW_STYLE
+                    {
                         return vec![];
                     }
                     return self.display_activate();
@@ -9706,18 +9832,26 @@ impl App {
             }
             Screen::Settings => match b {
                 Button::Up => {
-                    self.settings_sel = self.settings_sel.saturating_sub(1);
-                    if self.settings_sel == crate::settings::ROW_LANGUAGE && !self.settings_lang() {
-                        self.settings_sel -= 1;
+                    let lang = self.settings_lang();
+                    let mut r = self.settings_sel;
+                    while r > 0 {
+                        r -= 1;
+                        if crate::settings::shown(r, lang) {
+                            self.settings_sel = r;
+                            break;
+                        }
                     }
                     vec![]
                 }
                 Button::Down => {
-                    if self.settings_sel + 1 < crate::settings::rows(self.settings_more) {
-                        self.settings_sel += 1;
-                    }
-                    if self.settings_sel == crate::settings::ROW_LANGUAGE && !self.settings_lang() {
-                        self.settings_sel += 1;
+                    let lang = self.settings_lang();
+                    let mut r = self.settings_sel;
+                    while r + 1 < crate::settings::rows(self.settings_more) {
+                        r += 1;
+                        if crate::settings::shown(r, lang) {
+                            self.settings_sel = r;
+                            break;
+                        }
                     }
                     vec![]
                 }
@@ -9730,13 +9864,21 @@ impl App {
                 _ => vec![],
             },
             Screen::Display => match b {
+                // Starts and Ends are stepped over unless Night is on Auto.
                 Button::Up => {
-                    self.display_sel = self.display_sel.saturating_sub(1);
+                    if let Some(r) = (0..self.display_sel)
+                        .rev()
+                        .find(|&r| crate::display::shown(r))
+                    {
+                        self.display_sel = r;
+                    }
                     vec![]
                 }
                 Button::Down => {
-                    if self.display_sel + 1 < crate::display::ROWS {
-                        self.display_sel += 1;
+                    if let Some(r) = (self.display_sel + 1..crate::display::ROWS)
+                        .find(|&r| crate::display::shown(r))
+                    {
+                        self.display_sel = r;
                     }
                     vec![]
                 }
@@ -9968,6 +10110,12 @@ impl App {
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
         crate::now_playing::set_button(self.np_button);
+        // Now Playing grows its own controls with Big view, and onboarding is drawn to fit, so
+        // Bigger icons stays out of both (`scale::IconsExempt`).
+        let _own_sizes = crate::scale::IconsExempt::new(matches!(
+            self.current(),
+            Screen::NowPlaying | Screen::Onboarding
+        ));
         let _language = crate::i18n::enter(self.language);
         self.reconcile_playing(np.playing);
         // The shell owns the shuffle flag; the MIX chip only needs to know which way it points.
@@ -10304,7 +10452,19 @@ impl App {
                     self.search_enabled,
                 ),
             },
-            Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
+            Screen::Onboarding => crate::onboarding::render_with(
+                c,
+                &theme,
+                fonts,
+                self.onboarding_page,
+                &crate::onboarding::Choices {
+                    big: crate::scale::large(),
+                    bar: crate::scale::big_bar_set(),
+                    icons: crate::scale::big_icons_set(),
+                    quick: self.quick_enabled,
+                    folders: self.folders_tab,
+                },
+            ),
             Screen::Help => {
                 crate::help::render(c, &theme, fonts, self.help_scroll_px, self.quick_enabled)
             }
@@ -10790,6 +10950,8 @@ impl App {
                 let view = crate::settings::SettingsView {
                     volume_limit: self.volume_limit,
                     big_view: crate::scale::large(),
+                    big_bar: crate::scale::big_bar_set(),
+                    big_icons: crate::scale::big_icons_set(),
                     ignore_the: self.ignore_the,
                     quick: self.quick_enabled,
                     folders_tab: self.folders_tab,
@@ -10833,6 +10995,9 @@ impl App {
                     accent_locked: self.palette_pins_accent(),
                     accent: self.accent,
                     night: self.night,
+                    night_sched: self.night_sched,
+                    night_from: self.night_from,
+                    night_until: self.night_until,
                     volume_hud: self.volume_hud,
                     viz: &viz_lbl,
                     style: self.style,
@@ -15021,7 +15186,9 @@ mod tests {
         hit.sort();
         assert_eq!(
             hit,
-            (0..ROWS).collect::<Vec<_>>(),
+            (0..ROWS)
+                .filter(|r| crate::settings::shown(*r, true))
+                .collect::<Vec<_>>(),
             "some rows can never be tapped"
         );
     }
@@ -17947,6 +18114,66 @@ mod tests {
         assert_eq!(a.current(), Screen::Library);
     }
 
+    /// #51: each of Big view's extras grows what it names and nothing else, and neither does
+    /// anything without Big view.
+    #[test]
+    fn big_views_extras_grow_what_they_name() {
+        let _scale = lock_scale();
+        let fonts = crate::text::FontSet::load();
+        // Pixels that are not background in a box of `screen`.
+        let ink = |screen: Screen,
+                   large: bool,
+                   bar: bool,
+                   icons: bool,
+                   b: (usize, usize, usize, usize)| {
+            crate::scale::set_large(large);
+            crate::scale::set_big_bar(bar);
+            crate::scale::set_big_icons(icons);
+            let mut a = unlocked();
+            a.go_for_preview(screen);
+            a.settings_sel = crate::settings::ROW_SLEEP;
+            let mut c = Canvas::new();
+            a.render(&mut c, &fonts, &bare_np());
+            let rgb = c.to_rgb_bytes();
+            let bg = &rgb[(60 * 480 + 300) * 3..(60 * 480 + 300) * 3 + 3].to_vec();
+            let n = (b.2..b.3)
+                .flat_map(|y| (b.0..b.1).map(move |x| (x, y)))
+                .filter(|&(x, y)| &rgb[(y * 480 + x) * 3..(y * 480 + x) * 3 + 3] != &bg[..])
+                .count();
+            crate::scale::set_large(false);
+            crate::scale::set_big_bar(false);
+            crate::scale::set_big_icons(false);
+            n
+        };
+        let battery = (420, 480, 0, 38);
+        // The Display row's arrow; the cursor is moved off it so its highlight does not count.
+        let display_chevron = (440, 480, 91, 91 + 64);
+        let toolbar = (240, 360, crate::now_playing::TOOLBAR_TOP as usize + 1, 800);
+        let s = Screen::Settings;
+        assert!(ink(s, true, true, false, battery) > ink(s, true, false, false, battery));
+        assert_eq!(
+            ink(s, false, true, true, battery),
+            ink(s, false, false, false, battery),
+            "nothing without Big view"
+        );
+        assert!(
+            ink(s, true, false, true, display_chevron)
+                > ink(s, true, false, false, display_chevron),
+            "the row arrow grows"
+        );
+        assert_eq!(
+            ink(s, true, false, true, battery),
+            ink(s, true, false, false, battery),
+            "Bigger icons leaves the top bar to its own switch"
+        );
+        let np = Screen::NowPlaying;
+        assert_eq!(
+            ink(np, true, false, true, toolbar),
+            ink(np, true, false, false, toolbar),
+            "Now Playing sizes its own icons"
+        );
+    }
+
     /// Only the ☰ opens the Menu now (#51), so it has to be on the glass wherever the top bar is:
     /// every screen but onboarding and the sideways Winamp and cassette views.
     #[test]
@@ -19948,7 +20175,7 @@ mod tests {
     fn settings_usb_mode_enters_mass_storage() {
         let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
-        for _ in 0..crate::settings::ROW_USB_MODE {
+        for _ in 0..settings_presses(crate::settings::ROW_USB_MODE) {
             a.press(Button::Down);
         }
         assert_eq!(a.settings_sel, crate::settings::ROW_USB_MODE);
@@ -19975,7 +20202,7 @@ mod tests {
     fn the_database_row_asks_for_a_rescan_and_the_label_always_recovers() {
         let mut a = open_from_menu(Screen::Settings);
         a.settings_more = true;
-        for _ in 0..crate::settings::ROW_DATABASE {
+        for _ in 0..settings_presses(crate::settings::ROW_DATABASE) {
             a.press(Button::Down);
         }
         assert_eq!(a.settings_sel, crate::settings::ROW_DATABASE);
@@ -20030,7 +20257,7 @@ mod tests {
         let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
         // move cursor to the Battery row
-        for _ in 0..crate::settings::ROW_BATTERY {
+        for _ in 0..settings_presses(crate::settings::ROW_BATTERY) {
             a.press(Button::Down);
         }
         assert_eq!(a.settings_sel, crate::settings::ROW_BATTERY);
@@ -20047,9 +20274,141 @@ mod tests {
         assert_eq!(a.current(), Screen::Device);
     }
 
+    /// Night on a schedule acts at its two edges only, like a phone's: on at Starts, off at
+    /// Ends, a hand on the switch in between holds, and nothing happens with it off.
+    #[test]
+    fn night_follows_its_schedule_at_the_edges_only() {
+        use crate::display::{in_night_window, next_time, NIGHT_ENDS, NIGHT_STARTS};
+        let mut a = unlocked();
+        let at = |h: u16, m: u16| h * 60 + m;
+        assert!(a.night_schedule_tick(at(23, 0)).is_empty(), "off: nothing");
+        assert!(!a.night);
+        a.set_night_schedule(true, at(21, 0), at(7, 0));
+        assert_eq!(
+            a.night_schedule_tick(at(20, 59)),
+            vec![],
+            "before Starts, already day"
+        );
+        assert_eq!(
+            a.night_schedule_tick(at(21, 0)),
+            vec![Action::ThemeChanged(true)]
+        );
+        assert!(a.night);
+        a.night = false; // switched off by hand at 23:00
+        assert_eq!(
+            a.night_schedule_tick(at(23, 0)),
+            vec![],
+            "a hand holds till the next edge"
+        );
+        assert!(!a.night);
+        a.night = true; // and back on by hand
+        assert_eq!(
+            a.night_schedule_tick(at(7, 0)),
+            vec![Action::ThemeChanged(false)]
+        );
+        // A boot inside the window wakes into Night.
+        let mut b = unlocked();
+        b.set_night_schedule(true, at(21, 0), at(7, 0));
+        assert_eq!(
+            b.night_schedule_tick(at(2, 30)),
+            vec![Action::ThemeChanged(true)]
+        );
+        // The window crosses midnight; the rows step through their presets and come round.
+        assert!(in_night_window(at(0, 0), at(21, 0), at(7, 0)));
+        assert!(!in_night_window(at(12, 0), at(21, 0), at(7, 0)));
+        assert_eq!(next_time(&NIGHT_STARTS, at(23, 30)), at(18, 0));
+        assert_eq!(next_time(&NIGHT_ENDS, at(7, 0)), at(7, 30));
+        assert_eq!(
+            next_time(&NIGHT_ENDS, 1),
+            at(5, 0),
+            "an odd time goes to the first"
+        );
+    }
+
+    /// Display ▸ Night is three chips. Auto brings Starts and Ends onto the page; Off and On take
+    /// them away again and set Night there and then.
+    #[test]
+    fn the_night_chips_pick_off_on_or_the_schedule() {
+        use crate::display::{night_chip_at, row_at, row_top, shown, ROW_NIGHT, ROW_NIGHT_FROM};
+        let mut a = open_from_menu(Screen::Settings);
+        a.go_for_preview(Screen::Display);
+        let chip = |i: usize| {
+            let (x, w) = crate::kit::chip_span(i, 3);
+            let y = row_top(ROW_NIGHT) + crate::kit::ROW_H() / 2;
+            assert_eq!(night_chip_at(x + w / 2, y), Some(i));
+            (x + w / 2, y)
+        };
+        assert!(!shown(ROW_NIGHT_FROM), "no times until Auto");
+        let (x, y) = chip(1);
+        assert_eq!(a.tap(x, y), vec![Action::ThemeChanged(true)]);
+        assert!(a.night);
+        let (x, y) = chip(2);
+        assert_eq!(a.tap(x, y), vec![], "Auto waits for the clock");
+        assert!(shown(ROW_NIGHT_FROM));
+        let from = row_top(ROW_NIGHT_FROM) + 10;
+        assert_eq!(row_at(from), Some(ROW_NIGHT_FROM));
+        a.tap(240, from);
+        assert_eq!(
+            a.night_schedule().1,
+            21 * 60 + 30,
+            "Starts steps on half an hour"
+        );
+        let (x, y) = chip(0);
+        assert_eq!(a.tap(x, y), vec![Action::ThemeChanged(false)]);
+        assert!(!shown(ROW_NIGHT_FROM) && !a.night_schedule().0);
+    }
+
+    /// #51 follow-up: "Make it yours" in the introduction flips the same switches Settings does.
+    #[test]
+    fn the_introduction_lets_you_pick_the_settings_people_change_most() {
+        use crate::onboarding::{choice_rows, Choice, CHOICES_PAGE};
+        let _scale = lock_scale();
+        let mut a = unlocked();
+        a.start_onboarding();
+        a.press(Button::Select);
+        assert_eq!(a.onboarding_page, CHOICES_PAGE);
+        let row_y = |c: Choice| {
+            let i = choice_rows()
+                .iter()
+                .position(|r| *r == c)
+                .expect("row shown");
+            150 + i as i32 * crate::kit::ROW_H() + 10
+        };
+        assert!(!crate::scale::large());
+        assert!(
+            !choice_rows().contains(&Choice::Bar),
+            "the extras wait for Big view"
+        );
+        assert_eq!(a.tap(400, row_y(Choice::Big)), vec![Action::UiScaleChanged]);
+        assert!(crate::scale::large(), "Big view is on");
+        assert_eq!(
+            a.onboarding_page, CHOICES_PAGE,
+            "a row does not turn the page"
+        );
+        assert_eq!(a.tap(400, row_y(Choice::Bar)), vec![Action::UiScaleChanged]);
+        assert!(crate::scale::big_bar());
+        a.tap(400, row_y(Choice::Quick));
+        assert!(a.quick_enabled());
+        a.tap(400, row_y(Choice::Folders));
+        assert!(a.folders_tab());
+        // Off the rows the page turns as every other page does.
+        a.tap(400, 760);
+        assert_eq!(a.onboarding_page, CHOICES_PAGE + 1);
+        a.set_big_view(false);
+        crate::scale::set_big_bar(false);
+    }
+
+    /// Down presses from the top of Settings to `row`: the cursor steps over rows that are not
+    /// shown (Big view's extras while it is off).
+    fn settings_presses(row: usize) -> usize {
+        (0..row)
+            .filter(|r| crate::settings::shown(*r, true))
+            .count()
+    }
+
     /// Open Settings ▸ Device the way a user does.
     fn open_device(a: &mut App) {
-        for _ in 0..crate::settings::ROW_BATTERY {
+        for _ in 0..settings_presses(crate::settings::ROW_BATTERY) {
             a.press(Button::Down);
         }
         a.press(Button::Select);
@@ -20261,7 +20620,7 @@ mod tests {
     #[test]
     fn settings_sleep_timer_cycles_presets() {
         let mut a = open_from_menu(Screen::Settings);
-        for _ in 0..crate::settings::ROW_SLEEP {
+        for _ in 0..settings_presses(crate::settings::ROW_SLEEP) {
             a.press(Button::Down);
         }
         assert_eq!(a.settings_sel, crate::settings::ROW_SLEEP);

@@ -30,14 +30,93 @@ use crate::widgets::{fill_rect, right, stroke_rect, sty};
 
 pub const ROW_PALETTE: usize = 0;
 pub const ROW_ACCENT: usize = 1;
+/// Night: Off | On | Auto, as chips (`NIGHT_MODES`). Auto is a schedule, like a phone's night mode
+/// (the owner, 2026-11-01): Night comes on at Starts and goes off at Ends, and switching it by hand
+/// in between holds until the next of the two. Starts and Ends are shown only under Auto.
 pub const ROW_NIGHT: usize = 2;
+pub const ROW_NIGHT_FROM: usize = 3;
+pub const ROW_NIGHT_UNTIL: usize = 4;
 /// The volume HUD chips (Full | Minimal). A row for the cursor's sake; the chips are the targets.
-pub const ROW_VOLUME: usize = 3;
-pub const ROW_SIZE: usize = 4;
-pub const ROW_VIZ: usize = 5;
+pub const ROW_VOLUME: usize = 5;
+pub const ROW_SIZE: usize = 6;
+pub const ROW_VIZ: usize = 7;
 /// The design styles (`style::Style`), as chips. Like Volume, the chips are the targets.
-pub const ROW_STYLE: usize = 6;
-pub const ROWS: usize = 7;
+pub const ROW_STYLE: usize = 8;
+pub const ROWS: usize = 9;
+
+/// Night's chips, in order. Index = `App::night_mode`.
+pub const NIGHT_MODES: [&str; 3] = ["Off", "On", "Auto"];
+
+// Whether Starts and Ends are on the page: the navigator says, whenever Auto is picked or dropped.
+// Per test thread, like `scale::large`, so tests that pick Auto cannot move each other's rows.
+#[cfg(not(test))]
+static SCHEDULE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+thread_local! {
+    static SCHEDULE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_schedule_shown(on: bool) {
+    #[cfg(not(test))]
+    SCHEDULE.store(on, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    SCHEDULE.with(|s| s.set(on));
+}
+
+fn schedule_shown() -> bool {
+    #[cfg(not(test))]
+    return SCHEDULE.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    return SCHEDULE.with(|s| s.get());
+}
+
+/// Is row `r` on the page? Starts and Ends only under Auto.
+pub fn shown(r: usize) -> bool {
+    !matches!(r, ROW_NIGHT_FROM | ROW_NIGHT_UNTIL) || schedule_shown()
+}
+
+/// Top of the night chips, centred in their row.
+fn night_chips_top() -> i32 {
+    row_top(ROW_NIGHT) + (kit::ROW_H() - kit::CHIP_H) / 2
+}
+
+/// Which night chip is under `(x, y)`, as an index into `NIGHT_MODES`.
+pub fn night_chip_at(x: i32, y: i32) -> Option<usize> {
+    kit::chip_at(NIGHT_MODES.len(), night_chips_top(), x, y)
+}
+
+/// The times Starts steps through, in minutes after midnight: 18:00 to 23:30, every half hour.
+pub const NIGHT_STARTS: [u16; 12] = [
+    1080, 1110, 1140, 1170, 1200, 1230, 1260, 1290, 1320, 1350, 1380, 1410,
+];
+/// The times Ends steps through: 05:00 to 09:00, every half hour.
+pub const NIGHT_ENDS: [u16; 9] = [300, 330, 360, 390, 420, 450, 480, 510, 540];
+/// 21:00 to 07:00 until changed.
+pub const NIGHT_FROM_DEFAULT: u16 = 1260;
+pub const NIGHT_UNTIL_DEFAULT: u16 = 420;
+
+/// The preset after `now` in `list` (round to the start); a time not in the list goes to the first.
+pub fn next_time(list: &[u16], now: u16) -> u16 {
+    let i = list
+        .iter()
+        .position(|&t| t == now)
+        .map_or(0, |i| (i + 1) % list.len());
+    list[i]
+}
+
+/// Is `minute` (after midnight) inside the night that runs from `from` to `until`? Crosses midnight
+/// when `from` is later than `until`, which is every preset pair.
+pub fn in_night_window(minute: u16, from: u16, until: u16) -> bool {
+    if from <= until {
+        (from..until).contains(&minute)
+    } else {
+        minute >= from || minute < until
+    }
+}
+
+pub fn hhmm(minute: u16) -> String {
+    format!("{:02}:{:02}", minute / 60, minute % 60)
+}
 
 /// The volume HUD styles, in chip order. Index = `App::volume_hud`.
 pub const VOLUME_HUDS: [&str; 2] = ["Full", "Minimal"];
@@ -47,8 +126,9 @@ pub const VOLUME_HUDS: [&str; 2] = ["Full", "Minimal"];
 /// The Style label names what a style redraws so far, so nobody picks Terminal and wonders why the
 /// Library did not change. Part of the label, not its right-hand action: that slot is drawn in the
 /// accent, and the accent means "tap here".
-const SECTIONS: [(&str, usize); 4] = [
-    ("COLOUR", 3),
+const SECTIONS: [(&str, usize); 5] = [
+    ("COLOUR", 2),
+    ("NIGHT", 3),
     ("VOLUME", 1),
     ("TEXT", 2),
     ("STYLE · NOW PLAYING", 1),
@@ -64,7 +144,9 @@ pub fn row_top(r: usize) -> i32 {
             if i == r {
                 return y;
             }
-            y += kit::ROW_H();
+            if shown(i) {
+                y += kit::ROW_H();
+            }
             i += 1;
         }
     }
@@ -80,7 +162,7 @@ pub fn row_at(y: i32) -> Option<usize> {
             kit::ROW_H()
         }
     };
-    (0..ROWS).find(|&r| (row_top(r)..row_top(r) + h(r)).contains(&y))
+    (0..ROWS).find(|&r| shown(r) && (row_top(r)..row_top(r) + h(r)).contains(&y))
 }
 
 /// Top of the volume chips, centred in their row.
@@ -171,6 +253,10 @@ pub struct DisplayView<'a> {
     pub accent_locked: bool,
     pub accent: Accent,
     pub night: bool,
+    /// Night's schedule: on, and its two times in minutes after midnight.
+    pub night_sched: bool,
+    pub night_from: u16,
+    pub night_until: u16,
     /// Index into [`VOLUME_HUDS`].
     pub volume_hud: u8,
     /// "BARS · VEIL".
@@ -198,6 +284,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &DisplayVie
     for (label, n) in SECTIONS {
         y = kit::section_label(c, t, f, y, label, None);
         for _ in 0..n {
+            if !shown(r) {
+                r += 1;
+                continue;
+            }
             debug_assert_eq!(
                 y + scroll,
                 row_top(r),
@@ -300,17 +390,43 @@ fn draw_row(
             }
             next
         }
-        ROW_NIGHT => kit::row(
-            c,
-            t,
-            f,
-            y,
-            kit::ROW_H(),
-            &Row::new(crate::i18n::text("Night"))
-                .sub(crate::i18n::text("Dims everything after dark"))
-                .trail(Trail::Switch(v.night))
-                .sel(sel),
-        ),
+        ROW_NIGHT_FROM | ROW_NIGHT_UNTIL => {
+            let (title, at) = if r == ROW_NIGHT_FROM {
+                (crate::i18n::text("Starts"), v.night_from)
+            } else {
+                (crate::i18n::text("Ends"), v.night_until)
+            };
+            let at = hhmm(at);
+            kit::row(
+                c,
+                t,
+                f,
+                y,
+                kit::ROW_H(),
+                &Row::new(title).trail(Trail::Value(&at)).sel(sel),
+            )
+        }
+        ROW_NIGHT => {
+            if sel {
+                fill_rect(c, 0, y, W as i32, kit::ROW_H(), t.row_sel);
+            }
+            let mode = if v.night_sched {
+                2
+            } else {
+                usize::from(v.night)
+            };
+            let labels: Vec<&str> = NIGHT_MODES.iter().map(|m| crate::i18n::text(m)).collect();
+            kit::chips(
+                c,
+                t,
+                f,
+                night_chips_top() - row_top(ROW_NIGHT) + y,
+                &labels,
+                Some(mode),
+            );
+            crate::widgets::hline(c, y + kit::ROW_H() - 1, t.line);
+            y + kit::ROW_H()
+        }
         ROW_VOLUME => {
             if sel {
                 fill_rect(c, 0, y, W as i32, kit::ROW_H(), t.row_sel);
@@ -414,9 +530,17 @@ mod tests {
     /// Every row's middle is that row, and the gaps (section labels) are nobody's.
     #[test]
     fn every_row_is_hittable_and_labels_are_not() {
-        for r in 0..ROWS {
-            assert_eq!(row_at(row_top(r) + kit::ROW_H() / 2), Some(r));
+        for auto in [false, true] {
+            set_schedule_shown(auto);
+            for r in (0..ROWS).filter(|&r| shown(r)) {
+                assert_eq!(
+                    row_at(row_top(r) + kit::ROW_H() / 2),
+                    Some(r),
+                    "auto={auto}"
+                );
+            }
         }
+        set_schedule_shown(false);
         assert_eq!(
             row_at(crate::chrome::HEADER_BOTTOM + 5),
             None,

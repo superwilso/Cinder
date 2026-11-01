@@ -1,5 +1,6 @@
 //! First-run onboarding + re-viewable Help/Controls. A short paged intro shown ONCE on first boot
-//! (Welcome → Getting around → Buttons → Playing & Up Next → Gestures → Features → Done),
+//! (Welcome → Make it yours → Getting around → Buttons → Playing & Up Next → Gestures → Features →
+//! Done),
 //! persisted so it doesn't reappear; replayed from the last row of Menu ▸ Help & controls
 //! (`help.rs`), which is the reference list kept after it.
 //! Touch-navigated (the NW-A55 has no d-pad): tap the right side = next / finish, tap the left
@@ -20,21 +21,127 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, sty};
 use crate::Canvas;
 
-pub const PAGES: usize = 7;
+pub const PAGES: usize = 8;
+
+/// "Make it yours": the settings people most often want changed, picked on the spot rather than
+/// found later (the owner, 2026-11-01). Second, so Big view applies to the rest of the tour.
+pub const CHOICES_PAGE: usize = 1;
+
+/// The "Make it yours" switches as they stand, from the navigator.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Choices {
+    pub big: bool,
+    pub bar: bool,
+    pub icons: bool,
+    pub quick: bool,
+    pub folders: bool,
+}
+
+/// One row of "Make it yours". Each is a Settings switch, and does exactly what that switch does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Choice {
+    Big,
+    Bar,
+    Icons,
+    Quick,
+    Folders,
+}
+
+/// The rows in order. Big view's two extras only while it is on, as in Settings. Night is not one:
+/// it is something you switch when it gets dark, not a way you set the player up once.
+pub fn choice_rows() -> &'static [Choice] {
+    use Choice::*;
+    if crate::scale::large() {
+        &[Big, Bar, Icons, Quick, Folders]
+    } else {
+        &[Big, Quick, Folders]
+    }
+}
+
+const CHOICES_TOP: i32 = 150;
+
+/// The row under `y` on "Make it yours". Pure geometry, shared with the render.
+pub fn choice_at(y: i32) -> Option<Choice> {
+    let h = crate::kit::ROW_H();
+    if y < CHOICES_TOP {
+        return None;
+    }
+    choice_rows().get(((y - CHOICES_TOP) / h) as usize).copied()
+}
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, page: usize) {
+    render_with(c, t, f, page, &Choices::default());
+}
+
+pub fn render_with(c: &mut Canvas, t: &Theme, f: &FontSet, page: usize, choices: &Choices) {
     c.fill(t.bg);
     match page {
         0 => welcome(c, t, f),
-        1 => getting_around(c, t, f),
-        2 => controls(c, t, f),
-        3 => playing(c, t, f),
-        4 => gestures(c, t, f),
-        5 => features(c, t, f),
+        CHOICES_PAGE => make_it_yours(c, t, f, choices),
+        2 => getting_around(c, t, f),
+        3 => controls(c, t, f),
+        4 => playing(c, t, f),
+        5 => gestures(c, t, f),
+        6 => features(c, t, f),
         _ => done(c, t, f),
     }
     page_dots(c, t, page);
     footer(c, t, f, page);
+}
+
+fn make_it_yours(c: &mut Canvas, t: &Theme, f: &FontSet, ch: &Choices) {
+    crate::widgets::draw_fit(
+        c,
+        f,
+        36.0,
+        92.0,
+        crate::i18n::text("Make it yours"),
+        &sty(Family::Sans, Weight::Bold, 32.0, t.ink, 0.0),
+        458.0,
+    );
+    crate::widgets::draw_fit(
+        c,
+        f,
+        38.0,
+        124.0,
+        crate::i18n::text("Tap to change. All of these stay in Settings."),
+        &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0),
+        420.0,
+    );
+    let mut y = CHOICES_TOP;
+    for choice in choice_rows() {
+        let (title, sub, on) = match choice {
+            Choice::Big => (
+                crate::i18n::text("Big view"),
+                crate::i18n::text(crate::settings::BIG_SUB),
+                ch.big,
+            ),
+            Choice::Bar => (
+                crate::i18n::text("Bigger top bar"),
+                crate::i18n::text("Clock, battery and menu"),
+                ch.bar,
+            ),
+            Choice::Icons => (
+                crate::i18n::text("Bigger icons"),
+                crate::i18n::text("Arrows and symbols"),
+                ch.icons,
+            ),
+            Choice::Quick => (
+                crate::i18n::text("Pull-down panel"),
+                crate::i18n::text(crate::settings::QUICK_SUB),
+                ch.quick,
+            ),
+            Choice::Folders => (
+                crate::i18n::text("Folders tab"),
+                crate::i18n::text("Browse the Library by folder"),
+                ch.folders,
+            ),
+        };
+        let row = crate::kit::Row::new(title)
+            .sub(sub)
+            .trail(crate::kit::Trail::Switch(on));
+        y = crate::kit::row(c, t, f, y, crate::kit::ROW_H(), &row);
+    }
 }
 
 fn welcome(c: &mut Canvas, t: &Theme, f: &FontSet) {
@@ -531,7 +638,9 @@ fn footer(c: &mut Canvas, t: &Theme, f: &FontSet, page: usize) {
 }
 
 fn footer_hint(page: usize) -> &'static str {
-    if page + 1 >= PAGES {
+    if page == CHOICES_PAGE {
+        "ROW: CHANGE  \u{2022}  ELSEWHERE: NEXT"
+    } else if page + 1 >= PAGES {
         "TAP: START  \u{2022}  EDGE: SKIP"
     } else {
         "TAP: NEXT  \u{2022}  LEFT: BACK  \u{2022}  EDGE: SKIP"

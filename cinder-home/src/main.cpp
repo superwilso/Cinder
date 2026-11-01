@@ -14491,6 +14491,9 @@ void* render_driver(void*) {
             g_house_due = false;
             last_house_ms = house_now;
             cinder_clock_tick();
+            // Night schedule: at Starts and Ends the UI flips Night and hands back the same
+            // action the switch does, so the backlight follows it.
+            if (int na = cinder_night_tick()) carry_out_input(na);
             sd_watch_tick(house_now);   // self-paced to 5 s; see its note
             mono_shim_poll();           // one access() on tmpfs; logs and repaints only on a change
             ambient_tick();             // a compare unless the play state or a setting moved
