@@ -67,8 +67,15 @@ scenario() {
   # STOCK wins when both appear: handing over to the Sony player is terminal, and with the
   # supervisor a scenario can legitimately run cinder several times before getting there.
   local all
+  # A scenario that leaves $R/prelaunch.sh runs in a user+mount namespace with it sourced first:
+  # the way to hand the launcher a filesystem that is really full (#46).
+  if [ -f "$R/prelaunch.sh" ]; then
+    all="$(unshare -rm sh -c "R='$R'; . '$R/prelaunch.sh'; sh '$R/launch.sh' 2>/dev/null
+            cat '$R/contents/cinderhome.log' '$R/data/cinder/cinderhome.log' 2>/dev/null")"
+  else
   all="$( { sh "$R/launch.sh" 2>/dev/null
             cat "$R/contents/cinderhome.log" "$R/data/cinder/cinderhome.log" 2>/dev/null; } )"
+  fi
   local got=none
   case "$all" in *CINDER*) got=cinder;; esac
   case "$all" in *STOCK*)  got=stock;;  esac
@@ -153,6 +160,24 @@ else
   scenario "/data unwritable -> no safety net"    stock  'chmod 555 $R/data/cinder'
 fi
 scenario "/data/cinder is a FILE -> no safety net" stock 'rm -rf $R/data/cinder; : > $R/data/cinder'
+# #46: the album-cover cache filled /data, the counter could not be written, and every boot went to
+# stock. The launcher now drops the cache (disposable) and asks again. A 256 KB tmpfs filled to the
+# last block stands in for the 35 MB volume; it needs a user namespace, so it is skipped without one.
+# shellcheck disable=SC2034  # read by the scenario commands below, which shellcheck cannot see into
+FULL_DATA='mount -t tmpfs -o size=256k tmpfs "$R/data/cinder" || exit 1
+mkdir "$R/data/cinder/artcache"
+i=0; while dd if=/dev/zero of="$R/data/cinder/artcache/$i.t96" bs=27648 count=1 2>/dev/null; do i=$((i+1)); done
+while dd if=/dev/zero of="$R/data/cinder/artcache/pad$i" bs=4096 count=1 2>/dev/null; do i=$((i+1)); done'
+# shellcheck disable=SC2034
+FULL_NO_CACHE='mount -t tmpfs -o size=256k tmpfs "$R/data/cinder" || exit 1
+dd if=/dev/zero of="$R/data/cinder/fill" bs=4096 2>/dev/null; true'
+if unshare -rm true 2>/dev/null; then
+  scenario "/data full of covers -> cache dropped, runs" cinder 'printf "%s\n" "$FULL_DATA" > $R/prelaunch.sh'
+  check "  and says why" "$(crumb "$LAST_R" 'removed the album-cover cache')" 1
+  scenario "/data full, no cache to drop -> stock"   stock  'printf "%s\n" "$FULL_NO_CACHE" > $R/prelaunch.sh'
+else
+  printf '  skip  %-46s -> no user namespaces here\n' "/data full of covers"
+fi
 scenario "counter 2 of MAXBAD 4 -> still tries"    cinder 'echo 2 > $R/data/cinder/bootcount'
 scenario "counter 4 hits MAXBAD -> latch"         stock  'echo 3 > $R/data/cinder/bootcount; touch -d "2020-01-01" $R/cinder 2>/dev/null'
 scenario "already latched (off set)"              stock  ': > $R/data/cinder/off; touch -d "2020-01-01" $R/cinder'

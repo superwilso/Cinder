@@ -48,6 +48,9 @@ run_all() {  # run_all <label> <runner...>
     expect "$label" "mono_shim_off: hooks off, Wampy not loaded"     test ! -e "$S/wampy_loaded"
 }
 
+# The player's libasound versions its symbols, and two of them exist twice (#43): the fake does too.
+printf 'ALSA_0.9 { global: *; };\nALSA_0.9.0rc4 { global: fake_rate; } ALSA_0.9;\n' > "$W/asound.map"
+
 # ── host ──
 DEFS=(-DCINDER_MONO_DIR="\"$S\"" -DCINDER_MONO_DATA="\"$S\"" -DCINDER_WAMPY_LIB="\"$S/libsound_service_fw\""
       -DCINDER_ASOUND_LIB='"libfakeasound.so"' -DCINDER_SSFW_LIB='"libfakeasound.so"')
@@ -55,7 +58,7 @@ cc -O2 -Wall -Wextra -shared -fPIC "${DEFS[@]}" -I"$HERE/src" \
    -o "$W/libcinder_mono.so" "$HERE/src/cinder-mono.c" -ldl -lpthread
 cc -O2 -Wall -shared -fPIC -DFAKE_WAMPY -o "$W/fakewampy.so" "$HERE/tools/mono_shim_test.c"
 WAMPY="$W/fakewampy.so"
-cc -O2 -Wall -shared -fPIC -DFAKE_ASOUND -o "$W/libfakeasound.so" "$HERE/tools/mono_shim_test.c"
+cc -O2 -Wall -shared -fPIC -DFAKE_ASOUND -Wl,--version-script,"$W/asound.map" -o "$W/libfakeasound.so" "$HERE/tools/mono_shim_test.c"
 cc -O2 -Wall -o "$W/mono_shim_test" "$HERE/tools/mono_shim_test.c" -L"$W" -lfakeasound -Wl,-rpath,"$W"
 run_all host env LD_PRELOAD="$W/libcinder_mono.so" "$W/mono_shim_test"
 # The player WITHOUT Wampy (Walkman One): ALSA is loaded privately by the code that uses it, so
@@ -80,7 +83,7 @@ if [ -d "$DEVSYS/usr/include" ] && [ -f "$RAMLIB/libc.so.6" ] && [ -n "$QEMU" ] 
           -Wl,-soname,libcinder_mono.so -o "$SR/lib/libcinder_mono.so" "$HERE/src/cinder-mono.c" "${LINK[@]}"
     "$CC" -O2 -shared -fPIC "${SYS223[@]}" -DFAKE_WAMPY -o "$W/fakewampy_arm.so" "$HERE/tools/mono_shim_test.c" "${LINK[@]}"
     WAMPY="$W/fakewampy_arm.so"
-    "$CC" -O2 -shared -fPIC "${SYS223[@]}" -DFAKE_ASOUND -Wl,-soname,libfakeasound.so \
+    "$CC" -O2 -shared -fPIC "${SYS223[@]}" -DFAKE_ASOUND -Wl,-soname,libfakeasound.so -Wl,--version-script,"$W/asound.map" \
           -o "$SR/lib/libfakeasound.so" "$HERE/tools/mono_shim_test.c" "${LINK[@]}"
     CRT="$DEVSYS/usr/lib/arm-linux-gnueabihf"
     "$CC" -O2 "${SYS223[@]}" -nostdlib -o "$SR/mono_shim_test" \

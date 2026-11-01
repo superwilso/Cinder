@@ -9039,6 +9039,12 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
             let mut failed = Vec::new();
             let mut stop = false;
             for (album_id, object_id, key) in std::mem::take(&mut queue) {
+                // /data reached the reserve (#46): every further cover would be decoded for
+                // nothing, so the rest stay gradients until the next start.
+                if art_cache::full() {
+                    stop = true;
+                    break;
+                }
                 // Decode OUTSIDE the lock. This is the expensive part and the UI must keep painting
                 // through it.
                 let Some(t48) = art_cache::build_one(&db, key, object_id) else {

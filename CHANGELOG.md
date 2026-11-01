@@ -16,6 +16,41 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **The headphone jack plays again next to Wampy** (#43). With Wampy installed and the Mono and
+  soundscapes option on, the jack played music 8.7 times too fast at 384 kHz, which is silence,
+  whether the mono switch was on or off; Bluetooth was fine. The player's ALSA library has two
+  versions of the call that sets the sample rate, an old one that takes the rate itself and the
+  current one that takes its address. Next to Wampy, Cinder's sound hook looked the call up in a
+  way that, on the player's system library, returns the old one, so 44,100 arrived as an address
+  and ALSA chose its highest rate. It now asks ALSA's library directly, which returns the current
+  one. Soundscapes next to Wampy were silent on the jack for the same reason, and play now. The
+  hook's test builds a fake ALSA with both versions and runs on the player's own system library;
+  it fails without the fix. Checked on a Walkman One player with Wampy 1.14.6: 384 kHz before,
+  44.1 kHz after. The FM recorder's hook looked the same call up the same way and now asks ALSA
+  directly too (not checked on a player).
+- **A large library no longer locks Cinder out of starting** (#46). The album-cover cache filled
+  `/data` (35 MB on this player; 12,500 songs on a card were enough), the launcher could then not
+  write its bad-boot counter, and every start after that went to Sony's player, so Cinder never
+  ran to make room. The cache now stops 4 MB short of full, and the builder stops with it (the
+  albums past that draw their gradient). A launcher that finds `/data` full removes the cover
+  cache, which rebuilds, and tries again before it gives up, so a player already stuck comes back
+  on the first start after the update. The launcher test fills a real 256 KB filesystem to check
+  both cases. *The full-disk case is unverified on a player.*
+- **◁ on a paused track goes back to 0:00 and stays paused** (#50). Cinder decided "playing" from
+  the position having moved in the last 2.5 s, so for 2.5 s after a pause a seek (◁ restarting the
+  track, or a drag on the bar) still thought it was playing and resumed it. Reproduced on a player:
+  pause, ◁ within a second, and it played. A pause Cinder sent now counts at once; after the same
+  2.5 s, movement decides again, so a resume from the headphones still shows. The play button also
+  turns to ▶ at once instead of up to 2.5 s late. Host-tested (`playmotion_selftest`); on a player,
+  pause then ◁ sits at 0:00 paused, and ◁ while playing still restarts and plays.
+- **The first ▶ after a start plays.** With the last session restored, the first press of ▶ (on
+  Now Playing, the bar at the bottom, or the play button) sent Sony's player a Pause and only the
+  second press played. Cinder's own idea of "playing" started out as yes on every start; it now
+  starts as no when there is a session to resume, as the button already showed. Checked on a
+  player: one press, music.
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed

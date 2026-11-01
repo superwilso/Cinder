@@ -1296,6 +1296,12 @@ static void dev_compose_adb() {
 }
 #endif
 
+// Transport state. This is our INTENT (the last play/pause we sent); poll_now_playing replaces it
+// with the service's own view once the grace window below has passed. Both are needed: the intent
+// keeps the glyph correct immediately after a press, and the service's view is how a track ending
+// or PlayerService pausing itself reaches the UI.
+static bool g_playing = true;
+
 void deferred_up() {
     if (g_deferred_done) return;
     // First, and exactly once: this depends on nothing below it and costs one thread that
@@ -1426,6 +1432,11 @@ void deferred_up() {
             int rr = cinder_resume_load("/data/cinder/queue.conf", "/data/cinder/resume.conf");
             clog_(rr == 1 ? "deferred_up: resume — context restored (plays on the first press)"
                           : "deferred_up: resume — nothing saved");
+            // g_playing starts `true` and nothing corrects it before the first press on a boot
+            // with nothing playing, so ▶ toggled it to a Pause and only the SECOND press reached
+            // the resume below (seen 2026-11-01: one tap, a ChangePlayState, silence). The UI
+            // already shows ▷ here; the intent agrees with it now.
+            if (rr == 1) g_playing = false;
         });
         // LIBRARY SEARCH is an opt-in component with no binary of its own: the installer leaves
         // /data/cinder/search_on (machine-written state, off the MSC volume) and this turns the
@@ -2008,11 +2019,6 @@ static int touch_ui_y(int ry) {
     long v = (long)(ry - g_touch_min_y) * 800 / span;
     return v < 0 ? 0 : (v > 799 ? 799 : (int)v);
 }
-// Transport state. This is our INTENT (the last play/pause we sent); poll_now_playing replaces it
-// with the service's own view once the grace window below has passed. Both are needed: the intent
-// keeps the glyph correct immediately after a press, and the service's view is how a track ending
-// or PlayerService pausing itself reaches the UI.
-static bool g_playing = true;
 static long long g_transport_at = 0;              // when we last set g_playing ourselves (now_ms)
 static const long TRANSPORT_GRACE_MS = 3000; // > the ~1 s onPlayTimeUpdated period + its 2.5 s
                                              // movement tolerance, so the lag can't fight a press
