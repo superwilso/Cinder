@@ -101,6 +101,22 @@ pub fn load(key: u64, edge: usize) -> Option<Image> {
 /// Write one thumbnail. Temp file + rename, so a reader can never see a half-written cover and an
 /// interrupted write leaves the old file (or none) rather than a corrupt one.
 fn store(key: u64, img: &Image) -> std::io::Result<()> {
+    // A FULL /data LOCKS CINDER OUT (#46): the launcher proves it can write its bad-boot counter
+    // before it starts the app, and on a full volume it cannot, so every boot goes to stock and the
+    // app never runs to clean up. 12,500 songs on one card filled the volume with covers alone. So
+    // the cache stops short of a reserve; past it, an album keeps its gradient.
+    let need = img.rgb.len() as u64;
+    if !room_after(free_bytes(), need) && (prune_orphans() == 0 || !room_after(free_bytes(), need))
+    {
+        if !RESERVE_SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "cinder-ffi: art cache: /data is down to its last {} MB — no more covers are kept, \
+                 the rest draw as gradients",
+                RESERVE / 1_048_576
+            );
+        }
+        return Err(std::io::Error::from_raw_os_error(ENOSPC));
+    }
     match write_thumb(key, img) {
         // The volume is full. /data is 35 MB on this player and nothing else ever removes a
         // thumbnail, so make room from the covers the library no longer has and try once more.
@@ -110,6 +126,34 @@ fn store(key: u64, img: &Image) -> std::io::Result<()> {
 }
 
 const ENOSPC: i32 = 28;
+
+/// What the cache leaves free on /data (35 MB on this player): the launcher's counter, the queue,
+/// the settings and the logs all live there.
+const RESERVE: u64 = 4 * 1_048_576;
+static RESERVE_SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Bytes free to this process on the cache's volume; `u64::MAX` when it cannot be asked, so a
+/// failed query never stops the cache (the write itself still reports a real ENOSPC).
+fn free_bytes() -> u64 {
+    let Ok(c) = std::ffi::CString::new(dir()) else {
+        return u64::MAX;
+    };
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return u64::MAX;
+    }
+    st.f_bavail as u64 * st.f_frsize as u64
+}
+
+/// Has a write been refused for the reserve this run? The builder stops on it.
+pub fn full() -> bool {
+    RESERVE_SAID.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Does writing `need` bytes still leave the reserve?
+fn room_after(free: u64, need: u64) -> bool {
+    free.saturating_sub(need) >= RESERVE
+}
 
 /// The keys the library has a cover for now. Empty until the library has been built once.
 static LIVE: std::sync::Mutex<Option<std::collections::HashSet<u64>>> = std::sync::Mutex::new(None);
@@ -344,6 +388,19 @@ mod tests {
             h: edge,
             rgb: vec![fill; edge * edge * 3],
         }
+    }
+
+    /// #46: the cache filled /data and the launcher could no longer write its counter.
+    #[test]
+    fn a_cover_that_would_eat_the_reserve_is_not_kept() {
+        let t96 = (T96 * T96 * 3) as u64;
+        assert!(
+            room_after(RESERVE + t96, t96),
+            "exactly the reserve left after it"
+        );
+        assert!(!room_after(RESERVE + t96 - 1, t96));
+        assert!(!room_after(0, t96), "a full volume");
+        assert!(room_after(u64::MAX, t96), "a volume that cannot be asked");
     }
 
     /// The 2026-10-09 failure: a library that moved leaves every old thumbnail behind.
