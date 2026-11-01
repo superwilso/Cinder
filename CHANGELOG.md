@@ -21,7 +21,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Swipe up and Swipe down on Now Playing (#51).** Two new rows in Settings ▸ More settings ▸
   System pick what a swipe in the middle of Now Playing opens: the Menu, Sound, Equalizer, Up Next,
   Bluetooth, Library or Folders. Both are Off by default. A swipe up from the very bottom edge still
-  opens the Shelf, and a pull from the top bar still opens the pull-down panel. *Device-unverified.*
+  opens the Shelf, and a pull from the top bar still opens the pull-down panel. Verified on the
+  owner's player (Sound and Menu).
 - **The pull-down panel opens the Bluetooth page (#51).** Tap the name on its Bluetooth row; the
   switch still turns Bluetooth on and off. *Device-unverified.*
 
@@ -30,7 +31,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Only the ☰ on the top bar opens the Menu (#51).** Any tap along the bar outside the clock, the
   ☰ and the bookmark used to open the Menu, which threw people out of a settings page when a tap
   meant for the back arrow or a top row landed a few pixels high. Those taps now do nothing.
-  *Device-unverified.*
+  Verified on the owner's player.
+- **The top bar on the USB storage screen.** It shows the clock and battery there now, like every
+  screen but onboarding and the Winamp and cassette views. Its taps stay off while the PC has the
+  drive, so a stray one cannot interrupt a copy. *Device-unverified.*
 
 ### Fixed
 

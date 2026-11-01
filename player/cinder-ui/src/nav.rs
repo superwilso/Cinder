@@ -11120,11 +11120,14 @@ impl App {
         //
         // Drawn AFTER the screen (each one fills its own background first) but BEFORE the return
         // bar and the overlays, so the previous layering is preserved — the Shelf's dim still
-        // covers it. Onboarding and the USB-storage modal own the whole panel and never had one.
+        // covers it. Onboarding owns the whole panel, and the Winamp and cassette views draw their
+        // own top edge, so those three go without; every other screen has it (the owner, 11-01).
+        // USB storage shows it for the clock and battery, but its taps stay with the modal: a
+        // stray tap must not take the drive away from a PC mid-copy.
         // A screen that leaves its scroll clip set would hide the bar (Storage did, 10-26).
         c.clear_clip();
         c.clear_clip_x();
-        if !matches!(self.current(), Screen::Onboarding | Screen::UsbStorage) && !self.landscape() {
+        if self.current() != Screen::Onboarding && !self.landscape() {
             crate::chrome::status_bar(c, &theme, fonts, np.clock, np.badge, np.battery);
         }
 
@@ -17862,6 +17865,87 @@ mod tests {
         let (m0, m1) = crate::chrome::mode_zone();
         a.tap((m0 + m1) / 2, 62);
         assert_eq!(a.current(), Screen::Library);
+    }
+
+    /// Only the ☰ opens the Menu now (#51), so it has to be on the glass wherever the top bar is:
+    /// every screen but onboarding and the sideways Winamp and cassette views.
+    #[test]
+    fn every_screen_but_onboarding_draws_the_menu_glyph() {
+        let _scale = lock_scale();
+        let fonts = crate::text::FontSet::load();
+        let glyph_ink = |screen: Screen| {
+            let mut a = unlocked();
+            a.go_for_preview(screen);
+            let mut c = Canvas::new();
+            a.render(&mut c, &fonts, &bare_np());
+            let rgb = c.to_rgb_bytes();
+            let px = |x: usize, y: usize| {
+                let i = (y * 480 + x) * 3;
+                [rgb[i] as i32, rgb[i + 1] as i32, rgb[i + 2] as i32]
+            };
+            let bg = px(310, 22);
+            (12..33)
+                .flat_map(|y| (328..349).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let p = px(x, y);
+                    (0..3).map(|i| (p[i] - bg[i]).abs()).sum::<i32>() > 60
+                })
+                .count()
+        };
+        use Screen::*;
+        for s in [
+            Lock,
+            NowPlaying,
+            Menu,
+            Library,
+            Album,
+            Artist,
+            Playlist,
+            UpNext,
+            Zappin,
+            Eq,
+            Sound,
+            Soundscape,
+            Advanced,
+            Tone,
+            DacEq,
+            VolCurve,
+            Presets,
+            Nc,
+            Bluetooth,
+            Pairing,
+            BtCodec,
+            Settings,
+            Display,
+            Palette,
+            Language,
+            Skins,
+            Device,
+            Storage,
+            Fm,
+            UsbDac,
+            Receiver,
+            Help,
+            UsbStorage,
+            VizSet,
+            ClockSet,
+            GenreFilter,
+            Folders,
+            SensMe,
+            Books,
+            TrackInfo,
+            Lyrics,
+            Search,
+            Keyboard,
+            PlaylistPick,
+            TrackPick,
+        ] {
+            assert!(glyph_ink(s) >= 20, "{s:?}: no ☰ on the top bar");
+        }
+        assert!(
+            glyph_ink(Onboarding) < 20,
+            "onboarding owns the whole panel"
+        );
     }
 
     /// Both screens draw the switch, each spelling its own word.
