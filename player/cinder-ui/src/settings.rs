@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 27;
+pub const ROWS: usize = 28;
 /// Rows shown while the list is folded: the everyday ones and `ROW_MORE` itself.
 pub const EVERYDAY: usize = 11;
 /// More settings: unfolds every row after it, in place, and folds them away again.
@@ -49,6 +49,9 @@ pub const ROW_QUICK: usize = 17;
 /// up from the bottom edge stays the Shelf's and a pull from the status bar the pull-down panel's.
 pub const ROW_SWIPE_UP: usize = 18;
 pub const ROW_SWIPE_DOWN: usize = 19;
+/// The third button on Now Playing's toolbar (#51): Bluetooth, as always, or Sound, Equalizer or the
+/// Menu. `now_playing::NpButton`.
+pub const ROW_NP_BUTTON: usize = 20;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -83,7 +86,7 @@ pub const ROW_AUTO_OFF: usize = 14;
 /// and nothing but the user ever switched it off. ON by default since 2026-10-04, like Auto power
 /// off. It does not come back by itself.
 pub const ROW_BT_IDLE_OFF: usize = 15;
-pub const ROW_STORAGE: usize = 20;
+pub const ROW_STORAGE: usize = 21;
 pub const ROW_BATTERY: usize = 7;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
@@ -93,20 +96,20 @@ pub const ROW_CLOCK: usize = 6;
 pub const ROW_USB_MODE: usize = 8; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 21;
+pub const ROW_BOOT_STOCK: usize = 22;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 22;
+pub const ROW_RESTART: usize = 23;
 pub const ROW_POWER_OFF: usize = 9;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 23;
+pub const ROW_RESET: usize = 24;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_LANGUAGE: usize = 24;
-pub const ROW_FIRMWARE: usize = 25;
-pub const ROW_MODEL: usize = 26;
+pub const ROW_LANGUAGE: usize = 25;
+pub const ROW_FIRMWARE: usize = 26;
+pub const ROW_MODEL: usize = 27;
 
 /// What a swipe on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -189,7 +192,7 @@ const SECTIONS: [(&str, usize); 5] = [
     ("", EVERYDAY),
     ("LIBRARY", 3),
     ("POWER SAVING", 2),
-    ("SYSTEM", 9),
+    ("SYSTEM", 10),
     ("ABOUT", 2),
 ];
 /// Height of a section's label; the unlabelled first group has none.
@@ -272,6 +275,8 @@ pub struct SettingsView<'a> {
     /// What a swipe up / down on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
     pub swipe_up: SwipeTo,
     pub swipe_down: SwipeTo,
+    /// Now Playing's third toolbar button (`ROW_NP_BUTTON`).
+    pub np_button: crate::now_playing::NpButton,
     /// What shuffle deals (`ROW_SHUFFLE`): "SONGS", "ALBUMS" or "ARTISTS".
     pub shuffle_by: &'a str,
     /// More settings is unfolded (`ROW_MORE`).
@@ -366,6 +371,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_FOLDERS_TAB => Trail::Switch(v.folders_tab),
         ROW_SWIPE_UP => Trail::Value(v.swipe_up.label()),
         ROW_SWIPE_DOWN => Trail::Value(v.swipe_down.label()),
+        ROW_NP_BUTTON => Trail::Value(v.np_button.label()),
         ROW_BIG => Trail::Switch(v.big_view),
         // The volume limit is a value row rather than a switch because the interesting half is
         // WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number the
@@ -424,6 +430,7 @@ fn title(r: usize) -> &'static str {
         ROW_FOLDERS_TAB => crate::i18n::text("Folders tab"),
         ROW_SWIPE_UP => crate::i18n::text("Swipe up"),
         ROW_SWIPE_DOWN => crate::i18n::text("Swipe down"),
+        ROW_NP_BUTTON => crate::i18n::text("Now Playing button"),
         ROW_BIG => crate::i18n::text("Big view"),
         ROW_VOLUME_LIMIT => crate::i18n::text("Volume limit"),
         ROW_SLEEP => crate::i18n::text("Sleep timer"),
@@ -489,6 +496,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                 }),
                 ROW_BIG => crate::i18n::text(BIG_SUB),
                 ROW_SWIPE_UP | ROW_SWIPE_DOWN => crate::i18n::text("On Now Playing"),
+                ROW_NP_BUTTON => crate::i18n::text("The third one along the bottom"),
                 ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
                 ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
                 ROW_STORAGE => storage_parts(v.storage).1,
@@ -526,6 +534,7 @@ mod tests {
             folders_tab: false,
             swipe_up: SwipeTo::Off,
             swipe_down: SwipeTo::Off,
+            np_button: crate::now_playing::NpButton::Bluetooth,
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",
