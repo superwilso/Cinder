@@ -28,7 +28,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   one. Soundscapes next to Wampy were silent on the jack for the same reason, and play now. The
   hook's test builds a fake ALSA with both versions and runs on the player's own system library;
   it fails without the fix. Checked on a Walkman One player with Wampy 1.14.6: 384 kHz before,
-  44.1 kHz after.
+  44.1 kHz after. The FM recorder's hook looked the same call up the same way and now asks ALSA
+  directly too (not checked on a player).
 - **A large library no longer locks Cinder out of starting** (#46). The album-cover cache filled
   `/data` (35 MB on this player; 12,500 songs on a card were enough), the launcher could then not
   write its bad-boot counter, and every start after that went to Sony's player, so Cinder never
