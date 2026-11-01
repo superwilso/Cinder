@@ -60,13 +60,40 @@ int snd_pcm_hw_params_set_channels(void* pcm, void* params, unsigned int ch) { (
 int snd_pcm_close(void* pcm) { (void)pcm; return 0; }
 /* The rate a real hw_params commit would leave in the parameters: what the shim reads back. */
 int snd_pcm_hw_params(void* pcm, void* params) { (void)pcm; (void)params; return 0; }
-int snd_pcm_hw_params_get_rate(const void* params, unsigned int* val, int* dir)
+int fake_get_rate(const void* params, unsigned int* val, int* dir)
 {
     (void)params;
     *val = 48000;
     if (dir) *dir = 0;
     return 0;
 }
+/* #43: the player's libasound has TWO of these, as here: ALSA_0.9's took and returned the rate by
+ * value, ALSA_0.9.0rc4's (the default) uses pointers. A shim that reaches the old one hands it a
+ * pointer as the rate. The version script is in tools/test_mono_shim.sh. */
+static unsigned g_rate;
+int fake_set_rate_near(void* pcm, void* params, unsigned int* val, int* dir)
+{
+    (void)pcm; (void)params; (void)dir;
+    g_rate = *val;
+    return 0;
+}
+unsigned fake_set_rate_near_old(void* pcm, void* params, unsigned int val, int* dir)
+{
+    (void)pcm; (void)params; (void)dir;
+    g_rate = val;
+    return val;
+}
+unsigned fake_get_rate_old(const void* params, int* dir)
+{
+    (void)params;
+    if (dir) *dir = 0;
+    return 48000;
+}
+__asm__(".symver fake_set_rate_near,snd_pcm_hw_params_set_rate_near@@ALSA_0.9.0rc4");
+__asm__(".symver fake_set_rate_near_old,snd_pcm_hw_params_set_rate_near@ALSA_0.9");
+__asm__(".symver fake_get_rate,snd_pcm_hw_params_get_rate@@ALSA_0.9.0rc4");
+__asm__(".symver fake_get_rate_old,snd_pcm_hw_params_get_rate@ALSA_0.9");
+unsigned fake_rate(void) { return g_rate; }
 long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
 {
     if (pcm == (void*)0xBAD) return -32;   /* a write the codec refuses */
@@ -98,7 +125,9 @@ int snd_pcm_hw_params_set_channels(void* pcm, void* params, unsigned int ch);
 int snd_pcm_close(void* pcm);
 int snd_pcm_hw_params(void* pcm, void* params);
 long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames);
+int snd_pcm_hw_params_set_rate_near(void* pcm, void* params, unsigned int* val, int* dir);
 const unsigned char* fake_last(void);
+unsigned fake_rate(void);
 void fc_create(void* self, const void* pool, const cxx_vec* names) __asm__(FC_CREATE);
 const char* fake_chain(void);
 
@@ -316,6 +345,14 @@ int main(int argc, char** argv)
         }
         if (is_ssfw) check(failed == 3 && from == 1, "jack: the first three failed writes and the library are logged");
         else check(failed == 0 && from == 0, "jack: in any other process nothing is logged");
+    }
+
+    /* #43: the rate reaches the pointer version, whether or not the hooks are on. */
+    {
+        unsigned rate = 44100;
+        int dir = 0;
+        check(snd_pcm_hw_params_set_rate_near(pcmh, NULL, &rate, &dir) == 0 && fake_rate() == 44100,
+              "jack: 44100 reaches ALSA as 44100 (the default version, not ALSA_0.9's)");
     }
 
     /* the soundscape on the jack: needs the rate, which comes from the hw_params commit */
