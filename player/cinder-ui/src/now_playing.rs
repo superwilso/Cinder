@@ -75,6 +75,99 @@ pub const TOOLBAR_TOP: i32 = 744;
 pub const TOOLBAR_SLOTS: usize = 4;
 pub const TOOLBAR_CX: [i32; TOOLBAR_SLOTS] = [60, 180, 300, 420];
 
+/// What the third toolbar slot is (Settings ▸ Now Playing button, #51). Bluetooth by default, as it
+/// always was; the Bluetooth page is also a tap away in the pull-down panel and the Menu.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NpButton {
+    #[default]
+    Bluetooth,
+    Sound,
+    Eq,
+    Menu,
+}
+
+impl NpButton {
+    pub const ALL: [NpButton; 4] = [
+        NpButton::Bluetooth,
+        NpButton::Sound,
+        NpButton::Eq,
+        NpButton::Menu,
+    ];
+
+    /// The settings-file word.
+    pub fn token(self) -> &'static str {
+        match self {
+            NpButton::Bluetooth => "bluetooth",
+            NpButton::Sound => "sound",
+            NpButton::Eq => "eq",
+            NpButton::Menu => "menu",
+        }
+    }
+
+    pub fn from_token(s: &str) -> NpButton {
+        let s = s.trim();
+        Self::ALL
+            .into_iter()
+            .find(|b| b.token() == s)
+            .unwrap_or_default()
+    }
+
+    pub fn next(self) -> NpButton {
+        let i = Self::ALL.iter().position(|b| *b == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// The Settings row's value, and the word Nocturne writes under the slot.
+    pub fn label(self) -> &'static str {
+        match self {
+            NpButton::Bluetooth => crate::i18n::text("BLUETOOTH"),
+            NpButton::Sound => crate::i18n::text("SOUND"),
+            NpButton::Eq => crate::i18n::text("EQUALIZER"),
+            NpButton::Menu => crate::i18n::text("MENU"),
+        }
+    }
+
+    /// The short word, for the cassette's keys and Terminal's brackets.
+    pub fn short(self) -> &'static str {
+        match self {
+            NpButton::Bluetooth => "BT",
+            NpButton::Sound => "SND",
+            NpButton::Eq => "EQ",
+            NpButton::Menu => "MENU",
+        }
+    }
+
+    pub fn icon(
+        self,
+        c: &mut Canvas,
+        cx: f32,
+        cy: f32,
+        size: f32,
+        col: embedded_graphics::pixelcolor::Rgb888,
+    ) {
+        match self {
+            NpButton::Bluetooth => icons::bt(c, cx, cy, size, col),
+            NpButton::Sound => icons::sound(c, cx, cy, size, col),
+            NpButton::Eq => icons::eq(c, cx, cy, size, col),
+            NpButton::Menu => icons::menu(c, cx, cy, size, col),
+        }
+    }
+}
+
+thread_local! {
+    /// Which `NpButton` the styles draw. Set by the navigator before each frame, so it is never
+    /// stale; per thread, so tests that render side by side cannot see each other's choice.
+    static BUTTON: std::cell::Cell<NpButton> = const { std::cell::Cell::new(NpButton::Bluetooth) };
+}
+
+pub fn set_button(b: NpButton) {
+    BUTTON.with(|c| c.set(b));
+}
+
+pub fn button() -> NpButton {
+    BUTTON.with(|c| c.get())
+}
+
 pub const HEART_CX: i32 = 432;
 pub const HEART_CY: i32 = 548;
 pub const HEART_HALF: i32 = 30;
@@ -1163,7 +1256,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         match index {
             0 => icons::library(c, cx, tb, g(24.0), t.dim),
             1 => icons::queue(c, cx, tb, g(24.0), t.dim),
-            2 => icons::bt(c, cx, tb, g(23.0), t.dim),
+            2 => button().icon(c, cx, tb, g(23.0), t.dim),
             _ => icons::settings(c, cx, tb, g(24.0), t.dim),
         }
     }
@@ -1191,7 +1284,7 @@ fn idle_chrome(c: &mut Canvas, t: &Theme, f: &FontSet) {
     let tb = 774.0;
     icons::library(c, 60.0, tb, g(26.0), t.acc); // the one thing worth tapping from here
     icons::queue(c, 180.0, tb, g(26.0), t.dim);
-    icons::bt(c, 300.0, tb, g(25.0), t.dim);
+    button().icon(c, 300.0, tb, g(25.0), t.dim);
     icons::settings(c, 420.0, tb, g(26.0), t.dim);
     let _ = f;
 }

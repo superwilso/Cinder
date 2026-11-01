@@ -1319,6 +1319,7 @@ fn settings_body(r: &Render) -> String {
         up.token(),
         down.token()
     ));
+    body.push_str(&format!("np_button={}\n", r.app.np_button().token()));
     // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
     body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
     body.push_str(&format!(
@@ -8297,6 +8298,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
                     "folders_tab" => r.app.set_folders_tab(v == "1"),
+                    "np_button" => r
+                        .app
+                        .set_np_button(cinder_ui::now_playing::NpButton::from_token(v)),
                     "np_swipe_up" | "np_swipe_down" => {
                         let (mut up, mut down) = r.app.np_swipes();
                         let t = cinder_ui::settings::SwipeTo::from_token(v);

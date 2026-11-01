@@ -1705,6 +1705,8 @@ pub struct App {
     /// What a swipe up / down in the middle of Now Playing opens (Settings, #51). Off by default.
     np_swipe_up: crate::settings::SwipeTo,
     np_swipe_down: crate::settings::SwipeTo,
+    /// Now Playing's third toolbar button (Settings ▸ Now Playing button, #51). Bluetooth by default.
+    np_button: crate::now_playing::NpButton,
     /// The pull-down panel is showing. Its own flag, not the Shelf's: the two never share state.
     quick_open: bool,
     pins: [Option<ShelfPin>; crate::shelf::SLOTS],
@@ -2140,6 +2142,7 @@ impl Default for App {
             folders_tab: false,
             np_swipe_up: crate::settings::SwipeTo::Off,
             np_swipe_down: crate::settings::SwipeTo::Off,
+            np_button: crate::now_playing::NpButton::Bluetooth,
             quick_open: false,
             pins: std::array::from_fn(|_| None),
             history: Vec::new(),
@@ -2767,6 +2770,15 @@ impl App {
             SwipeTo::Folders => self.open_folders(),
         }
         true
+    }
+
+    /// Now Playing's third toolbar button, for the settings file.
+    pub fn np_button(&self) -> crate::now_playing::NpButton {
+        self.np_button
+    }
+
+    pub fn set_np_button(&mut self, b: crate::now_playing::NpButton) {
+        self.np_button = b;
     }
 
     pub fn set_folders_tab(&mut self, on: bool) {
@@ -4208,6 +4220,10 @@ impl App {
                 self.np_swipe_down = self.np_swipe_down.next();
                 vec![]
             }
+            crate::settings::ROW_NP_BUTTON => {
+                self.np_button = self.np_button.next();
+                vec![]
+            }
             crate::settings::ROW_FOLDERS_TAB => {
                 // Render-only, like the pull-down panel: the shell's save path writes the file.
                 self.set_folders_tab(!self.folders_tab);
@@ -4808,7 +4824,14 @@ impl App {
                             0 => self.open_browse(),
                             1 if self.zappin_active => self.push(Screen::Zappin),
                             1 => self.push(Screen::UpNext),
-                            2 => self.push(Screen::Bluetooth),
+                            2 => match self.np_button {
+                                crate::now_playing::NpButton::Bluetooth => {
+                                    self.push(Screen::Bluetooth)
+                                }
+                                crate::now_playing::NpButton::Sound => self.push(Screen::Sound),
+                                crate::now_playing::NpButton::Eq => self.push(Screen::Eq),
+                                crate::now_playing::NpButton::Menu => self.push(Screen::Menu),
+                            },
                             _ => self.push(Screen::Settings),
                         }
                         vec![]
@@ -9944,6 +9967,7 @@ impl App {
     /// Draw the current screen. Live now-playing data comes from the shell (`np`); list/
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
+        crate::now_playing::set_button(self.np_button);
         let _language = crate::i18n::enter(self.language);
         self.reconcile_playing(np.playing);
         // The shell owns the shuffle flag; the MIX chip only needs to know which way it points.
@@ -10771,6 +10795,7 @@ impl App {
                     folders_tab: self.folders_tab,
                     swipe_up: self.np_swipe_up,
                     swipe_down: self.np_swipe_down,
+                    np_button: self.np_button,
                     shuffle_by: self.shuffle_by.label(),
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
@@ -17389,6 +17414,61 @@ mod tests {
         assert_eq!(a.tap(120, crate::quick::ROW_BT + 30), vec![]);
         assert!(!a.quick_is_open(), "the panel closes behind it");
         assert_eq!(a.current(), Screen::Bluetooth);
+    }
+
+    /// #51: the third toolbar button is Bluetooth unless Settings says otherwise, opens what it
+    /// shows, and every style draws the choice rather than the Bluetooth glyph.
+    #[test]
+    fn the_third_toolbar_button_is_the_one_settings_picked() {
+        use crate::now_playing::NpButton;
+        let _scale = lock_scale();
+        let fonts = crate::text::FontSet::load();
+        let slot = |a: &mut App| {
+            a.go(Screen::NowPlaying);
+            let (x, y) = crate::now_playing::layout(a.style, a.night, false)
+                .at(crate::now_playing::Hit::Toolbar(2))
+                .expect("a third toolbar slot")
+                .centre();
+            a.tap(x, y);
+            a.current()
+        };
+        let mut a = unlocked();
+        assert_eq!(a.np_button(), NpButton::Bluetooth, "Bluetooth by default");
+        assert_eq!(slot(&mut a), Screen::Bluetooth);
+        for (b, screen) in [
+            (NpButton::Sound, Screen::Sound),
+            (NpButton::Eq, Screen::Eq),
+            (NpButton::Menu, Screen::Menu),
+        ] {
+            a.set_np_button(b);
+            assert_eq!(slot(&mut a), screen, "{b:?}");
+            assert_eq!(NpButton::from_token(b.token()), b);
+        }
+        assert_eq!(
+            NpButton::Menu.next(),
+            NpButton::Bluetooth,
+            "the row comes round"
+        );
+        // What each style draws in the slot changes with the choice.
+        for style in crate::style::Style::ALL {
+            let toolbar = |b: NpButton| {
+                let mut a = unlocked();
+                a.set_style(style);
+                a.set_np_button(b);
+                a.go(Screen::NowPlaying);
+                let mut c = Canvas::new();
+                a.render(&mut c, &fonts, &bare_np());
+                let rgb = c.to_rgb_bytes();
+                (crate::now_playing::TOOLBAR_TOP as usize..800)
+                    .flat_map(|y| rgb[(y * 480 + 240) * 3..(y * 480 + 360) * 3].to_vec())
+                    .collect::<Vec<u8>>()
+            };
+            assert_ne!(
+                toolbar(NpButton::Bluetooth),
+                toolbar(NpButton::Sound),
+                "{style:?}: the slot still says Bluetooth"
+            );
+        }
     }
 
     /// #51: a swipe on Now Playing opens what Settings picked, and nothing while it is Off — the

@@ -16,15 +16,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Added
-
-- **Swipe up and Swipe down on Now Playing (#51).** Two new rows in Settings ▸ More settings ▸
-  System pick what a swipe in the middle of Now Playing opens: the Menu, Sound, Equalizer, Up Next,
-  Bluetooth, Library or Folders. Both are Off by default. A swipe up from the very bottom edge still
-  opens the Shelf, and a pull from the top bar still opens the pull-down panel. Verified on the
-  owner's player (Sound and Menu).
-- **The pull-down panel opens the Bluetooth page (#51).** Tap the name on its Bluetooth row; the
-  switch still turns Bluetooth on and off. *Device-unverified.*
+## [0.3.22] — 2026-10-28
 
 ### Changed
 
@@ -35,23 +27,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **The top bar on the USB storage screen.** It shows the clock and battery there now, like every
   screen but onboarding and the Winamp and cassette views. Its taps stay off while the PC has the
   drive, so a stray one cannot interrupt a copy. *Device-unverified.*
-
-### Fixed
-
-- **A big library gets a cover on every row (#46).** The album-cover cache keeps two sizes per
-  album, and the larger one took the space the rest of the library's list thumbnails needed:
-  on a ~1,200-album library, about 700 albums got covers and the rest a plain colour. Every album
-  now gets its list thumbnail first, and the larger cover only where space is left; where it is
-  missing, the album page and grid enlarge the thumbnail. *Device-unverified.*
-- **The Bluetooth screen names an SBC link (#44).** It showed `CODEC 0x01` where the link was
-  SBC: Sony's code for SBC had never been seen on the sending side. It now reads SBC, or SBC XQ
-  with that option installed, so asking for LDAC with earphones that lack it reads
-  "SBC XQ · ASKED FOR LDAC". Mapped from a user's log. *Device-unverified.*
-
-## [0.3.22] — 2026-10-28
-
-### Changed
-
 - **Big view: bigger covers in lists.** The Albums, Artists and Playlists lists, an artist's
   albums, a playlist's songs and Up Next draw their covers at 60 px instead of 48 in Big view,
   to match the taller rows. Grid covers grow from 96 px to 132, three across. With Big view off
@@ -90,6 +65,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **A big library gets a cover on every row (#46).** The album-cover cache keeps two sizes per
+  album, and the larger one took the space the rest of the library's list thumbnails needed:
+  on a ~1,200-album library, about 700 albums got covers and the rest a plain colour. Every album
+  now gets its list thumbnail first, and the larger cover only where space is left; where it is
+  missing, the album page and grid enlarge the thumbnail. *Device-unverified.*
+- **The Bluetooth screen names an SBC link (#44).** It showed `CODEC 0x01` where the link was
+  SBC: Sony's code for SBC had never been seen on the sending side. It now reads SBC, or SBC XQ
+  with that option installed, so asking for LDAC with earphones that lack it reads
+  "SBC XQ · ASKED FOR LDAC". Mapped from a user's log. *Device-unverified.*
 - **The headphone jack plays again next to Wampy** (#43). With Wampy installed and the Mono and
   soundscapes option on, the jack played music 8.7 times too fast at 384 kHz, which is silence,
   whether the mono switch was on or off; Bluetooth was fine. The player's ALSA library has two
@@ -174,6 +158,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Swipe up and Swipe down on Now Playing (#51).** Two new rows in Settings ▸ More settings ▸
+  System pick what a swipe in the middle of Now Playing opens: the Menu, Sound, Equalizer, Up Next,
+  Bluetooth, Library or Folders. Both are Off by default. A swipe up from the very bottom edge still
+  opens the Shelf, and a pull from the top bar still opens the pull-down panel. Verified on the
+  owner's player (Sound and Menu).
+- **Now Playing's Bluetooth button can be another screen (#51).** Settings ▸ More settings ▸
+  System ▸ Now Playing button makes the third button along the bottom Sound, Equalizer or the Menu
+  instead of Bluetooth, in every Now Playing style. Bluetooth stays the default, and its page is
+  still in the Menu and the pull-down panel. *Device-unverified.*
+- **The pull-down panel opens the Bluetooth page (#51).** Tap the name on its Bluetooth row; the
+  switch still turns Bluetooth on and off. *Device-unverified.*
 - **Library: an opt-in FOLDERS tab** (#45). Settings ▸ More settings ▸ Folders tab puts FOLDERS
   at the end of the Library's tab strip; a tap opens the folder browser and Back comes back to the
   Library. Off by default. The strip fits itself to the width: the gaps close first, then the text

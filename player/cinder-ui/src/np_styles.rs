@@ -496,7 +496,11 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     // The toolbar: four words under a hairline.
     hline(c, TOOLBAR_TOP, t.line);
     for (i, word) in TOOLBAR_WORDS.iter().enumerate() {
-        let word = crate::i18n::text(word);
+        let word = if i == 2 {
+            crate::now_playing::button().label()
+        } else {
+            crate::i18n::text(word)
+        };
         let (x, _) = centre(l, Hit::Toolbar(i as u8));
         let col = if quiet && i == 0 { t.acc } else { t.dim };
         let st = s(Family::Mono, Weight::Regular, 11.0, col, 0.16);
@@ -791,7 +795,13 @@ fn terminal_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
     // The toolbar.
     hline(c, TOOLBAR_TOP, t.line);
     for (i, label) in TERMINAL_TOOLBAR.iter().enumerate() {
-        let label = crate::i18n::text(label);
+        let custom;
+        let label = if i == 2 {
+            custom = format!("[{}]", crate::now_playing::button().short());
+            &custom
+        } else {
+            crate::i18n::text(label)
+        };
         let col = if quiet && i == 0 { t.acc } else { t.dim };
         word(c, Hit::Toolbar(i as u8), label, col);
     }
@@ -1029,6 +1039,11 @@ fn cassette_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
 
     hline(c, TOOLBAR_TOP, t.line);
     for (i, label) in ["LIBRARY", "QUEUE", "BT", "SETTINGS"].iter().enumerate() {
+        let label = if i == 2 {
+            crate::now_playing::button().short()
+        } else {
+            label
+        };
         let (x, y) = centre(l, Hit::Toolbar(i as u8));
         let col = if quiet && i == 0 { t.acc } else { t.dim };
         toolbar_word(
