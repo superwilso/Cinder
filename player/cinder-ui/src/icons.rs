@@ -78,27 +78,32 @@ fn disc(c: &mut Canvas, cx: i32, cy: i32, d: i32, col: Rgb888) {
 }
 
 pub fn play(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     polygon(c, cx, cy, s, col, &[(8.0, 5.2), (18.5, 12.0), (8.0, 18.8)]);
 }
 
 pub fn pause(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     vbox(c, cx, cy, s, col, 0, 6.5, 5.0, 3.4, 14.0, true);
     vbox(c, cx, cy, s, col, 0, 14.1, 5.0, 3.4, 14.0, true);
 }
 
 pub fn prev(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(c, cx, cy, s, col, w, &[(7.0, 5.0), (7.0, 19.0)]);
     polygon(c, cx, cy, s, col, &[(18.0, 6.2), (9.8, 12.0), (18.0, 17.8)]);
 }
 
 pub fn next(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(c, cx, cy, s, col, w, &[(17.0, 5.0), (17.0, 19.0)]);
     polygon(c, cx, cy, s, col, &[(6.0, 6.2), (14.2, 12.0), (6.0, 17.8)]);
 }
 
 pub fn shuffle(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(
         c,
@@ -148,6 +153,7 @@ pub fn shuffle(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn repeat(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(
         c,
@@ -188,6 +194,7 @@ pub fn repeat(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn heart(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     // two humps + lower tip, scaled into the 24-box
     let r = (s * 5.2 / 24.0) as i32;
     let hx = (s * 4.6 / 24.0) as i32;
@@ -205,6 +212,7 @@ pub fn heart(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn queue(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(c, cx, cy, s, col, w, &[(4.0, 6.0), (20.0, 6.0)]);
     polyline(c, cx, cy, s, col, w, &[(4.0, 12.0), (14.0, 12.0)]);
@@ -220,6 +228,7 @@ pub fn queue(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn eq(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(c, cx, cy, s, col, w, &[(6.0, 4.0), (6.0, 20.0)]);
     polyline(c, cx, cy, s, col, w, &[(12.0, 4.0), (12.0, 20.0)]);
@@ -230,6 +239,7 @@ pub fn eq(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn bt(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(
         c,
@@ -252,6 +262,7 @@ pub fn bt(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 /// "Random": a die showing five. The artist page's Random album button (it used [`library`]'s grid,
 /// which reads as "view", not "pick one").
 pub fn dice(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     vbox(c, cx, cy, s, col, stroke_w(s), 1.5, 1.5, 21.0, 21.0, false);
     let d = ((s * 4.2 / 24.0).round() as i32).max(3);
     for (x, y) in [
@@ -267,6 +278,7 @@ pub fn dice(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn library(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     vbox(c, cx, cy, s, col, w, 4.0, 4.0, 6.6, 6.6, false);
     vbox(c, cx, cy, s, col, w, 13.4, 4.0, 6.6, 6.6, false);
@@ -277,6 +289,7 @@ pub fn library(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 /// "List view": three rows, each a small cover and a line. Drawn beside [`library`]'s 2x2 grid,
 /// which is the grid view's icon, on the Library header's view button.
 pub fn list_view(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     for y in [4.0, 10.5, 17.0] {
         vbox(c, cx, cy, s, col, w, 3.5, y, 3.5, 3.5, true);
@@ -286,6 +299,7 @@ pub fn list_view(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 
 /// "Compact view": five close lines and no covers.
 pub fn compact_view(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     for y in [4.5, 8.25, 12.0, 15.75, 19.5] {
         polyline(c, cx, cy, s, col, w, &[(3.5, y), (20.5, y)]);
@@ -293,6 +307,7 @@ pub fn compact_view(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn bookmark(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(
         c,
@@ -313,6 +328,7 @@ pub fn bookmark(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn menu(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s).max(2);
     polyline(c, cx, cy, s, col, w, &[(4.0, 7.5), (20.0, 7.5)]);
     polyline(c, cx, cy, s, col, w, &[(4.0, 12.0), (20.0, 12.0)]);
@@ -320,6 +336,7 @@ pub fn menu(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn lock(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     vbox(c, cx, cy, s, col, w, 5.0, 10.5, 14.0, 9.5, false);
     polyline(
@@ -343,6 +360,7 @@ pub fn lock(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 /// An X — "remove this". Used by the queue's swipe-to-delete reveal, where a trash can would be
 /// unreadable at 18 px on this panel.
 pub fn close(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(c, cx, cy, s, col, w, &[(6.0, 6.0), (18.0, 18.0)]);
     polyline(c, cx, cy, s, col, w, &[(18.0, 6.0), (6.0, 18.0)]);
@@ -350,6 +368,7 @@ pub fn close(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 
 /// A magnifier — "search": a ring and a handle, stroked at the same weight as every other icon.
 pub fn search(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     let ring: Vec<(f32, f32)> = (0..=20)
         .map(|i| {
@@ -363,6 +382,7 @@ pub fn search(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 
 /// An open book: two pages meeting at the spine. The Library header's Audiobooks button.
 pub fn book(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(
         c,
@@ -385,6 +405,7 @@ pub fn book(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn chevron(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s).max(2);
     polyline(
         c,
@@ -399,6 +420,7 @@ pub fn chevron(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 
 /// Chevron pointing UP — "this opens upward", used on the Now Playing return bar.
 pub fn chevron_up(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s).max(2);
     polyline(
         c,
@@ -412,6 +434,7 @@ pub fn chevron_up(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn back(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s).max(2);
     polyline(
         c,
@@ -450,6 +473,7 @@ fn vdisc(c: &mut Canvas, cx: f32, cy: f32, s: f32, x: f32, y: f32, r: f32, col: 
 }
 
 pub fn note(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(
         c,
@@ -465,6 +489,7 @@ pub fn note(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn radio(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     vbox(c, cx, cy, s, col, w, 3.0, 8.5, 18.0, 11.0, false);
     circle_stroke(c, cx, cy, s, 8.2, 14.0, 2.4, col, w);
@@ -474,6 +499,7 @@ pub fn radio(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn sound(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polygon(
         c,
@@ -511,6 +537,7 @@ pub fn sound(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn usb(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(c, cx, cy, s, col, w, &[(12.0, 21.0), (12.0, 4.6)]);
     polyline(
@@ -546,6 +573,7 @@ pub fn usb(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn rx(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(
         c,
@@ -568,6 +596,7 @@ pub fn rx(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 }
 
 pub fn settings(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     circle_stroke(c, cx, cy, s, 12.0, 12.0, 3.1, col, w);
     polyline(c, cx, cy, s, col, w, &[(12.0, 2.5), (12.0, 5.5)]);
@@ -584,6 +613,7 @@ pub fn settings(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 /// bundled family has the star, and a character they lack sends the player to Sony's fonts
 /// (`docs/DESIGN_GUIDE.md` §7).
 pub fn star(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888, filled: bool) {
+    let s = crate::scale::icon(s);
     // Ten points around the centre of the 24-box, outer radius 11, inner 4.6, first point up.
     let pts: Vec<(f32, f32)> = (0..10)
         .map(|k| {
@@ -609,6 +639,7 @@ pub fn star(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888, filled: bool)
 /// The smart-playlist mark (the handoff's diamond lead on 5g), as an outlined diamond — vector for
 /// the same reason as [`star`].
 pub fn diamond(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     polyline(
         c,
@@ -629,6 +660,7 @@ pub fn diamond(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
 
 /// The drag handle (the handoff's three-bar lead on 5b): three short bars.
 pub fn grip(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
     let w = stroke_w(s);
     for y in [7.0, 12.0, 17.0] {
         polyline(c, cx, cy, s, col, w, &[(5.0, y), (19.0, y)]);

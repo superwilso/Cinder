@@ -17,11 +17,11 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 28;
+pub const ROWS: usize = 30;
 /// Rows shown while the list is folded: the everyday ones and `ROW_MORE` itself.
-pub const EVERYDAY: usize = 11;
+pub const EVERYDAY: usize = 13;
 /// More settings: unfolds every row after it, in place, and folds them away again.
-pub const ROW_MORE: usize = 10;
+pub const ROW_MORE: usize = 12;
 
 /// How many rows are on the screen: all of them, or the everyday ones.
 pub fn rows(more: bool) -> usize {
@@ -37,21 +37,35 @@ pub const ROW_DISPLAY: usize = 0;
 /// everyday list, right under Display, because the people who need it are the ones who find small
 /// rows hard to reach — it must not sit behind More settings.
 pub const ROW_BIG: usize = 1;
-pub const ROW_BRIGHTNESS: usize = 2;
-pub const ROW_SCREEN_OFF: usize = 3;
+/// Big view's two extras (#51), listed under it and shown only while it is on: a bigger top bar
+/// (clock, battery, ☰, bookmark) and bigger icons everywhere else. `scale::set_big_bar`/`icons`.
+pub const ROW_BIG_BAR: usize = 2;
+pub const ROW_BIG_ICONS: usize = 3;
+
+/// Is row `r` on the screen? The Language row needs a second language to switch to, and Big view's
+/// two extras need Big view.
+pub fn shown(r: usize, lang: bool) -> bool {
+    match r {
+        ROW_LANGUAGE => lang,
+        ROW_BIG_BAR | ROW_BIG_ICONS => crate::scale::large(),
+        _ => true,
+    }
+}
+pub const ROW_BRIGHTNESS: usize = 4;
+pub const ROW_SCREEN_OFF: usize = 5;
 /// The pull-down panel (`quick.rs`): a swipe down from the status bar opens brightness, Bluetooth,
 /// night and the sleep timer. Asked for on the r/walkman thread; OFF by default, because the owner
 /// uses the Shelf and a new gesture must never arrive unasked (`docs/PLAN_community_2026-09-23.md`
 /// B1). With it off there is no gesture and nothing else on any screen changes.
-pub const ROW_QUICK: usize = 17;
+pub const ROW_QUICK: usize = 19;
 /// Swipe up / swipe down on Now Playing (#51): each opens the screen picked here, or nothing. OFF
 /// by default, like every community-asked gesture. They are the middle of the screen only: a swipe
 /// up from the bottom edge stays the Shelf's and a pull from the status bar the pull-down panel's.
-pub const ROW_SWIPE_UP: usize = 18;
-pub const ROW_SWIPE_DOWN: usize = 19;
+pub const ROW_SWIPE_UP: usize = 20;
+pub const ROW_SWIPE_DOWN: usize = 21;
 /// The third button on Now Playing's toolbar (#51): Bluetooth, as always, or Sound, Equalizer or the
 /// Menu. `now_playing::NpButton`.
-pub const ROW_NP_BUTTON: usize = 20;
+pub const ROW_NP_BUTTON: usize = 22;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -61,55 +75,55 @@ pub const ROW_NP_BUTTON: usize = 20;
 /// directly; the flag would be a control that accepts a write and changes nothing, which is
 /// exactly what "High gain output" turned out to be (see sound.rs). So the shell reads Sony's
 /// number and clamps in its own `apply_volume`.
-pub const ROW_VOLUME_LIMIT: usize = 16;
-pub const ROW_SLEEP: usize = 4;
+pub const ROW_VOLUME_LIMIT: usize = 18;
+pub const ROW_SLEEP: usize = 6;
 /// What the shuffle button deals: SONGS (every track at random, as always), ALBUMS (whole albums
 /// at random, each in its own order) or ARTISTS. `shuffle.rs`. SONGS by default, so the button
 /// does what it has always done until the owner picks otherwise.
-pub const ROW_SHUFFLE: usize = 5;
+pub const ROW_SHUFFLE: usize = 7;
 /// Ignore "The" in artists — sort "The Beatles" among the B's in the Artists tab, the Albums tab's
 /// artist groups and Songs by artist (and file it under B on the rail). OFF by default: artists
 /// sort as written. Titles and album names keep their "The" either way. See `collate`.
-pub const ROW_IGNORE_THE: usize = 11;
-pub const ROW_DATABASE: usize = 12;
+pub const ROW_IGNORE_THE: usize = 13;
+pub const ROW_DATABASE: usize = 14;
 /// Folders tab: a FOLDERS link at the end of the Library's tab strip that opens the folder browser
 /// (#45, asked for on GitHub). OFF by default, like every community-asked UI change: with it off the
 /// strip is exactly the four tabs it always was.
-pub const ROW_FOLDERS_TAB: usize = 13;
+pub const ROW_FOLDERS_TAB: usize = 15;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. 30 MIN by default since 2026-10-04 (it was OFF): the owner's rule
 /// is that no state may drain a player nobody is using. OFF is one tap away.
-pub const ROW_AUTO_OFF: usize = 14;
+pub const ROW_AUTO_OFF: usize = 16;
 /// Bluetooth auto off: switch the radio off after ten minutes of a dark screen with nothing
 /// playing over it. The radio (and a link carrying nothing) costs power for as long as it is up,
 /// and nothing but the user ever switched it off. ON by default since 2026-10-04, like Auto power
 /// off. It does not come back by itself.
-pub const ROW_BT_IDLE_OFF: usize = 15;
-pub const ROW_STORAGE: usize = 21;
-pub const ROW_BATTERY: usize = 7;
+pub const ROW_BT_IDLE_OFF: usize = 17;
+pub const ROW_STORAGE: usize = 23;
+pub const ROW_BATTERY: usize = 9;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 6;
-pub const ROW_USB_MODE: usize = 8; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 8;
+pub const ROW_USB_MODE: usize = 10; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 22;
+pub const ROW_BOOT_STOCK: usize = 24;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 23;
-pub const ROW_POWER_OFF: usize = 9;
+pub const ROW_RESTART: usize = 25;
+pub const ROW_POWER_OFF: usize = 11;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 24;
+pub const ROW_RESET: usize = 26;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_LANGUAGE: usize = 25;
-pub const ROW_FIRMWARE: usize = 26;
-pub const ROW_MODEL: usize = 27;
+pub const ROW_LANGUAGE: usize = 27;
+pub const ROW_FIRMWARE: usize = 28;
+pub const ROW_MODEL: usize = 29;
 
 /// What a swipe on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -266,6 +280,9 @@ pub struct SettingsView<'a> {
     pub volume_limit: bool,
     /// Big view on/off (`ROW_BIG`).
     pub big_view: bool,
+    /// Big view's extras, as set (`ROW_BIG_BAR`, `ROW_BIG_ICONS`).
+    pub big_bar: bool,
+    pub big_icons: bool,
     /// Ignore "The" at the start of artist names when sorting (`ROW_IGNORE_THE`).
     pub ignore_the: bool,
     /// The pull-down panel is switched on (`ROW_QUICK`).
@@ -336,7 +353,7 @@ fn row_span(scroll: i32, more: bool, lang: bool) -> impl Iterator<Item = (usize,
         }
         yy += label_h(label);
         for _ in 0..*n {
-            if r == ROW_LANGUAGE && !lang {
+            if !shown(r, lang) {
                 r += 1;
                 continue;
             }
@@ -373,6 +390,8 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_SWIPE_DOWN => Trail::Value(v.swipe_down.label()),
         ROW_NP_BUTTON => Trail::Value(v.np_button.label()),
         ROW_BIG => Trail::Switch(v.big_view),
+        ROW_BIG_BAR => Trail::Switch(v.big_bar),
+        ROW_BIG_ICONS => Trail::Switch(v.big_icons),
         // The volume limit is a value row rather than a switch because the interesting half is
         // WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number the
         // user did not choose, and the number is Sony's per-output AVLS threshold, read live.
@@ -432,6 +451,8 @@ fn title(r: usize) -> &'static str {
         ROW_SWIPE_DOWN => crate::i18n::text("Swipe down"),
         ROW_NP_BUTTON => crate::i18n::text("Now Playing button"),
         ROW_BIG => crate::i18n::text("Big view"),
+        ROW_BIG_BAR => crate::i18n::text("Bigger top bar"),
+        ROW_BIG_ICONS => crate::i18n::text("Bigger icons"),
         ROW_VOLUME_LIMIT => crate::i18n::text("Volume limit"),
         ROW_SLEEP => crate::i18n::text("Sleep timer"),
         ROW_SHUFFLE => crate::i18n::text("Shuffle"),
@@ -482,7 +503,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
             y = kit::section_label(c, t, f, y, label, None);
         }
         for _ in 0..n {
-            if r == ROW_LANGUAGE && v.languages.len() < 2 {
+            if !shown(r, v.languages.len() >= 2) {
                 r += 1;
                 continue;
             }
@@ -495,6 +516,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                     QUICK_SUB
                 }),
                 ROW_BIG => crate::i18n::text(BIG_SUB),
+                ROW_BIG_BAR => crate::i18n::text("Clock, battery and menu"),
+                ROW_BIG_ICONS => crate::i18n::text("Arrows and symbols"),
                 ROW_SWIPE_UP | ROW_SWIPE_DOWN => crate::i18n::text("On Now Playing"),
                 ROW_NP_BUTTON => crate::i18n::text("The third one along the bottom"),
                 ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
@@ -531,6 +554,8 @@ mod tests {
         SettingsView {
             volume_limit: false,
             big_view: false,
+            big_bar: false,
+            big_icons: false,
             folders_tab: false,
             swipe_up: SwipeTo::Off,
             swipe_down: SwipeTo::Off,
@@ -745,7 +770,7 @@ mod volume_limit_tests {
     /// including the last one, which is the one a miscounted section table loses first.
     #[test]
     fn every_row_including_the_new_one_is_hittable() {
-        for r in 0..ROWS {
+        for r in (0..ROWS).filter(|r| shown(*r, true)) {
             let top = row_top_px(r) + LIST_TOP;
             let scroll = (top + RH() / 2 - (crate::canvas::H as i32 / 2))
                 .clamp(0, max_scroll_px(true, true));
@@ -756,6 +781,20 @@ mod volume_limit_tests {
                 "row {r} not hittable at y={y} scroll={scroll}"
             );
         }
+    }
+
+    /// #51: Big view's two extras sit under it and appear only while it is on.
+    #[test]
+    fn big_views_extras_show_only_with_big_view() {
+        assert!(!shown(ROW_BIG_BAR, true) && !shown(ROW_BIG_ICONS, true));
+        assert!(row_at(LIST_TOP + RH() * 2 + 1, 0, false, true) == Some(ROW_BRIGHTNESS));
+        crate::scale::set_large(true);
+        assert!(shown(ROW_BIG_BAR, true) && shown(ROW_BIG_ICONS, true));
+        assert_eq!(
+            row_at(LIST_TOP + RH() * 2 + 1, 0, false, true),
+            Some(ROW_BIG_BAR)
+        );
+        crate::scale::set_large(false);
     }
 
     /// Folded, the list is the everyday rows only, ends on More settings, and fits the panel
@@ -769,7 +808,9 @@ mod volume_limit_tests {
             0,
             "the folded list must not scroll"
         );
-        let last = LIST_TOP + EVERYDAY as i32 * RH() - RH() / 2;
+        // Big view's two extras are hidden while it is off, which is how this list fits.
+        let visible = (0..EVERYDAY).filter(|r| shown(*r, true)).count() as i32;
+        let last = LIST_TOP + visible * RH() - RH() / 2;
         assert_eq!(row_at(last, 0, false, true), Some(ROW_MORE));
         assert_eq!(
             row_at(last + RH(), 0, false, true),

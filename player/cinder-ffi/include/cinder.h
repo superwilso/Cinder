@@ -438,6 +438,9 @@ int  cinder_scrobble_open(const char *path, const char *client);
 void cinder_scrobble_tick(int playing);
 /* Refresh the status-bar/lock clock from local time (call ~1x/sec). Repaints only on minute change. */
 void cinder_clock_tick(void);
+/* Night on a schedule: call ~1x/sec. Returns CINDER_ACT_THEME_CHANGED when Night just came on or
+ * went off (carry it out like the switch: the backlight follows), else CINDER_ACT_NONE. */
+int  cinder_night_tick(void);
 /* Push battery percent (0..100) to the status bar; repaints only on change. */
 void cinder_set_battery(int pct);
 /* Settings > Device: the hardware's vital signs. Split into four calls rather than one wide one so

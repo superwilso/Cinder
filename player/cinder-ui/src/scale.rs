@@ -73,6 +73,89 @@ pub fn large() -> bool {
     return LARGE.with(|l| l.get());
 }
 
+// ── Big view's two extras (#51) ──────────────────────────────────────────────────────────────
+//
+// Big view grows text and rows, and asked about on GitHub (2026-11-01), the icons and the top
+// bar's clock and battery stayed small beside them. Two switches under Big view, each off by
+// default and each doing nothing while Big view itself is off:
+//   * BAR   — the top bar's clock, battery, ☰ and bookmark (`chrome::status_bar`).
+//   * ICONS — every other icon: arrows, the back arrow, list and header symbols (`icons`).
+// Now Playing grows its own controls with Big view already, so it, onboarding and the top bar
+// draw with ICONS held off (`IconsExempt`).
+const BAR: u8 = 1;
+const ICONS: u8 = 2;
+const EXEMPT: u8 = 4;
+/// What the ICONS switch multiplies an icon by, in percent.
+pub const ICON_PCT: i32 = 130;
+
+#[cfg(not(test))]
+static FLAGS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+#[cfg(test)]
+thread_local! {
+    static FLAGS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+fn flags() -> u8 {
+    #[cfg(not(test))]
+    return FLAGS.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    return FLAGS.with(|f| f.get());
+}
+
+fn set_flag(bit: u8, on: bool) {
+    let v = if on { flags() | bit } else { flags() & !bit };
+    #[cfg(not(test))]
+    FLAGS.store(v, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    FLAGS.with(|f| f.set(v));
+}
+
+pub fn set_big_bar(on: bool) {
+    set_flag(BAR, on);
+}
+/// The Bigger top bar switch, as set (Settings shows it whether or not Big view is on).
+pub fn big_bar_set() -> bool {
+    flags() & BAR != 0
+}
+/// The top bar draws bigger: Big view AND its Bigger top bar switch.
+pub fn big_bar() -> bool {
+    large() && big_bar_set()
+}
+
+pub fn set_big_icons(on: bool) {
+    set_flag(ICONS, on);
+}
+pub fn big_icons_set() -> bool {
+    flags() & ICONS != 0
+}
+
+/// An icon's size: `px`, or ICON_PCT of it with Big view and Bigger icons on, outside the places
+/// that size their own (`IconsExempt`).
+pub fn icon(px: f32) -> f32 {
+    if large() && flags() & (ICONS | EXEMPT) == ICONS {
+        px * ICON_PCT as f32 / 100.0
+    } else {
+        px
+    }
+}
+
+/// Holds Bigger icons off until dropped, then puts back what was there.
+pub struct IconsExempt(bool);
+
+impl IconsExempt {
+    pub fn new(on: bool) -> Self {
+        let was = flags() & EXEMPT != 0;
+        set_flag(EXEMPT, on || was);
+        IconsExempt(was)
+    }
+}
+
+impl Drop for IconsExempt {
+    fn drop(&mut self) {
+        set_flag(EXEMPT, self.0);
+    }
+}
+
 /// `px` at the current control size: unchanged with Big view off.
 pub fn ctl(px: i32) -> i32 {
     if large() {
