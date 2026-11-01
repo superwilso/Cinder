@@ -36,12 +36,13 @@ typedef int (*rate_fn)(snd_pcm_t*, snd_pcm_hw_params_t*, unsigned*, int*);
 typedef int (*pcm_fn)(snd_pcm_t*);
 
 /* RTLD_NOLOAD: libasound is loaded by the time the service calls any of these, and this must never
- * be what loads it. A handle lookup searches libasound and its needs, never our own hooks. */
+ * be what loads it. A handle lookup searches libasound and its needs, never our own hooks. And
+ * ONLY by handle (#43): set_rate_near exists twice in the player's libasound, and glibc 2.23's
+ * RTLD_NEXT returns the old ALSA_0.9 one, which takes the rate by value — the pointer below would
+ * arrive as the rate. cinder-mono.c has the measurement. */
 static void* alsa_sym(const char* name)
 {
     static void* lib;
-    void* p = dlsym(RTLD_NEXT, name);
-    if (p) return p;
     if (!lib) lib = dlopen("libasound.so", RTLD_NOW | RTLD_NOLOAD);
     return lib ? dlsym(lib, name) : NULL;
 }
