@@ -10,4 +10,4 @@ default-run = "device"
 
 [dependencies]
 cinder-ui = { path = "../cinder-ui" }
-minifb = "0.28"
+minifb = "0.29"
