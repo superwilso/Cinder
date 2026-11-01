@@ -163,10 +163,12 @@ scenario "/data/cinder is a FILE -> no safety net" stock 'rm -rf $R/data/cinder;
 # #46: the album-cover cache filled /data, the counter could not be written, and every boot went to
 # stock. The launcher now drops the cache (disposable) and asks again. A 256 KB tmpfs filled to the
 # last block stands in for the 35 MB volume; it needs a user namespace, so it is skipped without one.
+# shellcheck disable=SC2034  # read by the scenario commands below, which shellcheck cannot see into
 FULL_DATA='mount -t tmpfs -o size=256k tmpfs "$R/data/cinder" || exit 1
 mkdir "$R/data/cinder/artcache"
 i=0; while dd if=/dev/zero of="$R/data/cinder/artcache/$i.t96" bs=27648 count=1 2>/dev/null; do i=$((i+1)); done
 while dd if=/dev/zero of="$R/data/cinder/artcache/pad$i" bs=4096 count=1 2>/dev/null; do i=$((i+1)); done'
+# shellcheck disable=SC2034
 FULL_NO_CACHE='mount -t tmpfs -o size=256k tmpfs "$R/data/cinder" || exit 1
 dd if=/dev/zero of="$R/data/cinder/fill" bs=4096 2>/dev/null; true'
 if unshare -rm true 2>/dev/null; then
