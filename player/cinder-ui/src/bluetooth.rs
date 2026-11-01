@@ -60,11 +60,15 @@ pub fn codec_name(id: u8, xq: bool) -> &'static str {
 /// the sink's SBC / LDAC / AAC offer. Sink and source report through the same `btmw_av_codec_t`
 /// (libBtCompIf's two `NotifySoundStatus` signatures), so the value means AAC on both.
 ///
+/// 0x01 = SBC, from a user's log on 2026-11-01 (#44): `bt-sound: codec:0x01` on a link that
+/// cinder-aac logged as `link is SBC: bitpool 35..46 … mode 4` (Dual Channel, so SBC XQ: `xq`).
+///
 /// The other enumerators are NOT known yet, so anything else is shown as its raw byte rather than
 /// guessed at — a wrong codec label is worse than an honest hex value on a screen whose entire
 /// purpose is telling you what you are actually listening to.
-pub fn link_codec_name(raw: u8) -> Option<&'static str> {
+pub fn link_codec_name(raw: u8, xq: bool) -> Option<&'static str> {
     match raw {
+        0x01 => Some(if xq { "SBC XQ" } else { "SBC" }),
         0x02 => Some("LDAC"),
         0x03 => Some("AAC"),
         _ => None,
@@ -72,8 +76,8 @@ pub fn link_codec_name(raw: u8) -> Option<&'static str> {
 }
 
 /// Label for the negotiated codec: its name if we know the enumerator, else the raw byte.
-pub fn link_codec_label(raw: u8) -> String {
-    link_codec_name(raw).map_or_else(|| format!("CODEC 0x{raw:02X}"), |n| n.to_string())
+pub fn link_codec_label(raw: u8, xq: bool) -> String {
+    link_codec_name(raw, xq).map_or_else(|| format!("CODEC 0x{raw:02X}"), |n| n.to_string())
 }
 
 /// LDAC sound-quality tiers. Index = the persisted `bt_ldac_quality` value.
@@ -426,10 +430,10 @@ fn codec_strip(bt: &Bt) -> String {
     let name = name.to_uppercase();
     match bt.link_codec {
         Some(raw) => {
-            let live = link_codec_label(raw);
-            // Only LDAC's enumerator is known (see `link_codec_name`), so a raw byte proves a
+            let live = link_codec_label(raw, bt.xq);
+            // Not every enumerator is known (see `link_codec_name`), so a raw byte proves a
             // fallback only from LDAC, or when it names a codec that is not the one asked for.
-            let fell_back = match link_codec_name(raw) {
+            let fell_back = match link_codec_name(raw, bt.xq) {
                 Some(n) => n != want,
                 None => bt.codec_sel == LDAC,
             };
@@ -462,7 +466,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         // The tag carries the NEGOTIATED codec when the link reports one. This is the answer to
         // "am I actually getting LDAC" — the radio falls back silently, so the codec radio list
         // below (which is only a request) can say LDAC while the link is running something else.
-        let tag = match bt.link_codec.map(link_codec_label) {
+        let tag = match bt.link_codec.map(|raw| link_codec_label(raw, bt.xq)) {
             Some(codec) => crate::ui_format!("CONNECTED · {}", codec.to_uppercase()),
             None => crate::i18n::text("CONNECTED").to_string(),
         };
@@ -666,7 +670,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         crate::i18n::text("THIS DEVICE"),
         None,
     );
-    let live = bt.link_codec.map(link_codec_label);
+    let live = bt.link_codec.map(|raw| link_codec_label(raw, bt.xq));
     let want = codec_name(bt.codec_sel, bt.xq);
     let detail = match live {
         // What the link NEGOTIATED, when that differs from the request — the radio falls back
@@ -989,6 +993,17 @@ mod tests {
         assert_eq!(
             codec_strip(&bt(true, Some("Buds"), 3, None)),
             "BUDS · CONNECTED"
+        );
+        // #44: LDAC asked for, earphones without it, Sony's 0x01 = SBC (XQ with the component).
+        let mut b = bt(true, Some("Buds"), LDAC, Some(0x01));
+        assert_eq!(codec_strip(&b), "BUDS · SBC · ASKED FOR LDAC");
+        b.xq = true;
+        assert_eq!(codec_strip(&b), "BUDS · SBC XQ · ASKED FOR LDAC");
+        b.codec_sel = 3;
+        assert_eq!(
+            codec_strip(&b),
+            "BUDS · SBC XQ",
+            "SBC XQ asked for is no fallback"
         );
         assert!(codec_strip(&bt(true, None, LDAC, None)).starts_with("NOTHING CONNECTED"));
         assert!(codec_strip(&bt(false, Some("Buds"), LDAC, Some(LDAC_RAW)))

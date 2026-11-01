@@ -16,6 +16,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **A big library gets a cover on every row (#46).** The album-cover cache keeps two sizes per
+  album, and the larger one took the space the rest of the library's list thumbnails needed:
+  on a ~1,200-album library, about 700 albums got covers and the rest a plain colour. Every album
+  now gets its list thumbnail first, and the larger cover only where space is left; where it is
+  missing, the album page and grid enlarge the thumbnail. *Device-unverified.*
+- **The Bluetooth screen names an SBC link (#44).** It showed `CODEC 0x01` where the link was
+  SBC: Sony's code for SBC had never been seen on the sending side. It now reads SBC, or SBC XQ
+  with that option installed, so asking for LDAC with earphones that lack it reads
+  "SBC XQ · ASKED FOR LDAC". Mapped from a user's log. *Device-unverified.*
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed

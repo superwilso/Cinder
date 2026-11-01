@@ -1018,7 +1018,7 @@ static void log_mirror(const char* path, long long& off, const char* prefix, con
 
 void helper_log_mirror_tick() {
     static long long aac_off = 0, mono_off = 0;
-    static const char* const kAac[] = {"encoder st", "link is", nullptr};
+    static const char* const kAac[] = {"encoder st", "link is", "behind ", nullptr};
     log_mirror("/tmp/cinder_aac.log", aac_off, "aac: ", kAac);
     log_mirror("/tmp/cinder_mono.log", mono_off, "mono-shim: ", nullptr);
 }

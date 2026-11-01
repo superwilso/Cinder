@@ -244,6 +244,43 @@ pub fn is_cached(key: u64) -> bool {
     usable(key, T48) && usable(key, T96)
 }
 
+/// Does this album have its list-row thumbnail? The builder decodes these albums first.
+pub fn has_thumb(key: u64) -> bool {
+    usable(key, T48)
+}
+
+/// The album drill-in and grid cover: the 96, or the 48 enlarged when only that one fitted (#46).
+pub fn load_cover(key: u64) -> Option<Image> {
+    load(key, T96).or_else(|| load(key, T48).map(|t| t.scaled_to(T96, T96)))
+}
+
+/// What one 48 takes on /data: 6912 bytes, rounded up to ext4's 4 KB blocks.
+const T48_ON_DISK: u64 = 8192;
+
+/// Is there room for a 96 that still leaves every album missing its 48 room for one?
+///
+/// WHY: a 96 is four times a 48, and /data holds about 700 albums at both sizes. Taking them in
+/// library order, the first 700 albums got both and the rest got nothing (#46, ~1,200 albums). The
+/// rows are what every list draws, so they come first: a 96 is only kept when it leaves the reserve
+/// AND a 48 for each of `missing_48` other albums, and the rest of the space goes to 96s afterwards.
+pub fn cover_fits(missing_48: usize) -> bool {
+    static PRUNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let fits = || t96_fits(free_bytes(), missing_48);
+    // Orphans from a moved library hold space the 96s could have (see `prune_orphans`); clearing
+    // them once per run is enough, they do not come back while it runs.
+    fits()
+        || (!PRUNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+            && prune_orphans() > 0
+            && fits())
+}
+
+fn t96_fits(free: u64, missing_48: usize) -> bool {
+    room_after(
+        free,
+        (T96 * T96 * 3) as u64 + missing_48 as u64 * T48_ON_DISK,
+    )
+}
+
 /// Load every already-cached 48x48 thumbnail for the given albums. Called once at library build,
 /// before the builder thread starts, so a device that has run before shows covers immediately.
 /// TWO key spaces, on purpose: the map handed to the UI is keyed by `album_id`, because that is
@@ -265,7 +302,9 @@ pub fn load_all(
 /// Decode one album's cover and write both sizes. Returns the 48x48 for the live UI map.
 ///
 /// `object_id` is any track on the album — they all embed the same picture.
-pub fn build_one(db: &cinder_db::Db, key: u64, object_id: i64) -> Option<Image> {
+/// The 96 is written only when `cover_fits(missing_48)`: `missing_48` counts the OTHER albums
+/// still without a 48, which come before it.
+pub fn build_one(db: &cinder_db::Db, key: u64, object_id: i64, missing_48: usize) -> Option<Image> {
     let native = crate::art_load::load(db, object_id)?;
     let t96 = native.scaled_to(T96, T96);
     // 48 comes from the 96, not from the native decode: with an area-averaging scaler the two-step
@@ -275,12 +314,17 @@ pub fn build_one(db: &cinder_db::Db, key: u64, object_id: i64) -> Option<Image> 
     // touching the filesystem so the peak doesn't overlap with anything else this thread does —
     // this process has already died once from allocation failure under fragmentation.
     drop(native);
-    if let Err(e) = store(key, &t96) {
-        eprintln!("cinder-ffi: art cache: write {key:016x}.t96 failed: {e}");
+    // The 48 first: it is the one every list row draws (see `cover_fits`).
+    if !usable(key, T48) {
+        if let Err(e) = store(key, &t48) {
+            eprintln!("cinder-ffi: art cache: write {key:016x}.t48 failed: {e}");
+            return None;
+        }
     }
-    if let Err(e) = store(key, &t48) {
-        eprintln!("cinder-ffi: art cache: write {key:016x}.t48 failed: {e}");
-        return None;
+    if cover_fits(missing_48) {
+        if let Err(e) = store(key, &t96) {
+            eprintln!("cinder-ffi: art cache: write {key:016x}.t96 failed: {e}");
+        }
     }
     Some(t48)
 }
@@ -401,6 +445,36 @@ mod tests {
         assert!(!room_after(RESERVE + t96 - 1, t96));
         assert!(!room_after(0, t96), "a full volume");
         assert!(room_after(u64::MAX, t96), "a volume that cannot be asked");
+    }
+
+    /// #46: with ~1,200 albums the 96s took the space the later albums' 48s needed.
+    #[test]
+    fn a_cover_leaves_room_for_the_rows_still_missing() {
+        let t96 = (T96 * T96 * 3) as u64;
+        assert!(t96_fits(RESERVE + t96, 0));
+        assert!(
+            !t96_fits(RESERVE + t96, 1),
+            "one album still without a row thumbnail"
+        );
+        assert!(t96_fits(RESERVE + t96 + 500 * T48_ON_DISK, 500));
+        assert!(!t96_fits(RESERVE + t96 + 500 * T48_ON_DISK - 1, 500));
+    }
+
+    #[test]
+    fn a_missing_cover_is_the_row_thumbnail_enlarged() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tmp("enlarge");
+        std::env::set_var("CINDER_ART_CACHE", &d);
+        assert!(ensure_dir());
+        store(5, &img(T48, 0x44)).unwrap();
+        assert!(has_thumb(5) && !is_cached(5));
+        let c = load_cover(5).expect("the 48 stands in");
+        assert_eq!((c.w, c.h), (T96, T96));
+        assert!(c.rgb.iter().all(|&b| b == 0x44));
+        store(5, &img(T96, 0x99)).unwrap();
+        assert_eq!(load_cover(5).unwrap().rgb[0], 0x99, "the real 96 wins");
+        assert!(load_cover(6).is_none());
+        std::fs::remove_dir_all(&d).ok();
     }
 
     /// The 2026-10-09 failure: a library that moved leaves every old thumbnail behind.

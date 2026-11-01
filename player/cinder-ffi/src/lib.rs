@@ -2775,7 +2775,7 @@ fn load_grid_covers(r: &mut Render) {
             .art_cache_keys
             .get(id)
             .copied()
-            .and_then(|k| art_cache::load(k, art_cache::T96))
+            .and_then(art_cache::load_cover)
         {
             Some(img) => r.app.put_grid_cover(*id, img),
             None => {
@@ -2874,7 +2874,7 @@ pub extern "C" fn cinder_render_tick() {
         r.app.set_album_cover(
             open_album
                 .and_then(|id| r.art_cache_keys.get(&id).copied())
-                .and_then(|k| art_cache::load(k, art_cache::T96)),
+                .and_then(art_cache::load_cover),
         );
     }
     load_grid_covers(r);
@@ -8976,10 +8976,16 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
     let cached = art_cache::load_all(sources.iter().map(|(aid, _, k)| (*aid, *k)));
     let have = cached.len();
     r.app.library_mut().thumbs = cached;
-    let todo: Vec<(i64, i64, u64)> = sources
+    let mut todo: Vec<(i64, i64, u64)> = sources
         .into_iter()
         .filter(|(_, _, k)| !art_cache::is_cached(*k))
         .collect();
+    // Albums with no row thumbnail first; the ones that only lack a 96 wait for space (#46).
+    todo.sort_by_cached_key(|(_, _, k)| art_cache::has_thumb(*k));
+    let mut missing_48 = todo
+        .iter()
+        .filter(|(_, _, k)| !art_cache::has_thumb(*k))
+        .count();
     eprintln!(
         "cinder-ffi: art cache: {have} cached, {} to decode (~{} s of background work)",
         todo.len(),
@@ -9045,12 +9051,21 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
                     stop = true;
                     break;
                 }
+                // Only the 96 is missing and it would not be kept: skip the 365 ms decode.
+                let had_48 = art_cache::has_thumb(key);
+                if had_48 && !art_cache::cover_fits(missing_48) {
+                    continue;
+                }
                 // Decode OUTSIDE the lock. This is the expensive part and the UI must keep painting
                 // through it.
-                let Some(t48) = art_cache::build_one(&db, key, object_id) else {
+                let others = missing_48.saturating_sub(usize::from(!had_48));
+                let Some(t48) = art_cache::build_one(&db, key, object_id, others) else {
                     failed.push((album_id, object_id, key));
                     continue;
                 };
+                if !had_48 {
+                    missing_48 = missing_48.saturating_sub(1);
+                }
                 done += 1;
                 if let Ok(mut g) = cell().lock() {
                     let Some(r) = g.as_mut() else {

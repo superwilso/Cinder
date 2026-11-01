@@ -13320,7 +13320,7 @@ impl App {
     /// single mapping so this screen and the Bluetooth screen cannot disagree about what is
     /// playing. Anything still unmapped renders as raw hex rather than a guess.
     pub fn negotiated_codec_name(&self) -> Option<&'static str> {
-        crate::bluetooth::link_codec_name(self.bt_link_codec_raw()?)
+        crate::bluetooth::link_codec_name(self.bt_link_codec_raw()?, self.bt_sbc_xq)
     }
 
     /// The negotiated `BtSoundCodec` byte for the CURRENT link, or `None` if nothing is connected

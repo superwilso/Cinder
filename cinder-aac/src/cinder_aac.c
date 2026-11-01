@@ -281,6 +281,10 @@ static struct {
     unsigned long bursts;    /* times it fell behind and sent back to back to catch up (#44) */
     long worst_ms;           /* the furthest behind it has been, in ms */
     int behind;              /* behind on the last frame: a burst is under way */
+    unsigned long resets;    /* times it fell so far behind that the clock restarted */
+    struct timespec last_in; /* when the last PCM had been handled */
+    long gap_ms;             /* the wait for the latest PCM: a long one = the source stalled */
+    long overslept_ms;       /* how much longer the last pace sleep took than asked: = we stalled */
 } g = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
 static void* g_cb_copy[16];  /* libBtMw's table is 0x40 bytes: 16 slots */
@@ -369,6 +373,9 @@ EXPORT int btmtk_a2dp_stream_data_encoder_init(int codec, int a, int b, int c, i
         g.bursts = 0;
         g.worst_ms = 0;
         g.behind = 0;
+        g.resets = 0;
+        g.last_in.tv_sec = 0;
+        g.gap_ms = g.overslept_ms = 0;
         g.t0.tv_sec = 0;
         logf_("encoder start: %d Hz, %d bit/s, payload %d (mtu arg %d, limit %d): %s (%s, peak cap %d)",
               g.cfg_rate, br, g.payload, mtu, lim, g.enc ? "ok" : why,
@@ -393,8 +400,8 @@ EXPORT void btmtk_a2dp_stream_data_encoder_deinit(int x)
     int ours = g.enc != NULL;
     if (ours) {
         logf_("encoder stop: %lu frames, %lu too big, %lu failed, %lu waits, %lu catch-up bursts "
-              "(worst %ld ms behind), ended at %d bit/s",
-              g.frames, g.dropped, g.failed, g.waits, g.bursts, g.worst_ms,
+              "(worst %ld ms behind), %lu clock restarts, ended at %d bit/s",
+              g.frames, g.dropped, g.failed, g.waits, g.bursts, g.worst_ms, g.resets,
               aac_enc_bitrate(g.enc));
         aac_enc_close(g.enc);
         g.enc = NULL;
@@ -423,21 +430,29 @@ static void pace(void)
     long ahead = due - ms_since(&g.t0, &now);
     /* Behind by more than a frame (~21 ms) means the frames that follow go out back to back: a
      * burst the headphones may answer by changing their playback speed (#44). Counted, not
-     * changed, until a log shows how often and how far. */
+     * changed, until a log shows how often and how far. Each one says whose stall it was: a long
+     * wait for PCM is the source (the player, the sound service), an oversleep is this thread. */
     if (ahead < -BURST_MS) {
         if (-ahead > g.worst_ms) g.worst_ms = -ahead;
-        if (!g.behind && ahead >= -RESET_MS) g.bursts++;   /* once per fall, not per frame */
+        if (!g.behind && ahead >= -RESET_MS)   /* once per fall, not per frame */
+            LOG_RARE(g.bursts, "behind %ld ms, catching up: waited %ld ms for PCM, last sleep "
+                     "overslept %ld ms", -ahead, g.gap_ms, g.overslept_ms);
         g.behind = 1;
     } else {
         g.behind = 0;
     }
     if (ahead < -RESET_MS) {
         /* Fell behind (a pause, an underrun): restart the clock instead of bursting. */
+        LOG_RARE(g.resets, "behind %ld ms, clock restarted: waited %ld ms for PCM", -ahead,
+                 g.gap_ms);
         g.t0 = now;
         g.frames = 0;
     } else if (ahead > LEAD_MS) {
         g.waits++;
         usleep((useconds_t)(ahead - LEAD_MS) * 1000);
+        struct timespec woke;
+        clock_gettime(CLOCK_MONOTONIC, &woke);
+        g.overslept_ms = ms_since(&now, &woke) - (ahead - LEAD_MS);
     }
 }
 
@@ -450,6 +465,9 @@ EXPORT void btmtk_a2dp_send_audio_stream_data(void* data, unsigned len)
         if (real.send_pcm) real.send_pcm(data, len);
         return;
     }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    g.gap_ms = g.last_in.tv_sec ? ms_since(&g.last_in, &now) : 0;
     const uint8_t* p = data;
     len &= 0xffff;
     while (len) {
@@ -475,5 +493,7 @@ EXPORT void btmtk_a2dp_send_audio_stream_data(void* data, unsigned len)
         /* mtkbt adds the last argument to the RTP timestamp after each packet: samples. */
         real.send_frame(g.out, (size_t)n, AAC_FRAME_SAMPLES);
     }
+    /* From the END of this call, so the gap is the source's wait and not our own pace sleep. */
+    clock_gettime(CLOCK_MONOTONIC, &g.last_in);
     pthread_mutex_unlock(&g.lock);
 }
