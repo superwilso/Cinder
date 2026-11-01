@@ -65,9 +65,18 @@ pub enum StatusTap {
     Shelf,
     /// The clock/codec-badge zone → Now Playing. One tap back from anywhere.
     NowPlaying,
-    /// Anywhere else along the strip → the Menu. Deliberately forgiving.
+    /// The ☰ glyph → the Menu.
     Menu,
+    /// The rest of the strip: swallowed, so it reaches neither the Menu nor the screen below.
+    ///
+    /// It used to be the Menu, "deliberately forgiving", and that is what threw people out of a
+    /// settings page they were in the middle of: a thumb reaching for the back chevron or a row
+    /// near the top landed a few pixels high and the page was gone (#51). A miss now does nothing.
+    Nothing,
 }
+
+/// The Menu's target: the ☰ glyph and a thumb's width either side of it, up to the Shelf's zone.
+const MENU_HALF_W: i32 = 34;
 
 /// Hit test for the status strip. SINGLE SOURCE with [`status_bar`]'s glyph placement: the Shelf
 /// zone is built from the same `SHELF_CX` the bookmark is drawn at, so the target cannot drift out
@@ -81,8 +90,10 @@ pub fn status_hit(x: i32, y: i32) -> Option<StatusTap> {
             StatusTap::Shelf
         } else if x < NP_ZONE_W {
             StatusTap::NowPlaying
-        } else {
+        } else if (x - MENU_CX as i32).abs() <= MENU_HALF_W {
             StatusTap::Menu
+        } else {
+            StatusTap::Nothing
         },
     )
 }

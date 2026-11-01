@@ -1702,6 +1702,9 @@ pub struct App {
     quick_enabled: bool,
     /// Settings ▸ Folders tab: the FOLDERS link on the Library's tab strip. OFF by default.
     folders_tab: bool,
+    /// What a swipe up / down in the middle of Now Playing opens (Settings, #51). Off by default.
+    np_swipe_up: crate::settings::SwipeTo,
+    np_swipe_down: crate::settings::SwipeTo,
     /// The pull-down panel is showing. Its own flag, not the Shelf's: the two never share state.
     quick_open: bool,
     pins: [Option<ShelfPin>; crate::shelf::SLOTS],
@@ -2135,6 +2138,8 @@ impl Default for App {
             shelf_open: false,
             quick_enabled: false,
             folders_tab: false,
+            np_swipe_up: crate::settings::SwipeTo::Off,
+            np_swipe_down: crate::settings::SwipeTo::Off,
             quick_open: false,
             pins: std::array::from_fn(|_| None),
             history: Vec::new(),
@@ -2721,6 +2726,49 @@ impl App {
         self.folders_tab
     }
 
+    /// What a swipe up and a swipe down on Now Playing open, for the settings file.
+    pub fn np_swipes(&self) -> (crate::settings::SwipeTo, crate::settings::SwipeTo) {
+        (self.np_swipe_up, self.np_swipe_down)
+    }
+
+    pub fn set_np_swipes(&mut self, up: crate::settings::SwipeTo, down: crate::settings::SwipeTo) {
+        self.np_swipe_up = up;
+        self.np_swipe_down = down;
+    }
+
+    /// A vertical swipe on Now Playing ended, `dy` px down (negative = up). Opens what Settings ▸
+    /// Swipe up / Swipe down picked, and says whether it took the gesture. Now Playing has no
+    /// vertical drag of its own, so with both Off nothing changes; the Shelf's bottom edge and the
+    /// pull-down panel's status bar claim their contacts before this is asked (cinder-home).
+    pub fn np_swipe(&mut self, dy: i32) -> bool {
+        use crate::settings::SwipeTo;
+        const TRAVEL: i32 = 80;
+        if self.current() != Screen::NowPlaying
+            || self.locked
+            || self.overlay_open()
+            || self.landscape()
+            || dy.abs() < TRAVEL
+        {
+            return false;
+        }
+        match if dy < 0 {
+            self.np_swipe_up
+        } else {
+            self.np_swipe_down
+        } {
+            SwipeTo::Off => return false,
+            SwipeTo::Menu => self.push(Screen::Menu),
+            SwipeTo::Sound => self.push(Screen::Sound),
+            SwipeTo::Eq => self.push(Screen::Eq),
+            SwipeTo::UpNext if self.zappin_active => self.push(Screen::Zappin),
+            SwipeTo::UpNext => self.push(Screen::UpNext),
+            SwipeTo::Bluetooth => self.push(Screen::Bluetooth),
+            SwipeTo::Library => self.open_browse(),
+            SwipeTo::Folders => self.open_folders(),
+        }
+        true
+    }
+
     pub fn set_folders_tab(&mut self, on: bool) {
         self.folders_tab = on;
         self.lib.folders_tab = on;
@@ -2787,6 +2835,11 @@ impl App {
             QuickHit::Bluetooth => {
                 self.bt_on = !self.bt_on;
                 vec![Action::BtToggle(self.bt_on)]
+            }
+            QuickHit::BluetoothPage => {
+                self.quick_open = false;
+                self.push(Screen::Bluetooth);
+                vec![]
             }
             QuickHit::Night => {
                 self.night = !self.night;
@@ -4146,6 +4199,15 @@ impl App {
                 self.set_quick_enabled(!self.quick_enabled);
                 vec![]
             }
+            crate::settings::ROW_SWIPE_UP => {
+                // Render-only, like the Folders tab: the shell's save path writes the file.
+                self.np_swipe_up = self.np_swipe_up.next();
+                vec![]
+            }
+            crate::settings::ROW_SWIPE_DOWN => {
+                self.np_swipe_down = self.np_swipe_down.next();
+                vec![]
+            }
             crate::settings::ROW_FOLDERS_TAB => {
                 // Render-only, like the pull-down panel: the shell's save path writes the file.
                 self.set_folders_tab(!self.folders_tab);
@@ -4639,6 +4701,7 @@ impl App {
                 }
                 return vec![];
             }
+            Some(crate::chrome::StatusTap::Nothing) => return vec![],
             None => {}
         }
         // Back chevron: a generous ≥44px target (the whole header-left block, from just under
@@ -10706,6 +10769,8 @@ impl App {
                     ignore_the: self.ignore_the,
                     quick: self.quick_enabled,
                     folders_tab: self.folders_tab,
+                    swipe_up: self.np_swipe_up,
+                    swipe_down: self.np_swipe_down,
                     shuffle_by: self.shuffle_by.label(),
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
@@ -16918,11 +16983,13 @@ mod tests {
         let mut shelf_w = 0;
         let mut np_w = 0;
         let mut menu_w = 0;
+        let mut nothing_w = 0;
         for x in 0..crate::canvas::W as i32 {
             match status_hit(x, STATUS_H / 2) {
                 Some(StatusTap::Shelf) => shelf_w += 1,
                 Some(StatusTap::NowPlaying) => np_w += 1,
                 Some(StatusTap::Menu) => menu_w += 1,
+                Some(StatusTap::Nothing) => nothing_w += 1,
                 None => panic!("x={x} inside the strip resolved to nothing"),
             }
         }
@@ -16931,8 +16998,12 @@ mod tests {
             "Shelf target only {shelf_w}px wide — too small for a thumb"
         );
         assert!(np_w >= 120, "Now Playing zone only {np_w}px wide");
-        assert!(menu_w > 0, "the forgiving Menu zone must survive");
-        assert_eq!(shelf_w + np_w + menu_w, crate::canvas::W as i32);
+        assert!(menu_w >= 44, "Menu target only {menu_w}px wide");
+        assert!(
+            nothing_w > 0,
+            "#51: a miss along the strip must not open the Menu"
+        );
+        assert_eq!(shelf_w + np_w + menu_w + nothing_w, crate::canvas::W as i32);
         // Below the strip the whole thing stops claiming taps.
         assert_eq!(status_hit(10, STATUS_H), None);
     }
@@ -17304,6 +17375,48 @@ mod tests {
         );
     }
 
+    /// #51: the Bluetooth row's name opens the Bluetooth page, so Now Playing's Bluetooth button
+    /// is not the only way there.
+    #[test]
+    fn the_pull_down_bluetooth_name_opens_the_page() {
+        let mut a = App::unlocked();
+        a.set_quick_enabled(true);
+        assert!(a.quick_pull_begin(240, 20));
+        assert!(a.quick_pull_open());
+        assert_eq!(a.tap(120, crate::quick::ROW_BT + 30), vec![]);
+        assert!(!a.quick_is_open(), "the panel closes behind it");
+        assert_eq!(a.current(), Screen::Bluetooth);
+    }
+
+    /// #51: a swipe on Now Playing opens what Settings picked, and nothing while it is Off — the
+    /// default, so no player changes unasked.
+    #[test]
+    fn now_playing_swipes_open_what_settings_picked() {
+        use crate::settings::SwipeTo;
+        let mut a = App::unlocked();
+        a.go(Screen::NowPlaying);
+        assert!(!a.np_swipe(-200) && !a.np_swipe(200), "off by default");
+        assert_eq!(a.current(), Screen::NowPlaying);
+        a.set_np_swipes(SwipeTo::Sound, SwipeTo::Menu);
+        assert!(!a.np_swipe(-40), "too short to be a swipe");
+        assert!(a.np_swipe(-200));
+        assert_eq!(a.current(), Screen::Sound, "up");
+        a.go(Screen::NowPlaying);
+        assert!(a.np_swipe(200));
+        assert_eq!(a.current(), Screen::Menu, "down");
+        assert!(!a.np_swipe(200), "only on Now Playing");
+        // The Settings rows step through every target and back to Off, and the words round-trip.
+        for t in SwipeTo::ALL {
+            assert_eq!(SwipeTo::from_token(t.token()), t);
+        }
+        let mut t = SwipeTo::Off;
+        for _ in 0..SwipeTo::ALL.len() {
+            t = t.next();
+        }
+        assert_eq!(t, SwipeTo::Off);
+        assert_eq!(SwipeTo::from_token("nonsense"), SwipeTo::Off);
+    }
+
     /// Every control is an action that already exists, one per tap.
     #[test]
     fn the_pull_down_panel_controls_are_existing_actions() {
@@ -17322,7 +17435,8 @@ mod tests {
         );
         assert_eq!(a.brightness(), 2);
         let bt = a.bt_on;
-        assert_eq!(a.tap(240, quick::ROW_BT + 30), vec![Action::BtToggle(!bt)]);
+        let sw = crate::kit::RIGHT - crate::kit::SWITCH_W / 2;
+        assert_eq!(a.tap(sw, quick::ROW_BT + 30), vec![Action::BtToggle(!bt)]);
         let night = a.night;
         assert_eq!(
             a.tap(240, quick::ROW_NIGHT() + 30),
@@ -17375,8 +17489,10 @@ mod tests {
                                                      // tapping elsewhere on the bar still opens the Menu (after closing the shelf)
         a.tap(240, 200); // backdrop → close
         assert!(!a.shelf_is_open());
-        // Mid-strip (right of the clock/badge zone, left of the bookmark) still opens the Menu.
+        // Mid-strip is a miss now (#51), and only the ☰ opens the Menu.
         a.tap(240, 16);
+        assert_eq!(a.current(), Screen::NowPlaying);
+        a.tap(338, 16);
         assert_eq!(a.current(), Screen::Menu);
     }
 
@@ -17394,7 +17510,7 @@ mod tests {
         // Bluetooth switch directly beneath it — see STATUS_DEAD_H.
         assert_eq!(
             status_hit(240, STATUS_H - STATUS_DEAD_H - 1),
-            Some(StatusTap::Menu)
+            Some(StatusTap::Nothing)
         );
         for y in STATUS_H - STATUS_DEAD_H..STATUS_H {
             assert_eq!(status_hit(240, y), None, "the strip still claims y={y}");
@@ -20039,12 +20155,13 @@ mod tests {
     fn touch_tap_navigates() {
         let mut a = App::unlocked();
         assert_eq!(a.current(), Screen::NowPlaying);
-        // The strip is forgiving, but not uniform: the far-left clock/badge zone is the ONE-TAP
-        // return to Now Playing (the badge is the now-playing indicator), while the rest of the
-        // strip opens the Menu.
+        // The far-left clock/badge zone is the ONE-TAP return to Now Playing (the badge is the
+        // now-playing indicator); the ☰ opens the Menu; the rest of the strip does nothing (#51).
         a.tap(20, 16); // over the clock → Now Playing (already there, so it stays)
         assert_eq!(a.current(), Screen::NowPlaying);
-        a.tap(240, 16); // mid strip → Menu
+        a.tap(240, 16); // mid strip → nothing
+        assert_eq!(a.current(), Screen::NowPlaying);
+        a.tap(338, 16); // the ☰ → Menu
         assert_eq!(a.current(), Screen::Menu);
         a.tap(200, 91 + 63 + 8); // leave Menu (into Library) so the next assert is meaningful
         a.tap(338, 22); // the ☰ icon → Menu too
