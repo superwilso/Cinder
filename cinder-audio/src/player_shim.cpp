@@ -6,6 +6,7 @@
 // on-device hex dump (cinder_audio_dump_status, used by cinder-probe --discover).
 #include "playerservice_abi.hpp"
 #include "cinder_audio.h"
+#include "play_motion.h"
 
 #include <atomic>
 #include <cstdlib>
@@ -188,8 +189,15 @@ void* pump_main(void*) {
     return nullptr;
 }
 
+// When this shim last sent Pause or Stop; 0 after a Play. See play_motion.h.
+std::atomic<long long> g_halted_at_ms{0};
+
 inline int change_state(pl::playstate_t s) {
     if (!g_ctrl) return -1;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    g_halted_at_ms.store(s == pl::playstate_t::Play ? 0 : (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000,
+                         std::memory_order_relaxed);
     return g_ctrl->ChangePlayState(s);
 }
 
@@ -297,13 +305,13 @@ int cinder_audio_is_playing(void) {
     // "The position moved recently." onPlayTimeUpdated lands ~1x/sec, so 2500 ms tolerates one
     // dropped update without flickering the transport glyph. This is deliberately derived from
     // observed motion rather than from onPlayStatusUpdated's state int, whose encoding is not
-    // calibrated — see cinder_audio_play_state.
-    long long moved = g_cb_moved_at_ms.load(std::memory_order_relaxed);
-    if (moved == 0) return 0;
+    // calibrated — see cinder_audio_play_state. A Pause we sent wins over motion that is still
+    // recent (play_motion.h, #50).
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-    return (now - moved) < 2500 ? 1 : 0;
+    return play_motion_playing(now, g_cb_moved_at_ms.load(std::memory_order_relaxed),
+                               g_halted_at_ms.load(std::memory_order_relaxed));
 }
 
 int cinder_audio_resume(void) {

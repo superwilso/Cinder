@@ -1103,7 +1103,23 @@ fi
 # no way out. No working safety net -> don't take the risk. Proven by write-then-read-back, not by
 # a `[ -w ]` test, because a full or read-only fs passes -w and still fails the write.
 mkdir -p "$STATE" 2>/dev/null
-if ! echo probe > "$STATE/.wtest" 2>/dev/null || [ "$(cat "$STATE/.wtest" 2>/dev/null)" != "probe" ]; then
+wtest() { echo probe > "$STATE/.wtest" 2>/dev/null && [ "$(cat "$STATE/.wtest" 2>/dev/null)" = "probe" ]; }
+# A FULL /data (#46). The album-cover cache is the one thing in $STATE that grows with the library,
+# and it is disposable: the app rebuilds it. A large library filled the 35 MB volume with covers,
+# this probe failed, and every boot after went to stock, so the app never ran to make room. Make
+# room here, once, and ask again. Busybox when it is there (one process for a thousand files);
+# otherwise plain `rm` per file, because this shell's rm takes no -f.
+if ! wtest && [ -d "$STATE/artcache" ]; then
+    if [ -x /xbin/busybox ]; then
+        /xbin/busybox rm -rf "$STATE/artcache" 2>/dev/null
+    else
+        for _f in "$STATE"/artcache/*; do rm "$_f" 2>/dev/null; done
+        rmdir "$STATE/artcache" 2>/dev/null
+    fi
+    sync
+    ART_FREED="/data was full - removed the album-cover cache to make room (it rebuilds)"
+fi
+if ! wtest; then
     breadcrumb "$STATE cannot be written, so the bad-boot counter has no safety net"
     run_stock "$@"
 fi
@@ -1149,6 +1165,8 @@ done
 LOGF=/contents/cinderhome.log
 can_write "$LOGF" || LOGF=/data/cinder/cinderhome.log
 can_write "$LOGF" || LOGF=""
+# Said here, into this boot's own log: written any earlier, the rotation above files it as .1.
+[ -n "${ART_FREED:-}" ] && [ -n "$LOGF" ] && ( echo "cinderhome-launch: $ART_FREED" >> "$LOGF" ) 2>/dev/null
 
 # ── CRASH SUPERVISOR ──────────────────────────────────────────────────────────────────────────
 # WHY THIS EXISTS: until now the launcher `exec`'d cinder-home, so the shell was GONE. When the

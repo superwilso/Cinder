@@ -16,6 +16,24 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **A large library no longer locks Cinder out of starting** (#46). The album-cover cache filled
+  `/data` (35 MB on this player; 12,500 songs on a card were enough), the launcher could then not
+  write its bad-boot counter, and every start after that went to Sony's player, so Cinder never
+  ran to make room. The cache now stops 4 MB short of full, and the builder stops with it (the
+  albums past that draw their gradient). A launcher that finds `/data` full removes the cover
+  cache, which rebuilds, and tries again before it gives up, so a player already stuck comes back
+  on the first start after the update. The launcher test fills a real 256 KB filesystem to check
+  both cases. *Device-unverified.*
+- **◁ on a paused track goes back to 0:00 and stays paused** (#50). Cinder decided "playing" from
+  the position having moved in the last 2.5 s, so for 2.5 s after a pause a seek (◁ restarting the
+  track, or a drag on the bar) still thought it was playing and resumed it. Reproduced on a player:
+  pause, ◁ within a second, and it played. A pause Cinder sent now counts at once; after the same
+  2.5 s, movement decides again, so a resume from the headphones still shows. The play button also
+  turns to ▶ at once instead of up to 2.5 s late. Host-tested (`playmotion_selftest`).
+  *Device-unverified.*
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed
