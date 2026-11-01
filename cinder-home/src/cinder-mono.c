@@ -275,11 +275,19 @@ static void* lib_sym(const char* lib_name, void** lib, const char* name)
  * that reaches the wrong libasound fails every write: either way the jack is silent while
  * Bluetooth, which only goes through libc, plays on, and nothing said why. One line per function,
  * as it is resolved; a miss is retried on every call, so only the first few are said. */
+/* ALWAYS BY HANDLE, never RTLD_NEXT (#43). libasound exports two versions of set_rate_near and
+ * get_rate: ALSA_0.9's took the rate BY VALUE, ALSA_0.9.0rc4's (the default, what Sony's HAL links)
+ * takes a pointer. glibc 2.23's dlsym(RTLD_NEXT) asks for no particular version and gets the OLDEST,
+ * a handle lookup gets the newest. Next to Wampy, where RTLD_NEXT does find libasound, the HAL's
+ * pointer to 44100 reached the by-value one as a rate in the billions, ALSA clamped it to 384 kHz,
+ * and 44.1 kHz music went to the jack 8.7 times too fast: silence, hooks on or off (measured on a
+ * Walkman One player 2026-11-01). */
 static void* alsa_sym(const char* name)
 {
     static void* lib;
     static int missed;
-    void* p = lib_sym(CINDER_ASOUND_LIB, &lib, name);
+    if (!lib) lib = dlopen(CINDER_ASOUND_LIB, RTLD_NOW | RTLD_NOLOAD);
+    void* p = lib ? dlsym(lib, name) : NULL;
     if (g_ssfw) {
         Dl_info di;
         if (!p) { if (missed++ < 3) mlog("alsa: %s not found — the jack gets ENOSYS", name); }
