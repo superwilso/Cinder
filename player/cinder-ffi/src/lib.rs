@@ -1312,6 +1312,13 @@ fn settings_body(r: &Render) -> String {
     // The pull-down panel (Settings ▸ Pull-down panel), OFF unless switched on.
     body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
     body.push_str(&format!("folders_tab={}\n", r.app.folders_tab() as u8));
+    // Settings ▸ Swipe up / Swipe down: what each opens on Now Playing (#51), as words.
+    let (up, down) = r.app.np_swipes();
+    body.push_str(&format!(
+        "np_swipe_up={}\nnp_swipe_down={}\n",
+        up.token(),
+        down.token()
+    ));
     // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
     body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
     body.push_str(&format!(
@@ -6965,6 +6972,19 @@ pub extern "C" fn cinder_quick_pull_open() -> libc::c_int {
     opened as libc::c_int
 }
 
+/// A vertical drag ended `dy` px down (negative = up): on Now Playing, open what Settings ▸ Swipe
+/// up / Swipe down picked. 1 if it took the gesture (no fling then), 0 otherwise.
+#[no_mangle]
+pub extern "C" fn cinder_np_swipe(dy: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let took = r.app.np_swipe(dy as i32);
+    if took {
+        r.dirty = true;
+    }
+    took as libc::c_int
+}
+
 /// Bottom-edge swipe up: open the Shelf. Returns 1 if the UI took the gesture, 0 if it declined
 /// (locked, onboarding, or the Shelf is already open) so the shell can let the contact scroll.
 #[no_mangle]
@@ -8277,6 +8297,16 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
                     "folders_tab" => r.app.set_folders_tab(v == "1"),
+                    "np_swipe_up" | "np_swipe_down" => {
+                        let (mut up, mut down) = r.app.np_swipes();
+                        let t = cinder_ui::settings::SwipeTo::from_token(v);
+                        if k == "np_swipe_up" {
+                            up = t;
+                        } else {
+                            down = t;
+                        }
+                        r.app.set_np_swipes(up, down);
+                    }
                     "lib_views" => r.app.set_lib_views_str(v),
                     "style" => r.app.set_style_token(v),
                     "wsz" => r.skin_pref = v.to_string(),

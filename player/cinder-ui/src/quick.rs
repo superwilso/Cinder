@@ -83,7 +83,10 @@ pub struct QuickView<'a> {
 pub enum QuickHit {
     /// A brightness level, 1..=5.
     Brightness(u8),
+    /// The Bluetooth row's switch: on or off.
     Bluetooth,
+    /// The rest of the Bluetooth row, its name: opens the Bluetooth page (#51).
+    BluetoothPage,
     Night,
     /// An index into [`SLEEP_PRESETS`].
     Sleep(usize),
@@ -92,6 +95,10 @@ pub enum QuickHit {
     /// Below the sheet: close the panel.
     Outside,
 }
+
+/// Left of this the Bluetooth row opens the page; from here right it is the switch. The switch is
+/// 40 px wide at the right edge, so this leaves a thumb's width of slack around it.
+const SWITCH_ZONE_X: i32 = kit::RIGHT - kit::SWITCH_W - 80;
 
 /// Which control is under `(x, y)`. Pure geometry, so the hit test and the render cannot drift.
 pub fn hit(x: i32, y: i32) -> QuickHit {
@@ -102,7 +109,11 @@ pub fn hit(x: i32, y: i32) -> QuickHit {
         return QuickHit::Brightness(i as u8 + 1);
     }
     if (ROW_BT..ROW_BT + kit::ROW_H()).contains(&y) {
-        return QuickHit::Bluetooth;
+        return if x >= SWITCH_ZONE_X {
+            QuickHit::Bluetooth
+        } else {
+            QuickHit::BluetoothPage
+        };
     }
     if (ROW_NIGHT()..ROW_NIGHT() + kit::ROW_H()).contains(&y) {
         return QuickHit::Night;
@@ -203,7 +214,16 @@ mod tests {
                 QuickHit::Sleep(i)
             );
         }
-        assert_eq!(hit(240, ROW_BT + 30), QuickHit::Bluetooth);
+        assert_eq!(
+            hit(240, ROW_BT + 30),
+            QuickHit::BluetoothPage,
+            "the name opens the page"
+        );
+        assert_eq!(
+            hit(kit::RIGHT - kit::SWITCH_W / 2, ROW_BT + 30),
+            QuickHit::Bluetooth,
+            "the switch switches"
+        );
         assert_eq!(hit(240, ROW_NIGHT() + 30), QuickHit::Night);
         assert_eq!(
             hit(240, TOP + 10),

@@ -12306,9 +12306,13 @@ static void touch_release() {
         // A long press already queued the song. Falling through would read the lift as a tap and
         // start playing the song the user only asked to hear next.
     } else if (g_touch_down && g_drag_active) {
-        // Live drag ends: hand the measured velocity to the fling (unless the finger held
-        // still before lifting — stale velocity must not fling).
-        if (now_ms() - g_drag_last_ms <= 120 && (g_drag_vel > 220.0f || g_drag_vel < -220.0f))
+        // Live drag ends. On Now Playing a swipe up or down may open what Settings picked (#51);
+        // Now Playing has no scroll, so taking it costs nothing. Otherwise hand the measured
+        // velocity to the fling (unless the finger held still before lifting — stale velocity
+        // must not fling).
+        int dy = (g_touch_cur_y >= 0 ? touch_ui_y(g_touch_cur_y) : 0) - touch_ui_y(g_touch_start_y);
+        if (g_touch_cur_y >= 0 && cinder_np_swipe(dy)) {
+        } else if (now_ms() - g_drag_last_ms <= 120 && (g_drag_vel > 220.0f || g_drag_vel < -220.0f))
             cinder_touch_fling((int)g_drag_vel);
     } else if (g_touch_down && g_touch_start_x >= 0) {
         int sx = touch_ui_x(g_touch_start_x), cx = touch_ui_x(g_touch_cur_x);

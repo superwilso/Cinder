@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 25;
+pub const ROWS: usize = 27;
 /// Rows shown while the list is folded: the everyday ones and `ROW_MORE` itself.
 pub const EVERYDAY: usize = 11;
 /// More settings: unfolds every row after it, in place, and folds them away again.
@@ -44,6 +44,11 @@ pub const ROW_SCREEN_OFF: usize = 3;
 /// uses the Shelf and a new gesture must never arrive unasked (`docs/PLAN_community_2026-09-23.md`
 /// B1). With it off there is no gesture and nothing else on any screen changes.
 pub const ROW_QUICK: usize = 17;
+/// Swipe up / swipe down on Now Playing (#51): each opens the screen picked here, or nothing. OFF
+/// by default, like every community-asked gesture. They are the middle of the screen only: a swipe
+/// up from the bottom edge stays the Shelf's and a pull from the status bar the pull-down panel's.
+pub const ROW_SWIPE_UP: usize = 18;
+pub const ROW_SWIPE_DOWN: usize = 19;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -78,7 +83,7 @@ pub const ROW_AUTO_OFF: usize = 14;
 /// and nothing but the user ever switched it off. ON by default since 2026-10-04, like Auto power
 /// off. It does not come back by itself.
 pub const ROW_BT_IDLE_OFF: usize = 15;
-pub const ROW_STORAGE: usize = 18;
+pub const ROW_STORAGE: usize = 20;
 pub const ROW_BATTERY: usize = 7;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
@@ -88,20 +93,89 @@ pub const ROW_CLOCK: usize = 6;
 pub const ROW_USB_MODE: usize = 8; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 19;
+pub const ROW_BOOT_STOCK: usize = 21;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 20;
+pub const ROW_RESTART: usize = 22;
 pub const ROW_POWER_OFF: usize = 9;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 21;
+pub const ROW_RESET: usize = 23;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_LANGUAGE: usize = 22;
-pub const ROW_FIRMWARE: usize = 23;
-pub const ROW_MODEL: usize = 24;
+pub const ROW_LANGUAGE: usize = 24;
+pub const ROW_FIRMWARE: usize = 25;
+pub const ROW_MODEL: usize = 26;
+
+/// What a swipe on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwipeTo {
+    #[default]
+    Off,
+    Menu,
+    Sound,
+    Eq,
+    UpNext,
+    Bluetooth,
+    Library,
+    Folders,
+}
+
+impl SwipeTo {
+    /// The order the row steps through.
+    pub const ALL: [SwipeTo; 8] = [
+        SwipeTo::Off,
+        SwipeTo::Menu,
+        SwipeTo::Sound,
+        SwipeTo::Eq,
+        SwipeTo::UpNext,
+        SwipeTo::Bluetooth,
+        SwipeTo::Library,
+        SwipeTo::Folders,
+    ];
+
+    /// The settings-file word. A word, so a new target cannot shift what an existing file means.
+    pub fn token(self) -> &'static str {
+        match self {
+            SwipeTo::Off => "off",
+            SwipeTo::Menu => "menu",
+            SwipeTo::Sound => "sound",
+            SwipeTo::Eq => "eq",
+            SwipeTo::UpNext => "upnext",
+            SwipeTo::Bluetooth => "bluetooth",
+            SwipeTo::Library => "library",
+            SwipeTo::Folders => "folders",
+        }
+    }
+
+    pub fn from_token(s: &str) -> SwipeTo {
+        let s = s.trim();
+        Self::ALL
+            .into_iter()
+            .find(|t| t.token() == s)
+            .unwrap_or_default()
+    }
+
+    /// The Settings row's value.
+    pub fn label(self) -> &'static str {
+        match self {
+            SwipeTo::Off => crate::i18n::text("OFF"),
+            SwipeTo::Menu => crate::i18n::text("MENU"),
+            SwipeTo::Sound => crate::i18n::text("SOUND"),
+            SwipeTo::Eq => crate::i18n::text("EQUALIZER"),
+            SwipeTo::UpNext => crate::i18n::text("UP NEXT"),
+            SwipeTo::Bluetooth => crate::i18n::text("BLUETOOTH"),
+            SwipeTo::Library => crate::i18n::text("LIBRARY"),
+            SwipeTo::Folders => crate::i18n::text("FOLDERS"),
+        }
+    }
+
+    pub fn next(self) -> SwipeTo {
+        let i = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+}
 
 #[allow(non_snake_case)]
 fn RH() -> i32 {
@@ -115,7 +189,7 @@ const SECTIONS: [(&str, usize); 5] = [
     ("", EVERYDAY),
     ("LIBRARY", 3),
     ("POWER SAVING", 2),
-    ("SYSTEM", 7),
+    ("SYSTEM", 9),
     ("ABOUT", 2),
 ];
 /// Height of a section's label; the unlabelled first group has none.
@@ -195,6 +269,9 @@ pub struct SettingsView<'a> {
     pub quick: bool,
     /// The Library's FOLDERS link is switched on (`ROW_FOLDERS_TAB`).
     pub folders_tab: bool,
+    /// What a swipe up / down on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
+    pub swipe_up: SwipeTo,
+    pub swipe_down: SwipeTo,
     /// What shuffle deals (`ROW_SHUFFLE`): "SONGS", "ALBUMS" or "ARTISTS".
     pub shuffle_by: &'a str,
     /// More settings is unfolded (`ROW_MORE`).
@@ -287,6 +364,8 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_SCREEN_OFF => Trail::Value(v.screen_off),
         ROW_QUICK => Trail::Switch(v.quick),
         ROW_FOLDERS_TAB => Trail::Switch(v.folders_tab),
+        ROW_SWIPE_UP => Trail::Value(v.swipe_up.label()),
+        ROW_SWIPE_DOWN => Trail::Value(v.swipe_down.label()),
         ROW_BIG => Trail::Switch(v.big_view),
         // The volume limit is a value row rather than a switch because the interesting half is
         // WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number the
@@ -343,6 +422,8 @@ fn title(r: usize) -> &'static str {
         ROW_SCREEN_OFF => crate::i18n::text("Screen-off timer"),
         ROW_QUICK => crate::i18n::text("Pull-down panel"),
         ROW_FOLDERS_TAB => crate::i18n::text("Folders tab"),
+        ROW_SWIPE_UP => crate::i18n::text("Swipe up"),
+        ROW_SWIPE_DOWN => crate::i18n::text("Swipe down"),
         ROW_BIG => crate::i18n::text("Big view"),
         ROW_VOLUME_LIMIT => crate::i18n::text("Volume limit"),
         ROW_SLEEP => crate::i18n::text("Sleep timer"),
@@ -407,6 +488,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                     QUICK_SUB
                 }),
                 ROW_BIG => crate::i18n::text(BIG_SUB),
+                ROW_SWIPE_UP | ROW_SWIPE_DOWN => crate::i18n::text("On Now Playing"),
                 ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
                 ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
                 ROW_STORAGE => storage_parts(v.storage).1,
@@ -442,6 +524,8 @@ mod tests {
             volume_limit: false,
             big_view: false,
             folders_tab: false,
+            swipe_up: SwipeTo::Off,
+            swipe_down: SwipeTo::Off,
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",

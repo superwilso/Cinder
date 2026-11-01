@@ -154,7 +154,7 @@ fn icon_row(
 }
 
 /// HOW TO GET AROUND — the page the intro was missing. Every screen has the same furniture, and
-/// none of it is labelled on the glass: the clock is a Now Playing button, the strip is the Menu,
+/// none of it is labelled on the glass: the clock is a Now Playing button, the ☰ is the Menu,
 /// the bookmark is the Shelf.
 fn getting_around(c: &mut Canvas, t: &Theme, f: &FontSet) {
     title(c, t, f, crate::i18n::text("Getting around"));

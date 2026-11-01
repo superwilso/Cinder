@@ -593,6 +593,9 @@ void cinder_set_volume(int level);
 /* Bottom-edge swipe UP opens the Shelf. Returns 1 if the UI took it, 0 if it declined (locked,
  * onboarding, or already open) — on 0 the shell should let the contact scroll as usual. */
 int  cinder_shelf_swipe(void);
+/* A vertical drag ended dy px down (negative = up): on Now Playing, open what Settings ▸ Swipe up /
+ * Swipe down picked (#51). 1 = taken (do not fling). */
+int  cinder_np_swipe(int dy);
 /* Top-edge pull DOWN opens the quick-settings panel — only when Settings ▸ Pull-down panel is on
  * (default OFF). Ask cinder_quick_pull_begin once per vertical contact, with its START point, before
  * the list drag: 0 = not ours, let the contact scroll as it always did. On 1 the contact is the
