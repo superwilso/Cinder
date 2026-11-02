@@ -35,8 +35,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Cinder reads in `player-map/` (scrubbed and leak-checked like the rest). An NW-A40 or A30 with
   adb (Walkman One has it) can be mapped by its owner, and the harness then lists what Cinder would
   need there. Steps in cinder-sony-analysis's README.
+- **For contributors: drive a player without the screen, and read Bluetooth send timing.**
+  `tools/devctl.sh` presses buttons, taps, takes screenshots, reads the state and runs Sony's HCI
+  trace over adb, with nothing installed. `analysis/tools/a2dp_timing.py` reads a trace and says
+  whether audio left the player evenly, with stalls, bursts and a backed-up radio called out.
+  Measurements for #44 in `analysis/RE_bt_send_timing.md`.
 
 ### Fixed
+
+- **`cinder-home/tools/screenshot.sh` left Cinder saving a screenshot every second.** Its trigger
+  file was made by adb's root shell in the sticky `/tmp`, which Cinder cannot delete, so every
+  frame after the first saw it again. The script now removes it itself.
 
 - **Settings ▸ Device said WALKMAN ONE on Sony's own firmware.** The test for Walkman One looked
   for `/sbin/boot_complete.sh` and `/opt2`, and Sony's stock 1.02 has both: a 111-byte boot script
