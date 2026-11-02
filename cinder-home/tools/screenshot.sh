@@ -29,6 +29,9 @@ try_app() {
     # mid-pull. `ps | grep` because this busybox has no pidof/pgrep.
     adb shell 'ps 2>/dev/null | grep -q "[c]inder-home" && echo yes' 2>/dev/null | grep -q yes \
         || { echo "  (app: cinder-home not running)" >&2; return 1; }
+    # /tmp is sticky and adb's shell is root, so cinder-home (uid 100) cannot unlink a trigger
+    # adb made: it would save a frame every second until someone did. The trap removes it.
+    trap "adb shell 'rm /tmp/cinder_screenshot.req 2>/dev/null' >/dev/null 2>&1" RETURN
     adb shell 'rm /tmp/cinder_screen.png 2>/dev/null; touch /tmp/cinder_screenshot.req' >/dev/null 2>&1
     # adb drops are common on this device (gadget re-enumeration); keep retrying rather than failing.
     for _ in $(seq 1 30); do
