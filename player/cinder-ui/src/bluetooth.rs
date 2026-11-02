@@ -840,7 +840,17 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt, scroll: i32
         t.faint,
         0.04,
     );
-    let note = crate::i18n::text(if crate::scale::large() {
+    // AAC holds a slot the radio fills when Bluetooth starts, so choosing another codec does not
+    // stop it until then: a Connect from this player still got AAC (CMF Buds Pro 2, 2026-11-02).
+    // Only earphones that reconnect on their own after a restart pick the new choice up. Said here,
+    // where the chips that did not take effect are.
+    let note = crate::i18n::text(if aac_sticks(bt) {
+        if crate::scale::large() {
+            "AAC stays until Bluetooth restarts."
+        } else {
+            "AAC stays until you turn Bluetooth off and on."
+        }
+    } else if crate::scale::large() {
         "Applies to Bluetooth and USB-DAC."
     } else {
         "Used everywhere, USB-DAC to LDAC included."
@@ -848,6 +858,11 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt, scroll: i32
     let note = crate::widgets::fit(f, note, &st, (kit::RIGHT - kit::LEFT) as f32);
     text::draw(c, f, kit::LEFT as f32, (bottom + 28) as f32, &note, &st);
     c.clear_clip();
+}
+
+/// The link is AAC although another codec is chosen: the choice waits for a Bluetooth restart.
+fn aac_sticks(bt: &Bt) -> bool {
+    bt.on && bt.connected.is_some() && bt.link_codec == Some(0x03) && bt.codec_sel != AAC
 }
 
 /// The theme a Sound quality control is drawn in: as it is, or — while the radio is off — with its
@@ -899,6 +914,24 @@ mod tests {
         let end = DEBUG_Y() + DEBUG_H();
         crate::scale::set_large(false);
         assert!(end <= 730, "Big view's Debug log row ends at {end}");
+    }
+
+    /// An AAC link with another codec chosen says the choice waits for a Bluetooth restart.
+    #[test]
+    fn aac_left_running_says_restart_bluetooth() {
+        assert!(aac_sticks(&bt(true, Some("CMF Buds Pro 2"), 3, Some(0x03))));
+        assert!(
+            !aac_sticks(&bt(true, Some("CMF Buds Pro 2"), AAC, Some(0x03))),
+            "AAC chosen"
+        );
+        assert!(
+            !aac_sticks(&bt(true, Some("CMF Buds Pro 2"), 3, Some(0x01))),
+            "SBC took"
+        );
+        assert!(
+            !aac_sticks(&bt(true, None, 3, Some(0x03))),
+            "nothing connected"
+        );
     }
 
     fn bt(on: bool, connected: Option<&str>, codec_sel: u8, link_codec: Option<u8>) -> Bt<'_> {

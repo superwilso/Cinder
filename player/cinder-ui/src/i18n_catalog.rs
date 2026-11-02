@@ -105,6 +105,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "A tape: reels wind as it plays" => Some("卡带：播放时带盘会动"),
         "A/B COMPARE" => Some("A/B 对比"),
         "AAC or SBC" => Some("AAC 或 SBC"),
+        "AAC stays until Bluetooth restarts." => Some("AAC 会保持到蓝牙重启。"),
+        "AAC stays until you turn Bluetooth off and on." => Some("AAC 会保持到你关闭再打开蓝牙。"),
         "ABOUT" => Some("关于"),
         "ADD" => Some("添加"),
         "ADD SONGS TO UP NEXT" => Some("需要音乐播放队列"),
