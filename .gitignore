@@ -89,6 +89,7 @@ cinder-home/dist/*/cinder-installer*
 # Objects, the linked scenario runner, and the two tables regenerated from main.cpp and the
 # public headers on every run — none of it is a source of truth for anything.
 .harness/
+.harness-real/
 
 # Debug symbols for the ARM binaries: build.sh writes these next to the stripped output so a crash
 # address can be resolved with addr2line. They are BUILD BYPRODUCTS — 6 MB each, rewritten on every

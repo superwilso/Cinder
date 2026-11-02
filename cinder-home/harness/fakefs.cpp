@@ -247,6 +247,20 @@ extern "C" int open(const char* path, int flags, ...) {
     return (int)syscall(SYS_openat, AT_FDCWD, target, flags, (int)mode);
 }
 
+// open64 is the same call under its large-file name, and it is the one SQLite (inside the real
+// cinder-ffi, in the real-FFI harness) and Rust's std reach: without it the library database and
+// every file the UI reads went straight past the tree.
+extern "C" int open64(const char* path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & (O_CREAT | O_TMPFILE)) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    return open(path, flags, mode);
+}
+
 // stat, through the same tree. This one earns its place specifically: `db_sig.h` decides whether the
 // library gets reloaded by stat'ing /db/MTPDB.dat and its two journal files, and "the device does not
 // pick up music I just copied on" is the oldest open user-visible bug in the project. Without a

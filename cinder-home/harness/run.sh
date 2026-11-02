@@ -17,7 +17,11 @@
 set -u
 
 cd "$(dirname "$0")/../.." || exit 1
-OUT="${CINDER_HARNESS_OUT:-.harness}"
+# CINDER_HARNESS_REAL_FFI=1: link the real cinder-ffi (the Rust UI, built for this machine) in
+# place of cinder.h's recording stubs, so main.cpp and the UI it drives run together. Only the
+# `real-*` scenarios run by default: the rest assert on stub calls that are not there in this build.
+REAL_FFI="${CINDER_HARNESS_REAL_FFI:-}"
+OUT="${CINDER_HARNESS_OUT:-$([ -n "$REAL_FFI" ] && echo .harness-real || echo .harness)}"
 mkdir -p "$OUT" || exit 1
 
 CXX="${CXX:-}"
@@ -37,6 +41,13 @@ CXXFLAGS=(-std=c++14 -O0 -DCINDER_HOST_SYNTAX_ONLY)
 [ -n "${CINDER_HARNESS_DEBUG:-}" ] && CXXFLAGS+=(-g)
 # CINDER_HARNESS_COVERAGE=1: gcov counters on every object, for "which lines did the scenarios run".
 LDFLAGS=()
+FFI_LIB=()
+if [ -n "$REAL_FFI" ]; then
+    CXXFLAGS+=(-DCINDER_HARNESS_REAL_FFI)
+    (cd player && cargo build -q -p cinder-ffi) || { echo "harness: FAILED to build cinder-ffi" >&2; exit 1; }
+    FFI_LIB=(player/target/debug/libcinder_ffi.a -ldl -lm)
+    export CINDER_FFI_HEADLESS=1   # frames go nowhere: there is no fb0 here
+fi
 [ -n "${CINDER_HARNESS_COVERAGE:-}" ] && { CXXFLAGS+=(--coverage); LDFLAGS+=(--coverage); }
 
 # The harness's own code is held to the same -Werror standard as the app it checks. Two exemptions,
@@ -52,7 +63,7 @@ echo "harness: $($CXX --version | head -1)"
 # Regenerate both tables every run, from the sources they describe: a header that grows a function
 # the app calls must not be able to leave a stale stub behind, and a vtable slot index that is
 # corrected in main.cpp must not leave the harness naming the old method.
-python3 cinder-home/harness/gen_stubs.py . > "$OUT/stubs.cpp" || exit 1
+python3 cinder-home/harness/gen_stubs.py . ${REAL_FFI:+--no-ffi=player/target/debug/libcinder_ffi.a} > "$OUT/stubs.cpp" || exit 1
 python3 cinder-home/harness/gen_slotmap.py cinder-home/src/main.cpp > "$OUT/slotmap.h" || exit 1
 
 build() { # build <out.o> <src> [extra flags...]
@@ -78,13 +89,14 @@ build "$OUT/stubs.o"      "$OUT/stubs.cpp"                  "${WARN[@]}" -Wno-un
 "$CXX" -o "$OUT/harness" \
     "$OUT/main.o" "$OUT/harness.o" "$OUT/fake_easel.o" "$OUT/fake_pst.o" \
     "$OUT/fakefs.o" "$OUT/fakeinput.o" \
-    "$OUT/scenarios.o" "$OUT/stubs.o" "${LDFLAGS[@]}" -lpthread || {
+    "$OUT/scenarios.o" "$OUT/stubs.o" "${FFI_LIB[@]}" "${LDFLAGS[@]}" -lpthread || {
     echo "harness: FAILED to link" >&2; exit 1; }
 
 if [ $# -gt 0 ]; then
     scenarios="$*"
 else
     scenarios="$("$OUT/harness" list)"
+    [ -n "$REAL_FFI" ] && scenarios="$(printf '%s\n' $scenarios | grep '^real-')"
 fi
 
 fails=0
