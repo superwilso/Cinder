@@ -16,6 +16,9 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <spawn.h>
+#include <sys/wait.h>
+extern char** environ;
 
 static int g_fails = 0;
 static const char* g_scenario = "?";
@@ -311,6 +314,56 @@ static void s_boot(void) {
           "paired-device list read during boot");
     check(cinder_harness_count("BtCommon::AddListener") >= 1,
           "BtCommon notification listener registered during boot");
+}
+
+// ── a real player's map (tools/map_player.sh): boot on what that player's kernel really reports ──
+// Opt-in: CINDER_HARNESS_MAP=/path/to/map. Without it the scenario passes as a skip, so CI and a
+// plain run.sh are unchanged. The map is COPIED into this run's tree — never written — and wins
+// over healthy_device()'s invented values wherever it has a file. What it reports matters as much
+// as what it checks: every /sys and /proc path the app opened that the map does not have is a path
+// this player does not have either (the map reads every path the source names), i.e. a feature
+// probing hardware that is not there, or a path that is simply wrong.
+static void print_absent(const char* name, int count, void* ctx) {
+    const char* p = std::strchr(name, ':') + 1;
+    if (std::strncmp(p, "/sys/", 5) && std::strncmp(p, "/proc/", 6)) return;
+    std::printf("         absent on this player: %s (%d open%s)\n", p, count, count == 1 ? "" : "s");
+    ++*static_cast<int*>(ctx);
+}
+
+static void s_real_player(void) {
+    const char* map = std::getenv("CINDER_HARNESS_MAP");
+    if (!map || !*map) {
+        std::printf("  skip (set CINDER_HARNESS_MAP to a tools/map_player.sh directory)\n");
+        return;
+    }
+    healthy_device();
+    // The tree's root, from where one probe file lands.
+    cinder_harness_fs_write("/.map_root", "");
+    char root[1024];
+    if (!cinder_harness_fs_resolve("/.map_root", "r", root, (int)sizeof root)) {
+        check(false, "found the harness's filesystem tree");
+        return;
+    }
+    root[std::strlen(root) - std::strlen("/.map_root")] = 0;
+    // posix_spawn, not system(): the harness's own system() records the command and runs nothing.
+    const std::string from = std::string(map) + "/fs/.", to = std::string(root) + "/";
+    char* argv[] = {(char*)"cp", (char*)"-a", (char*)from.c_str(), (char*)to.c_str(), nullptr};
+    pid_t pid = 0;
+    int st = -1;
+    if (posix_spawnp(&pid, "cp", nullptr, nullptr, argv, environ) == 0) waitpid(pid, &st, 0);
+    check(st == 0, "the map copied into this run's tree");
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("easel:OnForeground") == 1, "reached Foreground on the real values");
+    check(cinder_harness_count("cinder_render_tick") > 100, "painting frames");
+    char bc[8] = {0};
+    cinder_harness_fs_read("/data/cinder/bootcount", bc, (int)sizeof bc - 1);
+    check(bc[0] == '0', "the boot was marked healthy (bootcount 0)");
+    int absent = 0;
+    cinder_harness_each_name("fopen(absent):", print_absent, &absent);
+    cinder_harness_each_name("open(absent):", print_absent, &absent);
+    std::printf("  info %d /sys or /proc path(s) the app opened are not on this player\n", absent);
 }
 
 // ── hagodaemon is not up: every Sony service client fails to build, for the whole run ────────
@@ -2833,6 +2886,7 @@ static const Scenario kScenarios[] = {
     { "blank-order", s_blank_remembers_before_zeroing,
       "the service level is read before it is zeroed, so the restore has something to restore" },
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
+    {"real-player",       s_real_player,             "boots on a real player's map (CINDER_HARNESS_MAP), lists what it lacks"},
     {"library-touched",   s_library_touched_not_changed, "a scan that changes no row does not rebuild the library"},
     {"suspend-default",   s_suspend_by_default,      "stage 1 early suspend runs by default, under a wakelock"},
     {"ram-suspend",       s_ram_suspend_opt_in,      "stage 2 by default: idle, off the cable -> wakelock released"},

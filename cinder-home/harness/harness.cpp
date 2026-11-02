@@ -489,6 +489,22 @@ void cinder_harness_dump(int max_lines) {
     dump_unlocked(max_lines);
 }
 
+int cinder_harness_each_name(const char* prefix, void (*fn)(const char* name, int count, void* ctx),
+                             void* ctx) {
+    std::vector<std::pair<std::string, int>> hits;
+    {
+        Lock l; ensure();
+        const size_t n = std::strlen(prefix);
+        std::vector<int> count(g_names->size(), 0);
+        for (auto& c : *g_trace) count[c.name_id]++;
+        for (size_t id = 0; id < g_names->size(); ++id)
+            if (count[id] && (*g_names)[id].compare(0, n, prefix) == 0)
+                hits.emplace_back((*g_names)[id], count[id]);
+    }
+    for (auto& h : hits) fn(h.first.c_str(), h.second, ctx);
+    return (int)hits.size();
+}
+
 void cinder_harness_clock_passive(void) {
     Lock l; ensure();
     if (t_role == T_RUNNING) g_running--;
