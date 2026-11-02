@@ -16,51 +16,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Added
-
-- **For contributors: a map of a real player, a virtual player on it, and saved setups.**
-  `tools/map_player.sh OUT` copies what Cinder reads from a player over adb — sysfs, procfs,
-  properties, the library database and Cinder's own files — reading only, and skipping the nodes
-  known to wedge or crash the player. `cargo run -p cinder-sim --bin player -- OUT` runs the real
-  UI and FFI on that copy in a window, or takes `--taps` and `--shot` for scripts.
-  `CINDER_HARNESS_MAP=OUT cinder-home/harness/run.sh real-player` boots the shell on the same copy
-  and lists every `/sys` and `/proc` path it opened that the player does not have. With
-  `CINDER_HARNESS_REAL_FFI=1` the harness links the real UI instead of its recording stubs, so the
-  shell and the UI run together on that copy (`real-*` scenarios: the boot, and the first ▶ after
-  a restored queue).
-  `tools/player_state.sh save|load NAME` keeps named setups of a player (settings, likes, queue;
-  never the recovery files) to switch between when chasing a bug.
-- **Map your player, whatever the model.** `python3 tools/device_map/device_map.py` now names the
-  player and its firmware itself and writes `device-map-<model>-<firmware>/`, with the values
-  Cinder reads in `player-map/` (scrubbed and leak-checked like the rest). An NW-A40 or A30 with
-  adb (Walkman One has it) can be mapped by its owner, and the harness then lists what Cinder would
-  need there. Steps in cinder-sony-analysis's README.
-- **For contributors: drive a player without the screen, and read Bluetooth send timing.**
-  `tools/devctl.sh` presses buttons, taps, takes screenshots, reads the state and runs Sony's HCI
-  trace over adb, with nothing installed. `analysis/tools/a2dp_timing.py` reads a trace and says
-  whether audio left the player evenly, with stalls, bursts and a backed-up radio called out.
-  Measurements for #44 in `analysis/RE_bt_send_timing.md`.
-- **Bluetooth ▸ Debug log keeps recording past 4 MB.** It used to stop at 4 MB, about a minute of
-  SBC XQ, which is too short to catch a problem that comes and goes. Each 4 MB part is now saved
-  to the drive as it fills and the next one starts, up to 15 parts (60 MB). *Harness-built;
-  device-unverified.*
-
-### Fixed
-
-- **"Shuffle a playlist" did nothing when your playlists are Cinder's own.** The band on the
-  Playlists tab picked only from Sony's database, which holds no playlists on a player where
-  they were all made in Cinder or synced as `.m3u8` files. It now picks from the playlists the tab
-  lists, and skips one the filter leaves empty instead of doing nothing. *Host-tested.*
-- **`cinder-home/tools/screenshot.sh` left Cinder saving a screenshot every second.** Its trigger
-  file was made by adb's root shell in the sticky `/tmp`, which Cinder cannot delete, so every
-  frame after the first saw it again. The script now removes it itself.
-
-- **Settings ▸ Device said WALKMAN ONE on Sony's own firmware.** The test for Walkman One looked
-  for `/sbin/boot_complete.sh` and `/opt2`, and Sony's stock 1.02 has both: a 111-byte boot script
-  of its own and a stock partition. It now looks for Walkman One's `/system/etc/.mod`, as the
-  installer's log and the device map do (both had the same mistake). *Host-tested; checked on a
-  stock player over adb.*
-
 ## [0.3.22] — 2026-10-28
 
 ### Changed
@@ -110,6 +65,19 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **"Shuffle a playlist" did nothing when your playlists are Cinder's own.** The band on the
+  Playlists tab picked only from Sony's database, which holds no playlists on a player where
+  they were all made in Cinder or synced as `.m3u8` files. It now picks from the playlists the tab
+  lists, and skips one the filter leaves empty instead of doing nothing. *Host-tested.*
+- **`cinder-home/tools/screenshot.sh` left Cinder saving a screenshot every second.** Its trigger
+  file was made by adb's root shell in the sticky `/tmp`, which Cinder cannot delete, so every
+  frame after the first saw it again. The script now removes it itself.
+
+- **Settings ▸ Device said WALKMAN ONE on Sony's own firmware.** The test for Walkman One looked
+  for `/sbin/boot_complete.sh` and `/opt2`, and Sony's stock 1.02 has both: a 111-byte boot script
+  of its own and a stock partition. It now looks for Walkman One's `/system/etc/.mod`, as the
+  installer's log and the device map do (both had the same mistake). *Host-tested; checked on a
+  stock player over adb.*
 - **A player left on a wall charger no longer drops out of Cinder for good (#52).** After the
   screen-off sleep, a cable makes Cinder try to bring the USB port back, and a charger has no
   computer behind it, so every step ran out: over 25 seconds against a 20-second limit, which ends
@@ -209,6 +177,32 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **For contributors: a map of a real player, a virtual player on it, and saved setups.**
+  `tools/map_player.sh OUT` copies what Cinder reads from a player over adb — sysfs, procfs,
+  properties, the library database and Cinder's own files — reading only, and skipping the nodes
+  known to wedge or crash the player. `cargo run -p cinder-sim --bin player -- OUT` runs the real
+  UI and FFI on that copy in a window, or takes `--taps` and `--shot` for scripts.
+  `CINDER_HARNESS_MAP=OUT cinder-home/harness/run.sh real-player` boots the shell on the same copy
+  and lists every `/sys` and `/proc` path it opened that the player does not have. With
+  `CINDER_HARNESS_REAL_FFI=1` the harness links the real UI instead of its recording stubs, so the
+  shell and the UI run together on that copy (`real-*` scenarios: the boot, and the first ▶ after
+  a restored queue).
+  `tools/player_state.sh save|load NAME` keeps named setups of a player (settings, likes, queue;
+  never the recovery files) to switch between when chasing a bug.
+- **Map your player, whatever the model.** `python3 tools/device_map/device_map.py` now names the
+  player and its firmware itself and writes `device-map-<model>-<firmware>/`, with the values
+  Cinder reads in `player-map/` (scrubbed and leak-checked like the rest). An NW-A40 or A30 with
+  adb (Walkman One has it) can be mapped by its owner, and the harness then lists what Cinder would
+  need there. Steps in cinder-sony-analysis's README.
+- **For contributors: drive a player without the screen, and read Bluetooth send timing.**
+  `tools/devctl.sh` presses buttons, taps, takes screenshots, reads the state and runs Sony's HCI
+  trace over adb, with nothing installed. `analysis/tools/a2dp_timing.py` reads a trace and says
+  whether audio left the player evenly, with stalls, bursts and a backed-up radio called out.
+  Measurements for #44 in `analysis/RE_bt_send_timing.md`.
+- **Bluetooth ▸ Debug log keeps recording past 4 MB.** It used to stop at 4 MB, about a minute of
+  SBC XQ, which is too short to catch a problem that comes and goes. Each 4 MB part is now saved
+  to the drive as it fills and the next one starts, up to 15 parts (60 MB). *Harness-built;
+  device-unverified.*
 - **Night on a schedule.** Settings ▸ Display ▸ Night is now Off / On / Auto. Auto works like a
   phone's night mode: Night comes on at Starts and goes off at Ends (18:00–23:30 and 05:00–09:00,
   every half hour; 21:00 to 07:00 to begin with), and switching it by hand in between holds until
