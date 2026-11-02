@@ -16,29 +16,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Added
-
-- **Night on a schedule.** Settings ▸ Display ▸ Night is now Off / On / Auto. Auto works like a
-  phone's night mode: Night comes on at Starts and goes off at Ends (18:00–23:30 and 05:00–09:00,
-  every half hour; 21:00 to 07:00 to begin with), and switching it by hand in between holds until
-  the next of the two. A player started during the night wakes in Night. *Device-unverified.*
-- **"Make it yours" in the introduction.** A new second page offers the settings people most
-  often change, as switches: Big view (and its two extras once it is on), the pull-down panel and
-  the Folders tab. Each is the same switch as in Settings. *Device-unverified.*
-- **Big view: Bigger top bar and Bigger icons (#51).** Two switches under Settings ▸ Big view,
-  shown while it is on and off by default. Bigger top bar grows the clock, the battery, the ☰ and
-  the bookmark; Bigger icons grows the arrows, the back arrow and the symbols on every screen but
-  Now Playing, which Big view already sizes. *Device-unverified.*
-
-### Fixed
-
-- **A player left on a wall charger no longer drops out of Cinder for good (#52).** After the
-  screen-off sleep, a cable makes Cinder try to bring the USB port back, and a charger has no
-  computer behind it, so every step ran out: over 25 seconds against a 20-second limit, which ends
-  the app and holds every later start on Sony's player. The limit now covers the whole attempt,
-  and an attempt that finds no computer is not repeated until the cable comes out.
-  *Device-unverified.*
-
 ## [0.3.22] — 2026-10-28
 
 ### Changed
@@ -88,6 +65,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **A player left on a wall charger no longer drops out of Cinder for good (#52).** After the
+  screen-off sleep, a cable makes Cinder try to bring the USB port back, and a charger has no
+  computer behind it, so every step ran out: over 25 seconds against a 20-second limit, which ends
+  the app and holds every later start on Sony's player. The limit now covers the whole attempt,
+  and an attempt that finds no computer is not repeated until the cable comes out.
+  *Device-unverified.*
 - **A big library gets a cover on every row (#46).** The album-cover cache keeps two sizes per
   album, and the larger one took the space the rest of the library's list thumbnails needed:
   on a ~1,200-album library, about 700 albums got covers and the rest a plain colour. Every album
@@ -181,6 +164,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Night on a schedule.** Settings ▸ Display ▸ Night is now Off / On / Auto. Auto works like a
+  phone's night mode: Night comes on at Starts and goes off at Ends (18:00–23:30 and 05:00–09:00,
+  every half hour; 21:00 to 07:00 to begin with), and switching it by hand in between holds until
+  the next of the two. A player started during the night wakes in Night. *Device-unverified.*
+- **"Make it yours" in the introduction.** A new second page offers the settings people most
+  often change, as switches: Big view (and its two extras once it is on), the pull-down panel and
+  the Folders tab. Each is the same switch as in Settings. *Device-unverified.*
+- **Big view: Bigger top bar and Bigger icons (#51).** Two switches under Settings ▸ Big view,
+  shown while it is on and off by default. Bigger top bar grows the clock, the battery, the ☰ and
+  the bookmark; Bigger icons grows the arrows, the back arrow and the symbols on every screen but
+  Now Playing, which Big view already sizes. *Device-unverified.*
 - **Swipe up and Swipe down on Now Playing (#51).** Two new rows in Settings ▸ More settings ▸
   System pick what a swipe in the middle of Now Playing opens: the Menu, Sound, Equalizer, Up Next,
   Bluetooth, Library or Folders. Both are Off by default. A swipe up from the very bottom edge still

@@ -106,3 +106,29 @@ gadget; that was the "dev adb does not come back" half. The dev build now calls
 Power at 211 s, cable in at ~217 s; the gadget was already `CONFIGURED` as `mass_storage,adb`
 (product 0ca0, Sony's), `cinder-msc usb-resume` found a host and did nothing, adbd running.
 Checklist 33.2 passes. The stable channel has no adb and does not set the flag.
+
+## 2026-11-02: a wall charger is a cable with no host (#52)
+
+Reported on an NW-A55 left on a wall charger overnight: cinder-home exited `rc=42` after 45,213 s
+(12.5 h), the last lines in its log were `cinder-msc: usb-resume: step 4, init's adb block:
+state=DISCONNECTED — STILL DOWN` and `musb role now = b_idle`, and every boot after was held on
+stock by the bad-boot latch.
+
+What the evidence says, and what it does not:
+
+- **`/sys/class/power_supply/usb/online` reads 1 on that charger.** The resume path only runs
+  `usb-resume` when it does, and it ran. So that node does not tell a charger from a computer;
+  `android_usb/android0/state` reaching `CONNECTED`/`CONFIGURED` is the only sign of a host. Not
+  measured here which chargers read as `usb` rather than `ac`; a non-standard one (data lines open)
+  may be the reason.
+- **With no host, `usb-resume` walks every step.** Steps 0–3 wait up to 4 s each for a host, step 3
+  adds 0.5 s, step 4 (`usb_rescue`) polls `getprop sys.usb.state` up to 60 times (a `popen` each)
+  and then waits 4 s more, and dmesg is copied twice: over 25 s, worst case past 30 s.
+- **The call ran under `run_watchdog_only("usb: resume", 20, …)`**, where an overrun is fatal by
+  design (a forked child cannot be abandoned), and the fatal path latches the counter to MAXBAD even
+  after a healthy start. The backtrace (`waitpid` under `system()`) fits; the WATCHDOG line naming
+  the call was not in the paste.
+
+Fixed in `src/usb_resume_gate.h` (host-tested, `tools/usbresume_selftest.cpp`): the budget is
+60 s, and a run that finds no host is not repeated until `usb/online` drops, so a charger costs one
+run per plug instead of one per resume. Not yet run on a player with a wall charger.
