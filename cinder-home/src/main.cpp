@@ -59,6 +59,7 @@
 #include "bt_vol_watch.h" // volume steps the sink never answers (host-tested)
 #include "db_sig.h"   // has the library database moved? (host-tested)
 #include "jack_edge.h"
+#include "usb_resume_gate.h" // when to run cinder-msc usb-resume (host-tested, #52)
 #include "fmrec.h"    // FM recording: the WAV writer both radio readers share (host-tested)
 #include "zappin_policy.h"
 #include "batt_slew.h" // how far the voltage-derived gauge may move per reading (host-tested)
@@ -4368,28 +4369,35 @@ static void soc_suspend_leave_now(const char* why) {
 // seconds to come up by itself and then run `cinder-msc usb-resume`, which tries the driver's
 // cable switch, then the gadget, then init — and logs each step, because with USB down the log is
 // the only witness. Once per resume. system() on this thread for a few seconds, with the screen
-// dark and nothing playing; the port is useless until it runs.
+// dark and nothing playing; the port is useless until it runs. A wall charger is a cable with no
+// host behind it: see usb_resume_gate.h (#52) for the budget and the one-try-per-plug rule.
 static bool g_usb_after_resume = false;
+static int g_usb_resume_rc = 0;
 static void usb_after_resume_tick() {
     static int plugged_s = 0;
     static bool forced = false;   // usb-resume wrote `1` (device) to mt_usb/mode
+    static bool gave_up = false;  // a run on this plug found no host (a charger): not again till unplugged
     const bool cable = socsusp::read_node_long("/sys/class/power_supply/usb/online") == 1;
+    if (!cable) gave_up = false;
     if (forced && !cable) {
         // Sony's SetOtgIdle on the way out, so the forced role does not outlive the cable.
         forced = false;
         socsusp::write_node("/sys/devices/platform/mt_usb/mode", "0");
         clog_("usb: cable out after a forced device role -> role released");
     }
-    if (!g_usb_after_resume) { plugged_s = 0; return; }
-    if (!cable) { plugged_s = 0; return; }
-    if (++plugged_s < 5) return;
+    if (!cinder_usb_resume_due(&plugged_s, g_usb_after_resume, cable, gave_up)) return;
     g_usb_after_resume = false;
     forced = true;
-    plugged_s = 0;
     clog_("usb: a cable is in after a resume from RAM -> cinder-msc usb-resume");
-    run_watchdog_only("usb: resume", 20, []() {   // system()
-        (void)std::system("/system/vendor/cinder/bin/cinder-msc usb-resume");
+    g_usb_resume_rc = -1;
+    run_watchdog_only("usb: resume", USB_RESUME_BUDGET_S, []() {   // system()
+        g_usb_resume_rc = std::system("/system/vendor/cinder/bin/cinder-msc usb-resume");
     });
+    if (g_usb_resume_rc != 0) {
+        gave_up = true;
+        clog_("usb: no host found (a charger, or a port only a restart brings back) -> not again "
+              "until the cable comes out");
+    }
 }
 
 // Called once a second from the housekeeping block. Returns nothing; all state is internal.
@@ -11786,7 +11794,10 @@ void carry_out(int act) {
             break;
         case CINDER_ACT_THEME_CHANGED:
             // night/day toggled -> set the panel backlight (night = minimal light), guarded.
-            run_guarded("carry_out: backlight (theme)", 4, apply_backlight);
+            // NOT WITH THE PANEL DARK: the Night schedule flips the theme from the clock tick, and
+            // set_backlight would light a screen the user (or the idle timer) turned off. Waking
+            // runs apply_backlight, which reads the theme then.
+            if (g_screen_on) run_guarded("carry_out: backlight (theme)", 4, apply_backlight);
             break;
         case CINDER_ACT_BOOT_TO_STOCK:
             // NOT run_guarded, for the same reason CINDER_ACT_RESTART below is not: this call does

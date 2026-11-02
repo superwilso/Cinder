@@ -30,6 +30,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   the bookmark; Bigger icons grows the arrows, the back arrow and the symbols on every screen but
   Now Playing, which Big view already sizes. *Device-unverified.*
 
+### Fixed
+
+- **A player left on a wall charger no longer drops out of Cinder for good (#52).** After the
+  screen-off sleep, a cable makes Cinder try to bring the USB port back, and a charger has no
+  computer behind it, so every step ran out: over 25 seconds against a 20-second limit, which ends
+  the app and holds every later start on Sony's player. The limit now covers the whole attempt,
+  and an attempt that finds no computer is not repeated until the cable comes out.
+  *Device-unverified.*
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed
