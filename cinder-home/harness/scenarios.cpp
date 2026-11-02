@@ -333,10 +333,17 @@ static void print_absent(const char* name, int count, void* ctx) {
     ++*static_cast<int*>(ctx);
 }
 
-// healthy_device(), then the map over it. False (and a skip line) when no map was given.
-static bool seed_from_map(void) {
+// healthy_device(), then the map over it. Without a map: false and a skip line — unless the
+// scenario can do without one (`optional`), and then it runs on healthy_device()'s invented values.
+// That is what CI gets: no map exists there (a map is a person's library and settings).
+static bool seed_from_map(bool optional = false) {
     const char* map = std::getenv("CINDER_HARNESS_MAP");
     if (!map || !*map) {
+        if (optional) {
+            std::printf("  (no CINDER_HARNESS_MAP: an invented device, no library)\n");
+            healthy_device();
+            return true;
+        }
         std::printf("  skip (set CINDER_HARNESS_MAP to a tools/map_player.sh directory)\n");
         return false;
     }
@@ -362,7 +369,13 @@ static bool seed_from_map(void) {
 }
 
 static void s_real_player(void) {
+    // With the real UI linked this boot is worth running even without a map: the shell and the UI
+    // starting together is the point. With the stubs it is s_boot again, so it needs the map.
+#ifdef CINDER_HARNESS_REAL_FFI
+    if (!seed_from_map(true)) return;
+#else
     if (!seed_from_map()) return;
+#endif
     cinder_harness_set_budget_ms(20000);
     cinder_harness_run();
 
@@ -376,6 +389,8 @@ static void s_real_player(void) {
     char bc[8] = {0};
     cinder_harness_fs_read("/data/cinder/bootcount", bc, (int)sizeof bc - 1);
     check(bc[0] == '0', "the boot was marked healthy (bootcount 0)");
+    const char* map = std::getenv("CINDER_HARNESS_MAP");
+    if (!map || !*map) return;   // "not on this player" means nothing without a player's map
     int absent = 0;
     cinder_harness_each_name("fopen(absent):", print_absent, &absent);
     cinder_harness_each_name("open(absent):", print_absent, &absent);
