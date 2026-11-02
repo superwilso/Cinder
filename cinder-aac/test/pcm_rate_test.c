@@ -30,6 +30,7 @@ int main(void)
     pcm_rate_start(&m, 44100, 4, t);
     assert(run(&m, &t, 44100, 60) == 0);
     assert(m.off_windows == 0 && m.stalls == 0);
+    assert(m.worst_gap_ms >= 45 && m.worst_gap_ms <= 47);   /* every wait counts, not only stalls */
     assert(pcm_rate_avg(&m) > 43900 && pcm_rate_avg(&m) < 44300);
 
     /* 44.1 kHz PCM into a 48 kHz encoder: every judged window is off. */

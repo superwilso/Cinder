@@ -4542,9 +4542,9 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
 // gated (the BT client shim, same boundary as ldac-bridge); this config write is the always-safe
 // half (pure file IO, no Sony service). Names mirror the cinder.h codec/quality indices.
 void write_bt_pref() {
-    static const char* codecs[] = { "ldac", "aptxhd", "aptx", "sbc", "aac" };
+    static const char* codecs[] = { "ldac", "aptxhd", "aptx", "sbc", "aac", "best" };
     static const char* quals[]  = { "auto", "990", "660", "330" };
-    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 4) ci = 0;
+    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 5) ci = 0;
     int qi = cinder_get_bt_ldac_quality(); if (qi < 0 || qi > 3) qi = 0;
     FILE* f = std::fopen("/contents/cinder_bt.conf", "w");
     if (f) {
@@ -5161,13 +5161,13 @@ static void bt_read_codecs() {
 static bool bt_slot_stale() {
     if (!g_bt_aac || !g_bt_slot || !cinder_get_bt_on()) return false;
     int ci = cinder_get_bt_codec();
-    return (ci == 1 && g_bt_slot != 'h') || (ci == 4 && g_bt_slot != 'a');
+    return (ci == 1 && g_bt_slot != 'h') || ((ci == 4 || ci == 5) && g_bt_slot != 'a');
 }
 
 void apply_bt_codec() {
     enum { VIDX_SetLdacSoundQuality = 18, VIDX_SetLdac = 20,
            VIDX_SetAptxClassic = 21, VIDX_SetAptxHD = 22 };
-    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 4) ci = 0;   // 0 ldac 1 aptxhd 2 aptx 3 sbc 4 aac
+    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 5) ci = 0;   // 0 ldac 1 aptxhd 2 aptx 3 sbc 4 aac 5 best
     int qi = cinder_get_bt_ldac_quality(); if (qi < 0 || qi > 3) qi = 0;   // 0 auto 1 990 2 660 3 330
     bt_read_codecs();
     // Which of AAC / aptX HD the shared slot gets at the next Bluetooth start (bt_read_codecs).
@@ -5181,7 +5181,11 @@ void apply_bt_codec() {
         if (!x) { clog_("bt-codec: BtTransmitterServiceClient unavailable"); return; }
         typedef int (*fnb)(void*, const bool*);
         // AAC (4) rides Sony's aptX HD switch; without the bt-aac library it falls back to SBC.
-        bool ldac = (ci == 0), aptxhd = (ci == 1 || (ci == 4 && g_bt_aac)), aptx = (ci == 2);
+        // Best (5) turns every switch on and lets the link take what the headphones share; the
+        // shared slot then holds AAC, or aptX HD without the library.
+        const bool best = (ci == 5);
+        bool ldac = (ci == 0 || best), aptxhd = (ci == 1 || (ci == 4 && g_bt_aac) || best),
+             aptx = (ci == 2 || best);
         ((fnb)bt_slot(x, VIDX_SetLdac))(x, &ldac);
         ((fnb)bt_slot(x, VIDX_SetAptxHD))(x, &aptxhd);
         ((fnb)bt_slot(x, VIDX_SetAptxClassic))(x, &aptx);
@@ -8996,6 +9000,8 @@ static void rx_usb_restore() {
 static void rx_fm_sink()      { usb_enter_func_mode(FM_A2DPSINK); }
 static void rx_fm_mediaplay() { usb_enter_func_mode(FM_MEDIAPLAY); }
 
+static const char* const RX_MARK = "/tmp/cinder_bt_rx";   // read by cinder-aac's aac_switch
+
 // Enter or leave, to match cinder_get_rx_on(). Idempotent. Called directly (not under one guard):
 // each Sony step carries its own, as in apply_usb_dac, because the guard's jump buffer does not nest.
 void apply_receiver() {
@@ -9004,6 +9010,10 @@ void apply_receiver() {
     if (on) {
         g_rx_active = true;   // FIRST: the reconnect ladder stands aside from here on
         clog_("rx: entering receiver mode");
+        // Tells the bt-aac library this is the receiver, before SetAAC reaches it: until a phone
+        // connects the stack reports no role at all, and without this the library sent the
+        // transmit choice (AAC off) to the receiver (2026-11-02).
+        if (FILE* f = std::fopen(RX_MARK, "w")) std::fclose(f);
         ambient_yield_for_music();   // the receiver owns the jack and the radio
         run_guarded("rx: release the music player", 10, rx_release_player);
         run_guarded("rx: EnterFuncMode(A2dpSink)", 20, rx_fm_sink);
@@ -9018,6 +9028,9 @@ void apply_receiver() {
         run_guarded("rx: EnterFuncMode(MediaPlay)", 20, rx_fm_mediaplay);
         rx_usb_restore();
         run_guarded("rx: reclaim the music player", 10, rx_reclaim_player);
+        std::remove(RX_MARK);
+        // The receiver's AAC setting is still in the radio: send the transmit choice again.
+        run_guarded("rx: re-apply the Bluetooth codec", 6, apply_bt_codec);
         g_rx_active = false;
         g_rx_reopen_wait = false;
         g_rx_phase = 0;

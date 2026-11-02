@@ -73,7 +73,7 @@ enum { AAC_OBJ_MPEG2_LC = 0x80, AAC_F44 = 0x10, AAC_F48 = 0x08, AAC_STEREO = 1 }
 enum { AAC_MAX_BITRATE = 320000 };
 /* SBC entry fields: bitpool range, then channel modes (joint 1, stereo 2, dual 4, mono 8). */
 enum { SEP_SLOT_SBC = 0, SBC_MIN_BP = 4, SBC_MAX_BP = 5, SBC_BLOCKS = 6, SBC_MODE = 10 };
-enum { SBC_DUAL = 4, SBC_XQ_BITPOOL = 47 };
+enum { SBC_DUAL = 4, SBC_XQ_BITPOOL = 47, SBC_XQ_MIN_BITPOOL = 2 };
 
 /* ---- log: one file, throttled at the print ------------------------------------------------ */
 
@@ -128,6 +128,7 @@ static struct {
     void** callbacks;        /* blueangel's bt_av_callbacks: the table libBtMw registered */
     uint8_t* app;            /* blueangel's bt_a2dp_app (a struct): +0x70 is the media payload limit */
     is_src_fn is_src;        /* libBtMw: the A2DP side is in source (transmit) mode */
+    is_src_fn is_snk;        /* libBtMw: in sink (receiver) mode; neither before a role is set */
 } real;
 
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
@@ -177,6 +178,7 @@ static void resolve(void)
     real.callbacks = (void**)sym(ba, "bt_av_callbacks");
     real.app = (uint8_t*)sym(ba, "bt_a2dp_app");
     real.is_src = (is_src_fn)sym(mw, "btmwAvBothIsSrc");
+    real.is_snk = (is_src_fn)sym(mw, "btmwAvBothIsSnk");
     int all = real.sep_init && real.activate && real.aac_enable && real.aptxhd_enable && real.enc_init &&
               real.enc_deinit && real.send_pcm && real.send_frame && real.callbacks && real.app &&
               real.is_src;
@@ -202,6 +204,12 @@ EXPORT void btmtk_a2dp_sep_default_setting_initialized(uint8_t* seps, int n, cha
               sbc[SBC_MODE]);
         sbc[SBC_MODE] = SBC_DUAL;
         sbc[SBC_MAX_BP] = SBC_XQ_BITPOOL;
+        /* Sony's minimum of 35 suits Joint Stereo, where headphones go to 53. In Dual Channel many
+         * stop lower (CMF Buds Pro 2: 31 on one connect, 39 on another), and the link came up as
+         * "bitpool 35..31": a range the A2DP rules do not allow, which that pair let through and a
+         * stricter one may refuse. The encoder runs at the top of the range, so the floor costs
+         * nothing. 2 is the spec's. */
+        sbc[SBC_MIN_BP] = SBC_XQ_MIN_BITPOOL;
         logf_("SBC endpoint is now XQ: Dual Channel, bitpool %d..%d", sbc[SBC_MIN_BP], SBC_XQ_BITPOOL);
     }
     if (!g_on || n <= SEP_SLOT_APTX_HD) return;
@@ -229,10 +237,25 @@ EXPORT void btmtk_a2dp_sep_default_setting_initialized(uint8_t* seps, int n, cha
 static int g_aac_tx = 1;     /* transmit AAC wanted: Sony's aptX HD switch, last set */
 static uint8_t g_aac_rx = 1; /* the receiver's AAC setting, last set */
 
-/* Transmitting, the switch follows the codec choice; receiving, the receiver's own setting. */
+/* Receiving, the receiver's own setting; otherwise the codec choice.
+ *
+ * "Otherwise" includes NO ROLE YET. At boot btmwAvBothIsSrc is 0 as well as btmwAvBothIsSnk (the
+ * A2DP state is neither 3/6 nor 2/5), and asking "are we a source?" sent the receiver's value
+ * (on) at every boot: the choice was never applied, and a headphone reconnecting on its own came up
+ * AAC with SBC XQ chosen (2026-11-02, CMF Buds Pro 2; the log said "transmit AAC off"). Transmit is
+ * the default role, so only a sink, or Cinder's receiver mode, gets the receiver's value. */
+static const char kRx[] = "/tmp/cinder_bt_rx";   /* Cinder's receiver mode is on */
+
 static void aac_switch(void)
 {
-    real.aac_enable(real.is_src() && g_slot == 'a' ? (uint8_t)g_aac_tx : g_aac_rx);
+    /* The stack is a sink, or Cinder said its receiver is on (before a phone connects the stack
+     * reports neither role). */
+    const int snk = (real.is_snk ? real.is_snk() : !real.is_src()) || access(kRx, F_OK) == 0;
+    const uint8_t v = !snk && g_slot == 'a' ? (uint8_t)g_aac_tx : g_aac_rx;
+    /* What is SENT, not what was asked for. */
+    logf_("mtkbt AAC switch -> %s (%s, slot %c, transmit wanted %d, receiver %d)", v ? "on" : "off",
+          snk ? "receiving" : "transmitting", g_slot ? g_slot : '-', g_aac_tx, g_aac_rx);
+    real.aac_enable(v);
 }
 
 EXPORT void btmtk_a2dp_send_aac_enable_req(uint8_t on)
@@ -262,6 +285,7 @@ EXPORT void btmtk_a2dp_send_activate_req(int a, int b)
 {
     init();
     if (real.activate) real.activate(a, b);
+    logf_("activate(%d, %d): source %d, sink %d", a, b, real.is_src(), real.is_snk ? real.is_snk() : -1);
     if (g_on) aac_switch();
     if (g_on || g_xq) swap_callbacks();
 }

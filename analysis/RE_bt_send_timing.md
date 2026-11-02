@@ -87,9 +87,23 @@ its rate (`cinder-aac/src/pcm_rate.h`), logs a stall over 150 ms, a 10 s window 
 and one line per stream (`stream stop: …`); the AAC case says "this plays at the wrong speed".
 The mono shim does the same on the sending side ("bt: PCM sent at … Hz").
 
-Open: whether mtkbt's SBC timestamps count bytes in Joint Stereo too (only Dual Channel, i.e.
-SBC XQ, was captured). If they are bytes only in Dual Channel, earphones that recover the clock
-from RTP would misjudge it on SBC XQ alone. Needs one boot with `/data/cinder/bt_sbc_xq` removed.
+Closed the same night: plain SBC (Joint Stereo, one boot with `/data/cinder/bt_sbc_xq` set
+aside) counts bytes too, 176428 a second on the CMF Buds Pro 2. It is Sony's behaviour for every
+SBC link, not something SBC XQ adds.
+
+Found on the way, and fixed:
+
+- **The AAC switch sent the receiver's setting at every boot.** `aac_switch` asked
+  `btmwAvBothIsSrc`, which is 0 until a link has a role (libBtMw: A2DP state 3 or 6 = source, 2 or
+  5 = sink, anything else neither). So with SBC XQ or LDAC chosen, AAC stayed on, and the CMF Buds
+  Pro 2 reconnected on AAC with "transmit AAC off" in the log. Now only `btmwAvBothIsSnk`, or
+  Cinder's receiver mode (`/tmp/cinder_bt_rx`, written by `apply_receiver`), gets the receiver's
+  value.
+- **SBC XQ kept Sony's minimum bitpool of 35**, and in Dual Channel the CMF Buds Pro 2 stop at 31
+  on some connects: the link came up "35..31". The minimum is now 2.
+- **The CMF Buds Pro 2 offer LDAC + SBC or AAC + SBC**, one pair at a time, switched in their own
+  app with a restart of the buds (owner, 2026-11-02). Tonight's AAC and LDAC links on them were
+  the two modes.
 
 ## What this leaves for #44
 
