@@ -72,7 +72,12 @@ ones. Read its safety rules first. Grouped by what each needs:
   [`RESEARCH_other_repos_backup_2026-10.md`](RESEARCH_other_repos_backup_2026-10.md).
 
 **Other models** (ZX300, WM1A/Z, A40, A30): start from antiheroriot's ZX300 branch as a pull
-request.
+request. No code needed to help: if your player has adb (Walkman One turns it on), a map of it is
+the first step. `python3 tools/device_map/device_map.py` reads it over adb without changing
+anything, scrubs the serial number and addresses, and writes a folder to attach to an issue; the
+steps are in [cinder-sony-analysis](https://github.com/superwilso/cinder-sony-analysis#map-your-own-player--nw-a40-nw-a30-and-others).
+The harness then boots Cinder's shell on it and lists every path Cinder expects that your model
+does not have.
 
 **Translations:** [`LOCALIZATION.md`](LOCALIZATION.md) has the workflow. Every translation has to
 draw from the bundled fonts; a test checks it.

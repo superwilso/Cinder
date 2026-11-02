@@ -7897,23 +7897,27 @@ pub extern "C" fn cinder_set_device_storage(
 
 /// Which firmware Cinder is installed ON TOP OF, for the Device screen's `Base` row.
 ///
-/// Two markers, and they are the same two `install_cinderhome.sh` uses, deliberately: the install
-/// log and the screen must never disagree about what this player is. `/sbin/boot_complete.sh` IS
-/// Walkman One — the 1452-line script that re-applies `/system/etc/.mod` on every boot — and
-/// `/opt2` is the state it keeps (`analysis/RE_walkmanone_extract.md`). Neither exists on stock.
+/// The marker is the one `install_cinderhome.sh` uses, deliberately: the install log and the
+/// screen must never disagree about what this player is. See [`is_walkman_one`].
 ///
 /// Read once: it cannot change without a reinstall, and this is called on every Device refresh.
 fn base_firmware() -> &'static str {
     static BASE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
     BASE.get_or_init(|| {
-        let w1 = std::path::Path::new("/sbin/boot_complete.sh").is_file()
-            && std::path::Path::new("/opt2").is_dir();
-        if w1 {
+        if is_walkman_one(std::path::Path::new("/")) {
             "WALKMAN ONE"
         } else {
             "SONY STOCK"
         }
     })
+}
+
+/// Walkman One has `/system/etc/.mod`, the tree its boot script re-applies on every boot
+/// (`analysis/RE_walkmanone_extract.md`). Until 2026-11-02 this asked for `/sbin/boot_complete.sh`
+/// and `/opt2` instead, and every stock player showed WALKMAN ONE: Sony's own 1.02 ramdisk ships a
+/// 111-byte boot_complete.sh (W1's is 43,869 bytes), and /opt2 is a stock partition.
+fn is_walkman_one(root: &std::path::Path) -> bool {
+    root.join("system/etc/.mod").is_dir()
 }
 
 /// Seconds since boot and the kernel release string.
@@ -10435,6 +10439,19 @@ mod tests {
     fn global_render() -> std::sync::MutexGuard<'static, ()> {
         static GLOBAL_RENDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
         GLOBAL_RENDER.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Stock 1.02 has boot_complete.sh and /opt2 too; only Walkman One has /system/etc/.mod.
+    #[test]
+    fn stock_with_sonys_boot_script_is_not_walkman_one() {
+        let root = std::env::temp_dir().join(format!("cinder_w1_{}", std::process::id()));
+        std::fs::create_dir_all(root.join("sbin")).unwrap();
+        std::fs::create_dir_all(root.join("opt2/appresouce")).unwrap();
+        std::fs::write(root.join("sbin/boot_complete.sh"), "sleep 45\n").unwrap();
+        assert!(!super::is_walkman_one(&root), "Sony's own 1.02 layout");
+        std::fs::create_dir_all(root.join("system/etc/.mod/adler")).unwrap();
+        assert!(super::is_walkman_one(&root), "Walkman One's mod tree");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

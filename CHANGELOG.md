@@ -30,6 +30,19 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   a restored queue).
   `tools/player_state.sh save|load NAME` keeps named setups of a player (settings, likes, queue;
   never the recovery files) to switch between when chasing a bug.
+- **Map your player, whatever the model.** `python3 tools/device_map/device_map.py` now names the
+  player and its firmware itself and writes `device-map-<model>-<firmware>/`, with the values
+  Cinder reads in `player-map/` (scrubbed and leak-checked like the rest). An NW-A40 or A30 with
+  adb (Walkman One has it) can be mapped by its owner, and the harness then lists what Cinder would
+  need there. Steps in cinder-sony-analysis's README.
+
+### Fixed
+
+- **Settings ▸ Device said WALKMAN ONE on Sony's own firmware.** The test for Walkman One looked
+  for `/sbin/boot_complete.sh` and `/opt2`, and Sony's stock 1.02 has both: a 111-byte boot script
+  of its own and a stock partition. It now looks for Walkman One's `/system/etc/.mod`, as the
+  installer's log and the device map do (both had the same mistake). *Host-tested; checked on a
+  stock player over adb.*
 
 ## [0.3.22] — 2026-10-28
 
