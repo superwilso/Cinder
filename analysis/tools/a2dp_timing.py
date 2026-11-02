@@ -64,6 +64,10 @@ def main(argv):
     if not media:
         sys.exit("no A2DP media packets in the trace (was anything playing?)")
     key = max(media, key=lambda k: len(media[k]))
+    # A capture starts mid-stream: completions for packets sent before it make the raw count go
+    # below zero. The lowest it reaches is "nothing queued".
+    low = min((q[2] for q in queued if q[1] == key[0]), default=0)
+    queued = [(t, h, n - low) for t, h, n in queued]
     pk = media[key]
     t0, ts0 = pk[0][0], pk[0][2]
     span_t, span_a = pk[-1][0] - t0, (pk[-1][2] - ts0) & 0xffffffff
@@ -112,12 +116,17 @@ def main(argv):
                                                                max(ld), max(gaps), mq, flag))
         i, start = j, start + w
 
-    print("\nevents (a gap over 100 ms between media packets):")
+    print("\nevents (a gap over 100 ms between media packets, or packets the stack skipped):")
     k = 0
     for n in range(1, len(pk)):
         g = (pk[n][0] - pk[n - 1][0]) * 1000
+        skipped = ((pk[n][1] - pk[n - 1][1]) & 0xffff) - 1
         if g > 100:
             print("  %s  gap %.0f ms, lead %.0f -> %.0f ms" % (when(pk[n][0]), g, lead[n - 1], lead[n]))
+            k += 1
+        if skipped:
+            # mtkbt drops packets it could not get out (a weak link): the radio, not the source.
+            print("  %s  %d packet(s) skipped, lead %.0f ms" % (when(pk[n][0]), skipped, lead[n]))
             k += 1
     if not k:
         print("  none")
