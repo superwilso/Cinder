@@ -109,6 +109,7 @@ dependencies = [
 name = "cinder-sim"
 version = "0.1.0"
 dependencies = [
+ "cinder-ffi",
  "cinder-ui",
  "minifb",
 ]

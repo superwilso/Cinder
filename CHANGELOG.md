@@ -16,6 +16,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **For contributors: a map of a real player, a virtual player on it, and saved setups.**
+  `tools/map_player.sh OUT` copies what Cinder reads from a player over adb — sysfs, procfs,
+  properties, the library database and Cinder's own files — reading only, and skipping the nodes
+  known to wedge or crash the player. `cargo run -p cinder-sim --bin player -- OUT` runs the real
+  UI and FFI on that copy in a window, or takes `--taps` and `--shot` for scripts.
+  `tools/player_state.sh save|load NAME` keeps named setups of a player (settings, likes, queue;
+  never the recovery files) to switch between when chasing a bug.
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed

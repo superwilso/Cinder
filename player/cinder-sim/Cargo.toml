@@ -2,7 +2,8 @@
 name = "cinder-sim"
 version = "0.1.0"
 edition = "2021"
-# One binary, `device`: drives the real on-device nav::App from the keyboard or a --script.
+# `device`: drives the real on-device nav::App from the keyboard or a --script.
+# `player`: the virtual player — the real FFI on a map of a real player (tools/map_player.sh).
 default-run = "device"
 
 # Interactive desktop preview of the real cinder-ui code, in a 480x800 window
@@ -10,4 +11,5 @@ default-run = "device"
 
 [dependencies]
 cinder-ui = { path = "../cinder-ui" }
+cinder-ffi = { path = "../cinder-ffi" }
 minifb = "0.29"

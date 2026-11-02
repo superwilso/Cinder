@@ -8,7 +8,8 @@ edition = "2021"
 #   [C++ easel/appmgr shell] + [this Rust UI] + [C/C++ Sony IPC shims].
 [lib]
 name = "cinder_ffi"
-crate-type = ["staticlib"]
+# rlib too: the virtual player (cinder-sim) links it as a Rust crate.
+crate-type = ["staticlib", "rlib"]
 
 [features]
 # Forwarded to cinder-ui: `--features dev` selects the development channel marker. build.sh passes

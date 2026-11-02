@@ -759,6 +759,24 @@ fn open_render_present(no_thread: bool) -> Result<Sink, String> {
     }
 }
 
+/// Where frames go instead of fb0: the virtual player (`cinder-sim --bin player`) sets this before
+/// `cinder_render_init`. Nothing on the device sets it.
+pub type FrameSink = Box<dyn FnMut(&[u32]) + Send>;
+static VIRTUAL_SINK: Mutex<Option<FrameSink>> = Mutex::new(None);
+
+/// Send every presented frame (480x800, 0x00RRGGBB) to `sink` instead of the panel.
+pub fn set_virtual_present(sink: FrameSink) {
+    *VIRTUAL_SINK.lock().unwrap() = Some(sink);
+}
+
+struct VirtualPresent(FrameSink);
+
+impl present::PresentTarget for VirtualPresent {
+    fn present(&mut self, buf: &[u32]) {
+        (self.0)(buf)
+    }
+}
+
 /// Open the framebuffer and initialise the renderer. Returns 0 on success, <0 on error.
 #[no_mangle]
 pub extern "C" fn cinder_render_init() -> libc::c_int {
@@ -779,7 +797,12 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         open_render_present(no_thread)
     };
     #[cfg(not(test))]
-    let present_result = open_render_present(no_thread);
+    let present_result = match VIRTUAL_SINK.lock().unwrap().take() {
+        Some(sink) => {
+            present::PresentThread::start(move || Ok(VirtualPresent(sink))).map(Sink::Threaded)
+        }
+        None => open_render_present(no_thread),
+    };
     let present = match present_result {
         Ok(p) => p,
         Err(e) => {
