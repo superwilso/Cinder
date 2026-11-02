@@ -35,6 +35,9 @@ INC=(-I "$OUT" -I cinder-home/harness -I cinder-home/src -I player/cinder-ffi/in
 # whose output is a call trace, not a debugger session. CINDER_HARNESS_DEBUG=1 turns it back on.
 CXXFLAGS=(-std=c++14 -O0 -DCINDER_HOST_SYNTAX_ONLY)
 [ -n "${CINDER_HARNESS_DEBUG:-}" ] && CXXFLAGS+=(-g)
+# CINDER_HARNESS_COVERAGE=1: gcov counters on every object, for "which lines did the scenarios run".
+LDFLAGS=()
+[ -n "${CINDER_HARNESS_COVERAGE:-}" ] && { CXXFLAGS+=(--coverage); LDFLAGS+=(--coverage); }
 
 # The harness's own code is held to the same -Werror standard as the app it checks. Two exemptions,
 # both structural rather than laziness:
@@ -75,7 +78,7 @@ build "$OUT/stubs.o"      "$OUT/stubs.cpp"                  "${WARN[@]}" -Wno-un
 "$CXX" -o "$OUT/harness" \
     "$OUT/main.o" "$OUT/harness.o" "$OUT/fake_easel.o" "$OUT/fake_pst.o" \
     "$OUT/fakefs.o" "$OUT/fakeinput.o" \
-    "$OUT/scenarios.o" "$OUT/stubs.o" -lpthread || {
+    "$OUT/scenarios.o" "$OUT/stubs.o" "${LDFLAGS[@]}" -lpthread || {
     echo "harness: FAILED to link" >&2; exit 1; }
 
 if [ $# -gt 0 ]; then
