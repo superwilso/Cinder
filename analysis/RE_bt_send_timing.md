@@ -27,7 +27,20 @@ Power wakes it (leaves stage 1), it times out again.
 | AAC (Cinder's encoder, 269 kbit/s) | 189 | 43 | 34 ms | none | −3 ppm | two entries, one exit |
 | SBC XQ (Dual Channel, bitpool 47, 551 kbit/s) | 189 | 115 | 39 ms | none | +134 ppm | one entry, one exit |
 
-No RTP sequence gaps in any capture, and the controller never held more than 4 packets. On this
+Two more, the same evening, to test "the CPU is too busy" and "it happens after a boot":
+
+| Test | Seconds | Worst gap | Stalls / bursts |
+|---|---|---|---|
+| LDAC, screen off, 2 then 4 busy processes at the sender's own priority (nice 0) on both cores | 136 | 24 ms (14 ms under load) | none |
+| LDAC from 40 s after a reboot, through the library build and the first stage 1 entry when the 180 s boot grace ends (198 s) | 240 | 35 ms | none |
+
+Load makes the pacing more even, not less: busy cores stay out of deep idle and wake on time.
+The sender (BtTransmitterService and mtkbt, both nice 0; SoundServiceFw is nice −15) is not
+starved on two cores by anything at its own priority. A walk out of range, by contrast, shows
+clearly: 65 skipped packets, the audio up to 106 ms behind, then a 4 % catch-up — heard as
+stutters on the XM4, not as a speed change.
+
+Outside the walk, no RTP sequence gaps in any capture, and the controller never held more than 4 packets. On this
 player the sender is even through stage 1 entry and exit for all three codecs: whatever #44's
 reporter hears is not produced by Cinder's suspend path on stock firmware.
 
