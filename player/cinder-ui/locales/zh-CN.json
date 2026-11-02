@@ -80,6 +80,8 @@
   "Splits each Bluetooth step, via the EQ": "通过均衡器细分蓝牙音量",
   "Fine volume": "精细音量",
   "Used everywhere, USB-DAC to LDAC included.": "适用于各输出，包括 USB-DAC 至 LDAC。",
+  "AAC stays until Bluetooth restarts.": "AAC 会保持到蓝牙重启。",
+  "AAC stays until you turn Bluetooth off and on.": "AAC 会保持到你关闭再打开蓝牙。",
   "Sets headphone level; no beep": "设置耳机音量；无按键提示音",
   "NIGHT": "夜间",
   "NOW PLAYING": "正在播放",

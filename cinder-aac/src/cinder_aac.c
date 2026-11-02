@@ -51,6 +51,7 @@
 #include <unistd.h>
 
 #include "aac_enc.h"
+#include "pcm_rate.h"
 
 #ifndef CINDER_AAC_DIR
 #define CINDER_AAC_DIR "/data/cinder"
@@ -285,6 +286,9 @@ static struct {
     struct timespec last_in; /* when the last PCM had been handled */
     long gap_ms;             /* the wait for the latest PCM: a long one = the source stalled */
     long overslept_ms;       /* how much longer the last pace sleep took than asked: = we stalled */
+    pcm_rate mon;            /* every codec's PCM, timed against its rate (#44) */
+    int mon_on, mon_codec;   /* a stream is running; its codec (CODEC_AAC when ours) */
+    unsigned long mon_stalls_said, mon_off_said;
 } g = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
 static void* g_cb_copy[16];  /* libBtMw's table is 0x40 bytes: 16 slots */
@@ -328,6 +332,9 @@ static void on_codec_config(void* addr, uint8_t* cfg)
             logf_("link is SBC: bitpool %d..%d, blocks/subbands/alloc %d/%d/%d, freq %d, mode %d",
                   cfg[SBC_MIN_BP], cfg[SBC_MAX_BP], cfg[SBC_BLOCKS], cfg[SBC_BLOCKS + 1],
                   cfg[SBC_BLOCKS + 2], cfg[SBC_BLOCKS + 3], cfg[SBC_MODE]);
+        else
+            logf_("link is codec 0x%02x%s", cfg[0],
+                  cfg[0] == CODEC_AAC ? " (AAC, not transmitting)" : "");
         pthread_mutex_lock(&g.lock);
         g.cfg_rate = 0;
         pthread_mutex_unlock(&g.lock);
@@ -348,6 +355,41 @@ static void swap_callbacks(void)
     g_cb_copy[4] = (void*)on_codec_config;
     *real.callbacks = g_cb_copy;
     logf_("codec-config callback wrapped");
+}
+
+static long long ms_of(const struct timespec* t)
+{
+    return (long long)t->tv_sec * 1000 + t->tv_nsec / 1000000;
+}
+
+/* Times one PCM call against the stream's rate (pcm_rate.h). Called with g.lock held. A wait of
+ * two seconds or more is a pause, not a stall: the measurement starts again after it. */
+static void watch_pcm(unsigned n)
+{
+    if (!g.mon_on) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const long long now = ms_of(&ts);
+    if (g.mon.bytes && now - g.mon.last_ms >= 2000) {
+        pcm_rate keep = g.mon;
+        pcm_rate_start(&g.mon, keep.expect_hz, keep.frame_bytes, now);
+        g.mon.t0_ms = keep.t0_ms;               /* the summary still covers the whole stream */
+        g.mon.bytes = keep.bytes;
+        g.mon.stalls = keep.stalls;
+        g.mon.worst_gap_ms = keep.worst_gap_ms;
+        g.mon.off_windows = keep.off_windows;
+    }
+    long gap;
+    const int r = pcm_rate_feed(&g.mon, n, now, &gap);
+    if (r & PCM_RATE_STALL)
+        LOG_RARE(g.mon_stalls_said, "PCM waited %ld ms (codec %d): the sound service fell behind, "
+                 "not the radio", gap, g.mon_codec);
+    if ((r & PCM_RATE_OFF) && g.enc)
+        LOG_RARE(g.mon_off_said, "AAC: PCM arrives at %ld Hz but the encoder runs at %d Hz: "
+                 "this plays at the wrong speed", g.mon.last_hz, g.mon.expect_hz);
+    else if (r & PCM_RATE_OFF)
+        LOG_RARE(g.mon_off_said, "PCM arrives at %ld Hz, %d expected (codec %d)", g.mon.last_hz,
+                 g.mon.expect_hz, g.mon_codec);
 }
 
 /* ---- libBtMw's "SBC" calls, answered with AAC ---------------------------------------------- */
@@ -385,11 +427,19 @@ EXPORT int btmtk_a2dp_stream_data_encoder_init(int codec, int a, int b, int c, i
         status(g.enc ? s : "AAC failed\n");
     }
     int ours = want && g.enc;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    pcm_rate_start(&g.mon, ours ? g.cfg_rate : rate, 4, ms_of(&now));
+    g.mon_on = 1;
+    g.mon_codec = ours ? CODEC_AAC : codec;
+    g.mon_stalls_said = g.mon_off_said = 0;
     pthread_mutex_unlock(&g.lock);
     if (ours) return 0;
-    if (g_xq && codec == CODEC_SBC)
-        logf_("SBC encoder start: args %d %d %d %d, rate %d, mode %d, mtu %d", a, b, c, d, rate,
-              mode, mtu);
+    /* Every codec, not only SBC XQ: which encoder ran, at which rate, is the first question a
+     * speed report raises (#44). */
+    logf_("%s encoder start: codec %d, args %d %d %d %d, rate %d, mode %d, mtu %d",
+          codec == CODEC_SBC ? (g_xq ? "SBC XQ" : "SBC") : "Sony", codec, a, b, c, d, rate, mode,
+          mtu);
     return real.enc_init ? real.enc_init(codec, a, b, c, d, rate, mode, mtu) : -1;
 }
 
@@ -397,6 +447,14 @@ EXPORT void btmtk_a2dp_stream_data_encoder_deinit(int x)
 {
     init();
     pthread_mutex_lock(&g.lock);
+    if (g.mon_on) {
+        g.mon_on = 0;
+        logf_("stream stop: codec %d, %lld s, PCM at %ld Hz (%d expected), worst wait %ld ms, "
+              "%lu stalls over %d ms, %lu of its 10 s windows more than 1%% off",
+              g.mon_codec, (g.mon.last_ms - g.mon.t0_ms) / 1000, pcm_rate_avg(&g.mon),
+              g.mon.expect_hz, g.mon.worst_gap_ms, g.mon.stalls, PCM_RATE_STALL_MS,
+              g.mon.off_windows);
+    }
     int ours = g.enc != NULL;
     if (ours) {
         logf_("encoder stop: %lu frames, %lu too big, %lu failed, %lu waits, %lu catch-up bursts "
@@ -460,6 +518,7 @@ EXPORT void btmtk_a2dp_send_audio_stream_data(void* data, unsigned len)
 {
     init();
     pthread_mutex_lock(&g.lock);
+    watch_pcm(len & 0xffff);
     if (!g.enc) {
         pthread_mutex_unlock(&g.lock);
         if (real.send_pcm) real.send_pcm(data, len);

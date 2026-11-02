@@ -53,6 +53,7 @@
 #include "filter_chain.h"
 #include "mono_sum.h"
 #include "soundscape.h"
+#include "../../cinder-aac/src/pcm_rate.h"
 
 /* The test (tools/test_mono_shim.sh) points these somewhere private; the device build never does. */
 #ifndef CINDER_MONO_DIR
@@ -652,6 +653,10 @@ static void bt_mix_frames(void* ctx, uint8_t* p, size_t n, uint32_t rate)
  * doing in that second. A gap of two seconds or more is a pause or a new stream, not a late write.
  * Two clock reads per write and no file access unless something was late. */
 static struct { long long prev_ms; long long late; long long since_said; int have; } g_btt;
+/* And the rate it is sent at, against the rate the stream declared (#44). The same measure runs in
+ * the Bluetooth service (cinder-aac), so a wrong rate can be placed on one side or the other. */
+static pcm_rate g_btr;
+static long long g_btr_said = 0;
 static int g_btt_lines = 0;
 static long long ts_ms(const struct timespec* t) { return (long long)t->tv_sec * 1000 + t->tv_nsec / 1000000L; }
 static void bt_timing(size_t n, uint32_t rate, uint32_t ch, const struct timespec* t0, const struct timespec* t1)
@@ -663,7 +668,15 @@ static void bt_timing(size_t n, uint32_t rate, uint32_t ch, const struct timespe
     const long chunk = (long)((unsigned long long)(n / (2u * ch)) * 1000u / rate);
     g_btt.prev_ms = a;
     g_btt.have = 1;
-    if (gap < 0 || gap >= 2000) return;
+    if (gap < 0 || gap >= 2000) {
+        pcm_rate_start(&g_btr, (int)rate, (int)(2u * ch), a);
+        pcm_rate_feed(&g_btr, (unsigned)n, a, &(long){0});
+        return;
+    }
+    long w;
+    if ((pcm_rate_feed(&g_btr, (unsigned)n, a, &w) & PCM_RATE_OFF) && g_btr_said++ < 20)
+        mlog("bt: PCM sent at %ld Hz for 10 s, the stream declared %u Hz", g_btr.last_hz,
+             (unsigned)rate);
     if (gap <= chunk + 40 && took <= 40) return;
     g_btt.late++;
     g_btt.since_said++;

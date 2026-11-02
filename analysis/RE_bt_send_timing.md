@@ -61,6 +61,36 @@ reporter hears is not produced by Cinder's suspend path on stock firmware.
 - **The HCI trace fills `/tmp` (32 MB) in about four minutes on LDAC.** A full `/tmp` empties
   `/tmp/cinder_aac_status`, and the screen then names an AAC link "SBC XQ".
 
+## What Cinder's code can and cannot do to the speed (read 2026-11-02)
+
+- **The mono shim never changes how much it sends.** `bt_send` (`cinder-mono.c`) sends exactly
+  the bytes it was given, summed in place when mono is on, and returns what the real send
+  returned; with mono and ambient off it passes the buffer untouched. The #43 fault (a versioned
+  libasound symbol resolved to the old version) was on the jack's ALSA path; Bluetooth does not
+  go through ALSA.
+- **LDAC, SBC and SBC XQ are Sony's encoders and Sony's pacing.** Cinder only changes what the
+  SBC endpoint offers (Dual Channel, bitpool up to 47). Over every SBC capture the bitpool and the
+  frames per packet never changed (XM4 47 and 3, CMF Buds Pro 2 39 and 2).
+- **The LDAC quality setting cannot reach an SBC link.** `BtMwAvSrcRequestSetLdacQuality`
+  (libBtMw) stores the value and applies it only when `btmwAvSrcCodecTypeIsLdac()`. So #44's
+  "Best effort is worse" on an SBC XQ link is not this setting.
+- **An SBC bitpool change restarts the encoder mid-stream** (`BtMwAvSrcRequestSetSbcBitpool`:
+  deinit, `NotifyPcmPreferredSize`, init). Only `BtTransmitterService::SetSbcSoundQuality` calls
+  it, and Cinder never does, so an SBC link keeps whatever Sony's own settings last chose.
+- **No HCI command is sent while audio streams** in any capture: no sniff mode, no role switch.
+- **AAC is the one codec Cinder encodes and paces.** Its encoder runs at the link's rate and did
+  not check the PCM against it; a 44.1 kHz stream into a 48 kHz encoder would play 9 % fast.
+  Sony reconfigures the link per track (48 → 44.1 kHz seen at play), so it has not been seen.
+
+Logging added for the next reports: the Bluetooth service now times every codec's PCM against
+its rate (`cinder-aac/src/pcm_rate.h`), logs a stall over 150 ms, a 10 s window more than 1 % off,
+and one line per stream (`stream stop: …`); the AAC case says "this plays at the wrong speed".
+The mono shim does the same on the sending side ("bt: PCM sent at … Hz").
+
+Open: whether mtkbt's SBC timestamps count bytes in Joint Stereo too (only Dual Channel, i.e.
+SBC XQ, was captured). If they are bytes only in Dual Channel, earphones that recover the clock
+from RTP would misjudge it on SBC XQ alone. Needs one boot with `/data/cinder/bt_sbc_xq` removed.
+
 ## What this leaves for #44
 
 The reporter's player differs from this one in three ways: Walkman One's replacement sound

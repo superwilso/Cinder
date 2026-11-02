@@ -16,6 +16,21 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Bluetooth logs say when audio arrives at the wrong rate or stalls (#44).** The Bluetooth
+  service times every codec's audio against its rate: a wait over 150 ms, or 10 s more than 1 %
+  off, is logged, with one summary line per stream. For AAC it says outright when the audio and
+  the encoder disagree, which would play at the wrong speed. The sound service checks the same
+  from its side. *Host-tested; device-unverified.*
+
+### Fixed
+
+- **Sound quality says when AAC is still in use after you chose another codec.** AAC holds a slot
+  the radio fills when Bluetooth starts, so choosing SBC XQ or LDAC did not stop it on the next
+  Connect from the player; only a Bluetooth restart does. The page's note now says "AAC stays until
+  you turn Bluetooth off and on" while that is the case. *Host-tested.*
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed
