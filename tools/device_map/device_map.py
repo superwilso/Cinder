@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
-"""device_map.py — take a read-only map of a connected NW-A50-series player over adb.
+"""device_map.py — take a read-only map of a connected Sony Walkman over adb.
 
+    python3 tools/device_map/device_map.py                 # -> ./device-map-<model>-<firmware>
     python3 tools/device_map/device_map.py --out ../cinder-sony-analysis/device/nw-a55/<label>
+
+Made on an NW-A55; meant for any player of the same platform (NW-A40/A30, ZX300, WM1A/Z) whose
+firmware has adb — Walkman One starts it at boot. Mapping a model Cinder does not run on yet is how
+it gets there: `player-map/` (below) is what Cinder's off-device harness boots on, and it lists
+every path Cinder expects that the player does not have.
 
 What it collects (collect.sh, run on the player) is the part of the device no firmware image can
 show: the processes that actually run and which Sony libraries each one hosts, the unix sockets
 between them, the kernel's view (config, partitions, interrupts, I2C chips, modules), sysfs, the
 ALSA mixer, the input devices, and the ramdisk as booted. Nothing on the player is changed; the
-collector writes only its own tarball under /tmp and this script deletes it again.
+collector writes only its own tarball under /tmp and this script deletes it again. `player-map/fs/`
+holds the value of every sysfs and procfs file Cinder's source reads, at its device path
+(tools/map_player.sh --public): `CINDER_HARNESS_MAP=<out>/player-map cinder-home/harness/run.sh
+real-player` boots Cinder's shell on it.
 
 The output is meant to be PUBLISHED, so before anything is written:
   * identifiers are scrubbed — the serial number, every MAC address (including the Bluetooth
@@ -195,13 +204,22 @@ def summary(root, label):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", required=True, help="output directory (created; must be empty or absent)")
-    ap.add_argument("--label", default="NW-A55", help="name used in SUMMARY.md")
+    ap.add_argument("--out", help="output directory (created; must be empty or absent); "
+                    "default ./device-map-<model>-<firmware>")
+    ap.add_argument("--label", help="name used in SUMMARY.md; default the player's own model")
     a = ap.parse_args()
+    if adb("get-state").strip() != "device":
+        raise SystemExit("no player on adb: connect it, and check `adb devices` lists it")
+    # The player says what it is; the label and the default folder follow from that.
+    model = adb("shell", "getprop ro.model.number").strip() or "unknown"
+    # Walkman One's mod tree, as cinder-ffi and the installer test it (not boot_complete.sh: stock
+    # ships one too).
+    w1 = "yes" in adb("shell", "[ -d /system/etc/.mod ] && echo yes")
+    base = "walkmanone" if w1 else "stock"
+    a.label = a.label or f"{model} ({'Walkman One' if w1 else 'Sony stock'})"
+    a.out = a.out or f"device-map-{re.sub(r'[^a-z0-9]+', '-', model.lower()).strip('-')}-{base}"
     if os.path.exists(a.out) and os.listdir(a.out):
         raise SystemExit(f"{a.out} is not empty")
-    if adb("get-state").strip() != "device":
-        raise SystemExit("no device")
 
     sec = secrets()
     adb("push", os.path.join(HERE, "collect.sh"), "/tmp/cinder_map_collect.sh")
@@ -219,6 +237,10 @@ def main():
     with tarfile.open(fileobj=io.BytesIO(blob)) as tf:
         tf.extractall(staging, filter="data")
     src = os.path.join(staging, "cinder_map")
+    # The values tree, inside `src` so the scrub and the leak check below cover it too.
+    print("reading the values Cinder uses (about ten minutes: one small read per file) …", flush=True)
+    subprocess.run(["bash", os.path.join(HERE, "..", "map_player.sh"), "--public",
+                    os.path.join(src, "player-map")], check=True)
     cfg = os.path.join(src, "kernel", "config.gz")
     if os.path.exists(cfg):
         with gzip.open(cfg) as g, open(os.path.join(src, "kernel", "config.txt"), "wb") as o:

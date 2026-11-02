@@ -2,10 +2,13 @@
 # map_player.sh — copy what the player's code reads (sysfs, procfs, properties, the installed
 # files) into a directory tree on this machine, for offline RE and for the virtual player.
 #
-#   tools/map_player.sh OUT_DIR        needs adb (the dev channel) and a player on the cable
+#   tools/map_player.sh OUT_DIR           needs adb (the dev channel) and a player on the cable
+#   tools/map_player.sh --public OUT_DIR  the device values only: no library, no Cinder files, no
+#                                         listings — what tools/device_map/device_map.py publishes
+#                                         (it runs this, then scrubs and leak-checks the result)
 #
 # READ-ONLY, and it reads nothing that has ever done harm. Nothing on the player is changed: the script and
-# its path list sit in /data/local/tmp while it runs, and every value comes back over adb, base64. Skipped, whatever the source asks for:
+# its path list sit in /tmp (RAM) while it runs, and every value comes back over adb, base64. Skipped, whatever the source asks for:
 #   /proc/regmon/*                 a read is a write: you set `target` first
 #   /proc/icx_audio_*              a PARTIAL read wedges the codec until a restart
 #   /sys/power/wait_for_fb_*       blocks, and is half of the app's suspend handshake
@@ -21,11 +24,13 @@
 #   run/                  the virtual player's working copy (cargo run -p cinder-sim --bin player)
 set -euo pipefail
 
-out="${1:?usage: tools/map_player.sh OUT_DIR}"
+public=0
+[ "${1:-}" = --public ] && { public=1; shift; }
+out="${1:?usage: tools/map_player.sh [--public] OUT_DIR}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 command -v adb >/dev/null || { echo "map_player: adb not found" >&2; exit 1; }
 [ "$(adb get-state 2>/dev/null)" = device ] || { echo "map_player: no player on adb" >&2; exit 1; }
-mkdir -p "$out/fs" "$out/cmd"
+mkdir -p "$out/fs"; [ "$public" = 1 ] || mkdir -p "$out/cmd"
 
 # The paths the code names, from the source, %d/%s turned into globs.
 mapfile -t named < <(grep -rhoE '"/(sys|proc)/[A-Za-z0-9_./%@:+-]+' \
@@ -53,7 +58,7 @@ bad() {
         /proc/icx_audio*) echo "a partial read wedges the codec";;
         /sys/power/wait_for_fb*) echo "blocks; the app'"'"'s suspend handshake";;
         */duty|/dev/*|/sys/kernel/debug*) echo "not data, or harmful";;
-        /proc/self*|/proc/\**) echo "per-process";;
+        /proc/self*|/proc/\**|/proc/[0-9]*) echo "per-process";;
         *) return 1;;
     esac
 }
@@ -70,14 +75,14 @@ while read -r p; do
                if [ -d "$f" ]; then for g in "$f"/*; do one "$g"; done; else one "$f"; fi
            done;;
     esac
-done < /data/local/tmp/cinder_map.paths
+done < /tmp/cinder_map.paths
 '
-# The script and its list go to /data/local/tmp (the installer's scratch area) and are removed at
+# The script and its list go to /tmp (RAM, and on every model; the A55's /data/local/tmp may not be) and are removed at
 # the end: this adbd has no exec-out stdin, and a command line this long is refused.
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 printf '%s\n' "$device_script" > "$tmp/cinder_map.sh"
 printf '%s\n' "${named[@]}" "${dirs[@]}" "${procs[@]}" > "$tmp/cinder_map.paths"
-adb push "$tmp/cinder_map.sh" "$tmp/cinder_map.paths" /data/local/tmp/ >/dev/null
+adb push "$tmp/cinder_map.sh" "$tmp/cinder_map.paths" /tmp/ >/dev/null
 echo "map_player: reading $(( ${#named[@]} + ${#dirs[@]} + ${#procs[@]} )) paths…"
 n=0; s=0
 : > "$out/skipped.txt"
@@ -87,8 +92,10 @@ while IFS=$'\t' read -r a b c; do
     mkdir -p "$out/fs$(dirname "$a")"
     printf '%s' "$b" | base64 -d > "$out/fs$a" 2>/dev/null || true
     n=$((n + 1))
-done < <(adb shell sh /data/local/tmp/cinder_map.sh </dev/null | tr -d '\r')
-adb shell rm /data/local/tmp/cinder_map.sh /data/local/tmp/cinder_map.paths </dev/null >/dev/null 2>&1 || true
+done < <(adb shell sh /tmp/cinder_map.sh </dev/null | tr -d '\r')
+adb shell rm /tmp/cinder_map.sh /tmp/cinder_map.paths </dev/null >/dev/null 2>&1 || true
+
+[ "$public" = 1 ] && { echo "map_player: $n files, $s skipped -> $out (public: values only)"; exit 0; }
 
 # Cinder's own state and the library, so the virtual player boots into this player's UI: the
 # settings, the resume queue, the library database (read only; Sony's scanner owns it) and the

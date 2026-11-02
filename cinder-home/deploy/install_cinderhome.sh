@@ -130,47 +130,6 @@ else
 fi
 echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC"
 
-# ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
-# Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
-# W1 3.02, 2026-09-21/22). They behave differently in ways that have each already cost a session,
-# and until now the install log could not tell them apart — a W1 install read exactly like a stock
-# one, so every symptom was diagnosed against the wrong base.
-#
-# Markers, in order of how little they can lie. `/sbin/boot_complete.sh` IS Walkman One: a 1452-line
-# script that re-applies `/system/etc/.mod` on every boot (analysis/RE_walkmanone_extract.md), and
-# `/opt2` is the state it keeps (including the stock NVP and NVRAM backups it restores from).
-FIRMWARE=stock
-if [ -f /sbin/boot_complete.sh ] && [ -d /opt2 ]; then
-    FIRMWARE=walkmanone
-fi
-echo "firmware: $FIRMWARE"
-if [ "$FIRMWARE" = walkmanone ]; then
-    echo "firmware: Walkman One detected (/sbin/boot_complete.sh + /opt2)"
-    # Three things a W1 player's install log should carry, because each one has been mistaken for
-    # a Cinder fault before:
-    #   1. A .UPG for this player must be sealed nw-wm1a, not nw-a50. W1 rewrites the model
-    #      identity, so `nvpstr kas` answers with the NW-WM1A key and Sony's updater drops an
-    #      nw-a50 package SILENTLY (`nvp zr 26 4` = EUPG). tools/pack_upg.sh dev nw-wm1a builds it.
-    #      This direct install is unaffected — it never goes through the updater.
-    echo "firmware: packages for this player must be sealed nw-wm1a (pack_upg.sh <channel> nw-wm1a)"
-    #   2. adb does not survive a W1 boot unless W1 is told to keep it, and without adb the next
-    #      failure is undiagnosable. The key is read outside W1's TMD5 guard, so it works even in
-    #      the "no tuning applied" state.
-    if [ -f /contents/CFW/settings.txt ] \
-       && "$BB" grep -q '^ADB=1' /contents/CFW/settings.txt 2>/dev/null; then
-        echo "firmware: ADB=1 is set in /contents/CFW/settings.txt — adb survives reboots"
-    else
-        echo "firmware: NOTE add a line ADB=1 to /contents/CFW/settings.txt to keep adb across boots"
-    fi
-    #   3. W1 ships a MOCK libTunerPlayerService.so (79,916 B vs stock's 96,308 B) because the
-    #      WM1Z identity it adopts has no tuner. The chip is still physically there and answering,
-    #      and Cinder drives it through /proc/regmon/Si4708icx rather than that library — measured
-    #      2026-09-22: tune, a graded RSSI meter and hardware seek all work, stereo lock at 100.0
-    #      MHz. So FM is supported here; it is Sony's own FM UI that is missing, not the hardware.
-    if [ "$WANT_FM" = 1 ]; then
-        echo "firmware: FM on Walkman One uses Cinder's own register path (W1's tuner service is a stub)"
-    fi
-fi
 
 # ── what was ALREADY mounted before we touched anything ──────────────────────────────────────
 # This script is written for the updater, where /system and /data are ours to mount and ours to
@@ -232,6 +191,51 @@ cleanup_mounts() {
 
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
+
+# ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
+# Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
+# W1 3.02, 2026-09-21/22). They behave differently in ways that have each already cost a session,
+# and until now the install log could not tell them apart — a W1 install read exactly like a stock
+# one, so every symptom was diagnosed against the wrong base.
+#
+# The marker is `/system/etc/.mod`, the tree Walkman One's boot script re-applies on every boot
+# (analysis/RE_walkmanone_extract.md). It is NOT `/sbin/boot_complete.sh` + `/opt2`, which this
+# used until 2026-11-02: Sony's own 1.02 ramdisk ships a 111-byte boot_complete.sh (`sleep 45`,
+# then `setprop boot.complete 1`; Walkman One's is 43,869 bytes) and /opt2 is a stock partition,
+# so every stock player read as Walkman One. And in the updater /sbin is the updater's ramdisk, not
+# the player's: this runs here, after /system is mounted above, so the answer is the player's.
+FIRMWARE=stock
+if [ -d /system/etc/.mod ]; then
+    FIRMWARE=walkmanone
+fi
+echo "firmware: $FIRMWARE"
+if [ "$FIRMWARE" = walkmanone ]; then
+    echo "firmware: Walkman One detected (/system/etc/.mod)"
+    # Three things a W1 player's install log should carry, because each one has been mistaken for
+    # a Cinder fault before:
+    #   1. A .UPG for this player must be sealed nw-wm1a, not nw-a50. W1 rewrites the model
+    #      identity, so `nvpstr kas` answers with the NW-WM1A key and Sony's updater drops an
+    #      nw-a50 package SILENTLY (`nvp zr 26 4` = EUPG). tools/pack_upg.sh dev nw-wm1a builds it.
+    #      This direct install is unaffected — it never goes through the updater.
+    echo "firmware: packages for this player must be sealed nw-wm1a (pack_upg.sh <channel> nw-wm1a)"
+    #   2. adb does not survive a W1 boot unless W1 is told to keep it, and without adb the next
+    #      failure is undiagnosable. The key is read outside W1's TMD5 guard, so it works even in
+    #      the "no tuning applied" state.
+    if [ -f /contents/CFW/settings.txt ] \
+       && "$BB" grep -q '^ADB=1' /contents/CFW/settings.txt 2>/dev/null; then
+        echo "firmware: ADB=1 is set in /contents/CFW/settings.txt — adb survives reboots"
+    else
+        echo "firmware: NOTE add a line ADB=1 to /contents/CFW/settings.txt to keep adb across boots"
+    fi
+    #   3. W1 ships a MOCK libTunerPlayerService.so (79,916 B vs stock's 96,308 B) because the
+    #      WM1Z identity it adopts has no tuner. The chip is still physically there and answering,
+    #      and Cinder drives it through /proc/regmon/Si4708icx rather than that library — measured
+    #      2026-09-22: tune, a graded RSSI meter and hardware seek all work, stereo lock at 100.0
+    #      MHz. So FM is supported here; it is Sony's own FM UI that is missing, not the hardware.
+    if [ "$WANT_FM" = 1 ]; then
+        echo "firmware: FM on Walkman One uses Cinder's own register path (W1's tuner service is a stub)"
+    fi
+fi
 
 # ── the state partition: mounted by US, not by the updater ───────────────────────────────────
 # The NWZ updater boots from a small ramdisk and provides only /contents (exec_file.sh remounts
