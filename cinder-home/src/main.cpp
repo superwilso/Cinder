@@ -9371,14 +9371,17 @@ static void dev_adb_keepalive() {
 // once and grows with traffic, and despite the extension it is a plain btsnoop file (Wireshark
 // opens it as-is). Every "won't connect" report can then arrive with the evidence.
 //
-// /tmp is RAM, so the switch is never persisted (every boot starts with it off), the capture is
-// stopped at HCI_LOG_MAX, and whenever it stops it is copied to the drive root and the RAM copy
-// removed. DEVICE-UNVERIFIED from this app: mtkbt runs as root, and if its umask makes the file
+// /tmp is RAM (32 MB), so the switch is never persisted (every boot starts with it off), and the
+// capture is cut at HCI_LOG_MAX: that part is copied to the drive root, the RAM copy removed, and a
+// new part started, up to HCI_LOG_PARTS, so a fault that comes and goes (#44: a speed change
+// minutes into a listen) can still be caught. 4 MB is about a minute of SBC XQ, 30 s of LDAC. DEVICE-UNVERIFIED from this app: mtkbt runs as root, and if its umask makes the file
 // 0600 this uid cannot read it — the copy then fails, says so in a toast and the log, and the
 // capture is still there for `adb pull`.
 static bool g_hci_log_on = false;
 static bool g_hci_want = false;
 static const long HCI_LOG_MAX = 4L * 1024 * 1024;
+static const int HCI_LOG_PARTS = 15;          // 60 MB on the drive at most
+static int g_hci_parts = 0;
 
 static void hci_log_apply() {
     enum { VIDX_SetHciLogEnabled = 26 };
@@ -9414,8 +9417,8 @@ static std::string hci_log_newest(long* size) {
 }
 
 // Copy the newest capture to the drive root as cinder-bt-log-<stamp>.btsnoop, then remove it from
-// RAM. `why` prefixes the toast ("Log full (4 MB). ").
-static void hci_log_save(const char* why) {
+// RAM. `why` prefixes the toast ("Log full (4 MB). "); `quiet` logs without a toast.
+static void hci_log_save(const char* why, bool quiet = false) {
     char msg[200];
     if (g_msc_active) {
         std::snprintf(msg, sizeof msg, "%sBluetooth log kept in /tmp: the drive is with the PC", why);
@@ -9465,7 +9468,8 @@ static void hci_log_save(const char* why) {
     }
     unlink(src.c_str());   // the RAM copy; harmless if this uid may not
     std::snprintf(msg, sizeof msg, "%sBluetooth log saved: %s", why, dst.c_str() + 10);
-    clog_(msg); cinder_toast(msg);
+    clog_(msg);
+    if (!quiet) cinder_toast(msg);
 }
 
 // CINDER_ACT_BT_DEBUG_LOG. The IPC is guarded; the file copy is plain IO and is not.
@@ -9473,20 +9477,30 @@ void apply_bt_debug_log() {
     g_hci_want = cinder_get_bt_debug_log() != 0;
     run_guarded("carry_out: Bluetooth debug log", 4, hci_log_apply);
     g_hci_log_on = g_hci_want;
+    g_hci_parts = 0;
     clog_(g_hci_want ? "bt-log: HCI capture ON (/tmp/hci_sniffer_log_*.cfa)" : "bt-log: HCI capture OFF");
     if (!g_hci_want) hci_log_save("");
 }
 
-// 1 Hz: stop the capture at its size limit, so a forgotten switch cannot fill RAM.
+// 1 Hz: at the size limit, save the part and start the next, so a forgotten switch cannot fill
+// RAM; after HCI_LOG_PARTS it stops, so it cannot fill the drive either.
 static void hci_log_tick() {
     if (!g_hci_log_on) return;
     long size = 0;
     if (hci_log_newest(&size).empty() || size < HCI_LOG_MAX) return;
     g_hci_want = false;
     run_guarded("pump: Bluetooth debug log limit", 4, hci_log_apply);
+    if (++g_hci_parts < HCI_LOG_PARTS) {
+        hci_log_save("", true);
+        g_hci_want = true;   // mtkbt opens a new file, named by the time
+        run_guarded("pump: Bluetooth debug log, next part", 4, hci_log_apply);
+        return;
+    }
     g_hci_log_on = false;
     cinder_bt_debug_log_stopped();
-    hci_log_save("Log full (4 MB). ");
+    char why[64];
+    std::snprintf(why, sizeof why, "Log full (%d parts of 4 MB). ", HCI_LOG_PARTS);
+    hci_log_save(why);
 }
 static bool g_msc_seen_usb = false; // saw the cable while in MSC → unplug ends the session
 // UNPLUG IS DEBOUNCED TOO, and for the same reason the release below is.

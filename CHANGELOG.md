@@ -40,9 +40,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   trace over adb, with nothing installed. `analysis/tools/a2dp_timing.py` reads a trace and says
   whether audio left the player evenly, with stalls, bursts and a backed-up radio called out.
   Measurements for #44 in `analysis/RE_bt_send_timing.md`.
+- **Bluetooth ▸ Debug log keeps recording past 4 MB.** It used to stop at 4 MB, about a minute of
+  SBC XQ, which is too short to catch a problem that comes and goes. Each 4 MB part is now saved
+  to the drive as it fills and the next one starts, up to 15 parts (60 MB). *Harness-built;
+  device-unverified.*
 
 ### Fixed
 
+- **"Shuffle a playlist" did nothing when your playlists are Cinder's own.** The band on the
+  Playlists tab picked only from Sony's database, which holds no playlists on a player where
+  they were all made in Cinder or synced as `.m3u8` files. It now picks from the playlists the tab
+  lists, and skips one the filter leaves empty instead of doing nothing. *Host-tested.*
 - **`cinder-home/tools/screenshot.sh` left Cinder saving a screenshot every second.** Its trigger
   file was made by adb's root shell in the sticky `/tmp`, which Cinder cannot delete, so every
   frame after the first saw it again. The script now removes it itself.

@@ -3956,6 +3956,31 @@ fn shuffle_tracks(
     }
 }
 
+/// "RANDOM PLAYLIST · SHUFFLED", the Playlists tab's band: one of the playlists that tab LISTS —
+/// Cinder's own `.m3u8` ones as well as Sony's — shuffled. `shuffle_tracks`' Playlist arm sees
+/// Sony's database alone, and on a player whose playlists are all Cinder's that holds none, so the
+/// band did nothing (owner, 2026-11-02, 10 playlists of their own). Playlists are tried in random
+/// order and the first with a track left under the filter wins, so one the filter empties is
+/// skipped rather than ending the press.
+fn shuffle_a_playlist(
+    r: &Render,
+    keep: &dyn Fn(&cinder_db::Track) -> bool,
+) -> Option<(Vec<cinder_db::Track>, Vec<i64>)> {
+    let mut rng = Rng::new();
+    let mut ids: Vec<i64> = r.app.library().playlists.iter().map(|p| p.id).collect();
+    rng.shuffle(&mut ids);
+    let mut v = ids.into_iter().find_map(|id| {
+        let v: Vec<cinder_db::Track> = any_playlist_tracks(r, id)?
+            .into_iter()
+            .filter(|t| keep(t))
+            .collect();
+        (!v.is_empty()).then_some(v)
+    })?;
+    let pre = v.iter().map(|t| t.object_id).collect();
+    rng.shuffle(&mut v);
+    Some((v, pre))
+}
+
 /// Member file URIs of a playlist, in the user's saved order. `None` when there's no DB, the id
 /// isn't a live playlist, or nothing in it still resolves to a playable track — the caller then
 /// emits no action rather than handing the shell an empty sequence.
@@ -5138,7 +5163,12 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 }
             };
             let books_on = !r.app.library().books.is_empty();
-            match shuffle_tracks(r.db.as_ref(), *scope, &keep, books_on) {
+            let picked = if matches!(scope, cinder_ui::nav::ShuffleScope::Playlist) {
+                shuffle_a_playlist(r, &keep)
+            } else {
+                shuffle_tracks(r.db.as_ref(), *scope, &keep, books_on)
+            };
+            match picked {
                 Some((seq, pre)) => {
                     // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
                     // the shuffle band on Albums / All Songs started a shuffled sequence but left
@@ -11674,6 +11704,42 @@ mod tests {
         assert_eq!(lib.playlists[0].name, "Night Bus");
         assert_eq!(lib.playlists[0].id, 60);
         assert_eq!(lib.playlists[0].tracks, 2);
+    }
+
+    /// "Shuffle a playlist" plays one of the playlists the tab lists, Cinder's own included, and
+    /// skips one the filter empties. It did nothing on a player whose playlists were all Cinder's,
+    /// because it only looked in Sony's database (2026-11-02).
+    #[test]
+    fn shuffle_a_playlist_picks_from_cinders_own_playlists_too() {
+        let mut r = zappin_render();
+        r.db = Some(fixture_db());
+        r.plists = playlists::Store {
+            lists: vec![playlists::Playlist {
+                id: -1,
+                name: "Mine".into(),
+                entries: vec![playlists::Entry {
+                    uri: "/music/box.flac".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // Sony's database lists none, as on the owner's player.
+        refresh_playlists(&mut r);
+        let (seq, pre) = shuffle_a_playlist(&r, &keep_all).expect("Cinder's playlist");
+        assert_eq!(uris_of(seq), vec!["/music/box.flac".to_string()]);
+        assert_eq!(pre.len(), 1);
+
+        // With Sony's "Night Bus" listed too and a filter that empties it, every press still plays.
+        r.db_playlists = build_library(r.db.as_ref().unwrap()).playlists;
+        refresh_playlists(&mut r);
+        assert_eq!(r.app.library().playlists.len(), 2);
+        let only_box = |t: &cinder_db::Track| t.filename == "/music/box.flac";
+        for _ in 0..16 {
+            let (seq, _) = shuffle_a_playlist(&r, &only_box).expect("never nothing");
+            assert_eq!(uris_of(seq), vec!["/music/box.flac".to_string()]);
+        }
     }
 
     /// File URIs of a resolved sequence — what the shell actually hands PlayerService.
