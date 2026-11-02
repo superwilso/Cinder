@@ -2,8 +2,8 @@
 # Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
-tag v0.3.22-rc9
-896442a19203b51aee1cbaeb41de357e3db4328b9edffeab6148c5706420b214  cinder-home/dist/stable/cinder-home
+tag v0.3.22-rc10
+9548ed767f11a64c6e78669820e405cd8dffb595efbddda52219dd4bad87f019  cinder-home/dist/stable/cinder-home
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
 f3fe97b5deacf21e6bc2079df75367468e6b4711f5aa45aae87b706f56ef6903  cinder-home/dist/stable/cinder-power
 120f964f84440c694afb96c848476ec22de808419f29e213ab081a385615ca43  cinder-home/dist/stable/cinder-msc
@@ -13,11 +13,11 @@ d2eeb22e165bd9dcf01b9862af6e17dbdd157817cbfac54fd14adf77516193fd  cinder-home/di
 f7682696f4f1c200c5ceb9ae04b82aac7ca5a7515ba3ff76db8f92cf61624898  cinder-home/dist/stable/cinder-battery
 8e88f2ad3304175dae9b7ac79c04afbb68c8b3b4399f1117ef4f53327ebe4272  cinder-home/dist/stable/cinder-signature.sh
 a01c243ee55fe108bcb52876b6dba5fb267d33e612b2ef66267b893282bb3d82  cinder-home/dist/stable/cinder-chain.sh
-14653047f241d8e1d06674113107bb4ebea9e8b69334f414a97773a5b05b3dc6  cinder-home/dist/stable/libcinder_mono.so
+f71bac6f439cfa2d23f3fabcecd937afad23465450e5b96137ff6f2efdfe9a4b  cinder-home/dist/stable/libcinder_mono.so
 baf48ebb69748d8240db7caa7d05ab5e6894898b54fd7f44711f8028438ef85a  cinder-home/dist/stable/cinder-hagowrap
 b611167da5eb741790f91b796514ce491e91bb163bf1762e72d7e4cf7a730210  cinder-home/dist/stable/cinder-guard.sh
 4c33563bd44109c5fa070084a8408521698495aad1d21843afa8641617e414af  cinder-home/dist/stable/cinder-preload.sh
-d2a04d621c703afb61032b79976c3748a4351dd7db5c32b01930d9de79c49901  cinder-home/dist/stable/libcinder_aac.so
+bfecbc27cec44f8e1789724fab6eb66b8ba671123459dddc2f4425faf3ad660b  cinder-home/dist/stable/libcinder_aac.so
 d41899380b7074e3f58c16868dbbd52ffb6c66ea759ba06b74a53ce16641c957  cinder-home/dist/stable/libfdk-aac-enc.so
 7b454471067f2eb93e5c5e76bf250b7bf7a7a4bdd8f5d231c17179a70275647e  cinder-home/dist/stable/libcinder_atrac.so
 d98635e0dc3f61c2cc610d14faedd6f8f53416045d2f7494643bda2ce70fe4f0  cinder-home/dist/stable/libcinder_fmrec.so
