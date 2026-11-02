@@ -76,6 +76,10 @@ int       cinder_harness_before(const char* a, const char* b);
 // Was the last call to `a` before the last call to `b`, by trace order (same-ms safe)?
 int       cinder_harness_last_before(const char* a, const char* b);
 void      cinder_harness_dump(int max_lines);          // the trace, for eyeballing a new scenario
+// Every distinct traced name that starts with `prefix`, with how many times it was called, in the
+// order first seen. Returns how many there were. (Copied out first: `fn` may call back in.)
+int       cinder_harness_each_name(const char* prefix, void (*fn)(const char* name, int count, void* ctx),
+                                   void* ctx);
 
 // The calling thread becomes PASSIVE: it waits for virtual time to arrive and contributes nothing
 // to when the clock jumps. The harness's own main thread calls this before waiting out the run
