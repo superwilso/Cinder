@@ -5749,7 +5749,7 @@ impl App {
                     x,
                     y + self.bt_codec_scroll(),
                     self.bt_on,
-                    self.bt_codec == crate::bluetooth::LDAC,
+                    crate::bluetooth::shows_ldac(self.bt_codec),
                     self.bt_aac,
                 ) {
                     BtHit::Codec(i) => {
@@ -7400,7 +7400,7 @@ impl App {
             }
             Screen::BtCodec => {
                 let max =
-                    crate::bluetooth::codec_max_scroll(self.bt_codec == crate::bluetooth::LDAC);
+                    crate::bluetooth::codec_max_scroll(crate::bluetooth::shows_ldac(self.bt_codec));
                 self.bt_codec_scroll_px = (self.bt_codec_scroll() + dy_px).clamp(0, max);
             }
             Screen::PlaylistPick => {
@@ -7507,7 +7507,7 @@ impl App {
     fn bt_codec_scroll(&self) -> i32 {
         self.bt_codec_scroll_px
             .min(crate::bluetooth::codec_max_scroll(
-                self.bt_codec == crate::bluetooth::LDAC,
+                crate::bluetooth::shows_ldac(self.bt_codec),
             ))
             .max(0)
     }

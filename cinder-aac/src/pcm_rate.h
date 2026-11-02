@@ -47,9 +47,9 @@ static inline int pcm_rate_feed(pcm_rate* m, unsigned n, long long now_ms, long*
     *gap_ms = gap;
     m->last_ms = now_ms;
     m->bytes += n;
-    if (m->bytes > n && gap > PCM_RATE_STALL_MS) {   /* not the first call */
+    if (m->bytes > n && gap > m->worst_gap_ms) m->worst_gap_ms = gap;   /* not the first call */
+    if (m->bytes > n && gap > PCM_RATE_STALL_MS) {
         m->stalls++;
-        if (gap > m->worst_gap_ms) m->worst_gap_ms = gap;
         r |= PCM_RATE_STALL;
         /* The window would average the stall with its catch-up; start a fresh one after it. */
         m->win_ms = now_ms;

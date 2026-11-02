@@ -11,15 +11,20 @@ use crate::widgets::{center, fill_rect, stroke_rect, sty};
 use crate::Canvas;
 
 /// Transmit codecs. Index = the persisted `bt_codec` value, and the Sony switch it turns on:
-/// 0 SetLdac, 1 SetAptxHD, 2 SetAptxClassic, 3 none of them, 4 SetAptxHD again (see [`AAC`]).
-/// [`chips`] is which of them this boot offers, in display order.
-pub const CODECS: [(&str, &str); 5] = [
+/// 0 SetLdac, 1 SetAptxHD, 2 SetAptxClassic, 3 none of them, 4 SetAptxHD again (see [`AAC`]),
+/// 5 all of them ([`BEST`]). [`chips`] is which of them this boot offers, in display order.
+pub const CODECS: [(&str, &str); 6] = [
     ("LDAC", "Up to 990 kbps · Hi-Res"),
     ("aptX HD", "576 kbps · 24-bit"),
     ("aptX", "352 kbps · low latency"),
     ("SBC", "Universal · always works"),
     ("AAC", "Up to 320 kbps · AirPods, iPhone"),
+    ("Best", "The best these headphones have"),
 ];
+/// Every codec the player can send is offered and the link takes the best the headphones share —
+/// LDAC first where they have it. The shared slot holds AAC (more headphones have it than aptX HD).
+/// Owner request, 2026-11-02.
+pub const BEST: u8 = 5;
 /// AAC, from the `bt-aac` component (cinder-aac). The stack offers headphones four codecs, so AAC
 /// and aptX HD take turns in one slot: whichever of the two is chosen fills it when Bluetooth
 /// starts (the shell restarts Bluetooth to swap them), and Sony's aptX HD switch drives either.
@@ -34,9 +39,9 @@ const CHIP_PITCH: i32 = crate::kit::CHIP_H + 8;
 /// `bt-aac` library (`/tmp/cinder_aac_codecs`, read by the shell).
 pub fn chips(aac: bool) -> &'static [u8] {
     if aac {
-        &[0, 1, 2, AAC, SBC]
+        &[BEST, 0, 1, 2, AAC, SBC]
     } else {
-        &[0, 1, 2, SBC]
+        &[BEST, 0, 1, 2, SBC]
     }
 }
 
@@ -44,8 +49,14 @@ pub fn chips(aac: bool) -> &'static [u8] {
 pub fn codec_name(id: u8, xq: bool) -> &'static str {
     match id {
         SBC if xq => "SBC XQ",
+        BEST => crate::i18n::text("Best"),
         _ => CODECS[(id as usize).min(CODECS.len() - 1)].0,
     }
+}
+
+/// LDAC's quality rows apply: LDAC is the choice, or may be what Best picks.
+pub fn shows_ldac(codec_sel: u8) -> bool {
+    codec_sel == LDAC || codec_sel == BEST
 }
 
 /// The codec A2DP actually NEGOTIATED on the live link, as reported by
@@ -433,10 +444,12 @@ fn codec_strip(bt: &Bt) -> String {
             let live = link_codec_label(raw, bt.xq);
             // Not every enumerator is known (see `link_codec_name`), so a raw byte proves a
             // fallback only from LDAC, or when it names a codec that is not the one asked for.
-            let fell_back = match link_codec_name(raw, bt.xq) {
-                Some(n) => n != want,
-                None => bt.codec_sel == LDAC,
-            };
+            // Best asks for nothing in particular, so whatever the link took is what it asked for.
+            let fell_back = bt.codec_sel != BEST
+                && match link_codec_name(raw, bt.xq) {
+                    Some(n) => n != want,
+                    None => bt.codec_sel == LDAC,
+                };
             if fell_back {
                 format!(
                     "{name} \u{b7} {live} \u{b7} ASKED FOR {}",
@@ -675,6 +688,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     let detail = match live {
         // What the link NEGOTIATED, when that differs from the request — the radio falls back
         // silently and this row is now the only place that discrepancy is visible from.
+        Some(l) if bt.codec_sel == BEST => format!("{want} \u{b7} {l} in use"),
         Some(l) if !l.eq_ignore_ascii_case(want) => format!("{want} requested \u{b7} {l} in use"),
         Some(l) => l,
         None => want.to_string(),
@@ -747,7 +761,7 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt, scroll: i32
     c.fill(t.bg);
     let head_bottom = crate::chrome::header(c, t, f, crate::i18n::text("Sound quality"), None);
     c.set_clip_y(head_bottom, crate::canvas::H as i32);
-    let ldac = bt.codec_sel == LDAC;
+    let ldac = shows_ldac(bt.codec_sel);
     let mut bottom = 0;
     for (p, top, h) in codec_parts(ldac) {
         let top = top - scroll;
@@ -840,15 +854,13 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt, scroll: i32
         t.faint,
         0.04,
     );
-    // AAC holds a slot the radio fills when Bluetooth starts, so choosing another codec does not
-    // stop it until then: a Connect from this player still got AAC (CMF Buds Pro 2, 2026-11-02).
-    // Only earphones that reconnect on their own after a restart pick the new choice up. Said here,
-    // where the chips that did not take effect are.
+    // A codec choice reaches the link at the next connection, so an AAC link stays AAC until the
+    // headphones reconnect. Said here, where the chip that has not taken effect yet is.
     let note = crate::i18n::text(if aac_sticks(bt) {
         if crate::scale::large() {
-            "AAC stays until Bluetooth restarts."
+            "AAC until they reconnect."
         } else {
-            "AAC stays until you turn Bluetooth off and on."
+            "AAC stays until the headphones reconnect."
         }
     } else if crate::scale::large() {
         "Applies to Bluetooth and USB-DAC."
@@ -860,9 +872,13 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt, scroll: i32
     c.clear_clip();
 }
 
-/// The link is AAC although another codec is chosen: the choice waits for a Bluetooth restart.
+/// The link is AAC although another codec is chosen: the choice waits for the next connection.
 fn aac_sticks(bt: &Bt) -> bool {
-    bt.on && bt.connected.is_some() && bt.link_codec == Some(0x03) && bt.codec_sel != AAC
+    bt.on
+        && bt.connected.is_some()
+        && bt.link_codec == Some(0x03)
+        && bt.codec_sel != AAC
+        && bt.codec_sel != BEST
 }
 
 /// The theme a Sound quality control is drawn in: as it is, or — while the radio is off — with its
@@ -916,7 +932,20 @@ mod tests {
         assert!(end <= 730, "Big view's Debug log row ends at {end}");
     }
 
-    /// An AAC link with another codec chosen says the choice waits for a Bluetooth restart.
+    /// Best is offered first, shows LDAC's quality rows, and never calls the live codec a fallback.
+    #[test]
+    fn best_takes_whatever_the_link_agreed() {
+        assert_eq!(chips(true)[0], BEST);
+        assert_eq!(chips(false)[0], BEST);
+        assert!(shows_ldac(BEST) && shows_ldac(LDAC) && !shows_ldac(AAC));
+        let mut b = bt(true, Some("WH-1000XM4"), BEST, Some(0x03));
+        assert!(!aac_sticks(&b), "AAC is one of Best's");
+        assert!(!codec_strip(&b).contains("ASKED FOR"));
+        b.link_codec = Some(0x02);
+        assert_eq!(codec_strip(&b), "WH-1000XM4 \u{b7} LDAC");
+    }
+
+    /// An AAC link with another codec chosen says the choice waits for the next connection.
     #[test]
     fn aac_left_running_says_restart_bluetooth() {
         assert!(aac_sticks(&bt(true, Some("CMF Buds Pro 2"), 3, Some(0x03))));
@@ -965,8 +994,9 @@ mod tests {
                     Part::Ldac(k) => BtHit::Quality(LDAC_ORDER[k]),
                     Part::Enhanced => BtHit::Enhanced,
                     Part::Fine => BtHit::FineVolume,
-                    // x 240, y at the second row's top: its middle cell, empty without AAC.
-                    Part::Codecs => BtHit::None, // each chip is tapped at its centre below
+                    // x 240, y at the second row's top: its middle cell, SBC without AAC
+                    // (Best, LDAC, aptX HD / aptX, SBC). Each chip is tapped at its centre below.
+                    Part::Codecs => BtHit::Codec(SBC as usize),
                     Part::Strip | Part::Label(_) => BtHit::None,
                 };
                 assert_eq!(got, want, "{p:?} (ldac {ldac})");
@@ -1054,14 +1084,17 @@ mod tests {
                 .map(|&i| codec_name(i, xq))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(names(false, false), ["LDAC", "aptX HD", "aptX", "SBC"]);
+        assert_eq!(
+            names(false, false),
+            ["Best", "LDAC", "aptX HD", "aptX", "SBC"]
+        );
         assert_eq!(
             names(true, false),
-            ["LDAC", "aptX HD", "aptX", "AAC", "SBC"]
+            ["Best", "LDAC", "aptX HD", "aptX", "AAC", "SBC"]
         );
         assert_eq!(
             names(true, true),
-            ["LDAC", "aptX HD", "aptX", "AAC", "SBC XQ"]
+            ["Best", "LDAC", "aptX HD", "aptX", "AAC", "SBC XQ"]
         );
         let mut b = bt(true, Some("AirPods"), AAC, Some(0x03));
         b.aac = true;

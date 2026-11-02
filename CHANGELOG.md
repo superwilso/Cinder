@@ -22,14 +22,28 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   service times every codec's audio against its rate: a wait over 150 ms, or 10 s more than 1 %
   off, is logged, with one summary line per stream. For AAC it says outright when the audio and
   the encoder disagree, which would play at the wrong speed. The sound service checks the same
-  from its side. *Host-tested; device-unverified.*
+  from its side. *Verified on the owner's player: one line per stream, rate within 0.1 %.*
+- **Bluetooth ▸ Sound quality ▸ Best.** A new first choice that offers headphones every codec the
+  player can send and lets the link take the best they share: LDAC where they have it, then
+  aptX HD or aptX, then AAC (with the AAC component), then SBC. The page says which one it got
+  ("Best · LDAC in use"), and LDAC's quality rows stay, since LDAC may be what it picks.
+  *Verified on the owner's player: CMF Buds Pro 2 came up LDAC.*
 
 ### Fixed
 
-- **Sound quality says when AAC is still in use after you chose another codec.** AAC holds a slot
-  the radio fills when Bluetooth starts, so choosing SBC XQ or LDAC did not stop it on the next
-  Connect from the player; only a Bluetooth restart does. The page's note now says "AAC stays until
-  you turn Bluetooth off and on" while that is the case. *Host-tested.*
+- **Choosing a codec other than AAC did not switch AAC off.** With the AAC component, AAC stayed
+  on after every boot whatever was chosen, and headphones that have AAC connected with it: the
+  switch was decided by "is Bluetooth a source yet?", and at boot it is neither source nor
+  receiver, so the receiver's setting (AAC on) was sent. Only a sink, or Cinder's receiver mode,
+  now gets the receiver's setting; leaving receiver mode sends the codec choice again. *Verified
+  on the owner's player: SBC XQ chosen → the CMF Buds Pro 2 connect SBC XQ after a boot and after a
+  reconnect; Receiver mode still gets AAC.*
+- **SBC XQ could agree an impossible bitpool range.** It kept Sony's minimum of 35, and in Dual
+  Channel some headphones stop lower: the CMF Buds Pro 2 came up as "bitpool 35..31", which the
+  A2DP rules do not allow and stricter headphones may refuse. The minimum is now 2; the encoder
+  still runs at the top of the range. *Verified on the owner's player: "2..39".*
+- **Sound quality says when the link is still AAC after you chose another codec**: "AAC stays
+  until the headphones reconnect". *Host-tested.*
 
 ## [0.3.22] — 2026-10-28
 
