@@ -10,6 +10,9 @@
 // own state instead of the radio's. A pure-function test cannot see any of that; a 60-second boot
 // trace shows all of it.
 #include "harness.h"
+#ifdef CINDER_HARNESS_REAL_FFI
+#include "cinder.h"   // the real UI's own answers, for the real-* scenarios
+#endif
 #include "../src/zappin_policy.h"
 
 #include <cstdio>
@@ -330,11 +333,12 @@ static void print_absent(const char* name, int count, void* ctx) {
     ++*static_cast<int*>(ctx);
 }
 
-static void s_real_player(void) {
+// healthy_device(), then the map over it. False (and a skip line) when no map was given.
+static bool seed_from_map(void) {
     const char* map = std::getenv("CINDER_HARNESS_MAP");
     if (!map || !*map) {
         std::printf("  skip (set CINDER_HARNESS_MAP to a tools/map_player.sh directory)\n");
-        return;
+        return false;
     }
     healthy_device();
     // The tree's root, from where one probe file lands.
@@ -342,7 +346,7 @@ static void s_real_player(void) {
     char root[1024];
     if (!cinder_harness_fs_resolve("/.map_root", "r", root, (int)sizeof root)) {
         check(false, "found the harness's filesystem tree");
-        return;
+        return false;
     }
     root[std::strlen(root) - std::strlen("/.map_root")] = 0;
     // posix_spawn, not system(): the harness's own system() records the command and runs nothing.
@@ -352,11 +356,23 @@ static void s_real_player(void) {
     int st = -1;
     if (posix_spawnp(&pid, "cp", nullptr, nullptr, argv, environ) == 0) waitpid(pid, &st, 0);
     check(st == 0, "the map copied into this run's tree");
+    // The cover cache makes its own directory, which the tree only redirects for opens.
+    setenv("CINDER_ART_CACHE", (to + "data/cinder/artcache").c_str(), 1);
+    return st == 0;
+}
+
+static void s_real_player(void) {
+    if (!seed_from_map()) return;
     cinder_harness_set_budget_ms(20000);
     cinder_harness_run();
 
     check(cinder_harness_count("easel:OnForeground") == 1, "reached Foreground on the real values");
+#ifdef CINDER_HARNESS_REAL_FFI
+    // The real renderer: count what it presented, not calls to a stub that is not linked.
+    check(cinder_frames_presented() > 100, "the real UI presented frames");
+#else
     check(cinder_harness_count("cinder_render_tick") > 100, "painting frames");
+#endif
     char bc[8] = {0};
     cinder_harness_fs_read("/data/cinder/bootcount", bc, (int)sizeof bc - 1);
     check(bc[0] == '0', "the boot was marked healthy (bootcount 0)");
@@ -364,6 +380,31 @@ static void s_real_player(void) {
     cinder_harness_each_name("fopen(absent):", print_absent, &absent);
     cinder_harness_each_name("open(absent):", print_absent, &absent);
     std::printf("  info %d /sys or /proc path(s) the app opened are not on this player\n", absent);
+}
+
+// ── the first ▶ after a boot plays what was saved, across the shell and the real UI ───────────
+// The 2026-11-01 fault: g_playing started true, so the first press of ▶ on a boot that restored a
+// queue went out as a Pause and only the second one played. Here the real UI restores the map's
+// queue (resume.conf, queue.conf) and the real shell carries the press out, so the whole path —
+// the tap, the UI's pending play, the shell's queue hand-off — is the one the player runs.
+static void s_real_resume_play(void) {
+    if (!seed_from_map()) return;
+    // The map was taken over adb, on the cable: as it stands the shell sees a computer and goes to
+    // USB storage, which is right, and takes the screen. This press is made off the cable.
+    cinder_harness_fs_write("/sys/class/power_supply/usb/online", "0\n");
+    cinder_harness_fs_write("/sys/class/power_supply/usb/present", "0\n");
+    cinder_harness_fs_write("/sys/class/android_usb/android0/state", "DISCONNECTED\n");
+    cinder_harness_input_enable();
+    cinder_harness_tap_at(20000, 240, 692);   // ▶ on Now Playing, where a restored boot starts
+    cinder_harness_set_budget_ms(26000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("cinder_audio_play_tracks") == 1,
+          "one press of ▶ hands the saved queue to the player service");
+    std::printf("         queue handed over: %d tracks from index %d\n",
+                cinder_harness_audio_queue_count(), cinder_harness_audio_queue_start());
+    check(cinder_harness_audio_queue_count() > 0, "the queue is the restored one, not empty");
+    check(cinder_harness_count("cinder_audio_pause") == 0, "the first press is not a Pause");
 }
 
 // ── hagodaemon is not up: every Sony service client fails to build, for the whole run ────────
@@ -2887,6 +2928,7 @@ static const Scenario kScenarios[] = {
       "the service level is read before it is zeroed, so the restore has something to restore" },
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
     {"real-player",       s_real_player,             "boots on a real player's map (CINDER_HARNESS_MAP), lists what it lacks"},
+    {"real-resume-play",  s_real_resume_play,        "the first ▶ after a restored boot plays the saved queue (real UI)"},
     {"library-touched",   s_library_touched_not_changed, "a scan that changes no row does not rebuild the library"},
     {"suspend-default",   s_suspend_by_default,      "stage 1 early suspend runs by default, under a wakelock"},
     {"ram-suspend",       s_ram_suspend_opt_in,      "stage 2 by default: idle, off the cable -> wakelock released"},

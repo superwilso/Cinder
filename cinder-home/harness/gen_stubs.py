@@ -66,7 +66,17 @@ def root_rel(h):
 
 
 def main():
-    root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else '.')
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    # --no-ffi=LIB: the real-FFI harness links cinder-ffi itself (the header is still included).
+    no_ffi = next((a.split('=', 1)[1] for a in sys.argv if a.startswith('--no-ffi=')), None)
+    root = pathlib.Path(args[0] if args else '.')
+    # --no-ffi=LIB: only what that library really defines gets no stub. cinder.h also declares a few
+    # the C++ shims define (cinder_volume_avls_threshold is cinder-audio's), which still need one.
+    rust = set()
+    if no_ffi:
+        import subprocess
+        nm = subprocess.run(['nm', '--defined-only', '-g', no_ffi], capture_output=True, text=True)
+        rust = set(re.findall(r' T (cinder_[a-z0-9_]+)$', nm.stdout, re.M))
     decls = []
     seen = set()
     for h in HEADERS:
@@ -78,7 +88,7 @@ def main():
             if not m:
                 continue
             rt, name, args = m.group(1).strip(), m.group(2), m.group(3).strip()
-            if not name.startswith('cinder_') or name in seen or name in HAND_WRITTEN:
+            if not name.startswith('cinder_') or name in seen or name in HAND_WRITTEN or name in rust:
                 continue
             seen.add(name)
             decls.append((rt, name, args))

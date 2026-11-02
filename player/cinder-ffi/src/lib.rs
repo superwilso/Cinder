@@ -790,14 +790,12 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         || std::env::var("CINDER_NOTHREAD")
             .map(|v| v == "1")
             .unwrap_or(false);
-    #[cfg(test)]
-    let present_result = if std::env::var_os("CINDER_FFI_HEADLESS").is_some() {
-        present::PresentThread::start(|| Ok(tests::ReceiverNullPresent)).map(Sink::Threaded)
-    } else {
-        open_render_present(no_thread)
-    };
-    #[cfg(not(test))]
-    let present_result = match VIRTUAL_SINK.lock().unwrap().take() {
+    // Off the device only: a frame sink the virtual player set, or CINDER_FFI_HEADLESS (the tests,
+    // and the shell harness's real-FFI build), where frames are presented to nothing.
+    let sink = VIRTUAL_SINK.lock().unwrap().take().or_else(|| {
+        std::env::var_os("CINDER_FFI_HEADLESS").map(|_| Box::new(|_: &[u32]| {}) as FrameSink)
+    });
+    let present_result = match sink {
         Some(sink) => {
             present::PresentThread::start(move || Ok(VirtualPresent(sink))).map(Sink::Threaded)
         }
@@ -10533,12 +10531,6 @@ mod tests {
 
     use super::*;
     use crate::likes::liked_load;
-
-    pub(super) struct ReceiverNullPresent;
-
-    impl present::PresentTarget for ReceiverNullPresent {
-        fn present(&mut self, _buf: &[u32]) {}
-    }
 
     /// "No filter is active" — what `Action::Shuffle` passes when the Library's filter row is on
     /// ALL. A named function rather than a closure at each call site so the tests below read as

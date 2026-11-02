@@ -820,6 +820,7 @@ void cinder_harness_pending_play_uri_set(int index, const char* uri) {
     g_fake_pending_uris[index] = uri ? uri : "";
     if (g_fake_pending_count <= index) g_fake_pending_count = index + 1;
 }
+#ifndef CINDER_HARNESS_REAL_FFI  // the real cinder-ffi answers these in a REAL_FFI build
 extern "C" int cinder_pending_play_uri(int index, char* out, int cap) {
     cinder_harness_record("cinder_pending_play_uri", index);
     if (index < 0 || !out || cap <= 0) return -1;
@@ -849,6 +850,7 @@ extern "C" int cinder_pending_play_uri(int index, char* out, int cap) {
     out[n] = '\0';
     return n;
 }
+#endif  // CINDER_HARNESS_REAL_FFI
 
 // ZAPPIN's off-device scenario needs a minimal stateful PlayerService: setting a one-track
 // sequence changes the URI that the real shell poll reads back. It is deliberately synchronous
@@ -894,6 +896,7 @@ extern "C" int cinder_audio_seek_ms(int ms) {
     return rc;
 }
 
+#ifndef CINDER_HARNESS_REAL_FFI  // the real cinder-ffi answers these in a REAL_FFI build
 extern "C" int cinder_set_now_playing_uri(const char* uri, float progress, int playing, int battery) {
     (void)uri; (void)playing; (void)battery;
     const long long ppm = progress >= 0.0f && progress <= 1.0f
@@ -923,6 +926,7 @@ extern "C" int cinder_zappin_set_progress(unsigned int elapsed_ms, unsigned int 
     return cinder_harness_scripted("cinder_zappin_set_progress", &scripted)
         ? (int)scripted : 1;
 }
+#endif  // CINDER_HARNESS_REAL_FFI
 
 extern "C" int cinder_audio_current_uri(char* buf, int cap) {
     cinder_harness_record("cinder_audio_current_uri", 0);
@@ -937,6 +941,7 @@ extern "C" int cinder_audio_current_uri(char* buf, int cap) {
     return (int)n;
 }
 
+#ifndef CINDER_HARNESS_REAL_FFI  // the real cinder-ffi answers these in a REAL_FFI build
 extern "C" int cinder_zappin_candidate(int index, char* uri, int cap, long long* object_id,
                                         long long* start_ms, long long* length_ms,
                                         long long* duration_ms, int* source) {
@@ -956,7 +961,9 @@ extern "C" int cinder_zappin_candidate(int index, char* uri, int cap, long long*
     *source = index == 0 ? 1 : 2;
     return (int)n;
 }
+#endif  // CINDER_HARNESS_REAL_FFI
 
+#ifndef CINDER_HARNESS_REAL_FFI  // the real cinder-ffi answers these in a REAL_FFI build
 // ── the soundscape setting, hand-written for the same reason: two of its answers are out-params.
 // Read from the fake UI's state store, so a scenario sets it with cinder_harness_state_set(_at):
 // "ambient_sound" (0 = off), "ambient_alone" and "ambient_music" (gains x1000).
@@ -967,6 +974,7 @@ extern "C" int cinder_get_ambient(int* milli_alone, int* milli_music) {
     if (milli_music) *milli_music = (int)cinder_harness_state_get("ambient_music", 0);
     return (int)cinder_harness_state_get("ambient_sound", 0);
 }
+#endif  // CINDER_HARNESS_REAL_FFI
 
 void* dlopen(const char* path, int) {
     Lock l; ensure();

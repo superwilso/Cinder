@@ -24,7 +24,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   known to wedge or crash the player. `cargo run -p cinder-sim --bin player -- OUT` runs the real
   UI and FFI on that copy in a window, or takes `--taps` and `--shot` for scripts.
   `CINDER_HARNESS_MAP=OUT cinder-home/harness/run.sh real-player` boots the shell on the same copy
-  and lists every `/sys` and `/proc` path it opened that the player does not have.
+  and lists every `/sys` and `/proc` path it opened that the player does not have. With
+  `CINDER_HARNESS_REAL_FFI=1` the harness links the real UI instead of its recording stubs, so the
+  shell and the UI run together on that copy (`real-*` scenarios: the boot, and the first ▶ after
+  a restored queue).
   `tools/player_state.sh save|load NAME` keeps named setups of a player (settings, likes, queue;
   never the recovery files) to switch between when chasing a bug.
 
