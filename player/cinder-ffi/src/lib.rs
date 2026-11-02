@@ -773,7 +773,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
             .map(|v| v == "1")
             .unwrap_or(false);
     #[cfg(test)]
-    let present_result = if std::env::var_os("CINDER_RX_CODEC_FFI_CHILD").is_some() {
+    let present_result = if std::env::var_os("CINDER_FFI_HEADLESS").is_some() {
         present::PresentThread::start(|| Ok(tests::ReceiverNullPresent)).map(Sink::Threaded)
     } else {
         open_render_present(no_thread)
@@ -10988,6 +10988,109 @@ mod tests {
     // Run the global-FFI roundtrip in an isolated test process. The normal test suite has other
     // cases that use `cell()` concurrently; a subprocess lets this one exercise the actual FFI
     // load/get/save path without racing other tests that use the global Render.
+    /// Run one `_child` test of this module in a process of its own: the FFI keeps its Render (and
+    /// the UI scale and fonts) in process globals, which other tests on other threads also set.
+    fn run_child(name: &str, env: &str) {
+        let exe = std::env::current_exe().unwrap();
+        let mut command = match std::env::var_os("CINDER_FFI_TEST_RUNNER").filter(|r| !r.is_empty())
+        {
+            Some(runner) => {
+                let mut c = std::process::Command::new(runner);
+                c.arg(exe);
+                c
+            }
+            None => std::process::Command::new(exe),
+        };
+        let output = command
+            .args(["--exact", name, "--nocapture"])
+            .env(env, "1")
+            .env("CINDER_FFI_HEADLESS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{name} failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// EVERY SAVED SETTING COMES BACK. Each value in the settings file is changed (0 and 1 swap,
+    /// other numbers move by one, `on`/`off` swap), loaded, and saved again: a key whose changed
+    /// value does not survive is one the loader never reads, or reads into something the saver
+    /// does not write — a setting that quietly resets on every restart.
+    #[test]
+    fn every_saved_setting_survives_a_restart() {
+        run_child(
+            "tests::every_saved_setting_survives_a_restart_child",
+            "CINDER_SETTINGS_RT_CHILD",
+        );
+    }
+
+    #[test]
+    fn every_saved_setting_survives_a_restart_child() {
+        if std::env::var_os("CINDER_SETTINGS_RT_CHILD").is_none() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("cinder_settings_rt_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cinder_settings.conf");
+        let path_c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(cinder_render_init(), 0);
+        let body = |_: ()| settings_body(cell().lock().unwrap().as_ref().unwrap());
+        let before = body(());
+        let changed: Vec<(String, String)> = before
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| {
+                let w = match v {
+                    "0" => "1".to_string(),
+                    "1" => "0".to_string(),
+                    "on" => "off".to_string(),
+                    "off" => "on".to_string(),
+                    _ => match v.parse::<i64>() {
+                        Ok(n) => (n + 1).to_string(),
+                        Err(_) => v.to_string(),
+                    },
+                };
+                (k.to_string(), w)
+            })
+            .collect();
+        let text: String = changed.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(
+            cinder_settings_load(path_c.as_ptr()) & 1,
+            1,
+            "the file was read"
+        );
+        let after = body(());
+        let got: std::collections::HashMap<&str, &str> =
+            after.lines().filter_map(|l| l.split_once('=')).collect();
+        // Not restored, on purpose: every boot starts in day; the two timeouts snap to a preset
+        // (a changed value is off the list); a profile member not followed takes the live value;
+        // the swipe keys are action names, so `on` is not one.
+        const BY_DESIGN: &[&str] = &[
+            "night",
+            "screen_off",
+            "auto_off",
+            "bank_amp",
+            "np_swipe_up",
+            "np_swipe_down",
+        ];
+        let lost: Vec<String> = changed
+            .iter()
+            .filter(|(k, _)| !BY_DESIGN.contains(&k.as_str()))
+            .filter(|(k, v)| got.get(k.as_str()) != Some(&v.as_str()))
+            .map(|(k, v)| format!("{k}: wrote {v}, read back {:?}", got.get(k.as_str())))
+            .collect();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            lost.is_empty(),
+            "settings that reset on a restart:\n{}",
+            lost.join("\n")
+        );
+    }
+
     #[test]
     fn receiver_codec_settings_ffi_roundtrip() {
         let exe = std::env::current_exe().unwrap();
@@ -11007,6 +11110,7 @@ mod tests {
                 "--nocapture",
             ])
             .env("CINDER_RX_CODEC_FFI_CHILD", "1")
+            .env("CINDER_FFI_HEADLESS", "1")
             .output()
             .unwrap();
         assert!(
