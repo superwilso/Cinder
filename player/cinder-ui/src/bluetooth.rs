@@ -12,15 +12,23 @@ use crate::Canvas;
 
 /// Transmit codecs. Index = the persisted `bt_codec` value, and the Sony switch it turns on:
 /// 0 SetLdac, 1 SetAptxHD, 2 SetAptxClassic, 3 none of them, 4 SetAptxHD again (see [`AAC`]),
-/// 5 all of them ([`BEST`]). [`chips`] is which of them this boot offers, in display order.
-pub const CODECS: [(&str, &str); 6] = [
-    ("LDAC", "Up to 990 kbps · Hi-Res"),
-    ("aptX HD", "576 kbps · 24-bit"),
-    ("aptX", "352 kbps · low latency"),
-    ("SBC", "Universal · always works"),
-    ("AAC", "Up to 320 kbps · AirPods, iPhone"),
-    ("Best", "The best these headphones have"),
+/// 5 all of them ([`BEST`]), 6 none of them, with SBC XQ held back ([`SBC_STD`]). [`choices`] is
+/// which of them this boot offers, in display order.
+///
+/// Each has its name, one line that says what it is for in words anyone can follow (owner,
+/// 2026-11-03: "so people who don't understand the codecs can get the gist"), and a rough tag of
+/// how it sounds. Short enough for Big view.
+pub const CODECS: [(&str, &str, &str); 7] = [
+    ("LDAC", "Sony's hi-res · Sony headphones", "HI-RES"),
+    ("aptX HD", "High quality, if they have it", "HIGH"),
+    ("aptX", "Good, with less delay for video", "GOOD"),
+    ("SBC", "Works with all headphones", "BASIC"),
+    ("AAC", "Apple's · AirPods and Beats", "GOOD"),
+    ("Best", "Not sure? This one picks for you", "AUTO"),
+    ("SBC", "Works with all headphones", "BASIC"),
 ];
+/// SBC XQ's line and tag, for [`SBC`] while the `bt-sbc-xq` component is on.
+const SBC_XQ_INFO: (&str, &str) = ("Richer SBC · glitches? use SBC", "HIGH");
 /// Every codec the player can send is offered and the link takes the best the headphones share —
 /// LDAC first where they have it. The shared slot holds AAC (more headphones have it than aptX HD).
 /// Owner request, 2026-11-02.
@@ -30,19 +38,26 @@ pub const BEST: u8 = 5;
 /// starts (the shell restarts Bluetooth to swap them), and Sony's aptX HD switch drives either.
 pub const AAC: u8 = 4;
 const SBC: u8 = 3;
-/// Codec chips go three to a row: five across truncated "aptX HD" and "SBC XQ" at the larger text
-/// sizes. Two rows are always reserved, so the page below does not move when AAC is offered.
-const CHIP_COLS: usize = 3;
-const CHIP_PITCH: i32 = crate::kit::CHIP_H + 8;
-
-/// The codec chips this boot offers, as `CODECS` ids in display order. `aac` comes from the
-/// `bt-aac` library (`/tmp/cinder_aac_codecs`, read by the shell).
-pub fn chips(aac: bool) -> &'static [u8] {
-    if aac {
-        &[BEST, 0, 1, 2, AAC, SBC]
-    } else {
-        &[BEST, 0, 1, 2, SBC]
+/// Plain SBC while the `bt-sbc-xq` component is on, where [`SBC`] goes as SBC XQ. Some headphones'
+/// radios cannot carry XQ's 540 kbit/s: the stack drops packets and the music plays fast (#44, JBL
+/// Live Pro 2, 5.7 % of packets skipped). The endpoint is set when Bluetooth starts, so choosing
+/// it restarts Bluetooth, as moving between AAC and aptX HD does.
+pub const SBC_STD: u8 = 6;
+/// The codecs this boot offers, as `CODECS` ids in display order: one row each on the page, Best
+/// first. `aac` comes from the `bt-aac` library (`/tmp/cinder_aac_codecs`, read by the shell), and
+/// `xq` adds plain SBC beside SBC XQ.
+pub fn choices(aac: bool, xq: bool) -> &'static [u8] {
+    match (aac, xq) {
+        (true, true) => &[BEST, 0, 1, 2, AAC, SBC, SBC_STD],
+        (true, false) => &[BEST, 0, 1, 2, AAC, SBC],
+        (false, true) => &[BEST, 0, 1, 2, SBC, SBC_STD],
+        (false, false) => &[BEST, 0, 1, 2, SBC],
     }
+}
+
+/// The link's SBC is SBC XQ: the component is on and plain SBC is not the choice.
+fn xq_live(bt: &Bt) -> bool {
+    bt.xq && bt.codec_sel != SBC_STD
 }
 
 /// A codec's name. SBC goes as SBC XQ while the `bt-sbc-xq` component is on.
@@ -52,6 +67,18 @@ pub fn codec_name(id: u8, xq: bool) -> &'static str {
         BEST => crate::i18n::text("Best"),
         _ => CODECS[(id as usize).min(CODECS.len() - 1)].0,
     }
+}
+
+/// A codec's plain-language line and its tag, as the page shows them.
+pub fn codec_info(id: u8, xq: bool) -> (&'static str, &'static str) {
+    let (line, tag) = match id {
+        SBC if xq => SBC_XQ_INFO,
+        _ => {
+            let c = CODECS[(id as usize).min(CODECS.len() - 1)];
+            (c.1, c.2)
+        }
+    };
+    (crate::i18n::text(line), crate::i18n::text(tag))
 }
 
 /// LDAC's quality rows apply: LDAC is the choice, or may be what Best picks.
@@ -226,8 +253,8 @@ const LDAC_NAMES: [&str; 4] = [
 enum Part {
     Strip,
     Label(&'static str),
-    /// The transmit codec chips.
-    Codecs,
+    /// The row for codec `id` (a [`CODECS`] index).
+    Codec(u8),
     /// LDAC row `k` in display order (see [`LDAC_ORDER`]).
     Ldac(usize),
     Enhanced,
@@ -239,8 +266,8 @@ enum Part {
 
 /// The page, top to bottom, as `(part, top, height)` in screen pixels. `render_codec` draws it and
 /// `hit_codec` reads it, so a band cannot be drawn in one place and answer taps in another. The
-/// LDAC section exists only while LDAC is the chosen codec.
-fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
+/// LDAC section exists only while LDAC is the chosen codec; `ids` are the codec rows ([`choices`]).
+fn codec_parts(ldac: bool, ids: &[u8]) -> Vec<(Part, i32, i32)> {
     use crate::kit::{ROW_H, SECTION_H, STRIP_H};
     let mut out = Vec::new();
     let mut y = crate::chrome::HEADER_BOTTOM;
@@ -249,10 +276,15 @@ fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
         y += h;
     };
     push(Part::Strip, STRIP_H);
-    push(Part::Label(crate::i18n::text("TRANSMIT CODEC")), SECTION_H);
-    push(Part::Codecs, 2 * CHIP_PITCH);
+    push(
+        Part::Label(crate::i18n::text("HOW MUSIC IS SENT")),
+        SECTION_H,
+    );
+    for &id in ids {
+        push(Part::Codec(id), ROW_H());
+    }
     if ldac {
-        push(Part::Label("LDAC"), SECTION_H);
+        push(Part::Label(crate::i18n::text("LDAC QUALITY")), SECTION_H);
         for k in 0..LDAC_ORDER.len() {
             push(Part::Ldac(k), ROW_H());
         }
@@ -266,15 +298,17 @@ fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
 /// Room under the last row for the footer note.
 const CODEC_FOOT_H: i32 = 48;
 
-/// How far the page scrolls: only in Big view, whose taller rows push Fine volume and the note
-/// off the glass (reported 10-26).
-pub fn codec_max_scroll(ldac: bool) -> i32 {
-    let bottom = codec_parts(ldac).last().map_or(0, |&(_, top, h)| top + h);
+/// How far the page scrolls: a row per codec runs past the glass, and further in Big view.
+pub fn codec_max_scroll(ldac: bool, aac: bool, xq: bool) -> i32 {
+    let bottom = codec_parts(ldac, choices(aac, xq))
+        .last()
+        .map_or(0, |&(_, top, h)| top + h);
     (bottom + CODEC_FOOT_H - crate::canvas::H as i32).max(0)
 }
 
+/// Without AAC or SBC XQ: the row accessors below are for tests and callers of that page.
 fn codec_part_centre(ldac: bool, want: Part) -> i32 {
-    codec_parts(ldac)
+    codec_parts(ldac, choices(false, false))
         .into_iter()
         .find(|&(p, _, _)| p == want)
         .map_or(0, |(_, top, h)| top + h / 2)
@@ -312,15 +346,12 @@ pub fn advanced_row() -> (i32, i32, i32, i32) {
 pub fn debug_row_y() -> i32 {
     DEBUG_Y() + DEBUG_H() / 2
 }
-/// Centre of codec `id`'s chip on the Sound quality page.
-pub fn codec_chip(id: u8, aac: bool) -> (i32, i32) {
-    let i = chips(aac).iter().position(|&c| c == id).unwrap_or(0);
-    let (x, w) = crate::kit::chip_span(i % CHIP_COLS, CHIP_COLS);
-    let row = (i / CHIP_COLS) as i32;
-    (
-        x + w / 2,
-        codec_parts(false)[2].1 + row * CHIP_PITCH + crate::kit::CHIP_H / 2,
-    )
+/// Vertical centre of codec `id`'s row on the Sound quality page (unscrolled, LDAC rows hidden).
+pub fn codec_row_y(id: u8, aac: bool, xq: bool) -> i32 {
+    codec_parts(false, choices(aac, xq))
+        .into_iter()
+        .find(|&(p, _, _)| p == Part::Codec(id))
+        .map_or(0, |(_, top, h)| top + h / 2)
 }
 /// Vertical centre of the LDAC row for quality `q` (an index into [`QUALITIES`]). Only drawn, and
 /// only tappable, while LDAC is the chosen codec.
@@ -395,22 +426,17 @@ pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
 
 /// Map a tap on the Sound quality page. `codec_is_ldac` gates the LDAC rows (only shown for LDAC).
 /// The whole of a row is its target, the switch's row included: nothing else shares the band.
-pub fn hit_codec(x: i32, y: i32, on: bool, codec_is_ldac: bool, aac: bool) -> BtHit {
+pub fn hit_codec(x: i32, y: i32, on: bool, codec_is_ldac: bool, aac: bool, xq: bool) -> BtHit {
     if !on {
         return BtHit::None;
     }
-    for (p, top, h) in codec_parts(codec_is_ldac) {
+    let _ = x; // every band is a full-width row
+    for (p, top, h) in codec_parts(codec_is_ldac, choices(aac, xq)) {
         if !(top..top + h).contains(&y) {
             continue;
         }
         return match p {
-            Part::Codecs => {
-                let ids = chips(aac);
-                let row = ((y - top) / CHIP_PITCH) as usize;
-                crate::kit::chip_at(CHIP_COLS, top + row as i32 * CHIP_PITCH, x, y)
-                    .and_then(|i| ids.get(row * CHIP_COLS + i))
-                    .map_or(BtHit::None, |&id| BtHit::Codec(id as usize))
-            }
+            Part::Codec(id) => BtHit::Codec(id as usize),
             Part::Ldac(k) => BtHit::Quality(LDAC_ORDER[k]),
             Part::Enhanced => BtHit::Enhanced,
             Part::Fine => BtHit::FineVolume,
@@ -441,12 +467,12 @@ fn codec_strip(bt: &Bt) -> String {
     let name = name.to_uppercase();
     match bt.link_codec {
         Some(raw) => {
-            let live = link_codec_label(raw, bt.xq);
+            let live = link_codec_label(raw, xq_live(bt));
             // Not every enumerator is known (see `link_codec_name`), so a raw byte proves a
             // fallback only from LDAC, or when it names a codec that is not the one asked for.
             // Best asks for nothing in particular, so whatever the link took is what it asked for.
             let fell_back = bt.codec_sel != BEST
-                && match link_codec_name(raw, bt.xq) {
+                && match link_codec_name(raw, xq_live(bt)) {
                     Some(n) => n != want,
                     None => bt.codec_sel == LDAC,
                 };
@@ -479,7 +505,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         // The tag carries the NEGOTIATED codec when the link reports one. This is the answer to
         // "am I actually getting LDAC" — the radio falls back silently, so the codec radio list
         // below (which is only a request) can say LDAC while the link is running something else.
-        let tag = match bt.link_codec.map(|raw| link_codec_label(raw, bt.xq)) {
+        let tag = match bt.link_codec.map(|raw| link_codec_label(raw, xq_live(bt))) {
             Some(codec) => crate::ui_format!("CONNECTED · {}", codec.to_uppercase()),
             None => crate::i18n::text("CONNECTED").to_string(),
         };
@@ -683,7 +709,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         crate::i18n::text("THIS DEVICE"),
         None,
     );
-    let live = bt.link_codec.map(|raw| link_codec_label(raw, bt.xq));
+    let live = bt.link_codec.map(|raw| link_codec_label(raw, xq_live(bt)));
     let want = codec_name(bt.codec_sel, bt.xq);
     let detail = match live {
         // What the link NEGOTIATED, when that differs from the request — the radio falls back
@@ -753,7 +779,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
 /// controls were the top half of that screen; they are configured once and then ignored, so they
 /// were the wrong thing to give the most reachable space to.
 ///
-/// Drawn on the kit from [`codec_parts`]: a strip with what the link is doing, the codec as chips,
+/// Drawn on the kit from [`codec_parts`]: a strip with what the link is doing, a row per codec with
+/// what it is for in plain words (Best first, for anyone who does not know the names),
 /// LDAC's four modes as rows under Sony's own names, and VOLUME CONTROL. While the radio is off the
 /// page is inert, the rows are drawn in `faint` and nothing is marked chosen.
 pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt, scroll: i32) {
@@ -763,7 +790,7 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt, scroll: i32
     c.set_clip_y(head_bottom, crate::canvas::H as i32);
     let ldac = shows_ldac(bt.codec_sel);
     let mut bottom = 0;
-    for (p, top, h) in codec_parts(ldac) {
+    for (p, top, h) in codec_parts(ldac, choices(bt.aac, bt.xq)) {
         let top = top - scroll;
         bottom = top + h;
         match p {
@@ -773,30 +800,23 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt, scroll: i32
             Part::Label(l) => {
                 kit::section_label(c, t, f, top, l, None);
             }
-            Part::Codecs => {
-                let ids = chips(bt.aac);
-                let sel = bt
-                    .on
-                    .then(|| ids.iter().position(|&i| i == bt.codec_sel))
-                    .flatten();
-                for (r, row) in ids.chunks(CHIP_COLS).enumerate() {
-                    let names: Vec<&str> = row.iter().map(|&i| codec_name(i, bt.xq)).collect();
-                    let first = r * CHIP_COLS;
-                    let sel = sel
-                        .filter(|s| (first..first + row.len()).contains(s))
-                        .map(|s| s - first);
-                    let y = top + r as i32 * CHIP_PITCH;
-                    kit::chips_in(c, &shown(t, bt.on), f, y, &names, sel, CHIP_COLS);
-                }
+            Part::Codec(id) => {
+                let (line, tag) = codec_info(id, bt.xq);
+                let r = Row::new(codec_name(id, bt.xq))
+                    .sub(line)
+                    .trail(Trail::Value(tag))
+                    .sel(bt.on && bt.codec_sel == id);
+                row_or_off(c, t, f, top, h, &r, bt.on);
             }
             Part::Ldac(k) => {
                 let q = LDAC_ORDER[k];
                 let chosen = bt.on && bt.ldac_quality as usize == q;
-                let sub = if q == 0 {
-                    crate::i18n::text("Adapts the rate to the link")
-                } else {
-                    ""
-                };
+                let sub = crate::i18n::text(match q {
+                    0 => "Adjusts to the signal as you move",
+                    1 => "Best sound · keep the player close",
+                    2 => "A balance of sound and signal",
+                    _ => "Fewest dropouts in busy places",
+                });
                 let value = crate::i18n::text(QUALITIES[q]).to_uppercase();
                 let r = Row::new(crate::i18n::text(LDAC_NAMES[q]))
                     .sub(sub)
@@ -935,8 +955,8 @@ mod tests {
     /// Best is offered first, shows LDAC's quality rows, and never calls the live codec a fallback.
     #[test]
     fn best_takes_whatever_the_link_agreed() {
-        assert_eq!(chips(true)[0], BEST);
-        assert_eq!(chips(false)[0], BEST);
+        assert_eq!(choices(true, false)[0], BEST);
+        assert_eq!(choices(false, false)[0], BEST);
         assert!(shows_ldac(BEST) && shows_ldac(LDAC) && !shows_ldac(AAC));
         let mut b = bt(true, Some("WH-1000XM4"), BEST, Some(0x03));
         assert!(!aac_sticks(&b), "AAC is one of Best's");
@@ -988,48 +1008,56 @@ mod tests {
     #[test]
     fn every_sound_quality_band_answers_where_it_is_drawn() {
         for ldac in [true, false] {
-            for (p, top, h) in codec_parts(ldac) {
-                let got = hit_codec(240, top + h / 2, true, ldac, false);
+            for (p, top, h) in codec_parts(ldac, choices(false, false)) {
+                let got = hit_codec(240, top + h / 2, true, ldac, false, false);
                 let want = match p {
                     Part::Ldac(k) => BtHit::Quality(LDAC_ORDER[k]),
                     Part::Enhanced => BtHit::Enhanced,
                     Part::Fine => BtHit::FineVolume,
-                    // x 240, y at the second row's top: its middle cell, SBC without AAC
-                    // (Best, LDAC, aptX HD / aptX, SBC). Each chip is tapped at its centre below.
-                    Part::Codecs => BtHit::Codec(SBC as usize),
+                    Part::Codec(id) => BtHit::Codec(id as usize),
                     Part::Strip | Part::Label(_) => BtHit::None,
                 };
                 assert_eq!(got, want, "{p:?} (ldac {ldac})");
                 assert_eq!(
-                    hit_codec(240, top + h / 2, false, ldac, false),
+                    hit_codec(240, top + h / 2, false, ldac, false, false),
                     BtHit::None,
                     "{p:?} answered with the radio off"
                 );
             }
-            let (_, top, h) = *codec_parts(ldac).last().unwrap();
-            assert!(
-                top + h < crate::canvas::H as i32 - 40,
-                "the page runs off the glass (ldac {ldac})"
-            );
-        }
-        for aac in [false, true] {
-            for &id in chips(aac) {
-                let (x, y) = codec_chip(id, aac);
-                assert_eq!(hit_codec(x, y, true, true, aac), BtHit::Codec(id as usize));
+            // A row per codec runs past the glass: the page scrolls just far enough for the note.
+            for (aac, xq) in [(false, false), (true, true)] {
+                let (_, top, h) = *codec_parts(ldac, choices(aac, xq)).last().unwrap();
+                let max = codec_max_scroll(ldac, aac, xq);
+                let end = top + h + CODEC_FOOT_H - max;
+                assert!(end <= crate::canvas::H as i32);
+                assert!(max == 0 || end == crate::canvas::H as i32);
             }
         }
+        for aac in [false, true] {
+            for xq in [false, true] {
+                for &id in choices(aac, xq) {
+                    let y = codec_row_y(id, aac, xq);
+                    assert_eq!(
+                        hit_codec(240, y, true, true, aac, xq),
+                        BtHit::Codec(id as usize)
+                    );
+                }
+            }
+        }
+        // Best, the choice for anyone who does not know the names, is the first row on the page.
+        assert!(codec_row_y(BEST, true, true) < codec_row_y(LDAC, true, true));
         for q in 0..QUALITIES.len() {
             assert_eq!(
-                hit_codec(240, quality_row_y(q), true, true, false),
+                hit_codec(240, quality_row_y(q), true, true, false, false),
                 BtHit::Quality(q)
             );
         }
         assert_eq!(
-            hit_codec(240, enhanced_row_y(false), true, false, false),
+            hit_codec(240, enhanced_row_y(false), true, false, false, false),
             BtHit::Enhanced
         );
         assert_eq!(
-            hit_codec(240, fine_row_y(true), true, true, false),
+            hit_codec(240, fine_row_y(true), true, true, false, false),
             BtHit::FineVolume
         );
     }
@@ -1068,6 +1096,9 @@ mod tests {
             "BUDS · SBC XQ",
             "SBC XQ asked for is no fallback"
         );
+        // Plain SBC chosen beside SBC XQ: the link is plain SBC, and that is what was asked for.
+        b.codec_sel = SBC_STD;
+        assert_eq!(codec_strip(&b), "BUDS · SBC");
         assert!(codec_strip(&bt(true, None, LDAC, None)).starts_with("NOTHING CONNECTED"));
         assert!(codec_strip(&bt(false, Some("Buds"), LDAC, Some(LDAC_RAW)))
             .starts_with("BLUETOOTH IS OFF"));
@@ -1079,7 +1110,7 @@ mod tests {
     #[test]
     fn the_chips_follow_what_this_boot_offers() {
         let names = |aac, xq| {
-            chips(aac)
+            choices(aac, xq)
                 .iter()
                 .map(|&i| codec_name(i, xq))
                 .collect::<Vec<_>>()
@@ -1094,7 +1125,11 @@ mod tests {
         );
         assert_eq!(
             names(true, true),
-            ["Best", "LDAC", "aptX HD", "aptX", "AAC", "SBC XQ"]
+            ["Best", "LDAC", "aptX HD", "aptX", "AAC", "SBC XQ", "SBC"]
+        );
+        assert_eq!(
+            names(false, true),
+            ["Best", "LDAC", "aptX HD", "aptX", "SBC XQ", "SBC"]
         );
         let mut b = bt(true, Some("AirPods"), AAC, Some(0x03));
         b.aac = true;

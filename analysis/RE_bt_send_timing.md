@@ -114,3 +114,23 @@ earphones' radio. Walkman One on its own would have connected them with plain SB
 evidence: the same test with SBC XQ unticked, and a trace from their player (Bluetooth ▸ Debug log)
 read with `a2dp_timing.py` — a rise in "queued" before the speed change means the radio, flat
 pacing with no queue means the earphones.
+
+## The reporter's trace (2026-11-03): the radio drops SBC XQ packets
+
+The reporter (Walkman One, JBL Live Pro 2) found the speed-up goes away with SBC XQ off, and sent
+a 55 s Debug-log trace with it on. The link: SBC, Dual Channel, bitpool 46 (`35..46`), MTU 666,
+two 196-byte frames a packet (405 bytes), about 540 kbit/s.
+
+| | This player, XM4, SBC XQ | Reporter, JBL Live Pro 2, SBC XQ |
+|---|---|---|
+| RTP sequence gaps (packets the stack skipped) | 0 | **545 of about 9,550 (5.7 %)**, all through the capture |
+| Controller queue | at most 4 | 4 in every 2 s window |
+| Audio sent vs real time | +134 ppm | −1485 ppm, lead falling to −150 ms |
+| Worst gap between packets | 39 ms | 45 ms |
+
+The sender is never late (no gap over 45 ms); the controller is full and the stack throws packets
+away instead of waiting. Each skipped packet is 256 samples (5.8 ms), so about 3.2 s of every
+55 s never reaches the earphones. They play what arrives back to back: music with 5–6 % cut out
+in 6 ms slices, which is heard as a speed-up. Plain SBC (about 330 kbit/s) fits that radio;
+540 does not. The Bluetooth libraries that drop the packets are stock's (Walkman One does not
+replace them), so this is SBC XQ's rate on those earphones, not Walkman One.
