@@ -2078,9 +2078,21 @@ static char g_last_play_started_uri[512] = {};
 // measurement is the user's to make, and turning it off is one line.
 const char* const CPUFLOOR_PATH = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq";
 static int  g_cpufloor_khz = 0;      // 0 = feature off
-static int  g_cpufloor_orig = -1;    // what the governor had before we touched it
+static int  g_cpufloor_orig = -1;    // the hardware's lowest step (cpuinfo_min_freq)
 static bool g_cpufloor_read = false;
-static bool g_cpufloor_held = false;
+static bool g_cpufloor_playing = false;
+static int  g_cpufloor_written = -1;
+
+// SCREEN ON = 1040 MHz FLOOR, always (2026-11-03, "scrolls feel laggy"). The governor (MediaTek
+// hotplug) idles at 598 MHz and re-samples every 30 ms, so the first frames of every drag were
+// drawn at half speed. Measured on the owner's player, album grid, Big view: scroll frames drew in
+// 9-11 ms with 21-31 ms spikes at the normal floor, and 6.9 ms with an 8.7 ms worst at 1040.
+// It costs nothing per unit of work: 598, 747.5 and 1040 MHz all run at 1150 mV
+// (/proc/cpufreq/cpufreq_ptpod_freq_volt), so the same frame takes the same energy, done sooner.
+// Screen off goes back to the hardware's lowest step, so pocket playback is unchanged.
+// Known gap: closing a native DSD stream, Sony's audio library writes 598000 here itself, so the
+// floor stays down until the next screen change.
+static const int SCREEN_FLOOR_KHZ = 1040000;
 
 static int read_int_file(const char* path) {
     FILE* f = std::fopen(path, "r");
@@ -2105,8 +2117,10 @@ static void load_cpufloor_cfg() {
         char v[32];
         if (adv_value("cpufloor_khz", v, sizeof v) && std::atoi(v) > 0) g_cpufloor_khz = std::atoi(v);
     }
+    // The hardware's lowest step, not the node's current value: after a crash with the floor up,
+    // the node still says 1040 and would be "restored" to that forever.
+    g_cpufloor_orig = read_int_file("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq");
     if (g_cpufloor_khz) {
-        g_cpufloor_orig = read_int_file(CPUFLOOR_PATH);
         char m[144];
         std::snprintf(m, sizeof m, "cpufloor: %d kHz while playing (governor default %d)",
                       g_cpufloor_khz, g_cpufloor_orig);
@@ -2114,24 +2128,34 @@ static void load_cpufloor_cfg() {
     }
 }
 
-// Hold the floor while playing, drop it the moment playback stops. Best-effort: the node is 0666
-// on this device, but a write failure here must never be more than a log line.
-static void apply_cpu_floor(bool playing) {
+// The floor is the highest of: the hardware's lowest step, 1040 MHz while the screen is on, and the
+// opt-in playing floor while playing. Called on every screen change and transport change; writes
+// only when the answer changes. Best-effort: the node is 0666 on this device, but a write failure
+// here must never be more than a log line.
+static void cpu_floor_update() {
     if (!g_cpufloor_read) load_cpufloor_cfg();
-    if (!g_cpufloor_khz || g_cpufloor_orig < 0) return;
-    if (playing == g_cpufloor_held) return;
-    const int want = playing ? g_cpufloor_khz : g_cpufloor_orig;
+    if (g_cpufloor_orig < 0) return;
+    int want = g_cpufloor_orig;
+    if (g_screen_on && SCREEN_FLOOR_KHZ > want) want = SCREEN_FLOOR_KHZ;
+    if (g_cpufloor_playing && g_cpufloor_khz > want) want = g_cpufloor_khz;
+    if (want == g_cpufloor_written) return;
     FILE* f = std::fopen(CPUFLOOR_PATH, "w");
     if (!f) { clog_("cpufloor: cannot open scaling_min_freq (not 0666?)"); return; }
     std::fprintf(f, "%d", want);
     std::fclose(f);
-    g_cpufloor_held = playing;
+    g_cpufloor_written = want;
     // Read it back: cpufreq silently clamps to a value the table actually has, so what we asked
     // for and what is in force are not the same question.
     char m[128];
-    std::snprintf(m, sizeof m, "cpufloor: %s -> asked %d, in force %d",
-                  playing ? "play" : "stop", want, read_int_file(CPUFLOOR_PATH));
+    std::snprintf(m, sizeof m, "cpufloor: screen %s, %s -> asked %d, in force %d",
+                  g_screen_on ? "on" : "off", g_cpufloor_playing ? "playing" : "stopped", want,
+                  read_int_file(CPUFLOOR_PATH));
     clog_(m);
+}
+
+static void apply_cpu_floor(bool playing) {
+    g_cpufloor_playing = playing;
+    cpu_floor_update();
 }
 
 // Did the USER ask for the silence? `g_playing` cannot answer that: the now-playing poll
@@ -13670,6 +13694,7 @@ static void apply_pump_interval() {
     // can alias — a boundary event could then wait a whole second for the tick that consumes
     // it, every time, instead of half a period on average.
     cinder_audio_pump_set_interval(g_screen_on ? 20 : (just_pressed ? 100 : 500));
+    cpu_floor_update();   // every screen change passes through here
 }
 
 void poll_now_playing() {

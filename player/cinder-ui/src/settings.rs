@@ -295,7 +295,7 @@ impl SwipeTo {
 }
 
 #[allow(non_snake_case)]
-fn RH() -> i32 {
+pub(crate) fn RH() -> i32 {
     kit::ROW_H()
 }
 
