@@ -134,3 +134,35 @@ away instead of waiting. Each skipped packet is 256 samples (5.8 ms), so about 3
 in 6 ms slices, which is heard as a speed-up. Plain SBC (about 330 kbit/s) fits that radio;
 540 does not. The Bluetooth libraries that drop the packets are stock's (Walkman One does not
 replace them), so this is SBC XQ's rate on those earphones, not Walkman One.
+
+## SBC XQ Auto: what the stack already has (read 2026-11-03)
+
+An adaptive SBC XQ, like LDAC's Best effort, needs a signal that the radio is falling behind and
+a way to lower the bitpool without a restart. Both are in the Bluetooth service process that
+cinder-aac is preloaded into (offsets are file offsets in stock 1.02).
+
+- **The encoder is BlueZ's libsbc** (`/lib/libsbc_enc.so`: `sbc_init`, `sbc_encode`,
+  `sbc_reinit`, plus MTK's `sbc_init_mtk`, `sbc_set`, `sbc_encode_mtk`). `sbc_set(state, alloc,
+  subbands, blocks, bitpool, mode)` writes the library's own `sbc_t` (blocks +5, subbands +6,
+  mode +7, allocation +8, **bitpool +9**). `sbc_encode` compares the frame's bitpool with
+  `sbc->bitpool` on every call (`ldrb [r1,#9]; cmp` at 0x1566) and recomputes the frame length
+  when it changed, so **a new bitpool takes effect on the next frame, no restart**. blueangel's
+  packer (`FUN_00047f50`) reads each encoded frame's length, so packets follow.
+- **blueangel calls `sbc_set` and `sbc_encode_mtk` through its PLT**, so cinder-aac can interpose
+  them: capture `sbc_set`'s arguments at encoder start, call it again with another bitpool.
+- **The signal is the one LDAC's Best effort uses.** `btmtk_a2dp_ldac_send_audio_stream_data`
+  calls `btmtk_a2dp_request_avdtp_buffer_status()` (exported; sends message 0x21d to mtkbt) on
+  every PCM call while LDAC's ABR is on. mtkbt answers (`AVDTP_RtpBufferStatusReq
+  rtp_buffer_status = %d`), and `btmtk_a2dp_avdtp_buffer_status_rsp` hands the status byte
+  (message +0x20) to `btmtk_a2dp_ldac_abr_proc` — **through the PLT** (`blx 0x17624`), so
+  cinder-aac can take it for SBC and pass it on for LDAC. LDAC feeds it to `ldac_ABR_Proc` as
+  its transmit-queue depth.
+- **A second, pushed signal:** `MSG_ID_BT_A2DP_STREAM_QOS_IND` (`btmtk_a2dp_handle_stream_qos_ind`,
+  "QoS = %d") goes to libBtMw through `bt_av_callbacks` slot 12 (+0x30), the table cinder-aac
+  already wraps for slot 4. When mtkbt sends it is not known yet.
+
+Not known yet, and needing the player: the status byte's range on SBC (packets queued, as LDAC's
+API implies, or a level), whether mtkbt answers 0x21d when LDAC is not the codec, and the values
+around the JBL's 5.7 % drop rate. The plan: log the status per PCM call on SBC XQ (XM4 or CMF,
+then out of range on a walk), then step the bitpool down while the queue is deep and back up after
+a few quiet seconds, never outside the agreed range.
