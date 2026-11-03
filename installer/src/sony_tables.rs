@@ -571,7 +571,10 @@ mod tests {
         // zlib.compress(d, 9), d as built below
         let mut want: Vec<u8> = Vec::new();
         for i in 0..400u32 {
-            want.extend(std::iter::repeat(97 + (i * i % 7) as u8).take(1 + (i % 5) as usize));
+            want.extend(std::iter::repeat_n(
+                97 + (i * i % 7) as u8,
+                1 + (i % 5) as usize,
+            ));
         }
         want.extend(b"the quick brown fox jumps over the lazy dog ".repeat(6));
         let z = unhex(concat!(

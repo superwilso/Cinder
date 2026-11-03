@@ -108,22 +108,19 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      # Clippy, scoped to the lint groups that describe BUGS rather than taste.
-      #
-      # Not `-D warnings`: the tree has 121 style/pedantic warnings today, so that gate would be
-      # red on arrival and would only teach everyone to ignore it. `correctness` and `suspicious`
-      # are the groups that catch things that are actually wrong, both pass clean right now, and a
-      # new one appearing is a real regression worth stopping on. Widen as the backlog is worked
-      # off.
       # The tree was formatted once, in a commit of its own (see .git-blame-ignore-revs), so this
       # only ever fails on the lines a change touched.
       - name: Format
         if: matrix.os == 'ubuntu-latest'
         working-directory: ${{ matrix.dir }}
         run: cargo fmt --all -- --check
-      - name: Clippy (correctness + suspicious)
+      # Clippy: no warnings at all. The backlog was cleared on 2026-11-03; a lint that is wrong for
+      # one piece of code is allowed there, with a comment saying why, not switched off here.
+      # macOS keeps the bug-only groups: its USB code cannot be linted off a Mac, so nobody has run
+      # the full set on it yet. Widen it once a macOS run passes.
+      - name: Clippy
         working-directory: ${{ matrix.dir }}
-        run: cargo clippy --all-targets -- -D clippy::correctness -D clippy::suspicious
+        run: cargo clippy --all-targets -- ${{ matrix.os == 'macos-latest' && '-D clippy::correctness -D clippy::suspicious' || '-D warnings' }}
 
   # ── the half of the tree nothing used to check ─────────────────────────────────────────────────
   # Linux only, no cross toolchain, no matrix — about a minute. Every step here is run locally and

@@ -485,7 +485,8 @@ mod tests {
         };
         let mut got = vec![];
         read_user(&mut f, 0x200, data.len() as u64, |c| {
-            Ok(got.extend_from_slice(c))
+            got.extend_from_slice(c);
+            Ok(())
         })
         .unwrap();
         assert_eq!(got, data);
