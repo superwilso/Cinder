@@ -52,6 +52,7 @@
 
 #include "aac_enc.h"
 #include "pcm_rate.h"
+#include "sbc_abr.h"
 
 #ifndef CINDER_AAC_DIR
 #define CINDER_AAC_DIR "/data/cinder"
@@ -63,6 +64,10 @@ static const char kStd[] = CINDER_AAC_DIR "/bt_sbc_std";   /* plain SBC chosen: 
 static const char kLog[] = "/tmp/cinder_aac.log";
 static const char kStatus[] = "/tmp/cinder_aac_status";
 static const char kCodecs[] = "/tmp/cinder_aac_codecs";
+/* Measurement for an SBC XQ Auto (analysis/RE_bt_send_timing.md): while this file exists, an SBC
+ * stream asks mtkbt for its transmit-buffer status every 100 ms, as LDAC's Best effort does, and
+ * logs what comes back once a second. Nothing is changed in what is sent. */
+static const char kProbe[] = "/tmp/cinder_sbc_probe";
 
 #define EXPORT __attribute__((visibility("default")))
 
@@ -116,6 +121,9 @@ typedef void (*send_pcm_fn)(void*, unsigned);
 typedef void (*send_frame_fn)(const void*, size_t, uint32_t);
 typedef void (*cfg_cb_fn)(void*, uint8_t*);
 typedef int (*is_src_fn)(void);
+typedef void (*req_status_fn)(void);
+typedef void (*abr_proc_fn)(int);
+typedef void (*sbc_set_fn)(void*, int, int, int, int, unsigned char);
 
 static struct {
     sep_init_fn sep_init;
@@ -130,6 +138,9 @@ static struct {
     uint8_t* app;            /* blueangel's bt_a2dp_app (a struct): +0x70 is the media payload limit */
     is_src_fn is_src;        /* libBtMw: the A2DP side is in source (transmit) mode */
     is_src_fn is_snk;        /* libBtMw: in sink (receiver) mode; neither before a role is set */
+    req_status_fn req_status;  /* blueangel: ask mtkbt for the AVDTP buffer status (msg 0x21d) */
+    abr_proc_fn abr_proc;      /* blueangel: where the answer goes, LDAC's ABR */
+    sbc_set_fn sbc_set;        /* libsbc_enc: the encoder's settings, bitpool included */
 } real;
 
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
@@ -182,6 +193,9 @@ static void resolve(void)
     real.app = (uint8_t*)sym(ba, "bt_a2dp_app");
     real.is_src = (is_src_fn)sym(mw, "btmwAvBothIsSrc");
     real.is_snk = (is_src_fn)sym(mw, "btmwAvBothIsSnk");
+    real.req_status = (req_status_fn)sym(ba, "btmtk_a2dp_request_avdtp_buffer_status");
+    real.abr_proc = (abr_proc_fn)sym(ba, "btmtk_a2dp_ldac_abr_proc");
+    real.sbc_set = (sbc_set_fn)sym(dlopen("libsbc_enc.so", RTLD_NOW | RTLD_NOLOAD), "sbc_set");
     int all = real.sep_init && real.activate && real.aac_enable && real.aptxhd_enable && real.enc_init &&
               real.enc_deinit && real.send_pcm && real.send_frame && real.callbacks && real.app &&
               real.is_src;
@@ -323,6 +337,26 @@ static struct {
     pcm_rate mon;            /* every codec's PCM, timed against its rate (#44) */
     int mon_on, mon_codec;   /* a stream is running; its codec (CODEC_AAC when ours) */
     unsigned long mon_stalls_said, mon_off_said;
+    /* The SBC buffer-status probe (kProbe): on for this stream, when it last asked, and this
+     * second's answers. */
+    int probe;
+    long long probe_asked_ms, probe_win_ms;
+    unsigned long probe_asks, probe_answers;
+    int q_min, q_max, q_n;
+    long q_sum;
+    /* SBC XQ Auto (sbc_abr.h): on for an XQ stream; the encoder's sbc_set arguments, captured at
+     * its start, so the bitpool can be set again with the rest unchanged; a change waiting for the
+     * sending thread. */
+    int abr_on, link_min;
+    sbc_abr abr;
+    struct {
+        void* state;
+        int alloc, subbands, blocks, bitpool;
+        unsigned char mode;
+        int have;
+    } set;
+    int abr_pending;
+    unsigned long abr_changes;
 } g = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
 static void* g_cb_copy[16];  /* libBtMw's table is 0x40 bytes: 16 slots */
@@ -362,6 +396,7 @@ static void on_codec_config(void* addr, uint8_t* cfg)
             return;
         }
     } else if (cfg) {
+        if (cfg[0] == CODEC_SBC) g.link_min = cfg[SBC_MIN_BP];
         if (cfg[0] == CODEC_SBC)
             logf_("link is SBC: bitpool %d..%d, blocks/subbands/alloc %d/%d/%d, freq %d, mode %d",
                   cfg[SBC_MIN_BP], cfg[SBC_MAX_BP], cfg[SBC_BLOCKS], cfg[SBC_BLOCKS + 1],
@@ -466,6 +501,11 @@ EXPORT int btmtk_a2dp_stream_data_encoder_init(int codec, int a, int b, int c, i
     pcm_rate_start(&g.mon, ours ? g.cfg_rate : rate, 4, ms_of(&now));
     g.mon_on = 1;
     g.mon_codec = ours ? CODEC_AAC : codec;
+    g.probe = !ours && codec == CODEC_SBC && real.req_status && access(kProbe, F_OK) == 0;
+    g.probe_asked_ms = g.probe_win_ms = 0;
+    g.probe_asks = g.probe_answers = 0;
+    g.q_n = 0;
+    if (g.probe) logf_("sbc-probe: on for this stream (bitpool %d, mode %d)", a, mode);
     g.mon_stalls_said = g.mon_off_said = 0;
     pthread_mutex_unlock(&g.lock);
     if (ours) return 0;
@@ -474,13 +514,55 @@ EXPORT int btmtk_a2dp_stream_data_encoder_init(int codec, int a, int b, int c, i
     logf_("%s encoder start: codec %d, args %d %d %d %d, rate %d, mode %d, mtu %d",
           codec == CODEC_SBC ? (g_xq && g_sbc != 's' ? "SBC XQ" : "SBC") : "Sony", codec, a, b, c, d, rate, mode,
           mtu);
-    return real.enc_init ? real.enc_init(codec, a, b, c, d, rate, mode, mtu) : -1;
+    pthread_mutex_lock(&g.lock);
+    g.set.have = 0;
+    pthread_mutex_unlock(&g.lock);
+    const int r = real.enc_init ? real.enc_init(codec, a, b, c, d, rate, mode, mtu) : -1;
+    /* SBC XQ Auto: an XQ stream (the Dual Channel endpoint is ours) whose encoder settings were
+     * captured, and the two calls it needs. */
+    pthread_mutex_lock(&g.lock);
+    g.abr_on = codec == CODEC_SBC && g_xq && g_sbc == 'x' && g.set.have && real.sbc_set &&
+               real.req_status;
+    g.abr_pending = 0;
+    g.abr_changes = 0;
+    if (g.abr_on) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        sbc_abr_start(&g.abr, g.set.bitpool, g.link_min, ms_of(&now));
+        logf_("sbc-abr: on, bitpool %d..%d", g.abr.floor, g.abr.top);
+    }
+    pthread_mutex_unlock(&g.lock);
+    return r;
+}
+
+/* libsbc_enc's settings call, through blueangel's PLT: kept so SBC XQ Auto can set the bitpool
+ * again with everything else as the encoder started. */
+EXPORT void sbc_set(void* state, int alloc, int subbands, int blocks, int bitpool, unsigned char mode)
+{
+    init();
+    pthread_mutex_lock(&g.lock);
+    g.set.state = state;
+    g.set.alloc = alloc;
+    g.set.subbands = subbands;
+    g.set.blocks = blocks;
+    g.set.bitpool = bitpool;
+    g.set.mode = mode;
+    g.set.have = 1;
+    pthread_mutex_unlock(&g.lock);
+    if (real.sbc_set) real.sbc_set(state, alloc, subbands, blocks, bitpool, mode);
 }
 
 EXPORT void btmtk_a2dp_stream_data_encoder_deinit(int x)
 {
     init();
     pthread_mutex_lock(&g.lock);
+    if (g.probe) {
+        logf_("sbc-probe: stream stop, %lu asked, %lu answered", g.probe_asks, g.probe_answers);
+        g.probe = 0;
+    }
+    if (g.abr_on) {
+        logf_("sbc-abr: stream stop at bitpool %d, %lu changes", g.abr.cur, g.abr_changes);
+        g.abr_on = 0;
+    }
     if (g.mon_on) {
         g.mon_on = 0;
         logf_("stream stop: codec %d, %lld s, PCM at %ld Hz (%d expected), worst wait %ld ms, "
@@ -548,14 +630,81 @@ static void pace(void)
     }
 }
 
+/* mtkbt's answer to the buffer-status request reaches blueangel's LDAC ABR through this PLT entry.
+ * While an SBC stream is probed the answer is ours, and LDAC (not running) never sees it; otherwise
+ * it goes on to LDAC unchanged. */
+EXPORT void btmtk_a2dp_ldac_abr_proc(int status)
+{
+    init();
+    pthread_mutex_lock(&g.lock);
+    if (!g.probe && !g.abr_on) {
+        pthread_mutex_unlock(&g.lock);
+        if (real.abr_proc) real.abr_proc(status);
+        return;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const long long now = ms_of(&ts);
+    const int q = status & 0xff;
+    if (g.abr_on) {
+        const int bp = sbc_abr_feed(&g.abr, q, now);
+        if (bp) {
+            g.abr_pending = bp;
+            g.abr_changes++;
+            /* Every change: at most one a second down and one per 10 s up, and each is evidence. */
+            logf_("sbc-abr: queue %d -> bitpool %d (about %d kbit/s)", q, bp,
+                  (12 + 4 * bp) * 8 * 44100 / 128 / 1000);
+        }
+    }
+    if (!g.probe) {
+        pthread_mutex_unlock(&g.lock);
+        return;
+    }
+    if (!g.probe_answers) logf_("sbc-probe: first answer %d", q);
+    g.probe_answers++;
+    if (!g.q_n || q < g.q_min) g.q_min = q;
+    if (!g.q_n || q > g.q_max) g.q_max = q;
+    g.q_sum = g.q_n ? g.q_sum + q : q;
+    g.q_n++;
+    if (!g.probe_win_ms) g.probe_win_ms = now;
+    if (now - g.probe_win_ms >= 1000) {
+        logf_("sbc-q: %d..%d mean %ld.%ld over %d answers", g.q_min, g.q_max, g.q_sum / g.q_n,
+              (g.q_sum * 10 / g.q_n) % 10, g.q_n);
+        g.q_n = 0;
+        g.probe_win_ms = now;
+    }
+    pthread_mutex_unlock(&g.lock);
+}
+
 EXPORT void btmtk_a2dp_send_audio_stream_data(void* data, unsigned len)
 {
     init();
     pthread_mutex_lock(&g.lock);
     watch_pcm(len & 0xffff);
     if (!g.enc) {
+        int ask = 0, apply = 0;
+        if (g.abr_pending) {
+            apply = g.abr_pending;
+            g.abr_pending = 0;
+        }
+        if (g.probe || g.abr_on) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            const long long now = ms_of(&ts);
+            if (now - g.probe_asked_ms >= 100) {
+                g.probe_asked_ms = now;
+                g.probe_asks++;
+                ask = 1;
+            }
+        }
+        void* st = g.set.state;
+        const int al = g.set.alloc, sb = g.set.subbands, bl = g.set.blocks;
+        const unsigned char md = g.set.mode;
         pthread_mutex_unlock(&g.lock);
+        /* On the sending thread, between frames: libsbc picks the new bitpool up on the next one. */
+        if (apply) real.sbc_set(st, al, sb, bl, apply, md);
         if (real.send_pcm) real.send_pcm(data, len);
+        if (ask) real.req_status();
         return;
     }
     struct timespec now;

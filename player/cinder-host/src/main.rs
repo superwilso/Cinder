@@ -207,6 +207,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         badge: "FLAC 24/96",
         battery: 78,
         progress: 0.39,
+        keys_locked: false,
     };
 
     // The Menu as the device draws it with SensMe installed: ten rows, in `nav::MENU` order,

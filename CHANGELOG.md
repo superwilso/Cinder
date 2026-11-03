@@ -35,6 +35,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   under Hold the player's own play, skip and volume buttons do nothing. Power still turns the
   screen on and off, and headphone buttons still work. *Device-unverified.*
 
+- **SBC XQ adjusts to the signal, like LDAC's Best effort (#44).** Ten times a second it asks the
+  Bluetooth stack how many packets are waiting to go out, the reading LDAC's own Auto uses: 0
+  while the radio keeps up, and at its ceiling of 10 the stack throws music away, which plays as a
+  speed-up. Two readings of 4 or more step the rate down (551 → 452 → 364 → 298 kbit/s, one step a
+  second at most), a reading of 8 or more two steps at once; ten quiet seconds step it back up,
+  and a step up that fills the queue again doubles the wait before the next. The change takes effect on the next frame,
+  with no restart and no gap, and never leaves the range the headphones agreed. *Measured on the
+  owner's player with a WH-1000XM4 walked out of range: the reading rose to 5 a second and a half
+  before the first skipped packets and sat at 10 while 2,993 were skipped. A second walk with the
+  first version skipped 195 packets in two bursts; the faster drop and the slower climb answer
+  both. Third walk pending.*
+
 ### Changed
 
 - **Back works on Now Playing.** The left-edge swipe did nothing there: opening Now Playing (a

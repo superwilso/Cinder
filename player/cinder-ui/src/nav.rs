@@ -10243,6 +10243,7 @@ impl App {
                     badge: np.badge,
                     battery: np.battery,
                     progress: np.progress,
+                    keys_locked: self.hold_buttons,
                 };
                 crate::lock::render(c, &theme, fonts, &lk);
             }
