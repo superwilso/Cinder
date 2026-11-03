@@ -42,7 +42,12 @@ use stage::Action;
 use std::path::PathBuf;
 
 /// This installer's own version, for the stamp it leaves on the player and the release check.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// An edge build (.github/workflows/edge.yml) sets CINDER_EDGE_VERSION to `<version>-edge.<commit>`,
+/// so a report from a tester names the commit they ran.
+pub const VERSION: &str = match option_env!("CINDER_EDGE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 fn help() {
     println!("cinder-installer {VERSION} — channel {CHANNEL}");

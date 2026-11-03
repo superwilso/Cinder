@@ -130,6 +130,11 @@ The installer also has **Update** (keeps your choices) and **Uninstall** (restor
 and settings are untouched). It reads the player's logs, so it reports what is really installed.
 The `.exe` is unsigned; check it against `SHA256SUMS` on the release.
 
+**Want to try what's coming?** The [edge](../../releases/tag/edge) pre-release is an untested build
+of the newest commit, published now and then between releases. It installs the same way, it can be
+broken, and running the latest release's installer puts you back. Mention the version it prints
+(`…-edge.<commit>`) when you report something.
+
 Every option, and the developer build: [`install.md`](install.md). Removing it: [`UNINSTALL.md`](UNINSTALL.md).
 
 ## If something goes wrong
