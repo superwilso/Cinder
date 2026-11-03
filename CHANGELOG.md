@@ -18,6 +18,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **No more cut-off sentences at large text sizes.** The USB Storage screen wraps its text
+  instead of cutting it with "…" in Big view, and its TURN OFF button moves down to make room.
+  At 140% text without Big view, the Receiver notes, its footer, the Bluetooth and Sound
+  subtitles and the NFC hint use the shorter wording or a second line, as Big view already did.
+  Normal size is unchanged. *USB Storage cut off on the owner's player; the fix is host-tested,
+  with three new USB Storage previews.*
 - **Scrolling starts without the stall.** The CPU idles at 598 MHz and the governor takes a few
   frames to speed it up, so the first frames of every drag drew at half speed. While the screen is
   on, the CPU's lowest speed is now 1040 MHz; screen off goes back to 598 MHz. 598 to 1040 MHz run

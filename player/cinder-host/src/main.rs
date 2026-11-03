@@ -3965,6 +3965,23 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         save(&c, "display_night_auto");
         app.set_night_schedule(false, 21 * 60, 7 * 60);
     }
+
+    // USB Storage at normal size, Big view's size and the slider's largest: the sentences wrap and
+    // the button moves below them (they were cut with "…" on the player in Big view, 11-03, and no
+    // preview showed this screen at all). Last, like the blocks above.
+    for (name, pct) in [
+        ("usb_storage", None),
+        ("usb_storage_big", Some(cinder_ui::nav::BIG_TEXT_PCT)),
+        ("usb_storage_140", Some(140)),
+    ] {
+        if let Some(pct) = pct {
+            cinder_ui::text::set_scale_pct(pct);
+        }
+        let mut c = Canvas::new();
+        cinder_ui::usb_storage::render(&mut c, &th(false, amber), &fonts);
+        save(&c, name);
+        base_scale();
+    }
 }
 
 // ── Golden pixel hashes ────────────────────────────────────────────────────────────────────────

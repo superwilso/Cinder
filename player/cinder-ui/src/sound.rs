@@ -942,7 +942,7 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         // On the jack the curve is the DAC chip's own five bands: no processor time at all.
         ROW_EQ if s.eq_on_dac => t(
             crate::i18n::text("Equalizer"),
-            crate::i18n::text(if crate::scale::large() {
+            crate::i18n::text(if crate::scale::tight() {
                 "DAC: no extra battery on jack"
             } else {
                 "In the DAC \u{b7} no battery cost on the jack"
@@ -960,7 +960,7 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
             "DSEE HX",
             fx(
                 s.dsee,
-                if crate::scale::large() {
+                if crate::scale::tight() {
                     "Upscales compressed audio"
                 } else {
                     "Upscale compressed audio to near hi-res"
@@ -1010,7 +1010,7 @@ fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
         ),
         _ => RowText {
             title: crate::i18n::text("Advanced").into(),
-            sub: crate::i18n::text(if crate::scale::large() {
+            sub: crate::i18n::text(if crate::scale::tight() {
                 "Sound effects and DAC EQ"
             } else {
                 "Surround, DC Phase, Vinyl, Tone, DAC EQ"

@@ -278,23 +278,33 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         crate::text::draw(c, f, 22.0, LDAC_HINT_Y as f32, &hint, &hint_style);
     }
 
-    let notes = if crate::scale::large() {
-        [
-            crate::i18n::text("Sound comes out of the headphone jack."),
-            crate::i18n::text("Headphones do not reconnect while this is on."),
-            crate::i18n::text("Leave this page to stop it and resume music."),
-        ]
-    } else {
-        [
-            crate::i18n::text("Sound comes out of the headphone jack."),
-            crate::i18n::text("Bluetooth headphones do not reconnect while it is on."),
-            crate::i18n::text("Leaving this page turns it off and gives the music back."),
-        ]
-    };
+    // Each note in its long wording when it fits the width, else the short one written for Big
+    // view; chosen by measuring, so a large text size without Big view (the slider's 140%) gets the
+    // short one too instead of the long one cut with "…".
+    let notes = [
+        (
+            "Sound comes out of the headphone jack.",
+            "Sound comes out of the headphone jack.",
+        ),
+        (
+            "Bluetooth headphones do not reconnect while it is on.",
+            "Headphones do not reconnect while this is on.",
+        ),
+        (
+            "Leaving this page turns it off and gives the music back.",
+            "Leave this page to stop it and resume music.",
+        ),
+    ];
     let nst = sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0);
     let mut ny = 600.0;
     hline(c, 580, t.line);
-    for n in notes {
+    for (long, short) in notes {
+        let long = crate::i18n::text(long);
+        let n = if !crate::scale::large() && crate::text::measure(f, long, &nst) <= AVAIL {
+            long
+        } else {
+            crate::i18n::text(short)
+        };
         let s = crate::widgets::fit(f, n, &nst, AVAIL);
         crate::text::draw(c, f, 22.0, ny, &s, &nst);
         ny += 22.0;
@@ -302,7 +312,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
     hline(c, 740, t.line);
     let footer = crate::i18n::text("EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE");
     let footer_style = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1);
-    if crate::scale::large() {
+    if crate::scale::large() || crate::text::measure(f, footer, &footer_style) > 480.0 - 44.0 {
         crate::widgets::draw_wrap2(c, f, 22.0, 758.0, footer, &footer_style, 458.0, 19.0);
     } else {
         crate::widgets::center(c, f, 240.0, 770.0, footer, &footer_style);
