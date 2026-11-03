@@ -16,36 +16,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Added
-
-- **Bluetooth ▸ Sound quality ▸ SBC, beside SBC XQ (#44).** With the SBC XQ component on, a plain
-  SBC choice sits next to it. Some headphones' radios cannot carry SBC XQ's 540 kbit/s: a trace
-  from a JBL Live Pro 2 showed the player's Bluetooth stack dropping 5.7 % of the packets, steadily,
-  which plays as the music speeding up. Choosing SBC restarts Bluetooth with Sony's own SBC
-  (about 330 kbit/s), the same way moving between AAC and aptX HD does; choosing anything else
-  brings SBC XQ back. Without the component there is no second SBC. *Verified on the owner's
-  player: SBC chosen → Bluetooth restarted, the headphones connected Joint Stereo SBC (bitpool
-  35..39), not XQ's Dual Channel; SBC XQ chosen → XQ again.*
-
-- **Now Playing: Back arrow and Track number (#51).** Two switches under Settings ▸ More settings
-  ▸ Now Playing, both off by default. Back arrow puts an arrow top-left that does what the
-  left-edge swipe does (the Lyrics chip moves right of it); Track number shows the song's place in
-  what is playing ("3 / 12") in the middle of the top band. *Host-tested.*
-- **Hold locks the buttons (#51).** Settings ▸ More settings ▸ Gestures & buttons, off by default:
-  under Hold the player's own play, skip and volume buttons do nothing. Power still turns the
-  screen on and off, and headphone buttons still work. *Device-unverified.*
-
-- **SBC XQ adjusts to the signal, like LDAC's Best effort (#44).** Ten times a second it asks the
-  Bluetooth stack how many packets are waiting to go out, the reading LDAC's own Auto uses: 0
-  while the radio keeps up, and at its ceiling of 10 the stack throws music away, which plays as a
-  speed-up. Two readings of 4 or more step the rate down (551 → 452 → 364 → 298 kbit/s, one step a
-  second at most), a reading of 8 or more two steps at once; ten quiet seconds step it back up,
-  and a step up that fills the queue again doubles the wait before the next. The change takes effect on the next frame,
-  with no restart and no gap, and never leaves the range the headphones agreed. *Measured on the
-  owner's player with a WH-1000XM4 walked out of range: the reading rose to 5 a second and a half
-  before the first skipped packets and sat at 10 while 2,993 were skipped. A second walk with the
-  first version skipped 195 packets in two bursts; the faster drop and the slower climb answer
-  both. Third walk pending.*
+## [0.3.22] — 2026-10-28
 
 ### Changed
 
@@ -69,11 +40,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   and Beats", "Works with all headphones") and a rough tag of how it sounds (AUTO, HI-RES, HIGH,
   GOOD, BASIC). The sections read "How music is sent" and "LDAC quality", and each LDAC mode says
   what it trades. The page scrolls to the rest. *Host-tested.*
-
-## [0.3.22] — 2026-10-28
-
-### Changed
-
 - **Only the ☰ on the top bar opens the Menu (#51).** Any tap along the bar outside the clock, the
   ☰ and the bookmark used to open the Menu, which threw people out of a settings page when a tap
   meant for the back arrow or a top row landed a few pixels high. Those taps now do nothing.
@@ -244,6 +210,34 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Bluetooth ▸ Sound quality ▸ SBC, beside SBC XQ (#44).** With the SBC XQ component on, a plain
+  SBC choice sits next to it. Some headphones' radios cannot carry SBC XQ's 540 kbit/s: a trace
+  from a JBL Live Pro 2 showed the player's Bluetooth stack dropping 5.7 % of the packets, steadily,
+  which plays as the music speeding up. Choosing SBC restarts Bluetooth with Sony's own SBC
+  (about 330 kbit/s), the same way moving between AAC and aptX HD does; choosing anything else
+  brings SBC XQ back. Without the component there is no second SBC. *Verified on the owner's
+  player: SBC chosen → Bluetooth restarted, the headphones connected Joint Stereo SBC (bitpool
+  35..39), not XQ's Dual Channel; SBC XQ chosen → XQ again.*
+
+- **Now Playing: Back arrow and Track number (#51).** Two switches under Settings ▸ More settings
+  ▸ Now Playing, both off by default. Back arrow puts an arrow top-left that does what the
+  left-edge swipe does (the Lyrics chip moves right of it); Track number shows the song's place in
+  what is playing ("3 / 12") in the middle of the top band. *Host-tested.*
+- **Hold locks the buttons (#51).** Settings ▸ More settings ▸ Gestures & buttons, off by default:
+  under Hold the player's own play, skip and volume buttons do nothing. Power still turns the
+  screen on and off, and headphone buttons still work. *Device-unverified.*
+
+- **SBC XQ adjusts to the signal, like LDAC's Best effort (#44).** Ten times a second it asks the
+  Bluetooth stack how many packets are waiting to go out, the reading LDAC's own Auto uses: 0
+  while the radio keeps up, and at its ceiling of 10 the stack throws music away, which plays as a
+  speed-up. Two readings of 4 or more step the rate down (551 → 452 → 364 → 298 kbit/s, one step a
+  second at most), a reading of 8 or more two steps at once; ten quiet seconds step it back up,
+  and a step up that fills the queue again doubles the wait before the next. The change takes effect on the next frame,
+  with no restart and no gap, and never leaves the range the headphones agreed. *Measured on the
+  owner's player with a WH-1000XM4 walked out of range: the reading rose to 5 a second and a half
+  before the first skipped packets and sat at 10 while 2,993 were skipped. A second walk with the
+  first version skipped 195 packets in two bursts; the faster drop and the slower climb answer
+  both. Third walk pending.*
 - **Bluetooth logs say when audio arrives at the wrong rate or stalls (#44).** The Bluetooth
   service times every codec's audio against its rate: a wait over 150 ms, or 10 s more than 1 %
   off, is logged, with one summary line per stream. For AAC it says outright when the audio and
