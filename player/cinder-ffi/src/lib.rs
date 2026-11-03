@@ -287,6 +287,8 @@ impl Framebuffer {
         // bounds the worst case at half a compare on top of the write it was always doing.
         let mut compare = !force_full;
         let mut wrote = 0usize;
+        #[cfg(feature = "dev")]
+        let t_copy = std::time::Instant::now();
 
         for y in 0..H {
             if (y + 1) * W > buf.len() {
@@ -349,7 +351,17 @@ impl Framebuffer {
         if wrote == 0 {
             return;
         }
+        #[cfg(feature = "dev")]
+        let t_flip = std::time::Instant::now();
         self.flip();
+        #[cfg(feature = "dev")]
+        if wrote * 2 > H {
+            scroll_timing::blit(
+                t_flip.duration_since(t_copy).as_micros() as u64,
+                t_flip.elapsed().as_micros() as u64,
+                self.pages,
+            );
+        }
     }
 
     /// Push the frame to the glass. mtkfb does NOT scan the framebuffer continuously — the panel
@@ -372,6 +384,70 @@ impl Framebuffer {
                     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
                 );
             }
+        }
+    }
+}
+
+/// DEV BUILDS ONLY: where a scrolling frame's time goes, on the player. A drag dirties nearly every
+/// row, so these are the frames that decide how closely the list follows the finger. Every 60
+/// such frames: the raster (frames drawn within 100 ms of a drag move), the copy into the
+/// framebuffer pages, and the flip ioctl. Written 2026-11-03 for "scrolls feel laggy".
+#[cfg(feature = "dev")]
+mod scroll_timing {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static LAST_MOVE_MS: AtomicU64 = AtomicU64::new(0);
+    static RASTER: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    static COVERS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    static BLIT: [AtomicU64; 4] = [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+    fn ms() -> u64 {
+        let mut t = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
+        t.tv_sec as u64 * 1000 + t.tv_nsec as u64 / 1_000_000
+    }
+    /// [n, sum, max] in microseconds.
+    fn add(a: &[AtomicU64], us: u64) {
+        a[0].fetch_add(1, Relaxed);
+        a[1].fetch_add(us, Relaxed);
+        a[2].fetch_max(us, Relaxed);
+    }
+    fn take(a: &[AtomicU64]) -> (u64, f64, f64) {
+        let n = a[0].swap(0, Relaxed).max(1);
+        let sum = a[1].swap(0, Relaxed);
+        let max = a[2].swap(0, Relaxed);
+        (n, sum as f64 / n as f64 / 1000.0, max as f64 / 1000.0)
+    }
+    pub fn moved() {
+        LAST_MOVE_MS.store(ms(), Relaxed);
+    }
+    pub fn covers(us: u64) {
+        if us >= 100 {
+            add(&COVERS, us);
+        }
+    }
+    pub fn raster(us: u64) {
+        if ms().saturating_sub(LAST_MOVE_MS.load(Relaxed)) <= 100 {
+            add(&RASTER, us);
+        }
+    }
+    pub fn blit(copy_us: u64, flip_us: u64, pages: usize) {
+        add(&BLIT[..3], copy_us);
+        BLIT[3].fetch_add(flip_us, Relaxed);
+        if BLIT[0].load(Relaxed) >= 60 {
+            let flip = BLIT[3].swap(0, Relaxed) as f64 / BLIT[0].load(Relaxed) as f64 / 1000.0;
+            let (n, copy, copy_max) = take(&BLIT[..3]);
+            let (rn, raster, raster_max) = take(&RASTER);
+            let (cn, covers, covers_max) = take(&COVERS);
+            println!(
+                "cinder-ffi: scroll timing — {n} full frames: copy {copy:.1} ms (max {copy_max:.1}, {pages} pages), flip {flip:.1} ms; raster {raster:.1} ms (max {raster_max:.1}) over {rn} drag frames; cover loads {covers:.1} ms (max {covers_max:.1}) in {cn} frames"
+            );
         }
     }
 }
@@ -2918,7 +2994,11 @@ pub extern "C" fn cinder_render_tick() {
                 .and_then(art_cache::load_cover),
         );
     }
+    #[cfg(feature = "dev")]
+    let t_covers = std::time::Instant::now();
     load_grid_covers(r);
+    #[cfg(feature = "dev")]
+    scroll_timing::covers(t_covers.elapsed().as_micros() as u64);
     // Wampy's user font: a TTF/OTF at the top of the drive replaces Cinder's Sans. Looked for once
     // the drive is readable (it is not for the first seconds of a boot; the launcher's log there is
     // the sign), and only up to USER_FONT_MAX: fontdue parses every outline at load, and a CJK
@@ -3016,7 +3096,11 @@ pub extern "C" fn cinder_render_tick() {
     } else {
         None
     };
+    #[cfg(feature = "dev")]
+    let t_draw = std::time::Instant::now();
     r.app.render(&mut r.canvas, &r.fonts, &np);
+    #[cfg(feature = "dev")]
+    scroll_timing::raster(t_draw.elapsed().as_micros() as u64);
     if let Some(raster_t0) = raster_t0 {
         use std::sync::atomic::Ordering::Relaxed;
         // One clock read, not two — `elapsed()` was being called twice per frame purely to avoid
@@ -5856,6 +5940,8 @@ pub extern "C" fn cinder_sbar_release() {
 /// tracks the finger 1:1.
 #[no_mangle]
 pub extern "C" fn cinder_touch_drag(dy_px: libc::c_int) {
+    #[cfg(feature = "dev")]
+    scroll_timing::moved();
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.scroll_px(dy_px);
         r.dirty = true;

@@ -4291,6 +4291,24 @@ impl App {
         self.vol_overlay = crate::overlay::VOL_FRAMES;
     }
 
+    /// Back from a Settings topic page: the home page, cursor on that topic's link, scrolled just
+    /// far enough to show it. In Big view the home page is taller than the screen, and from the top
+    /// the lower topics' links are off the bottom (seen on the player 11-03: back from Power showed
+    /// Display to Library, with the cursor out of sight).
+    fn settings_page_back(&mut self) {
+        let g = self.settings_page.unwrap_or(0);
+        self.open_settings_page(None);
+        let link = crate::settings::group_row(g);
+        self.settings_sel = link;
+        let lang = self.settings_lang();
+        let rows = crate::settings::page_rows(None, lang);
+        if let Some(i) = rows.iter().position(|r| *r == link) {
+            let bottom = crate::settings::LIST_TOP + (i as i32 + 1) * crate::settings::RH();
+            let max = crate::settings::max_scroll_px(None, lang);
+            self.settings_scroll_px = (bottom + 8 - crate::canvas::H as i32).clamp(0, max);
+        }
+    }
+
     /// Show a Settings page (`None` = home) from its top, cursor on its first row.
     fn open_settings_page(&mut self, page: Option<usize>) {
         self.settings_page = page;
@@ -4910,7 +4928,12 @@ impl App {
         // target anyway is how an invisible control gets created.
         let has_header = !matches!(self.current(), Screen::NowPlaying | Screen::Lock);
         if has_header && crate::chrome::back_hit(x, y) {
-            self.pop();
+            // On a Settings topic page the arrow is the same Back as the edge swipe: the home page.
+            if self.current() == Screen::Settings && self.settings_page.is_some() {
+                self.settings_page_back();
+            } else {
+                self.pop();
+            }
             return vec![];
         }
 
@@ -9937,9 +9960,7 @@ impl App {
                 Button::Select | Button::Right | Button::Left => self.settings_activate(),
                 // Back from a topic page is the home page, cursor on the page's link.
                 Button::Back if self.settings_page.is_some() => {
-                    let g = self.settings_page.unwrap_or(0);
-                    self.open_settings_page(None);
-                    self.settings_sel = crate::settings::group_row(g);
+                    self.settings_page_back();
                     vec![]
                 }
                 Button::Back => {
@@ -17515,6 +17536,58 @@ mod tests {
         assert_eq!(a.display_sel, before);
         a.set_big_view(false);
         assert_eq!(a.display_scroll(), 0, "nothing to scroll with Big view off");
+    }
+
+    /// In Big view the Settings home page is taller than the screen. Back from a lower topic's page,
+    /// by the Back key (the edge swipe) or the header arrow, lands on the home page scrolled to show
+    /// that topic's link. Seen on the player 11-03: Back showed the top with the cursor off the
+    /// bottom, and the arrow left Settings altogether.
+    #[test]
+    fn big_view_back_from_a_settings_page_shows_its_link() {
+        use crate::settings::{group_row, page_rows, GROUPS, LIST_TOP, RH};
+        let _g = crate::text::scale_guard();
+        let mut a = open_from_menu(Screen::Settings);
+        a.set_big_view(true);
+        let lang = a.settings_lang();
+        assert!(
+            crate::settings::max_scroll_px(None, lang) > 0,
+            "the home page fits in Big view; this test has nothing to check"
+        );
+        let last = GROUPS.len() - 1;
+        let link_on_screen = |a: &App| {
+            let rows = page_rows(None, lang);
+            let i = rows.iter().position(|r| *r == a.settings_sel).unwrap() as i32;
+            let top = LIST_TOP + i * RH() - a.settings_scroll_px;
+            top >= LIST_TOP && top + RH() <= crate::canvas::H as i32
+        };
+        for by_arrow in [false, true] {
+            a.settings_sel = group_row(last);
+            a.press(Button::Select);
+            assert_eq!(a.settings_page, Some(last));
+            if by_arrow {
+                a.tap(30, 60);
+            } else {
+                a.press(Button::Back);
+            }
+            assert_eq!(
+                a.current(),
+                Screen::Settings,
+                "arrow={by_arrow}: left Settings"
+            );
+            assert_eq!(a.settings_page, None, "arrow={by_arrow}: still on the page");
+            assert_eq!(a.settings_sel, group_row(last));
+            assert!(
+                link_on_screen(&a),
+                "arrow={by_arrow}: the link is off the screen"
+            );
+        }
+        // At normal size the home page fits: Back leaves it where it starts.
+        a.set_big_view(false);
+        a.settings_sel = group_row(last);
+        a.press(Button::Select);
+        a.press(Button::Back);
+        assert_eq!(a.settings_scroll_px, 0);
+        assert!(link_on_screen(&a));
     }
 
     /// Big view pushes Sound quality's last rows off the glass, so the page scrolls, and Fine volume

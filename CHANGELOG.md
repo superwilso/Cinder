@@ -18,10 +18,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
-- **Settings has pages.** The Settings screen now fits without scrolling: Display, Big view,
-  Brightness and the sleep timer, then one row per topic (Playback, Now Playing, Library, Buttons &
-  gestures, Power, Device & storage, System). Each topic opens its own page, and Back returns to
-  Settings with that topic selected. This replaces the "More settings" fold-out. *Host-tested.*
+- **Scrolling starts without the stall.** The CPU idles at 598 MHz and the governor takes a few
+  frames to speed it up, so the first frames of every drag drew at half speed. While the screen is
+  on, the CPU's lowest speed is now 1040 MHz; screen off goes back to 598 MHz. 598 to 1040 MHz run
+  at the same voltage, so the same work should cost the same energy, done sooner. *Measured on the
+  owner's player, album grid in Big view: a scrolling frame drew in 9-11 ms with 21-31 ms spikes,
+  now 7-8 ms with 10-12 ms at worst. Battery effect not measured.*
+- **Settings has pages.** The Settings screen now fits without scrolling (Big view's taller rows
+  still scroll): Display, Big view, Brightness and the sleep timer, then one row per topic
+  (Playback, Now Playing, Library, Buttons & gestures, Power, Device & storage, System). Each topic
+  opens its own page. Back, by the edge swipe or the arrow, returns to Settings with that topic
+  selected and scrolled into view. This replaces the "More settings" fold-out. *Pages and the edge
+  swipe checked on the owner's player in Big view; the arrow and the scroll fix host-tested.*
 
 ## [0.3.22] — 2026-10-28
 
