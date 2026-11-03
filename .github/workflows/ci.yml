@@ -309,6 +309,30 @@ jobs:
         working-directory: rescue
         run: cargo audit
 
+  # The player is 32-bit ARM, and the host runners are 64-bit: `libc` types such as statvfs's
+  # f_blocks are u64 on a runner and u32 on the player. On 2026-11-03 a clippy autofix removed a
+  # cast that was a no-op on the PC, and main stopped building for the player while every job here
+  # stayed green. This compiles the player's Rust as the player does (no link: that needs Sony's
+  # libraries, so it stays in tools/release.sh). About ten seconds from cold, plus the apt install;
+  # the C compiler is for SQLite, which rusqlite builds from source.
+  arm:
+    name: player (32-bit ARM compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: arm-unknown-linux-gnueabihf
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: player
+      - name: Install the ARM C compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-arm-linux-gnueabihf
+      - name: Clippy for the player's target
+        working-directory: player
+        run: cargo clippy --target arm-unknown-linux-gnueabihf -p cinder-ffi --all-targets -- -D warnings
+
   payload:
     name: dist payload is complete
     runs-on: ubuntu-latest

@@ -117,7 +117,7 @@ code falls through to the old reboot-and-count behaviour rather than disabling t
 | Exit | Meaning | Supervisor |
 |---|---|---|
 | 132–136, 139, 141, 158/159 | ILL / TRAP / ABRT / BUS / FPE / SEGV / PIPE / XCPU-XFSZ | **respawn** |
-| 0 | deliberate exit — Settings ▸ Boot to stock arms its flag then `_exit(0)` and *relies* on appmgr rebooting | hand back |
+| 0 | deliberate exit — Settings ▸ System ▸ Boot to stock arms its flag then `_exit(0)` and *relies* on appmgr rebooting | hand back |
 | 42 | self-diagnosed fatal (guard / watchdog), whose contract is "die fast so the counter reverts" | hand back |
 | 143 / 137 | SIGTERM / SIGKILL — somebody killed us on purpose | hand back |
 | anything else | unknown | hand back |
