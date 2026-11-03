@@ -80,14 +80,12 @@ fn staged(comps: &[Comp], owner: &str, w1: bool) -> bool {
 }
 
 /// The uninstall package for this player's key.
-fn uninstall_upg(w1: bool) -> Result<&'static [u8], String> {
+fn uninstall_upg(comps: &[Comp], w1: bool) -> Result<&'static [u8], String> {
+    let ch = crate::payload::chosen(comps);
     let (bytes, name) = if w1 {
-        (
-            crate::payload::UNINSTALL_UPG_W1,
-            "cinder_home_uninstall.nw-wm1a.upg",
-        )
+        (ch.uninstall_upg_w1, "cinder_home_uninstall.nw-wm1a.upg")
     } else {
-        (crate::payload::UNINSTALL_UPG, "cinder_home_uninstall.upg")
+        (ch.uninstall_upg, "cinder_home_uninstall.upg")
     };
     bytes.ok_or_else(|| format!("this build has no uninstall package embedded ({name} was missing when it was compiled)"))
 }
@@ -114,16 +112,18 @@ impl Plan {
 
 /// Build the plan for `action` on a player that runs Walkman One (`w1`) or not. Returns Err when
 /// the build cannot carry it out at all: no package embedded for this player's key.
-pub fn plan(action: Action, comps: &[Comp], channel: &str, w1: bool) -> Result<Plan, String> {
+pub fn plan(action: Action, comps: &[Comp], w1: bool) -> Result<Plan, String> {
     if action.is_removal() {
-        let bytes = uninstall_upg(w1)?;
+        let bytes = uninstall_upg(comps, w1)?;
         return Ok(Plan {
             files: vec![(UPG_NAME.to_string(), bytes.len())],
             conf: None,
         });
     }
 
-    let files: Vec<(String, usize)> = crate::payload::PAYLOAD
+    let ch = crate::payload::chosen(comps);
+    let files: Vec<(String, usize)> = ch
+        .payload
         .iter()
         .filter(|(_, owner, _)| staged(comps, owner, w1))
         .map(|(name, _, bytes)| ((*name).to_string(), bytes.len()))
@@ -136,7 +136,7 @@ pub fn plan(action: Action, comps: &[Comp], channel: &str, w1: bool) -> Result<P
     }
     Ok(Plan {
         files,
-        conf: Some(crate::catalogue::conf_text(comps, channel)),
+        conf: Some(crate::catalogue::conf_text(comps, ch.name)),
     })
 }
 
@@ -149,16 +149,16 @@ pub fn plan(action: Action, comps: &[Comp], channel: &str, w1: bool) -> Result<P
 pub fn write_payload(
     action: Action,
     comps: &[Comp],
-    channel: &str,
     target: &Path,
     dry: bool,
     mut progress: impl FnMut(&str, usize),
 ) -> io::Result<()> {
     // The same reading the confirm screen's plan was built from: the drive itself.
     let w1 = crate::device::running_walkman_one(target);
-    plan(action, comps, channel, w1).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+    plan(action, comps, w1).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
     if action.is_removal() {
-        let bytes = uninstall_upg(w1).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+        let bytes =
+            uninstall_upg(comps, w1).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
         if !dry {
             write_verified(&target.join(UPG_NAME), bytes)?;
         }
@@ -200,7 +200,8 @@ pub fn write_payload(
         None
     };
 
-    for (name, owner, bytes) in crate::payload::PAYLOAD {
+    let ch = crate::payload::chosen(comps);
+    for (name, owner, bytes) in ch.payload {
         if !staged(comps, owner, w1) {
             continue;
         }
@@ -224,7 +225,7 @@ pub fn write_payload(
     } else if ll_fetch && dry {
         progress(ll::NAME, 0);
     }
-    let conf = crate::catalogue::conf_text(comps, channel);
+    let conf = crate::catalogue::conf_text(comps, ch.name);
     if !dry {
         write_verified(&target.join(CONF_NAME), conf.as_bytes())?;
     }
@@ -278,11 +279,15 @@ pub fn clean_leftovers(target: &Path, names: &[String]) -> Vec<(String, io::Resu
 /// `cinder_advanced.conf.example` is left out too: it is the reference Help points to, not a
 /// staged binary.
 pub fn payload_names() -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = crate::payload::PAYLOAD
-        .iter()
-        .map(|(n, _, _)| *n)
-        .filter(|n| *n != ADVANCED_EXAMPLE)
-        .collect();
+    // Every channel's files: a cleanup after a developer install must find cinder-probe too.
+    let mut names: Vec<&'static str> = Vec::new();
+    for ch in crate::payload::CHANNELS {
+        for (n, _, _) in ch.payload {
+            if *n != ADVANCED_EXAMPLE && !names.contains(n) {
+                names.push(n);
+            }
+        }
+    }
     for r in RETIRED {
         if !names.contains(r) {
             names.push(r);
@@ -1092,7 +1097,7 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
     #[test]
     fn an_uninstall_plan_is_one_file_and_no_conf() {
         let c = parse_catalogue(SAMPLE).unwrap();
-        match plan(Action::Uninstall, &c, "stable", false) {
+        match plan(Action::Uninstall, &c, false) {
             Ok(p) => {
                 assert_eq!(p.files.len(), 1);
                 assert_eq!(p.files[0].0, UPG_NAME);
@@ -1110,8 +1115,8 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
     fn install_and_update_stage_the_same_things() {
         let c = parse_catalogue(SAMPLE).unwrap();
         let (a, b) = (
-            plan(Action::Install, &c, "stable", false),
-            plan(Action::Update, &c, "stable", false),
+            plan(Action::Install, &c, false),
+            plan(Action::Update, &c, false),
         );
         let (a, b) = (a.unwrap(), b.unwrap());
         assert_eq!(a.files.len(), b.files.len());
@@ -1135,7 +1140,7 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
         fs::create_dir_all(&dir).unwrap();
 
         let mut seen = 0usize;
-        write_payload(Action::Install, &c, "stable", &dir, true, |_, _| seen += 1).unwrap();
+        write_payload(Action::Install, &c, &dir, true, |_, _| seen += 1).unwrap();
 
         assert!(
             seen > 0,
@@ -1170,7 +1175,8 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
     /// It is staged on every install, and kept: Help points at it.
     #[test]
     fn the_advanced_example_is_staged_and_never_a_leftover() {
-        assert!(crate::payload::PAYLOAD
+        assert!(crate::payload::CHANNELS[0]
+            .payload
             .iter()
             .any(|(n, owner, _)| *n == ADVANCED_EXAMPLE && owner.is_empty()));
         assert!(!payload_names().contains(&ADVANCED_EXAMPLE));

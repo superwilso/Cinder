@@ -28,9 +28,9 @@ pub const NAME: &str = "cinder-report.txt";
 /// The report text. `session` is this run's own log, when there is one to add.
 pub fn build(root: Option<&Path>, session: &str) -> String {
     let mut r = format!(
-        "Cinder report: installer {} ({} channel) on {} {}\n",
+        "Cinder report: installer {} (channels {}) on {} {}\n",
         crate::VERSION,
-        crate::CHANNEL,
+        crate::channels(),
         std::env::consts::OS,
         std::env::consts::ARCH
     );
@@ -106,16 +106,28 @@ fn upg_line(root: &Path) -> String {
     let Ok(bytes) = fs::read(root.join(stage::UPG_NAME)) else {
         return format!("{}: not on the drive", stage::UPG_NAME);
     };
-    let installs = crate::payload::PAYLOAD
-        .iter()
-        .filter(|(n, _, _)| *n == stage::UPG_NAME)
-        .map(|(_, owner, b)| (format!("install, {}", owner.trim_start_matches("fw:")), *b));
-    let removals = [
-        ("uninstall, nw-a50", crate::payload::UNINSTALL_UPG),
-        ("uninstall, nw-wm1a", crate::payload::UNINSTALL_UPG_W1),
-    ]
-    .into_iter()
-    .filter_map(|(n, b)| Some((n.to_string(), b?)));
+    let installs = crate::payload::CHANNELS.iter().flat_map(|ch| {
+        ch.payload
+            .iter()
+            .filter(|(n, _, _)| *n == stage::UPG_NAME)
+            .map(move |(_, owner, b)| {
+                (
+                    format!("install, {}, {}", ch.name, owner.trim_start_matches("fw:")),
+                    *b,
+                )
+            })
+    });
+    let removals = crate::payload::CHANNELS.iter().flat_map(|ch| {
+        [
+            (format!("uninstall, {}, nw-a50", ch.name), ch.uninstall_upg),
+            (
+                format!("uninstall, {}, nw-wm1a", ch.name),
+                ch.uninstall_upg_w1,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(n, b)| Some((n, b?)))
+    });
     let which = installs
         .chain(removals)
         .find(|(_, b)| *b == bytes.as_slice())

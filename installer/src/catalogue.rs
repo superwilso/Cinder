@@ -373,6 +373,22 @@ pub fn apply_saved(comps: &mut [Comp], text: &str) -> usize {
             }
         }
     }
+    // A player installed before the channel was a choice has no CINDER_CHANNEL line, only the
+    // `# channel:` stamp. Without this an Update would quietly move a developer install to stable.
+    if !text
+        .lines()
+        .any(|l| l.trim_start().starts_with("CINDER_CHANNEL="))
+    {
+        if let (Some(ch), Some(c)) = (
+            saved_stamp(text).0,
+            comps.iter_mut().find(|c| c.var == "CINDER_CHANNEL"),
+        ) {
+            if c.valid(&ch) {
+                c.value = ch;
+                n += 1;
+            }
+        }
+    }
     n
 }
 
@@ -696,6 +712,31 @@ preload | CINDER_PRELOAD | bool | 0 | Preload
     }
 
     // ── update: re-reading the answers already on the player ───────────────────────────────
+
+    /// An install from before the channel was a choice carries only the stamp; an Update keeps it.
+    /// A CINDER_CHANNEL line, when there is one, wins over the stamp.
+    #[test]
+    fn the_channel_comes_back_from_the_old_stamp() {
+        let mut c =
+            parse_catalogue(crate::CATALOGUE.expect("components.conf is embedded")).unwrap();
+        let ch = |c: &[Comp]| {
+            c.iter()
+                .find(|x| x.var == "CINDER_CHANNEL")
+                .unwrap()
+                .value
+                .clone()
+        };
+        apply_saved(&mut c, "# channel: dev\nCINDER_BATTERY=1\n");
+        assert_eq!(ch(&c), "dev");
+        apply_saved(&mut c, "# channel: dev\nCINDER_CHANNEL=stable\n");
+        assert_eq!(ch(&c), "stable");
+        apply_saved(&mut c, "# channel: nonsense\n");
+        assert_eq!(
+            ch(&c),
+            "stable",
+            "a stamp that is not a channel changes nothing"
+        );
+    }
 
     #[test]
     fn saved_answers_come_back() {

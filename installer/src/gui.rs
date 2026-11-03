@@ -529,17 +529,21 @@ fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i3
     }
 
     let comps = match crate::CATALOGUE.and_then(|t| crate::catalogue::parse_catalogue(t).ok()) {
-        Some(c) => c,
+        Some(mut c) => {
+            crate::payload::fit_catalogue(&mut c);
+            c
+        }
         None => {
             fail("This build has no component catalogue embedded, so it cannot install anything.\n\ncinder-home/deploy/components.conf was missing when it was compiled.");
             return Err(2);
         }
     };
-    if !crate::MISSING.is_empty() {
+    let missing = crate::payload::CHANNELS[0].missing;
+    if !missing.is_empty() {
         fail(&format!(
             "This build is incomplete — {} payload file(s) were missing when it was compiled:\n\n{}\n\nDownload a release build rather than one made from a checkout with no dist/.",
-            crate::MISSING.len(),
-            crate::MISSING.join("\n")
+            missing.len(),
+            missing.join("\n")
         ));
         return Err(2);
     }
@@ -797,7 +801,7 @@ pub fn screenshots(dir: &std::path::Path) -> i32 {
         a.target = a.players.first().cloned();
         a.state = Installed {
             last: Some(device::LastRun::Installed),
-            channel: Some(crate::CHANNEL.to_string()),
+            channel: Some(crate::payload::default().name.to_string()),
             installer_version: Some(crate::VERSION.to_string()),
             ..Installed::default()
         };
@@ -1506,12 +1510,7 @@ impl App {
             return s;
         }
 
-        let plan = stage::plan(
-            self.action,
-            &self.comps,
-            crate::CHANNEL,
-            self.state.walkman_one,
-        );
+        let plan = stage::plan(self.action, &self.comps, self.state.walkman_one);
         let mut s = format!(
             "{}\r\n\r\nPlayer:  {target}\r\n\r\n",
             self.action.verb().to_uppercase()
@@ -2168,10 +2167,14 @@ impl App {
                 format!(
                     "{}  ·  {} channel  ·  DRY RUN",
                     crate::VERSION,
-                    crate::CHANNEL
+                    crate::payload::chosen(&self.comps).name
                 )
             } else {
-                format!("{}   ·   {} channel", crate::VERSION, crate::CHANNEL)
+                format!(
+                    "{}   ·   {} channel",
+                    crate::VERSION,
+                    crate::payload::chosen(&self.comps).name
+                )
             });
             let mut r = RECT {
                 left: rc.right / 2,
@@ -2236,7 +2239,7 @@ fn carry_out(
     push_log(format!("  {}", crate::device::package_line(target)));
     tick();
     let verb = if dry { "would write" } else { "wrote" };
-    let r = stage::write_payload(action, comps, crate::CHANNEL, target, dry, |name, n| {
+    let r = stage::write_payload(action, comps, target, dry, |name, n| {
         push_log(format!("  {verb} {name:<24} {n:>9} bytes"));
         tick();
     });

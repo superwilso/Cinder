@@ -18,6 +18,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **One installer, both builds.** Every installer (releases and edge) now carries the developer
+  build as well as stable, and **Device ▸ Build** picks one: Stable, for almost everyone, or
+  Developer, which adds adb and test tools. Files the two share are stored once, and Update keeps
+  the build the player has, including on players installed before this. For releases, the
+  developer payload is not committed: `tools/release.sh` records its checksums in
+  `PAYLOAD.sha256` and uploads it to a draft release, and every installer build refuses it unless
+  it matches. *Host-tested, with the Build drop-down checked in the real Windows window; no release
+  has been cut with it yet.*
 - **Edge builds.** An untested build of the newest commit, for trying what's coming, on the
   [edge](https://github.com/superwilso/Cinder/releases/tag/edge) pre-release with installers for
   Windows, Linux and macOS. A maintainer publishes one with `tools/edge.sh`, which builds the

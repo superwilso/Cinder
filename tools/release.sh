@@ -149,8 +149,14 @@ UNREL="$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' "$CL" | tr -d '[:s
 if grep -q "^## \[$VER\]" "$CL" && [ -z "$UNREL" ]; then
     ok "changelog already has a [$VER] section"
 elif grep -q "^## \[$VER\]" "$CL"; then
-    fold_into "$VER" "$CL" > "$CL.tmp" && mv "$CL.tmp" "$CL"
-    ok "changelog: [Unreleased] merged into the existing [$VER] section"
+    # --dry-run edits nothing — this branch used to fold the file for real (seen 2026-11-03).
+    if [ -n "$DRY" ]; then
+        act "changelog: [Unreleased] would be merged into the existing [$VER] section  [would]"
+    else
+        fold_into "$VER" "$CL" > "$CL.tmp" && mv "$CL.tmp" "$CL"
+        ok "changelog: [Unreleased] merged into the existing [$VER] section"
+    fi
+    CHANGED+=("changelog")
 elif ! grep -q '^## \[Unreleased\]' "$CL"; then
     note "changelog has no [Unreleased] section — leaving it alone"
 else
@@ -215,6 +221,22 @@ for model in nw-a50 nw-wm1a; do
         || { tail -20 /tmp/cinder-release-build.log; die "pack_upg $model failed — see /tmp/cinder-release-build.log"; }
 done
 AFTER="$(find cinder-home/dist/stable -type f -exec md5sum {} + | sort -k2)"
+
+# AND THE DEVELOPER BUILD. Every installer carries both channels and the person installing picks
+# one (the `channel` entry in components.conf). dist/dev is NOT committed — its checksums go into
+# the manifest below, and the files themselves are uploaded to a draft release just before the tag
+# is pushed (step 8), where release.yml downloads them and checks them against those checksums.
+# The build is reproducible, so run 2 writes the same checksums run 1 did.
+note "building the developer channel …"
+bash cinder-home/build.sh dev >>/tmp/cinder-release-build.log 2>&1 \
+    || { tail -20 /tmp/cinder-release-build.log; die "dev build failed — see /tmp/cinder-release-build.log"; }
+for model in nw-a50 nw-wm1a; do
+    bash cinder-home/tools/pack_upg.sh dev "$model" >>/tmp/cinder-release-build.log 2>&1 \
+        || { tail -20 /tmp/cinder-release-build.log; die "pack_upg dev $model failed — see /tmp/cinder-release-build.log"; }
+done
+bash tools/check_arm_payload.sh cinder-home/dist/dev >>/tmp/cinder-release-build.log 2>&1 \
+    || { tail -20 /tmp/cinder-release-build.log; die "the developer payload does not fit the player — see /tmp/cinder-release-build.log"; }
+ok "developer channel built"
 
 if [ "$BEFORE" != "$AFTER" ]; then
     diff <(echo "$BEFORE") <(echo "$AFTER") | sed 's/^/    /' || true
@@ -329,6 +351,12 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/cinder_home_install.nw-wm1a.upg
     cinder-home/dist/stable/cinder_home_uninstall.nw-wm1a.upg
 )
+# The developer payload: the same files under dist/dev, plus the probe, which only it has.
+STABLE_COUNT=${#PAYLOAD_FILES[@]}
+for f in "${PAYLOAD_FILES[@]:0:$STABLE_COUNT}"; do
+    PAYLOAD_FILES+=("${f/dist\/stable\//dist/dev/}")
+done
+PAYLOAD_FILES+=(cinder-home/dist/dev/cinder-probe)
 MISSING=0
 for f in "${PAYLOAD_FILES[@]}"; do
     [ -f "$f" ] || { echo "    missing: $f"; MISSING=1; }
@@ -441,6 +469,20 @@ if [ -n "$STALE_TAG" ]; then
     git tag -d "$TAG" >/dev/null
     note "removed the unpushed $TAG left by an earlier run"
 fi
+# The developer payload goes up BEFORE the tag: pushing the tag starts release.yml, which downloads
+# it from this draft release and refuses it unless every file matches the committed manifest. A
+# draft is visible to maintainers only and creates no tag of its own.
+DEVPAY="$(mktemp -d)/dev-payload.tar.gz"
+tar -czf "$DEVPAY" -C cinder-home/dist dev
+if ! gh release view "payload-$TAG" >/dev/null 2>&1; then
+    gh release create "payload-$TAG" --draft --title "payload for $TAG (for release.yml, not for download)" \
+        --notes "The developer payload for $TAG, uploaded by tools/release.sh and read by release.yml. Deleted once $TAG is published." >/dev/null \
+        || die "could not create the draft release payload-$TAG for the developer payload"
+fi
+gh release upload "payload-$TAG" "$DEVPAY" --clobber \
+    || die "could not upload the developer payload to payload-$TAG"
+ok "uploaded the developer payload to the draft release payload-$TAG"
+
 git tag -a "$TAG" -m "Cinder $TAG"
 ok "tagged $TAG"
 git push origin "$TAG" \
