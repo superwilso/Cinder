@@ -2139,11 +2139,13 @@ static void cpu_floor_update() {
     if (g_screen_on && SCREEN_FLOOR_KHZ > want) want = SCREEN_FLOOR_KHZ;
     if (g_cpufloor_playing && g_cpufloor_khz > want) want = g_cpufloor_khz;
     if (want == g_cpufloor_written) return;
+    // Recorded BEFORE the write, so a node that will not open is reported once per change of
+    // answer, not on every call (CI caught ~1 line a second on a runner whose cpufreq is 0644).
+    g_cpufloor_written = want;
     FILE* f = std::fopen(CPUFLOOR_PATH, "w");
     if (!f) { clog_("cpufloor: cannot open scaling_min_freq (not 0666?)"); return; }
     std::fprintf(f, "%d", want);
     std::fclose(f);
-    g_cpufloor_written = want;
     // Read it back: cpufreq silently clamps to a value the table actually has, so what we asked
     // for and what is in force are not the same question.
     char m[128];
