@@ -10,7 +10,7 @@ license = "PolyForm-Noncommercial-1.0.0"
 [dependencies]
 rusb = { version = "0.9", features = ["vendored"] }
 # Inflates the DA out of wbrt's NSIS release (fetch.rs). Pure Rust; brings only adler2.
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
 
 [profile.release]
 opt-level = "z"
