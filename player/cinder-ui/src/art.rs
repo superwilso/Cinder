@@ -255,13 +255,13 @@ pub fn draw_image(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, opac
                 continue;
             };
             if op >= 1.0 {
-                for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
+                for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
                     *d = ((l[s[0] as usize] as u32) << 16)
                         | ((l[s[1] as usize] as u32) << 8)
                         | l[s[2] as usize] as u32;
                 }
             } else {
-                for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
+                for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
                     let r = l[lerp(br, s[0], op) as usize];
                     let g = l[lerp(bg, s[1], op) as usize];
                     let b = l[lerp(bb, s[2], op) as usize];
@@ -283,11 +283,11 @@ pub fn draw_image(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, opac
             continue;
         };
         if op >= 1.0 {
-            for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
+            for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
                 *d = ((s[0] as u32) << 16) | ((s[1] as u32) << 8) | s[2] as u32;
             }
         } else {
-            for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
+            for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
                 let r = lerp(br, s[0], op);
                 let g = lerp(bg, s[1], op);
                 let b = lerp(bb, s[2], op);

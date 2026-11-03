@@ -302,7 +302,9 @@ fn id3_text(enc: u8, bytes: &[u8]) -> String {
                 _ => (false, bytes),
             };
             let units: Vec<u16> = bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| {
                     if le {
                         u16::from_le_bytes([c[0], c[1]])

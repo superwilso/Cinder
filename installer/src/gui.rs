@@ -877,7 +877,7 @@ fn capture(hwnd: HWND) -> Option<(u32, u32, Vec<u8>)> {
     [PW_CLIENTONLY | PW_RENDERFULLCONTENT, PW_CLIENTONLY]
         .into_iter()
         .filter_map(|flags| capture_with(hwnd, flags))
-        .find(|(_, _, rgb)| rgb.chunks_exact(3).any(|p| p != &rgb[..3]))
+        .find(|(_, _, rgb)| rgb.as_chunks::<3>().0.iter().any(|p| p != &rgb[..3]))
 }
 
 fn capture_with(hwnd: HWND, flags: u32) -> Option<(u32, u32, Vec<u8>)> {
@@ -929,7 +929,9 @@ fn capture_with(hwnd: HWND, flags: u32) -> Option<(u32, u32, Vec<u8>)> {
             return None;
         }
         let rgb = bgra
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| [p[2], p[1], p[0]])
             .collect();
         Some((wd as u32, ht as u32, rgb))

@@ -94,10 +94,11 @@ pub fn json_string(body: &str, key: &str) -> Option<String> {
                     Some('r') => {}
                     Some('u') => {
                         let hex: String = chars.by_ref().take(4).collect();
-                        match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                            Some(ch) => out.push(ch),
-                            None => return None,
-                        }
+                        out.push(
+                            u32::from_str_radix(&hex, 16)
+                                .ok()
+                                .and_then(char::from_u32)?,
+                        );
                     }
                     Some(other) => out.push(other),
                     None => return None,
