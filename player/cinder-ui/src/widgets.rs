@@ -56,7 +56,7 @@ pub fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32)
 /// Draw text right-aligned so it ends at `xr`.
 /// The gutter both helpers keep clear of the panel edges — the same 22px every screen's left
 /// margin uses, so clamped text lines up with the rest of the layout instead of touching the glass.
-const EDGE: f32 = 22.0;
+pub(crate) const EDGE: f32 = 22.0;
 
 /// Draw text ending at `xr`.
 ///

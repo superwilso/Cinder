@@ -66,6 +66,13 @@ pub fn set_large(on: bool) {
     LARGE.with(|l| l.set(on));
 }
 
+/// Short wording wanted? Big view, or text at Big view's size or larger without it (the slider goes
+/// to 140%): the shorter labels were written for that width, and the long ones are cut with "…"
+/// there. Only for choosing WORDS; layout that depends on Big view's own geometry asks `large()`.
+pub fn tight() -> bool {
+    large() || crate::text::scale_pct() >= crate::nav::BIG_TEXT_PCT
+}
+
 pub fn large() -> bool {
     #[cfg(not(test))]
     return LARGE.load(std::sync::atomic::Ordering::Relaxed);
@@ -213,3 +220,23 @@ pub fn PICKER_ROW_H() -> i32 {
 //     shrink for all three, so it belongs with the caption pass above.
 //   * the seven treatments of the header's right-hand slot (audit C3), which is a `chrome::header`
 //     API change, not a number.
+
+#[cfg(test)]
+mod tight_tests {
+    /// Short wording comes with Big view, and with Big view's text size or larger without it; not
+    /// at normal size. At 140% without Big view the long labels were cut with "…".
+    #[test]
+    fn tight_follows_big_view_and_large_text() {
+        let _g = crate::text::scale_guard();
+        super::set_large(false);
+        assert!(!super::tight());
+        crate::text::set_scale_pct(120);
+        assert!(!super::tight());
+        crate::text::set_scale_pct(140);
+        assert!(super::tight());
+        crate::text::set_scale_pct(100);
+        super::set_large(true);
+        assert!(super::tight());
+        super::set_large(false);
+    }
+}

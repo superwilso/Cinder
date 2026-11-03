@@ -737,7 +737,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     );
     let dsub = if bt.debug_log {
         crate::i18n::text("Recording · switch off to save it to the drive")
-    } else if crate::scale::large() {
+    } else if crate::scale::tight() {
         crate::i18n::text("Record radio traffic for support")
     } else {
         crate::i18n::text("Record the radio's traffic for a bug report")
@@ -760,7 +760,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     let hint_st = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08);
     let link = "RECEIVER MODE \u{203a}";
     let link_st = sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08);
-    if crate::scale::large() {
+    // Two lines when one would cut the hint: in Big view always, and at a large text size without
+    // it (the slider's 140%) as long as the Debug log row ends above the hint's line.
+    let one_line =
+        text::measure(f, hint, &hint_st) + 14.0 + text::measure(f, link, &link_st) <= 458.0 - 46.0;
+    let room = DEBUG_Y() + DEBUG_H() + 16 <= 736;
+    if crate::scale::large() || (!one_line && room) {
         // Big view: the hint takes the line above the link, in the room four paired rows leave,
         // so neither is cut. The link's target band (`FOOTER_LINK_TOP`) starts under the hint.
         icons::rx(c, 30.0, 744.0, 14.0, t.faint);
