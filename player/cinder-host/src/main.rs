@@ -1393,6 +1393,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         swipe_up: settings::SwipeTo::Off,
                         swipe_down: settings::SwipeTo::Off,
                         np_button: cinder_ui::now_playing::NpButton::Bluetooth,
+                        np_back: false,
+                        np_count: false,
+                        hold_buttons: false,
                         volume_limit: false,
                         big_view: false,
                         big_bar: false,
@@ -2238,6 +2241,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     swipe_up: settings::SwipeTo::Off,
                     swipe_down: settings::SwipeTo::Off,
                     np_button: cinder_ui::now_playing::NpButton::Bluetooth,
+                    np_back: false,
+                    np_count: false,
+                    hold_buttons: false,
                     volume_limit: false,
                     big_view: false,
                     big_bar: false,
@@ -2281,6 +2287,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     swipe_up: settings::SwipeTo::Off,
                     swipe_down: settings::SwipeTo::Off,
                     np_button: cinder_ui::now_playing::NpButton::Bluetooth,
+                    np_back: false,
+                    np_count: false,
+                    hold_buttons: false,
                     volume_limit: false,
                     big_view: false,
                     big_bar: false,
@@ -3917,6 +3926,27 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         cinder_ui::scale::set_big_bar(false);
         cinder_ui::scale::set_big_icons(false);
         base_scale();
+    }
+
+    // Settings ▸ Back arrow and Track number on (#51): the arrow top-left, "3 / 12" in the middle
+    // of the top band. Last, like the blocks above.
+    {
+        use cinder_ui::nav::Screen;
+        let mut app = new_app();
+        app.set_np_back(true);
+        app.set_np_count(true);
+        let rows: Vec<cinder_ui::model::SongRow> = (1..=12)
+            .map(|i| cinder_ui::model::SongRow {
+                title: format!("Track {i}"),
+                ..Default::default()
+            })
+            .collect();
+        app.set_play_context(rows, 2);
+        app.go_for_preview(Screen::NowPlaying);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "now_playing_back_count");
+        app.set_np_back(false);
     }
 
     // Display ▸ Night on Auto: Starts and Ends come onto the page. Last, like the block above.

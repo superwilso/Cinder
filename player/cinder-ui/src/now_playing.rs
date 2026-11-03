@@ -168,6 +168,77 @@ pub fn button() -> NpButton {
     BUTTON.with(|c| c.get())
 }
 
+thread_local! {
+    /// Settings ▸ Back arrow (#51): the arrow is drawn top-left and the Lyrics chip moves right of
+    /// it. Set by the navigator, like [`BUTTON`].
+    static BACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_back(on: bool) {
+    BACK.with(|c| c.set(on));
+}
+
+pub fn back() -> bool {
+    BACK.with(|c| c.get())
+}
+
+/// The back arrow's chip: the same pill as the Lyrics chip, square, at the left of the top band.
+pub const BACK_CHIP_W: i32 = 40;
+/// How far the Lyrics chip moves right while the arrow is shown.
+pub const BACK_SHIFT: i32 = BACK_CHIP_W + 8;
+
+/// How far the Lyrics chip and its target sit right of where they always were.
+pub fn lyrics_shift() -> i32 {
+    if back() {
+        BACK_SHIFT
+    } else {
+        0
+    }
+}
+
+/// Did a tap land on the back arrow? Its target is the band's full height and the arrow's chip
+/// plus the margin to the glass edge, so a thumb in the corner finds it.
+pub fn hit_back(x: i32, y: i32) -> bool {
+    back()
+        && (0..LYRICS_X0 + BACK_CHIP_W + 4).contains(&x)
+        && (crate::chrome::STATUS_H..crate::chrome::STATUS_H + 44).contains(&y)
+}
+
+/// The back arrow, top-left under the status bar (Settings ▸ Back arrow).
+pub fn back_chip(c: &mut Canvas, t: &Theme) {
+    fill_rect(c, LYRICS_X0, LYRICS_Y0, BACK_CHIP_W, LYRICS_H, t.panel);
+    crate::widgets::stroke_rect(c, LYRICS_X0, LYRICS_Y0, BACK_CHIP_W, LYRICS_H, t.ctrl(), 1);
+    crate::icons::back(
+        c,
+        (LYRICS_X0 + BACK_CHIP_W / 2) as f32,
+        (LYRICS_Y0 + LYRICS_H / 2) as f32,
+        14.0,
+        t.ink,
+    );
+}
+
+/// The track's place in what is playing, "3 / 12", centred in the top band (Settings ▸ Track
+/// number). `pos` counts from 1.
+pub fn count_chip(c: &mut Canvas, t: &Theme, f: &FontSet, pos: usize, len: usize) {
+    if len == 0 || pos == 0 {
+        return;
+    }
+    let st = lyrics_style(t);
+    let label = format!("{pos} / {len}");
+    let w = text::measure(f, &label, &st) as i32 + 24;
+    let x = 240 - w / 2;
+    fill_rect(c, x, LYRICS_Y0, w, LYRICS_H, t.panel);
+    crate::widgets::stroke_rect(c, x, LYRICS_Y0, w, LYRICS_H, t.ctrl(), 1);
+    text::draw(
+        c,
+        f,
+        (x + 12) as f32,
+        (LYRICS_Y0 + LYRICS_H / 2 + 5) as f32,
+        &label,
+        &st,
+    );
+}
+
 pub const HEART_CX: i32 = 432;
 pub const HEART_CY: i32 = 548;
 pub const HEART_HALF: i32 = 30;
@@ -452,7 +523,7 @@ fn cinder_layout(night: bool, lyrics: bool) -> Layout {
     if lyrics {
         l.push(
             Shape::Rect {
-                x: 0,
+                x: lyrics_shift(),
                 y: crate::chrome::STATUS_H,
                 w: LYRICS_HIT_W,
                 h: 44,
@@ -705,11 +776,12 @@ fn lyrics_style(t: &Theme) -> TextStyle {
 /// Did a tap land on the Lyrics chip? `shown` = the chip is drawn (the song has lyrics).
 pub fn hit_lyrics(x: i32, y: i32, shown: bool) -> bool {
     shown
-        && (0..LYRICS_HIT_W).contains(&x)
+        && (lyrics_shift()..lyrics_shift() + LYRICS_HIT_W).contains(&x)
         && (crate::chrome::STATUS_H..crate::chrome::STATUS_H + 44).contains(&y)
 }
 
 pub(crate) fn lyrics_chip(c: &mut Canvas, t: &Theme, f: &FontSet) {
+    let x0 = LYRICS_X0 + lyrics_shift();
     let st = lyrics_style(t);
     let label = crate::widgets::fit(
         f,
@@ -718,12 +790,12 @@ pub(crate) fn lyrics_chip(c: &mut Canvas, t: &Theme, f: &FontSet) {
         (LYRICS_HIT_W - 24 - LYRICS_X0) as f32,
     );
     let w = text::measure(f, &label, &st) as i32 + 24;
-    fill_rect(c, LYRICS_X0, LYRICS_Y0, w, LYRICS_H, t.panel);
-    crate::widgets::stroke_rect(c, LYRICS_X0, LYRICS_Y0, w, LYRICS_H, t.ctrl(), 1);
+    fill_rect(c, x0, LYRICS_Y0, w, LYRICS_H, t.panel);
+    crate::widgets::stroke_rect(c, x0, LYRICS_Y0, w, LYRICS_H, t.ctrl(), 1);
     text::draw(
         c,
         f,
-        (LYRICS_X0 + 12) as f32,
+        (x0 + 12) as f32,
         (LYRICS_Y0 + LYRICS_H / 2 + 5) as f32,
         &label,
         &st,

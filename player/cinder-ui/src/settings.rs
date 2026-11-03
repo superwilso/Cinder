@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 30;
+pub const ROWS: usize = 33;
 /// Rows shown while the list is folded: the everyday ones and `ROW_MORE` itself.
 pub const EVERYDAY: usize = 13;
 /// More settings: unfolds every row after it, in place, and folds them away again.
@@ -57,15 +57,24 @@ pub const ROW_SCREEN_OFF: usize = 5;
 /// night and the sleep timer. Asked for on the r/walkman thread; OFF by default, because the owner
 /// uses the Shelf and a new gesture must never arrive unasked (`docs/PLAN_community_2026-09-23.md`
 /// B1). With it off there is no gesture and nothing else on any screen changes.
-pub const ROW_QUICK: usize = 19;
+pub const ROW_QUICK: usize = 21;
 /// Swipe up / swipe down on Now Playing (#51): each opens the screen picked here, or nothing. OFF
 /// by default, like every community-asked gesture. They are the middle of the screen only: a swipe
 /// up from the bottom edge stays the Shelf's and a pull from the status bar the pull-down panel's.
-pub const ROW_SWIPE_UP: usize = 20;
-pub const ROW_SWIPE_DOWN: usize = 21;
+pub const ROW_SWIPE_UP: usize = 16;
+pub const ROW_SWIPE_DOWN: usize = 17;
 /// The third button on Now Playing's toolbar (#51): Bluetooth, as always, or Sound, Equalizer or the
 /// Menu. `now_playing::NpButton`.
-pub const ROW_NP_BUTTON: usize = 22;
+pub const ROW_NP_BUTTON: usize = 18;
+/// A back arrow at the top left of Now Playing (#51, plaquette): the same as the left-edge swipe,
+/// for anyone who does not know the swipe or finds it hard. OFF by default.
+pub const ROW_NP_BACK: usize = 19;
+/// The track's place in what is playing ("3 / 12") on Now Playing (#51, plaquette). OFF by default.
+pub const ROW_NP_COUNT: usize = 20;
+/// Hold locks the player's own buttons too, not only the screen (#51, plaquette). Power still
+/// toggles the screen and headphone buttons still work. OFF by default: under Hold the side
+/// buttons have always controlled playback.
+pub const ROW_HOLD_BUTTONS: usize = 22;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -75,7 +84,7 @@ pub const ROW_NP_BUTTON: usize = 22;
 /// directly; the flag would be a control that accepts a write and changes nothing, which is
 /// exactly what "High gain output" turned out to be (see sound.rs). So the shell reads Sony's
 /// number and clamps in its own `apply_volume`.
-pub const ROW_VOLUME_LIMIT: usize = 18;
+pub const ROW_VOLUME_LIMIT: usize = 25;
 pub const ROW_SLEEP: usize = 6;
 /// What the shuffle button deals: SONGS (every track at random, as always), ALBUMS (whole albums
 /// at random, each in its own order) or ARTISTS. `shuffle.rs`. SONGS by default, so the button
@@ -94,13 +103,13 @@ pub const ROW_FOLDERS_TAB: usize = 15;
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. 30 MIN by default since 2026-10-04 (it was OFF): the owner's rule
 /// is that no state may drain a player nobody is using. OFF is one tap away.
-pub const ROW_AUTO_OFF: usize = 16;
+pub const ROW_AUTO_OFF: usize = 23;
 /// Bluetooth auto off: switch the radio off after ten minutes of a dark screen with nothing
 /// playing over it. The radio (and a link carrying nothing) costs power for as long as it is up,
 /// and nothing but the user ever switched it off. ON by default since 2026-10-04, like Auto power
 /// off. It does not come back by itself.
-pub const ROW_BT_IDLE_OFF: usize = 17;
-pub const ROW_STORAGE: usize = 23;
+pub const ROW_BT_IDLE_OFF: usize = 24;
+pub const ROW_STORAGE: usize = 26;
 pub const ROW_BATTERY: usize = 9;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
@@ -110,20 +119,20 @@ pub const ROW_CLOCK: usize = 8;
 pub const ROW_USB_MODE: usize = 10; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 24;
+pub const ROW_BOOT_STOCK: usize = 27;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 25;
+pub const ROW_RESTART: usize = 28;
 pub const ROW_POWER_OFF: usize = 11;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 26;
+pub const ROW_RESET: usize = 29;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_LANGUAGE: usize = 27;
-pub const ROW_FIRMWARE: usize = 28;
-pub const ROW_MODEL: usize = 29;
+pub const ROW_LANGUAGE: usize = 30;
+pub const ROW_FIRMWARE: usize = 31;
+pub const ROW_MODEL: usize = 32;
 
 /// What a swipe on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -202,11 +211,17 @@ fn RH() -> i32 {
 /// Section labels and how many rows sit under each — the single source both `content_height` and
 /// `row_at` read, so a row added to one can't be missed by the other.
 /// The first group is the everyday list and has no label: a list that fits the screen needs none.
-const SECTIONS: [(&str, usize); 5] = [
+///
+/// More settings is grouped by what a row is about (owner, 2026-11-03: "make things easier to
+/// find"): what the Library shows, what Now Playing shows and does, the gestures and buttons, power,
+/// then the system rows.
+const SECTIONS: [(&str, usize); 7] = [
     ("", EVERYDAY),
     ("LIBRARY", 3),
+    ("NOW PLAYING", 5),
+    ("GESTURES & BUTTONS", 2),
     ("POWER SAVING", 2),
-    ("SYSTEM", 10),
+    ("SYSTEM", 6),
     ("ABOUT", 2),
 ];
 /// Height of a section's label; the unlabelled first group has none.
@@ -223,7 +238,7 @@ pub const DISPLAY_SUB: &str = "Palette · accent · volume display";
 /// The Shuffle row's second line: which control the setting is about.
 pub const SHUFFLE_SUB: &str = "What the shuffle button deals";
 /// The More settings row's second line: what unfolds.
-pub const MORE_SUB: &str = "Library · power saving · system";
+pub const MORE_SUB: &str = "Library · Now Playing · gestures · system";
 /// The pull-down panel row's second line: where the gesture starts and what it opens.
 pub const QUICK_SUB: &str = "Swipe down from the top of the screen";
 /// The Big view row's second line: what it changes.
@@ -294,6 +309,11 @@ pub struct SettingsView<'a> {
     pub swipe_down: SwipeTo,
     /// Now Playing's third toolbar button (`ROW_NP_BUTTON`).
     pub np_button: crate::now_playing::NpButton,
+    /// Now Playing's back arrow and track counter, and Hold locking the buttons (`ROW_NP_BACK`,
+    /// `ROW_NP_COUNT`, `ROW_HOLD_BUTTONS`).
+    pub np_back: bool,
+    pub np_count: bool,
+    pub hold_buttons: bool,
     /// What shuffle deals (`ROW_SHUFFLE`): "SONGS", "ALBUMS" or "ARTISTS".
     pub shuffle_by: &'a str,
     /// More settings is unfolded (`ROW_MORE`).
@@ -389,6 +409,9 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_SWIPE_UP => Trail::Value(v.swipe_up.label()),
         ROW_SWIPE_DOWN => Trail::Value(v.swipe_down.label()),
         ROW_NP_BUTTON => Trail::Value(v.np_button.label()),
+        ROW_NP_BACK => Trail::Switch(v.np_back),
+        ROW_NP_COUNT => Trail::Switch(v.np_count),
+        ROW_HOLD_BUTTONS => Trail::Switch(v.hold_buttons),
         ROW_BIG => Trail::Switch(v.big_view),
         ROW_BIG_BAR => Trail::Switch(v.big_bar),
         ROW_BIG_ICONS => Trail::Switch(v.big_icons),
@@ -450,6 +473,9 @@ fn title(r: usize) -> &'static str {
         ROW_SWIPE_UP => crate::i18n::text("Swipe up"),
         ROW_SWIPE_DOWN => crate::i18n::text("Swipe down"),
         ROW_NP_BUTTON => crate::i18n::text("Now Playing button"),
+        ROW_NP_BACK => crate::i18n::text("Back arrow"),
+        ROW_NP_COUNT => crate::i18n::text("Track number"),
+        ROW_HOLD_BUTTONS => crate::i18n::text("Hold locks the buttons"),
         ROW_BIG => crate::i18n::text("Big view"),
         ROW_BIG_BAR => crate::i18n::text("Bigger top bar"),
         ROW_BIG_ICONS => crate::i18n::text("Bigger icons"),
@@ -518,8 +544,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                 ROW_BIG => crate::i18n::text(BIG_SUB),
                 ROW_BIG_BAR => crate::i18n::text("Clock, battery and menu"),
                 ROW_BIG_ICONS => crate::i18n::text("Arrows and symbols"),
-                ROW_SWIPE_UP | ROW_SWIPE_DOWN => crate::i18n::text("On Now Playing"),
+                ROW_SWIPE_UP | ROW_SWIPE_DOWN => crate::i18n::text("Opens the screen you pick"),
                 ROW_NP_BUTTON => crate::i18n::text("The third one along the bottom"),
+                ROW_NP_BACK => crate::i18n::text("Top left, like the edge swipe"),
+                ROW_NP_COUNT => crate::i18n::text("Its place in what's playing"),
+                ROW_HOLD_BUTTONS => crate::i18n::text("Headphone buttons still work"),
                 ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
                 ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
                 ROW_STORAGE => storage_parts(v.storage).1,
@@ -560,6 +589,9 @@ mod tests {
             swipe_up: SwipeTo::Off,
             swipe_down: SwipeTo::Off,
             np_button: crate::now_playing::NpButton::Bluetooth,
+            np_back: false,
+            np_count: false,
+            hold_buttons: false,
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",

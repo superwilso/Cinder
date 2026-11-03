@@ -1713,6 +1713,15 @@ pub struct App {
     np_swipe_down: crate::settings::SwipeTo,
     /// Now Playing's third toolbar button (Settings ▸ Now Playing button, #51). Bluetooth by default.
     np_button: crate::now_playing::NpButton,
+    /// Settings ▸ Back arrow / Track number on Now Playing, and Hold locks the buttons (#51). All
+    /// OFF by default.
+    np_back: bool,
+    np_count: bool,
+    hold_buttons: bool,
+    /// Where Now Playing was opened from, for Back on it (the left-edge swipe, the back arrow).
+    /// Opening Now Playing resets the stack (`go`), so without this Back there had nowhere to go
+    /// and did nothing (owner, 2026-11-03: "hard to activate on the now playing screen").
+    np_from: Vec<Screen>,
     /// The pull-down panel is showing. Its own flag, not the Shelf's: the two never share state.
     quick_open: bool,
     pins: [Option<ShelfPin>; crate::shelf::SLOTS],
@@ -2153,6 +2162,10 @@ impl Default for App {
             np_swipe_up: crate::settings::SwipeTo::Off,
             np_swipe_down: crate::settings::SwipeTo::Off,
             np_button: crate::now_playing::NpButton::Bluetooth,
+            np_back: false,
+            np_count: false,
+            hold_buttons: false,
+            np_from: Vec::new(),
             quick_open: false,
             pins: std::array::from_fn(|_| None),
             history: Vec::new(),
@@ -2872,6 +2885,28 @@ impl App {
 
     pub fn set_np_button(&mut self, b: crate::now_playing::NpButton) {
         self.np_button = b;
+    }
+
+    /// Settings ▸ Back arrow, Track number and Hold locks the buttons, for the settings file and the
+    /// shell (which applies the Hold lock to the side keys itself).
+    pub fn np_back(&self) -> bool {
+        self.np_back
+    }
+    pub fn set_np_back(&mut self, on: bool) {
+        self.np_back = on;
+        crate::now_playing::set_back(on);
+    }
+    pub fn np_count(&self) -> bool {
+        self.np_count
+    }
+    pub fn set_np_count(&mut self, on: bool) {
+        self.np_count = on;
+    }
+    pub fn hold_buttons(&self) -> bool {
+        self.hold_buttons
+    }
+    pub fn set_hold_buttons(&mut self, on: bool) {
+        self.hold_buttons = on;
     }
 
     pub fn set_folders_tab(&mut self, on: bool) {
@@ -4336,6 +4371,19 @@ impl App {
                 self.np_button = self.np_button.next();
                 vec![]
             }
+            // Render-only, like the Folders tab: the shell's save path writes the file.
+            crate::settings::ROW_NP_BACK => {
+                self.set_np_back(!self.np_back);
+                vec![]
+            }
+            crate::settings::ROW_NP_COUNT => {
+                self.np_count = !self.np_count;
+                vec![]
+            }
+            crate::settings::ROW_HOLD_BUTTONS => {
+                self.hold_buttons = !self.hold_buttons;
+                vec![]
+            }
             crate::settings::ROW_FOLDERS_TAB => {
                 // Render-only, like the pull-down panel: the shell's save path writes the file.
                 self.set_folders_tab(!self.folders_tab);
@@ -4914,6 +4962,11 @@ impl App {
                 // the Lyrics chip before the Menu band it sits in, the heart before the title
                 // block it overlaps, the title block before the transport.
                 use crate::now_playing::Hit;
+                // Settings ▸ Back arrow: ahead of the layout, whose Menu band it sits in. It does
+                // what the left-edge swipe does.
+                if crate::now_playing::hit_back(x, y) {
+                    return self.press(Button::Back);
+                }
                 let layout = crate::now_playing::layout(self.style, self.night, self.has_lyrics());
                 match layout.hit(x, y) {
                     Some(Hit::Lyrics) => {
@@ -9183,6 +9236,19 @@ impl App {
         if s == Screen::Settings {
             self.palettes_stale = true; // see `push`
         }
+        // Remember the browsing you leave for Now Playing, so Back there returns to it. Not when
+        // Now Playing is already on top, and never a stack holding the Lock screen, onboarding or
+        // USB storage: Back must not lead to a screen you only pass through.
+        if s == Screen::NowPlaying {
+            let from = std::mem::take(&mut self.stack);
+            if from.last().is_some_and(|x| *x != Screen::NowPlaying)
+                && !from
+                    .iter()
+                    .any(|x| matches!(x, Screen::Lock | Screen::Onboarding | Screen::UsbStorage))
+            {
+                self.np_from = from;
+            }
+        }
         self.stack = vec![s];
     }
 
@@ -9592,6 +9658,18 @@ impl App {
             Screen::NowPlaying => match b {
                 Button::Right => vec![Action::Next],
                 Button::Left => vec![Action::Prev],
+                // Back to where Now Playing was opened from; with nothing to return to, the
+                // Library, as the toolbar's Library button does.
+                Button::Back => {
+                    let from = std::mem::take(&mut self.np_from);
+                    if from.is_empty() {
+                        self.open_browse();
+                    } else {
+                        self.stack = from;
+                        self.note_browse();
+                    }
+                    vec![]
+                }
                 Button::Up | Button::Select => {
                     self.push(Screen::Menu);
                     vec![]
@@ -10116,6 +10194,7 @@ impl App {
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
         crate::now_playing::set_button(self.np_button);
+        crate::now_playing::set_back(self.np_back);
         // Now Playing grows its own controls with Big view, and onboarding is drawn to fit, so
         // Bigger icons stays out of both (`scale::IconsExempt`).
         let _own_sizes = crate::scale::IconsExempt::new(matches!(
@@ -10255,6 +10334,19 @@ impl App {
                         self.sleep_min,
                         self.stop_after,
                     );
+                    // Settings ▸ Back arrow and Track number (#51), in the top band.
+                    if self.np_back {
+                        crate::now_playing::back_chip(c, &theme);
+                    }
+                    if self.np_count {
+                        crate::now_playing::count_chip(
+                            c,
+                            &theme,
+                            fonts,
+                            self.context_idx + 1,
+                            self.context.len(),
+                        );
+                    }
                     // The queue toolbar slot becomes a persistent, touch-sized return to the preview
                     // while it is active. Its existing glyph remains; this short caption is the state
                     // marker and the whole 120px slot is already the hit target.
@@ -10964,6 +11056,9 @@ impl App {
                     swipe_up: self.np_swipe_up,
                     swipe_down: self.np_swipe_down,
                     np_button: self.np_button,
+                    np_back: self.np_back,
+                    np_count: self.np_count,
+                    hold_buttons: self.hold_buttons,
                     shuffle_by: self.shuffle_by.label(),
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
@@ -17222,13 +17317,11 @@ mod tests {
         app.push(Screen::Settings);
         assert_eq!(app.tap(20, 20), vec![]);
         assert_eq!(app.current(), Screen::NowPlaying);
-        // Back must not walk down through the screens we came from.
+        assert_eq!(app.stack.len(), 1, "stack should have collapsed");
+        // Back returns to the screen Now Playing was opened from (#51, 2026-11-03); it used to do
+        // nothing there.
         let _ = app.press(Button::Back);
-        assert_eq!(
-            app.current(),
-            Screen::NowPlaying,
-            "stack should have collapsed"
-        );
+        assert_eq!(app.current(), Screen::Settings);
     }
 
     /// The Now Playing bar's left zone is a real play/pause button; the rest still opens the screen.
@@ -24463,6 +24556,65 @@ mod tests {
             (pen - big).abs() < 0.01,
             "draw() pen {pen} != measure() {big}"
         );
+    }
+
+    /// #51 (plaquette): Settings ▸ Back arrow puts a back arrow top-left on Now Playing that does
+    /// what the left-edge swipe does, and the Lyrics chip moves right of it. Off by default, and
+    /// with it off the corner is what it always was.
+    #[test]
+    fn the_now_playing_back_arrow_does_what_back_does() {
+        let fresh = || {
+            let mut a = unlocked();
+            a.push_for_test(Screen::Library);
+            a.push_for_test(Screen::NowPlaying);
+            a
+        };
+        let (x, y) = (
+            crate::now_playing::LYRICS_X0 + 10,
+            crate::now_playing::LYRICS_Y0 + 10,
+        );
+        let mut a = fresh();
+        assert!(
+            !a.np_back() && !a.np_count() && !a.hold_buttons(),
+            "all off by default"
+        );
+        a.set_np_back(false);
+        assert!(!crate::now_playing::hit_back(x, y), "no arrow, no target");
+
+        let mut want = fresh();
+        want.press(Button::Back);
+        a.set_np_back(true);
+        a.tap(x, y);
+        assert_ne!(
+            a.current(),
+            Screen::NowPlaying,
+            "the arrow left Now Playing"
+        );
+        assert_eq!(a.current(), want.current(), "the arrow is Back");
+
+        // The Lyrics chip sits right of the arrow while it is shown, and where it was without.
+        let lx = crate::now_playing::LYRICS_X0 + 20;
+        let ly = crate::now_playing::LYRICS_Y0 + 10;
+        assert!(!crate::now_playing::hit_lyrics(lx, ly, true));
+        assert!(crate::now_playing::hit_lyrics(
+            lx + crate::now_playing::BACK_SHIFT,
+            ly,
+            true
+        ));
+        a.set_np_back(false);
+        assert!(crate::now_playing::hit_lyrics(lx, ly, true));
+
+        // With nothing to go back to (Now Playing at boot), Back opens the Library.
+        let mut a = unlocked();
+        a.press(Button::Back);
+        assert_eq!(a.current(), Screen::Library);
+        // Hold on and off lands on Now Playing; Back from there never returns to the Lock screen.
+        let mut a = fresh();
+        a.set_hold(true);
+        a.set_hold(false);
+        assert_eq!(a.current(), Screen::NowPlaying);
+        a.press(Button::Back);
+        assert!(!matches!(a.current(), Screen::Lock | Screen::NowPlaying));
     }
 
     #[test]
