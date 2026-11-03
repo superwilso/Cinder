@@ -8,6 +8,7 @@
 #   tools/devctl.sh shot [out.png]                         cinder-home/tools/screenshot.sh
 #   tools/devctl.sh state                                  playing?, codec, screen, suspend
 #   tools/devctl.sh log [N]                                last N lines of cinderhome.log
+#   tools/devctl.sh sh 'CMD'                               run CMD, exit with ITS code (adb shell's is always 0)
 #   tools/devctl.sh probe ARGS...                          push and run cinder-probe (dev build)
 #   tools/devctl.sh hci on|off|pull DIR                    Sony's HCI trace (btsnoop) in /tmp
 #
@@ -49,6 +50,18 @@ state)
          grep -E "bt-sound:|screen: |suspend: (idle|Power|screen)|bt-codec:" /contents/cinderhome.log | tail -4
          echo "aac: $(cat /tmp/cinder_aac_status 2>/dev/null)"; tail -2 /tmp/cinder_aac.log' ;;
 log) sh_ "tail -${2:-30} /contents/cinderhome.log" ;;
+sh)
+    # Sony's adbd predates adb's shell protocol, so `adb shell` exits 0 whatever the command did.
+    # Ask the player for the code on a last line of its own, then strip it. The command runs in a
+    # subshell so its own `exit N` still reaches the marker.
+    shift
+    out=$(sh_ "( $* ); printf '\n__rc=%d' \$?" | tr -d '\r')
+    case "$out" in
+        *__rc=*) rc=${out##*__rc=}; out=${out%__rc=*}; out=${out%$'\n'} ;;
+        *) echo "sh: no exit code from the player (is adb connected?)" >&2; rc=255 ;;
+    esac
+    printf '%s' "$out"
+    exit "$rc" ;;
 probe)
     shift
     adb push cinder-home/dist/dev/cinder-probe /tmp/cinder-probe >/dev/null || exit 1
