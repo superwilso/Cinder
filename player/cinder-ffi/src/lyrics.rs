@@ -212,7 +212,7 @@ fn uslt_text(b: &[u8]) -> Option<String> {
     let rest = rest.get(3..)?;
     let wide = enc == 1 || enc == 2;
     let body = if wide {
-        let i = rest.chunks_exact(2).position(|u| u == [0, 0])?;
+        let i = rest.as_chunks::<2>().0.iter().position(|u| *u == [0, 0])?;
         &rest[(i + 1) * 2..]
     } else {
         &rest[rest.iter().position(|&x| x == 0)? + 1..]
@@ -288,7 +288,7 @@ fn decode(b: &[u8]) -> String {
         [0xFE, 0xFF, ..] => Some(false),
         _ => None,
     } {
-        let units = b[2..].chunks_exact(2).map(|u| {
+        let units = b[2..].as_chunks::<2>().0.iter().map(|u| {
             if le {
                 u16::from_le_bytes([u[0], u[1]])
             } else {

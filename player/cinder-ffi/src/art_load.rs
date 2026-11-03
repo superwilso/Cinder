@@ -223,7 +223,9 @@ fn decode_jpeg(bytes: &[u8]) -> Option<Image> {
     } else if out.len() == px {
         out.iter().flat_map(|&g| [g, g, g]).collect()
     } else if out.len() == px * 4 {
-        out.chunks_exact(4)
+        out.as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2]])
             .collect()
     } else {
@@ -278,7 +280,7 @@ fn decode_png(bytes: &[u8]) -> Option<Image> {
         }
         png::ColorType::Rgba => {
             let mut out = Vec::with_capacity(w * h * 3);
-            for px in buf.chunks_exact(4).take(w * h) {
+            for px in buf.as_chunks::<4>().0.iter().take(w * h) {
                 out.extend_from_slice(&px[..3]);
             }
             out
@@ -292,7 +294,7 @@ fn decode_png(bytes: &[u8]) -> Option<Image> {
         }
         png::ColorType::GrayscaleAlpha => {
             let mut out = Vec::with_capacity(w * h * 3);
-            for px in buf.chunks_exact(2).take(w * h) {
+            for px in buf.as_chunks::<2>().0.iter().take(w * h) {
                 out.extend_from_slice(&[px[0], px[0], px[0]]);
             }
             out
@@ -631,7 +633,7 @@ mod tests {
             8 * 8 * 3,
             "grayscale must be fanned out to packed RGB"
         );
-        for (i, px) in img.rgb.chunks_exact(3).enumerate() {
+        for (i, px) in img.rgb.as_chunks::<3>().0.iter().enumerate() {
             assert!(
                 px[0] == px[1] && px[1] == px[2],
                 "px {i} is {px:?} — a grayscale expansion must leave r==g==b"

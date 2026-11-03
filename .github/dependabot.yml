@@ -75,6 +75,21 @@ updates:
     commit-message:
       prefix: "deps(installer)"
 
+  # cinder-rescue runs on the PC, never the player, and CI builds it on Linux, Windows and macOS,
+  # so CI can judge its updates. Majors still wait for a person: libusb is the USB path that
+  # restores a player.
+  - package-ecosystem: cargo
+    directory: /rescue
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      rescue-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps(rescue)"
+
   # Actions are the one ecosystem where CI genuinely does judge the result: if a bumped action
   # breaks, the workflow that uses it goes red on the PR. Majors are allowed here.
   - package-ecosystem: github-actions

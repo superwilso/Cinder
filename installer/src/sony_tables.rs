@@ -98,14 +98,13 @@ pub fn extract(span: &[u8]) -> Result<Vec<(&'static str, Vec<u8>)>, String> {
     let mut prev: [u8; 16] = span[..16].try_into().unwrap();
     let rk = aes128_key_schedule(KEY);
     let mut plain = Vec::with_capacity(span.len() - 16);
-    for c in span[16..].chunks_exact(16) {
-        let c: [u8; 16] = c.try_into().unwrap();
-        let mut p = aes128_decrypt_block(&rk, &c);
+    for c in span[16..].as_chunks::<16>().0 {
+        let mut p = aes128_decrypt_block(&rk, c);
         for i in 0..16 {
             p[i] ^= prev[i];
         }
         plain.extend_from_slice(&p);
-        prev = c;
+        prev = *c;
     }
 
     let mut blocks = Vec::with_capacity(CHUNKS * BLOCK);
@@ -466,7 +465,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
         msg.push(0);
     }
     msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
-    for block in msg.chunks_exact(64) {
+    for block in msg.as_chunks::<64>().0.iter() {
         let mut w = [0u32; 64];
         for i in 0..16 {
             w[i] = u32::from_be_bytes(block[4 * i..4 * i + 4].try_into().unwrap());

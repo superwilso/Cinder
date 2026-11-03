@@ -47,11 +47,10 @@ impl Sha256 {
             self.block(&b);
             self.fill = 0;
         }
-        let mut blocks = data.chunks_exact(64);
-        for b in &mut blocks {
+        let (blocks, rest) = data.as_chunks::<64>();
+        for b in blocks {
             self.block(b);
         }
-        let rest = blocks.remainder();
         self.buf[..rest.len()].copy_from_slice(rest);
         self.fill = rest.len();
     }

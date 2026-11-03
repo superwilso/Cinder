@@ -1839,7 +1839,10 @@ fn statvfs_mb(path: &str) -> (i32, i32) {
         return (0, 0);
     }
     let mb = |blocks: u64| (blocks as u128 * st.f_frsize as u128 / 1_048_576) as i32;
-    (mb(st.f_blocks), mb(st.f_bavail))
+    // f_blocks is u32 on the player (32-bit ARM) and u64 on a PC: the cast is only a no-op here.
+    #[allow(clippy::unnecessary_cast)]
+    let (blocks, avail) = (st.f_blocks as u64, st.f_bavail as u64);
+    (mb(blocks), mb(avail))
 }
 
 #[cfg(test)]
@@ -6248,7 +6251,7 @@ pub extern "C" fn cinder_pending_play_uri(
 /// `buf` must be valid for `cap` bytes and `cap` must be > 0.
 unsafe fn copy_str_into(s: &str, buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
     let n = s.len().min(cap as usize - 1);
-    std::ptr::copy_nonoverlapping(s.as_ptr(), buf as *mut u8, n);
+    std::ptr::copy_nonoverlapping(s.as_ptr(), buf.cast(), n);
     *buf.add(n) = 0;
     s.len() as libc::c_int
 }
@@ -7729,7 +7732,7 @@ pub unsafe extern "C" fn cinder_get_nc(
         return 0;
     }
     for (dst, src) in [(mode, m), (model, t)] {
-        std::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len());
+        std::ptr::copy_nonoverlapping(src.as_ptr(), dst.cast(), src.len());
         *dst.add(src.len()) = 0;
     }
     1
