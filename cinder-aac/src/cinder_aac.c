@@ -59,6 +59,7 @@
 static const char kOn[] = CINDER_AAC_DIR "/bt_aac";
 static const char kXq[] = CINDER_AAC_DIR "/bt_sbc_xq";
 static const char kHd[] = CINDER_AAC_DIR "/bt_aptxhd";
+static const char kStd[] = CINDER_AAC_DIR "/bt_sbc_std";   /* plain SBC chosen: hold XQ back */
 static const char kLog[] = "/tmp/cinder_aac.log";
 static const char kStatus[] = "/tmp/cinder_aac_status";
 static const char kCodecs[] = "/tmp/cinder_aac_codecs";
@@ -135,6 +136,7 @@ static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static int g_on;             /* AAC wanted and every symbol found */
 static int g_xq;             /* SBC XQ wanted */
 static int g_slot;           /* what holds aptX HD's slot: 0 not built yet, 'a' AAC, 'h' aptX HD */
+static int g_sbc;            /* this start's SBC endpoint, with g_xq: 0 not built yet, 'x' XQ, 's' plain */
 
 static void publish(int aac, int xq)
 {
@@ -144,6 +146,7 @@ static void publish(int aac, int xq)
     if (aac) fputs("aac\n", f);
     if (xq) fputs("sbc-xq\n", f);
     if (aac && g_slot) fputs(g_slot == 'a' ? "slot aac\n" : "slot aptxhd\n", f);
+    if (xq && g_sbc) fputs(g_sbc == 'x' ? "sbc now xq\n" : "sbc now std\n", f);
     fclose(f);
 }
 
@@ -199,7 +202,13 @@ EXPORT void btmtk_a2dp_sep_default_setting_initialized(uint8_t* seps, int n, cha
     if (real.sep_init) real.sep_init(seps, n, sink);
     if (sink) return;
     uint8_t* sbc = seps + SEP_SLOT_SBC * SEP_SIZE;
-    if (g_xq && n > SEP_SLOT_SBC && sbc[0] == CODEC_SBC) {
+    if (g_xq && access(kStd, F_OK) == 0) {
+        /* #44: some headphones' radios cannot carry XQ's rate; the stack drops packets and the
+         * music plays fast. Plain SBC is then the choice, and Sony's endpoint stays as it is. */
+        g_sbc = 's';
+        logf_("SBC endpoint stays Sony's (plain SBC is the choice)");
+    } else if (g_xq && n > SEP_SLOT_SBC && sbc[0] == CODEC_SBC) {
+        g_sbc = 'x';
         logf_("SBC endpoint was: bitpool %d..%d, modes 0x%x", sbc[SBC_MIN_BP], sbc[SBC_MAX_BP],
               sbc[SBC_MODE]);
         sbc[SBC_MODE] = SBC_DUAL;
@@ -212,6 +221,7 @@ EXPORT void btmtk_a2dp_sep_default_setting_initialized(uint8_t* seps, int n, cha
         sbc[SBC_MIN_BP] = SBC_XQ_MIN_BITPOOL;
         logf_("SBC endpoint is now XQ: Dual Channel, bitpool %d..%d", sbc[SBC_MIN_BP], SBC_XQ_BITPOOL);
     }
+    publish(g_on, g_xq);
     if (!g_on || n <= SEP_SLOT_APTX_HD) return;
     g_slot = access(kHd, F_OK) == 0 ? 'h' : 'a';
     publish(g_on, g_xq);
@@ -462,7 +472,7 @@ EXPORT int btmtk_a2dp_stream_data_encoder_init(int codec, int a, int b, int c, i
     /* Every codec, not only SBC XQ: which encoder ran, at which rate, is the first question a
      * speed report raises (#44). */
     logf_("%s encoder start: codec %d, args %d %d %d %d, rate %d, mode %d, mtu %d",
-          codec == CODEC_SBC ? (g_xq ? "SBC XQ" : "SBC") : "Sony", codec, a, b, c, d, rate, mode,
+          codec == CODEC_SBC ? (g_xq && g_sbc != 's' ? "SBC XQ" : "SBC") : "Sony", codec, a, b, c, d, rate, mode,
           mtu);
     return real.enc_init ? real.enc_init(codec, a, b, c, d, rate, mode, mtu) : -1;
 }

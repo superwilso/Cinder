@@ -88,9 +88,9 @@ f639417a99b94d6f lyrics_day
 5b41b16e8f3e3f82 search_day
 486140eb4d116f4b library_search_button_day
 97518bcc3058ab4d bluetooth_day
-f15c61da280dfd1a bluetooth_codec_day
-63bb1af2ddab2a51 bluetooth_codec_aac_day
-15f9121bc9e0e0b4 bluetooth_codec_off_day
+95019291a05cd2ca bluetooth_codec_day
+1b9e8565db926b26 bluetooth_codec_aac_day
+fc932a9345e0fc5d bluetooth_codec_off_day
 d812978ea55289d7 bluetooth_connecting_day
 fcb4cfe7d902b272 pairing_day
 87a8f73dc968addd pairing_page1_day
@@ -200,9 +200,9 @@ cac7ec63b511ce42 lyrics_night
 636383f17edea446 search_night
 27d43fb616816533 library_search_button_night
 29f51f960c48095d bluetooth_night
-185a80c082c1d5f3 bluetooth_codec_night
-77afe7a29490308c bluetooth_codec_aac_night
-fd934bef4690065f bluetooth_codec_off_night
+b9caa7fbdebd9492 bluetooth_codec_night
+0b0a38bc7d1aee48 bluetooth_codec_aac_night
+d5c3e930f872400c bluetooth_codec_off_night
 a8632fdfc02bc0a3 bluetooth_connecting_night
 b9f200d7182d5c31 pairing_night
 d45f9a11beac7466 pairing_page1_night
@@ -434,6 +434,7 @@ f4d75c35151216a7 big_settings
 7495adf7ebae5741 big_menu_end
 d36c5672ac6f5c89 big_display_end
 7bed64c7e58318f3 big_bluetooth
+44b387a1cfacb56b big_sound_quality
 779d2058d3670b06 usbdac_low_latency
 287bbdfb38b3f37a big_usbdac_low_latency
 e6cf9c3d640b5ac9 big_extras_settings

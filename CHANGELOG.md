@@ -16,6 +16,25 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Bluetooth ▸ Sound quality ▸ SBC, beside SBC XQ (#44).** With the SBC XQ component on, a plain
+  SBC choice sits next to it. Some headphones' radios cannot carry SBC XQ's 540 kbit/s: a trace
+  from a JBL Live Pro 2 showed the player's Bluetooth stack dropping 5.7 % of the packets, steadily,
+  which plays as the music speeding up. Choosing SBC restarts Bluetooth with Sony's own SBC
+  (about 330 kbit/s), the same way moving between AAC and aptX HD does; choosing anything else
+  brings SBC XQ back. Without the component there is no second SBC. *Verified on the owner's
+  player: SBC chosen → Bluetooth restarted, the headphones connected Joint Stereo SBC (bitpool
+  35..39), not XQ's Dual Channel; SBC XQ chosen → XQ again.*
+
+### Changed
+
+- **Bluetooth ▸ Sound quality says what each codec is for.** The codec chips are now a row each,
+  Best first, with one line in plain words ("Not sure? This one picks for you", "Apple's · AirPods
+  and Beats", "Works with all headphones") and a rough tag of how it sounds (AUTO, HI-RES, HIGH,
+  GOOD, BASIC). The sections read "How music is sent" and "LDAC quality", and each LDAC mode says
+  what it trades. The page scrolls to the rest. *Host-tested.*
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed

@@ -3856,6 +3856,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("big_menu_end", Screen::Menu, true),
             ("big_display_end", Screen::Display, true),
             ("big_bluetooth", Screen::Bluetooth, false),
+            ("big_sound_quality", Screen::BtCodec, false),
         ] {
             let mut app = new_app();
             app.set_big_view(true);

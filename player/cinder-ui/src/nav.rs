@@ -5751,6 +5751,7 @@ impl App {
                     self.bt_on,
                     crate::bluetooth::shows_ldac(self.bt_codec),
                     self.bt_aac,
+                    self.bt_sbc_xq,
                 ) {
                     BtHit::Codec(i) => {
                         self.bt_codec = i as u8;
@@ -7399,8 +7400,11 @@ impl App {
                 self.menu_scroll_px = (self.menu_scroll() + dy_px).clamp(0, max);
             }
             Screen::BtCodec => {
-                let max =
-                    crate::bluetooth::codec_max_scroll(crate::bluetooth::shows_ldac(self.bt_codec));
+                let max = crate::bluetooth::codec_max_scroll(
+                    crate::bluetooth::shows_ldac(self.bt_codec),
+                    self.bt_aac,
+                    self.bt_sbc_xq,
+                );
                 self.bt_codec_scroll_px = (self.bt_codec_scroll() + dy_px).clamp(0, max);
             }
             Screen::PlaylistPick => {
@@ -7508,6 +7512,8 @@ impl App {
         self.bt_codec_scroll_px
             .min(crate::bluetooth::codec_max_scroll(
                 crate::bluetooth::shows_ldac(self.bt_codec),
+                self.bt_aac,
+                self.bt_sbc_xq,
             ))
             .max(0)
     }
@@ -13439,6 +13445,10 @@ impl App {
     pub fn set_bt_codecs(&mut self, aac: bool, xq: bool) {
         self.bt_aac = aac;
         self.bt_sbc_xq = xq;
+        // Plain SBC is a choice only beside SBC XQ; without the component it is just SBC.
+        if !xq && self.bt_codec == crate::bluetooth::SBC_STD {
+            self.bt_codec = 3;
+        }
     }
     /// The chosen codec's name, as this boot sends it.
     pub fn bt_codec_name(&self) -> &'static str {
@@ -17410,7 +17420,7 @@ mod tests {
         a.bt_codec = crate::bluetooth::LDAC;
         a.push_for_test(Screen::BtCodec);
         a.set_big_view(true);
-        let max = crate::bluetooth::codec_max_scroll(true);
+        let max = crate::bluetooth::codec_max_scroll(true, false, false);
         assert!(max > 0, "Sound quality fits in Big view; drop its scroll");
         a.scroll_px(10_000);
         assert_eq!(a.bt_codec_scroll(), max);
@@ -17423,11 +17433,12 @@ mod tests {
         );
         assert_eq!(a.tap(240, crate::chrome::HEADER_BOTTOM - 4), vec![]);
         a.set_big_view(false);
+        // A row per codec scrolls with Big view off too, but not as far.
         assert_eq!(
             a.bt_codec_scroll(),
-            0,
-            "nothing to scroll with Big view off"
+            crate::bluetooth::codec_max_scroll(true, false, false)
         );
+        assert!(a.bt_codec_scroll() < max);
     }
 
     /// Big view: the Menu keeps full rows and scrolls to START ON; a chip tapped there picks
@@ -20045,7 +20056,7 @@ mod tests {
             vec![Action::BtCodecChanged]
         );
         // select SBC (codec chip 3) → device-wide codec changes; the LDAC rows hide
-        let (x, y) = crate::bluetooth::codec_chip(3, false);
+        let (x, y) = (240, crate::bluetooth::codec_row_y(3, false, false));
         assert_eq!(a.tap(x, y), vec![Action::BtCodecChanged]);
         assert_eq!(a.bt_codec, 3);
         // with SBC active there are no LDAC rows: a tap where one was never picks a quality

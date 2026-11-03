@@ -4542,9 +4542,10 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
 // gated (the BT client shim, same boundary as ldac-bridge); this config write is the always-safe
 // half (pure file IO, no Sony service). Names mirror the cinder.h codec/quality indices.
 void write_bt_pref() {
-    static const char* codecs[] = { "ldac", "aptxhd", "aptx", "sbc", "aac", "best" };
+    // 6 (plain SBC beside SBC XQ) is SBC to every reader of this file.
+    static const char* codecs[] = { "ldac", "aptxhd", "aptx", "sbc", "aac", "best", "sbc" };
     static const char* quals[]  = { "auto", "990", "660", "330" };
-    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 5) ci = 0;
+    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 6) ci = 0;
     int qi = cinder_get_bt_ldac_quality(); if (qi < 0 || qi > 3) qi = 0;
     FILE* f = std::fopen("/contents/cinder_bt.conf", "w");
     if (f) {
@@ -5136,11 +5137,14 @@ static void bt_vol_walk_tick(void) {
 // otherwise; "slot aac" / "slot aptxhd" says which it holds now. Either one is driven by Sony's
 // aptX HD switch. The library writes the file when the Bluetooth service starts, before that
 // service can answer apply_bt_codec. No file = no component, or the wrapper did not load it.
+// With SBC XQ, "sbc now xq" / "sbc now std" says what this start's SBC endpoint is: plain SBC
+// (codec index 6) holds XQ back, through /data/cinder/bt_sbc_std, at the next Bluetooth start.
 static bool g_bt_aac = false;
 static char g_bt_slot = 0;   // 'a' AAC, 'h' aptX HD, 0 = Bluetooth has not started yet
+static char g_bt_sbc = 0;    // 'x' SBC XQ, 's' plain SBC, 0 = no SBC XQ, or not started yet
 static void bt_read_codecs() {
     bool aac = false, xq = false;
-    char slot = 0;
+    char slot = 0, sbc = 0;
     if (FILE* f = std::fopen("/tmp/cinder_aac_codecs", "r")) {
         char line[32];
         while (std::fgets(line, sizeof line, f)) {
@@ -5148,26 +5152,32 @@ static void bt_read_codecs() {
             if (!std::strcmp(line, "sbc-xq\n")) xq = true;
             if (!std::strcmp(line, "slot aac\n")) slot = 'a';
             if (!std::strcmp(line, "slot aptxhd\n")) slot = 'h';
+            if (!std::strcmp(line, "sbc now xq\n")) sbc = 'x';
+            if (!std::strcmp(line, "sbc now std\n")) sbc = 's';
         }
         std::fclose(f);
     }
     g_bt_aac = aac;
     g_bt_slot = slot;
+    g_bt_sbc = xq ? sbc : 0;
     cinder_set_bt_codecs(aac ? 1 : 0, xq ? 1 : 0);
 }
 
-// The chosen codec is AAC or aptX HD and the shared slot holds the other one: only a Bluetooth
-// restart refills it. Read after apply_bt_codec, which refreshes g_bt_slot.
+// The chosen codec is AAC or aptX HD and the shared slot holds the other one, or the SBC
+// endpoint is XQ and plain SBC is chosen (or the other way round): only a Bluetooth restart
+// refills it. Read after apply_bt_codec, which refreshes g_bt_slot and g_bt_sbc.
 static bool bt_slot_stale() {
-    if (!g_bt_aac || !g_bt_slot || !cinder_get_bt_on()) return false;
+    if (!cinder_get_bt_on()) return false;
     int ci = cinder_get_bt_codec();
+    if (g_bt_sbc && (ci == 6) != (g_bt_sbc == 's')) return true;
+    if (!g_bt_aac || !g_bt_slot) return false;
     return (ci == 1 && g_bt_slot != 'h') || ((ci == 4 || ci == 5) && g_bt_slot != 'a');
 }
 
 void apply_bt_codec() {
     enum { VIDX_SetLdacSoundQuality = 18, VIDX_SetLdac = 20,
            VIDX_SetAptxClassic = 21, VIDX_SetAptxHD = 22 };
-    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 5) ci = 0;   // 0 ldac 1 aptxhd 2 aptx 3 sbc 4 aac 5 best
+    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 6) ci = 0;   // 0 ldac 1 aptxhd 2 aptx 3 sbc 4 aac 5 best 6 sbc (not XQ)
     int qi = cinder_get_bt_ldac_quality(); if (qi < 0 || qi > 3) qi = 0;   // 0 auto 1 990 2 660 3 330
     bt_read_codecs();
     // Which of AAC / aptX HD the shared slot gets at the next Bluetooth start (bt_read_codecs).
@@ -5175,6 +5185,13 @@ void apply_bt_codec() {
         if (FILE* f = std::fopen("/data/cinder/bt_aptxhd", "w")) std::fclose(f);
     } else {
         std::remove("/data/cinder/bt_aptxhd");
+    }
+    // Plain SBC holds SBC XQ back at the next Bluetooth start (#44: headphones whose radio
+    // cannot carry XQ drop packets, which plays fast).
+    if (ci == 6) {
+        if (FILE* f = std::fopen("/data/cinder/bt_sbc_std", "w")) std::fclose(f);
+    } else {
+        std::remove("/data/cinder/bt_sbc_std");
     }
     try {
         void* x = bt_xmit();
@@ -11918,7 +11935,7 @@ void carry_out(int act) {
             // also reconnects the headphones. 10 s: the off, up to 2 s for the radio to go down,
             // then the toggle's own 8 s path.
             if (bt_slot_stale()) {
-                clog_("bt-codec: the AAC / aptX HD slot holds the other one — restarting Bluetooth");
+                clog_("bt-codec: the AAC / aptX HD slot or the SBC endpoint is the other one — restarting Bluetooth");
                 run_guarded("carry_out: BT restart for the codec slot", 10, []() {
                     cinder_set_bt_on(0);
                     apply_bt_toggle();
