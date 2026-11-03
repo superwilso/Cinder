@@ -498,8 +498,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     crate::kit::switch(c, t, crate::kit::RIGHT - crate::kit::SWITCH_W, 58, bt.on);
 
     // connected card (or empty state)
-    if bt.on && bt.connected.is_some() {
-        let name = bt.connected.unwrap();
+    if let Some(name) = bt.connected.filter(|_| bt.on) {
         fill_rect(c, 22, CARD_Y, 436, CARD_H, t.panel);
         stroke_rect(c, 22, CARD_Y, 436, CARD_H, t.line, 1);
         // The tag carries the NEGOTIATED codec when the link reports one. This is the answer to

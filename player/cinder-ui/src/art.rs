@@ -783,7 +783,7 @@ mod tests {
         let img = Image {
             w: 4,
             h: 2,
-            rgb: vec![0x11, 0x22, 0x33].repeat(8),
+            rgb: [0x11, 0x22, 0x33].repeat(8),
         };
         draw_image(&mut c, &t, 2, 5, &img, 1.0);
         assert_eq!(c.buf[5 * crate::canvas::W + 2], 0x112233);
@@ -861,7 +861,7 @@ mod scale_tests {
         let img = Image {
             w: 2,
             h: 2,
-            rgb: vec![10, 20, 30].repeat(4),
+            rgb: [10, 20, 30].repeat(4),
         };
         let big = img.scaled_to(8, 8);
         assert_eq!((big.w, big.h), (8, 8));

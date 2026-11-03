@@ -135,7 +135,7 @@ mod tests {
         for y in [396i32, 400, 416, 420] {
             for x in [0i32, 4, 475, 479] {
                 assert_eq!(
-                    c.buf[y as usize * crate::canvas::W as usize + x as usize],
+                    c.buf[y as usize * crate::canvas::W + x as usize],
                     crate::canvas::to_u32(bg),
                     "text reached the screen edge at ({x},{y}) — the centred clamp is not holding"
                 );

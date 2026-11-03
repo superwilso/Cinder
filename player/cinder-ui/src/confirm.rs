@@ -211,7 +211,7 @@ pub fn confirm_button_centre(_ask: Ask) -> (i32, i32) {
 
 pub fn hit(ask: Ask, x: i32, y: i32) -> Hit {
     let (cy, ch) = (ask.card_y(), ask.card_h());
-    let in_card = x >= CARD_X && x < CARD_X + CARD_W && y >= cy && y < cy + ch;
+    let in_card = (CARD_X..CARD_X + CARD_W).contains(&x) && y >= cy && y < cy + ch;
     if !in_card {
         return Hit::Cancel; // tapping the dimmed backdrop dismisses
     }
@@ -390,10 +390,8 @@ mod tests {
                 for x in (0..crate::canvas::W as i32).step_by(3) {
                     if hit(ask, x, y) == Hit::Confirm {
                         assert!(
-                            x >= BTN_SPLIT
-                                && x < CARD_X + CARD_W
-                                && y >= BTN_Y
-                                && y < CARD_Y + CARD_H,
+                            (BTN_SPLIT..CARD_X + CARD_W).contains(&x)
+                                && (BTN_Y..CARD_Y + CARD_H).contains(&y),
                             "({x},{y}) confirms but is outside the drawn button"
                         );
                     }
@@ -493,7 +491,7 @@ mod tests {
             for x in (0..crate::canvas::W as i32).step_by(3) {
                 if hit(a, x, y) != Hit::Cancel {
                     assert!(
-                        x >= CARD_X && x < CARD_X + CARD_W && y >= top && y < cy + ch,
+                        (CARD_X..CARD_X + CARD_W).contains(&x) && y >= top && y < cy + ch,
                         "({x},{y}) acts but is outside the drawn rows"
                     );
                 }

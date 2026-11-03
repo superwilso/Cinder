@@ -691,7 +691,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
     // is remembered and comes back the moment mono is switched off, which is kinder than resetting
     // a setting the user tuned.
     let live = !s.mono;
-    let track_col = if live { t.line } else { t.line };
+    let track_col = t.line;
     let knob_col = if !live {
         t.faint
     } else if centred && !s.balance_drag {

@@ -1175,8 +1175,18 @@
   "Top left, like the edge swipe": "左上角，同边缘滑动",
   "Its place in what's playing": "在播放列表中的位置",
   "Headphone buttons still work": "耳机按键仍可用",
-  "GESTURES & BUTTONS": "手势与按键",
   "Library · Now Playing · gestures · system": "曲库 · 正在播放 · 手势 · 系统",
   "Opens the screen you pick": "打开你选的页面",
-  "HOLD LOCK · SIDE KEYS LOCKED · SLIDE HOLD OFF": "HOLD 已锁定 · 侧键已锁定 · 滑动 HOLD 解锁"
+  "HOLD LOCK · SIDE KEYS LOCKED · SLIDE HOLD OFF": "HOLD 已锁定 · 侧键已锁定 · 滑动 HOLD 解锁",
+  "Playback": "播放",
+  "Shuffle · volume limit": "随机 · 音量限制",
+  "Swipes · back arrow · track number": "滑动 · 返回箭头 · 曲目编号",
+  "Folders tab · \"The\" · database": "文件夹标签 · \"The\" · 数据库",
+  "Buttons & gestures": "按键与手势",
+  "Pull-down panel · Hold": "下拉面板 · HOLD",
+  "Screen off · auto off · restart · power off": "熄屏 · 自动关机 · 重启 · 关机",
+  "Device & storage": "设备与存储",
+  "Battery · storage · USB · clock": "电池 · 存储 · USB · 时钟",
+  "System": "系统",
+  "Language · boot to stock · reset · version": "语言 · 启动原厂 · 重置 · 固件"
 }

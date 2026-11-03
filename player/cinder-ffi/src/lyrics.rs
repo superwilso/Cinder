@@ -428,7 +428,7 @@ pub fn parse(text: &str) -> Lyrics {
     // Plain text: keep single blank lines (they separate verses), collapse runs, trim both ends.
     let mut lines: Vec<Line> = Vec::new();
     for words in plain {
-        if words.is_empty() && lines.last().map_or(true, |l: &Line| l.text.is_empty()) {
+        if words.is_empty() && lines.last().is_none_or(|l: &Line| l.text.is_empty()) {
             continue;
         }
         lines.push(Line {

@@ -46,7 +46,7 @@ impl Lyrics {
         }
         let started = self
             .lines
-            .partition_point(|l| l.at_ms.map_or(true, |t| t <= pos_ms));
+            .partition_point(|l| l.at_ms.is_none_or(|t| t <= pos_ms));
         started.checked_sub(1)
     }
 
@@ -268,7 +268,7 @@ mod tests {
             vec![],
             vec![38],
             vec![38; 3],
-            vec![38, 64, 18, 90, 38].repeat(20),
+            [38, 64, 18, 90, 38].repeat(20),
         ] {
             let max = max_scroll_px(&hs);
             for cur in 0..=hs.len() {

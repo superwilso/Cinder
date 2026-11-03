@@ -75,7 +75,7 @@ pub fn paired_pages(paired: usize) -> usize {
     if paired == 0 {
         1
     } else {
-        (paired + MAX_PAIRED - 1) / MAX_PAIRED
+        paired.div_ceil(MAX_PAIRED)
     }
 }
 /// First absolute index shown on `page`. Wraps, so a page index left over from a longer list can

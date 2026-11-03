@@ -72,7 +72,7 @@ struct Opts {
 fn preview_thumb(var: &str, edge: usize) -> Option<cinder_ui::art::Image> {
     let path = std::env::var(var).ok()?;
     let rgb = std::fs::read(path).ok()?;
-    (rgb.len() == edge * edge * 3).then(|| cinder_ui::art::Image {
+    (rgb.len() == edge * edge * 3).then_some(cinder_ui::art::Image {
         w: edge,
         h: edge,
         rgb,
@@ -106,6 +106,9 @@ fn r4_playlists(lib: &Library) -> Library {
     );
     l
 }
+
+/// A preview's name and the code that draws it.
+type Shot<'a> = (&'a str, &'a dyn Fn(&mut Canvas));
 
 fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     base_scale();
@@ -342,7 +345,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         .collect();
 
     for (name, theme) in [("day", th(false, amber)), ("night", th(true, amber))] {
-        let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
+        let render_set: &[Shot] = &[
             ("now_playing", &|c: &mut Canvas| {
                 now_playing::render(c, &theme, &fonts, &np)
             }),
@@ -676,10 +679,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     },
                 );
             }),
-            (
-                "playlist_page",
-                &|c: &mut Canvas| match lib.playlists.first() {
-                    Some(pl) => library::playlist_view(
+            ("playlist_page", &|c: &mut Canvas| {
+                if let Some(pl) = lib.playlists.first() {
+                    library::playlist_view(
                         c,
                         &theme,
                         &fonts,
@@ -690,10 +692,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         None,
                         false,
                         None,
-                    ),
-                    None => {}
-                },
-            ),
+                    )
+                }
+            }),
             // The playlists you MADE: the same page, plus its edit bar and a row armed for
             // removal — the state that is easiest to get wrong and hardest to see in a test.
             ("sound_source_direct", &|c: &mut Canvas| {
@@ -1385,7 +1386,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     1,
                     0,
                     &settings::SettingsView {
-                        more: false,
+                        page: None,
                         languages: &cinder_ui::i18n::Language::ALL,
                         shuffle_by: "SONGS",
                         ignore_the: false,
@@ -2231,9 +2232,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 &theme,
                 &fonts,
                 settings::ROW_RESTART,
-                settings::max_scroll_px(true, true),
+                0,
                 &settings::SettingsView {
-                    more: true,
+                    page: settings::page_of(settings::ROW_RESTART),
                     languages: &cinder_ui::i18n::Language::ALL,
                     shuffle_by: "SONGS",
                     ignore_the: false,
@@ -2268,18 +2269,17 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             save(&c, &format!("confirm_{name}"));
         }
 
-        // Settings just after More settings is tapped: unfolded, that row under the header — which
-        // must survive the scroll (device report, 2026-07-28).
+        // A topic page: System, where the value column is densest.
         {
             let mut c = Canvas::new();
             settings::render(
                 &mut c,
                 &theme,
                 &fonts,
-                settings::ROW_MORE,
-                settings::row_top_px(settings::ROW_MORE),
+                settings::ROW_LANGUAGE,
+                0,
                 &settings::SettingsView {
-                    more: true,
+                    page: settings::page_of(settings::ROW_LANGUAGE),
                     languages: &cinder_ui::i18n::Language::ALL,
                     shuffle_by: "SONGS",
                     ignore_the: false,
@@ -3075,7 +3075,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             app.tap(
                 240,
                 cinder_ui::settings::LIST_TOP
-                    + cinder_ui::settings::row_top_px(cinder_ui::settings::ROW_MORE)
+                    + cinder_ui::settings::row_top_px(cinder_ui::settings::group_row(
+                        cinder_ui::settings::GROUPS.len() - 1,
+                    ))
                     + 20,
             );
             app.scroll_px(10_000);
@@ -3400,7 +3402,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         app.tap(
             240,
             cinder_ui::settings::LIST_TOP
-                + cinder_ui::settings::row_top_px(cinder_ui::settings::ROW_MORE)
+                + cinder_ui::settings::row_top_px(cinder_ui::settings::group_row(
+                    cinder_ui::settings::GROUPS.len() - 1,
+                ))
                 + 20,
         );
         app.scroll_px(10_000);
@@ -4287,6 +4291,17 @@ fn main() {
     }
 }
 
+/// `lib` with one tab switched to `view`, for the Library view previews.
+fn with_view(
+    lib: &cinder_ui::Library,
+    tab: library::Tab,
+    view: library::LibView,
+) -> cinder_ui::Library {
+    let mut l = lib.clone();
+    l.views[tab as usize] = view;
+    l
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4380,15 +4395,4 @@ mod tests {
             "only b differs there"
         );
     }
-}
-
-/// `lib` with one tab switched to `view`, for the Library view previews.
-fn with_view(
-    lib: &cinder_ui::Library,
-    tab: library::Tab,
-    view: library::LibView,
-) -> cinder_ui::Library {
-    let mut l = lib.clone();
-    l.views[tab as usize] = view;
-    l
 }

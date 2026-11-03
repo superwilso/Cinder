@@ -28,7 +28,7 @@ pub enum Scale {
 impl Scale {
     pub const COUNT: u8 = 2;
     pub fn from_index(i: u8) -> Scale {
-        if i % Self::COUNT == 0 {
+        if i.is_multiple_of(Self::COUNT) {
             Scale::Dynamic
         } else {
             Scale::Fixed
@@ -63,7 +63,7 @@ pub enum Interp {
 impl Interp {
     pub const COUNT: u8 = 2;
     pub fn from_index(i: u8) -> Interp {
-        if i % Self::COUNT == 0 {
+        if i.is_multiple_of(Self::COUNT) {
             Interp::Smooth
         } else {
             Interp::Linear

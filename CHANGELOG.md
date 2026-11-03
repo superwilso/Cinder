@@ -16,6 +16,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **Settings has pages.** The Settings screen now fits without scrolling: Display, Big view,
+  Brightness and the sleep timer, then one row per topic (Playback, Now Playing, Library, Buttons &
+  gestures, Power, Device & storage, System). Each topic opens its own page, and Back returns to
+  Settings with that topic selected. This replaces the "More settings" fold-out. *Host-tested.*
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed

@@ -1454,7 +1454,7 @@ fn group_thousands(n: usize) -> String {
     let b = s.as_bytes();
     let mut out = String::new();
     for (i, ch) in b.iter().enumerate() {
-        if i > 0 && (b.len() - i) % 3 == 0 {
+        if i > 0 && (b.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*ch as char);
@@ -2248,11 +2248,10 @@ pub fn render(
             let first = ((scroll_px - hide) / rh) as usize;
             let mut y = top - hide - ((scroll_px - hide) % rh);
             c.set_clip_y(top - hide, LIST_BOTTOM);
-            for rank in first..order.len() {
+            for (rank, &i) in order.iter().enumerate().skip(first) {
                 if y >= LIST_BOTTOM {
                     break;
                 }
-                let i = order[rank];
                 let sgn = &lib.songs[i];
                 let cy = y + rh / 2;
                 let now = rank == current;
@@ -2387,9 +2386,7 @@ pub fn render(
                                     t.acc,
                                 );
                             }
-                            let sub = if edge {
-                                al.artist.clone()
-                            } else if al.year.is_empty() {
+                            let sub = if edge || al.year.is_empty() {
                                 al.artist.clone()
                             } else {
                                 format!("{} · {}", al.year, al.artist)
@@ -4978,7 +4975,7 @@ mod tests {
     #[test]
     fn az_jump_uses_the_active_sorts_key_and_visual_rank() {
         let l = lib();
-        for sort in 0..SORTS.len() {
+        for (sort, &sort_name) in SORTS.iter().enumerate() {
             let Some(key) = az_key_for(Tab::Songs, sort, 0) else {
                 continue;
             };
@@ -4999,7 +4996,7 @@ mod tests {
                 assert!(
                     landed || clamped,
                     "SORT={} letter {:?} landed on {:?}",
-                    SORTS[sort],
+                    sort_name,
                     ch as char,
                     hit.title
                 );

@@ -221,7 +221,7 @@ pub fn render(
         // The REAL decibels, not the raw half-dB value — printing the raw number claimed twice
         // the boost the DSP was applying.
         let dbl = match band_db(bands[i]) {
-            v if v == 0.0 => "0".to_string(),
+            0.0 => "0".to_string(),
             v if v.fract() == 0.0 => format!("{v:+.0}"),
             v => format!("{v:+.1}"),
         };
