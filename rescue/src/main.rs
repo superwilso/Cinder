@@ -362,7 +362,10 @@ fn sync(
         src.read_exact(&mut want)
             .map_err(|e| format!("backup file: {e}"))?;
         let mut have = Vec::with_capacity(n);
-        mtk::read_user(l, start + pos, n as u64, |c| Ok(have.extend_from_slice(c)))?;
+        mtk::read_user(l, start + pos, n as u64, |c| {
+            have.extend_from_slice(c);
+            Ok(())
+        })?;
         let differs = |i: usize| {
             let j = (i + PIECE).min(n);
             all || have[i..j] != want[i..j]
@@ -381,7 +384,10 @@ fn sync(
             if !dry_run {
                 mtk::write_user(l, at, (j - i) as u64, &mut &want[i..j], |_| {})?;
                 let mut back = Vec::with_capacity(j - i);
-                mtk::read_user(l, at, (j - i) as u64, |c| Ok(back.extend_from_slice(c)))?;
+                mtk::read_user(l, at, (j - i) as u64, |c| {
+                    back.extend_from_slice(c);
+                    Ok(())
+                })?;
                 if back != want[i..j] {
                     return Err(format!(
                         "{at:#x} read back differently from the backup. Run restore again, or restore with wbrt."
@@ -405,6 +411,7 @@ fn sync(
 ///      no ID (wbrt's), the same serial number in `nvp`;
 ///   4. the player's own partition table passes the same layout check, unless the table itself
 ///      (`mbr`) is among what is being put back.
+///
 /// Then per partition: compare the player with the backup 64 MiB at a time, write only the 1 MiB
 /// pieces that differ, and read each written piece back; it must equal the backup.
 fn restore(
@@ -500,7 +507,8 @@ fn restore(
     if let Some(want) = &serial {
         let mut b = vec![];
         mtk::read_user(&mut usb, backup::SERIAL_AT, 512, |c| {
-            Ok(b.extend_from_slice(c))
+            b.extend_from_slice(c);
+            Ok(())
         })?;
         match backup::serial(&b) {
             Some(s) if s == *want => sayln!("Same player as the backup (serial {s})"),
@@ -516,7 +524,10 @@ fn restore(
         sayln!("Putting the partition table back too, so the player's own is not checked");
     } else {
         let mut dev_head = Vec::with_capacity(0x500000);
-        mtk::read_user(&mut usb, 0, 0x500000, |c| Ok(dev_head.extend_from_slice(c)))?;
+        mtk::read_user(&mut usb, 0, 0x500000, |c| {
+            dev_head.extend_from_slice(c);
+            Ok(())
+        })?;
         backup::check_layout(&dev_head)
             .map_err(|e| format!("the player's own partition table: {e}\nPut the table back too: restore `all` (Everything except your music).{stuck}"))?;
         sayln!("The player's partition table is an A50-series one");

@@ -15,6 +15,8 @@
 //! `stage`, the
 //! same module the text front end uses, so there is exactly one implementation of "install".
 
+// The Win32 types keep their Windows spellings (HWND, RECT, MSG), so they match the documentation.
+#![allow(clippy::upper_case_acronyms)]
 #![allow(non_snake_case)]
 
 use std::ffi::c_void;
@@ -1011,7 +1013,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
             0
         }
         WM_COMMAND => {
-            let id = (wp & 0xFFFF) as usize;
+            let id = wp & 0xFFFF;
             // The cleanup confirm is modal, and a modal dialog runs a NESTED message loop: every
             // WM_PAINT for this window is dispatched while the click that opened it is still on
             // the stack. Showing it from inside `on_command` would mean showing it while the app
