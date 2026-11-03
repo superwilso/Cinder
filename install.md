@@ -324,7 +324,7 @@ step count; the installer fetches the Sony file it needs from Sony's own update 
 `CEW2` and Korean `KR3` regions) load a quieter table at boot. Cinder replaces it on every boot
 unless you choose **Sony, with region limit**, so on those players **the same volume number is louder than on Sony's
 firmware. Turn the volume down before the first boot.** Elsewhere `stock` is the table you already
-had. Settings ▸ Volume limit, Sony's safe-listening cap, is separate and still works.
+had. Settings ▸ Playback ▸ Volume limit, Sony's safe-listening cap, is separate and still works.
 
 The Smooth and Walkman One tables **are not part of the NW-A50's firmware**. They are in Sony's
 NW-WM1 series firmware, on the same update server, and Cinder may not ship them. So when you choose
