@@ -161,7 +161,34 @@ cinder-aac is preloaded into (offsets are file offsets in stock 1.02).
   "QoS = %d") goes to libBtMw through `bt_av_callbacks` slot 12 (+0x30), the table cinder-aac
   already wraps for slot 4. When mtkbt sends it is not known yet.
 
-Not known yet, and needing the player: the status byte's range on SBC (packets queued, as LDAC's
+**Measured 2026-11-03 (WH-1000XM4, SBC XQ Dual Channel bitpool 47, MTU 882, player beside the
+headphones):** mtkbt answers the request on SBC too, about ten answers a second at one request per
+100 ms; the status was 0 for 65 s, peaking at 1. So it is not an LDAC-only reply, and an idle link
+reads 0.
+
+**The walk (same evening, the owner carrying the XM4 out of range and back, HCI trace alongside):**
+the status is the transmit queue's depth in packets, and it fills to a ceiling of 10. Skipped
+packets (RTP sequence gaps in the trace) start exactly as it fills:
+
+| Uptime (s) | Status (max in the second) | Packets the stack skipped |
+|---|---|---|
+| 324–325 | 5 | 2 |
+| 362 | 8 | 3 |
+| 366–403 | 10, every second | 2,993 (577 events) |
+| back in range | 0 | 0 |
+
+So a status above about 4 is the warning and 10 is music being thrown away. An Auto steps the
+bitpool down when it reads 4 or more and back up after quiet seconds at 0.
+
+**Walk 2, with the first Auto (one step a second down, 10 s quiet up):** 195 skipped packets
+against walk 1's 2,993, in two bursts: 92 while it stepped 47 → 38 → 30 → 24 over three seconds
+(the queue already at 10), and 95 after it stepped back up to 30 at the edge of range and the
+queue was straight back at 10 (a 610 ms gap). The walks were not the same, so the count is not a
+fair comparison; the two bursts are what the second version answers: two steps at once on a
+reading of 8 or more, and a step up the queue answers within 15 s doubles the quiet needed for the
+next (to 80 s; a minute at the top resets it).
+
+Not known before the walk: the status byte's range on SBC (packets queued, as LDAC's
 API implies, or a level), whether mtkbt answers 0x21d when LDAC is not the codec, and the values
 around the JBL's 5.7 % drop rate. The plan: log the status per PCM call on SBC XQ (XM4 or CMF,
 then out of range on a walk), then step the bitpool down while the queue is deep and back up after

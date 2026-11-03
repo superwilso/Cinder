@@ -17,6 +17,8 @@ pub struct Lock<'a> {
     pub badge: &'a str,
     pub battery: u8,
     pub progress: f32,
+    /// Settings ▸ Hold locks the buttons is on: the side keys do nothing, so the hint says so.
+    pub keys_locked: bool,
 }
 
 /// Screen margin the centred text may not cross. The lock screen has no controls to hide, so this
@@ -74,7 +76,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, l: &Lock) {
 
     // bottom hint: lock glyph + caption. The Hold switch unlocks (touch is disabled); the side
     // transport keys stay live; Power just wakes the screen.
-    let hint = crate::i18n::text("HOLD LOCK · SIDE KEYS ACTIVE · SLIDE HOLD OFF");
+    let hint = crate::i18n::text(if l.keys_locked {
+        "HOLD LOCK · SIDE KEYS LOCKED · SLIDE HOLD OFF"
+    } else {
+        "HOLD LOCK · SIDE KEYS ACTIVE · SLIDE HOLD OFF"
+    });
     let hs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16);
     // Too wide for the glass (at 130 % it ran 57 px past both edges): two lines, split at the
     // last separator, the glyph on the first.
@@ -118,6 +124,7 @@ mod tests {
             badge: "FLAC 24/96",
             battery: 78,
             progress: 0.5,
+            keys_locked: false,
         };
         render(&mut c, &t, &f, &l);
 

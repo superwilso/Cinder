@@ -421,6 +421,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "HIGH" => Some("高"),
         "HOLD" => Some("长按"),
         "HOLD LOCK · SIDE KEYS ACTIVE · SLIDE HOLD OFF" => Some("HOLD 已锁定 · 侧键可用 · 滑动 HOLD 解锁"),
+        "HOLD LOCK · SIDE KEYS LOCKED · SLIDE HOLD OFF" => Some("HOLD 已锁定 · 侧键已锁定 · 滑动 HOLD 解锁"),
         "HOLD POWER" => Some("长按电源键"),
         "HOLD SWITCH" => Some("HOLD 锁定开关"),
         "HOLD switch" => Some("HOLD 开关"),
