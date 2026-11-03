@@ -56,7 +56,7 @@ fn push_lyrics(l: &mut Layout, lyrics: bool) {
     if lyrics {
         l.push(
             Shape::Rect {
-                x: 0,
+                x: np::lyrics_shift(),
                 y: crate::chrome::STATUS_H,
                 w: np::LYRICS_HIT_W,
                 h: 44,

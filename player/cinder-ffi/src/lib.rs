@@ -1341,6 +1341,13 @@ fn settings_body(r: &Render) -> String {
         down.token()
     ));
     body.push_str(&format!("np_button={}\n", r.app.np_button().token()));
+    // Settings ▸ Back arrow, Track number, Hold locks the buttons (#51), OFF unless switched on.
+    body.push_str(&format!(
+        "np_back={}\nnp_count={}\nhold_buttons={}\n",
+        r.app.np_back() as u8,
+        r.app.np_count() as u8,
+        r.app.hold_buttons() as u8
+    ));
     // Night's schedule. Night itself is not saved (every boot starts in day, see "night" in the
     // loader); with the schedule on, the first clock tick puts it where the hour says.
     let (on, from, until) = r.app.night_schedule();
@@ -6851,6 +6858,16 @@ pub extern "C" fn cinder_set_bt_negotiated_codec(raw: libc::c_int) {
 
 /// What this boot's Bluetooth stack offers beyond Sony's four codecs, from the `bt-aac`
 /// component: `aac` = AAC (codec index 4), `xq` = SBC goes as SBC XQ. Sets state only.
+/// Settings ▸ Hold locks the buttons: while Hold is on, the shell drops the player's own side keys
+/// (not Power, not headphone buttons). 1 = on.
+#[no_mangle]
+pub extern "C" fn cinder_get_hold_buttons() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.hold_buttons() as libc::c_int,
+        None => 0,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_set_bt_codecs(aac: libc::c_int, xq: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
@@ -8396,6 +8413,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
                     "folders_tab" => r.app.set_folders_tab(v == "1"),
+                    "np_back" => r.app.set_np_back(v == "1"),
+                    "np_count" => r.app.set_np_count(v == "1"),
+                    "hold_buttons" => r.app.set_hold_buttons(v == "1"),
                     "big_bar" => cinder_ui::scale::set_big_bar(v == "1"),
                     "big_icons" => cinder_ui::scale::set_big_icons(v == "1"),
                     "night_sched" | "night_from" | "night_until" => {

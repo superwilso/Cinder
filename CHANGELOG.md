@@ -27,7 +27,30 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   player: SBC chosen → Bluetooth restarted, the headphones connected Joint Stereo SBC (bitpool
   35..39), not XQ's Dual Channel; SBC XQ chosen → XQ again.*
 
+- **Now Playing: Back arrow and Track number (#51).** Two switches under Settings ▸ More settings
+  ▸ Now Playing, both off by default. Back arrow puts an arrow top-left that does what the
+  left-edge swipe does (the Lyrics chip moves right of it); Track number shows the song's place in
+  what is playing ("3 / 12") in the middle of the top band. *Host-tested.*
+- **Hold locks the buttons (#51).** Settings ▸ More settings ▸ Gestures & buttons, off by default:
+  under Hold the player's own play, skip and volume buttons do nothing. Power still turns the
+  screen on and off, and headphone buttons still work. *Device-unverified.*
+
 ### Changed
+
+- **Back works on Now Playing.** The left-edge swipe did nothing there: opening Now Playing (a
+  song, the mini player, unlocking) cleared the way back. It now returns to the screen Now Playing
+  was opened from, or opens the Library when there is none; never to the Lock screen.
+  *Host-tested.*
+- **Turning Hold off lights the screen (#51).** It stayed dark until Power. *Device-unverified.*
+- **More settings is grouped by topic.** Library, Now Playing (the swipes, the toolbar button,
+  the back arrow, the track number), Gestures & buttons (the pull-down panel, Hold), Power saving,
+  System, About, so a row is where its subject is.
+
+- **The left-edge swipe for Back is easier to hit.** It had to start in the leftmost 38 px (about
+  3 mm of glass) and travel 120 px; on Now Playing a thumb that landed a few millimetres in turned
+  the artwork's page or skipped back a track instead. The band is now 56 px (about 5 mm) and the
+  travel 100 px, on every screen. Dev builds log a near miss ("edge-back near miss: start x=…") so
+  the numbers can be tuned. *Device-unverified.*
 
 - **Bluetooth ▸ Sound quality says what each codec is for.** The codec chips are now a row each,
   Best first, with one line in plain words ("Not sure? This one picks for you", "Apple's · AirPods

@@ -12330,6 +12330,13 @@ static void scrub_carry() {
     carry_out(act);
 }
 
+// The left-edge Back swipe: it must START within EDGE_BACK_W of the left edge and travel
+// EDGE_BACK_TRAVEL rightward. 38 px (about 3 mm of glass) and 120 px were hard to hit on Now
+// Playing (owner, 2026-11-03): a thumb that lands a few millimetres in starts on the artwork,
+// where a rightward swipe turns the page, or below it, where it skips back a track. 56 px is about
+// 5 mm. The live row swipe below never starts inside the band, so the two cannot both claim it.
+static const int EDGE_BACK_W = 56, EDGE_BACK_TRAVEL = 100;
+
 static void touch_release() {
     if (g_touch_down && g_scrub_active) {
         // Drag-to-seek ends: ask cinder-ffi where the finger left the rail and seek there.
@@ -12375,7 +12382,17 @@ static void touch_release() {
         int cy = (g_touch_cur_y >= 0) ? touch_ui_y(g_touch_cur_y) : sy;
         int dx = cx - sx, dy = cy - sy;
         int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
-        if (sx <= 38 && dx >= 120) {                 // left-edge → rightward = Back
+#ifdef CINDER_DEV
+        // Near misses, to tune the band from real thumbs: a rightward swipe that began close to
+        // the edge but not inside it, or inside it and fell short.
+        if (dx >= 60 && adx > ady && sx <= EDGE_BACK_W + 40 && !(sx <= EDGE_BACK_W && dx >= EDGE_BACK_TRAVEL)) {
+            char m[96];
+            std::snprintf(m, sizeof m, "input: edge-back near miss: start x=%d (band %d), travel %d (need %d)",
+                          sx, EDGE_BACK_W, dx, EDGE_BACK_TRAVEL);
+            clog_(m);
+        }
+#endif
+        if (sx <= EDGE_BACK_W && dx >= EDGE_BACK_TRAVEL) {   // left-edge → rightward = Back
             int act = cinder_input(CINDER_BTN_BACK);
             if (act != CINDER_ACT_NONE) carry_out_input(act);
         } else if (adx < 26 && ady < 26) {           // ~stationary = tap (26: sloppy thumbs drift)
@@ -12544,9 +12561,9 @@ static void touch_drag_motion() {
             return;
         }
         // Mostly-horizontal past the same 12px slop: offer it to the UI as a live row swipe. The
-        // left-edge Back gesture is NOT offered — it starts at x<=38 and owns that strip, and a row
+        // left-edge Back gesture is NOT offered — it starts at x<=EDGE_BACK_W and owns that strip, and a row
         // that slid under an edge-back would promise a queue that release never performs.
-        if (adxt > 12 && adxt > adyt && touch_ui_x(g_touch_start_x) > 38) {
+        if (adxt > 12 && adxt > adyt && touch_ui_x(g_touch_start_x) > EDGE_BACK_W) {
             g_hswipe_active = cinder_swipe_track(dxt, touch_ui_y(g_touch_start_y)) != 0;
         }
         return;
@@ -12952,6 +12969,12 @@ void input_pump() {
                     g_held = (val != 0);     // the auto-wake path needs it (pocket-safety, below)
                     g_last_input_ms = now_ms();   // flicking the switch is deliberate activity
                     g_vol_btn = -1;          // locking mid-hold must not keep ramping
+                    // Hold OFF lights the screen (#51): taking the player out of Hold means you are
+                    // about to use it, and it used to stay dark until Power.
+                    if (!val && !g_screen_on) {
+                        clog_("hold: off -> screen on");
+                        run_guarded("hold off: screen on", 8, screen_toggle);
+                    }
                     continue;
                 }
 
@@ -13012,6 +13035,12 @@ void input_pump() {
                 if (kc < 0 || kc >= keymap_size()) continue;
                 int btn = g_keymap[kc];
                 if (btn < 0) continue;
+                // Settings ▸ Hold locks the buttons (#51): under Hold the player's own side keys
+                // (play, FF, REW, volume) do nothing and wake nothing. Power still toggles the
+                // screen, and headphone buttons arrive as other codes, so they still work.
+                if (g_held && (kc == 28 || kc == 105 || kc == 106 || kc == 114 || kc == 115)
+                        && cinder_get_hold_buttons())
+                    continue;
                 // Wampy's "swap prev/next" (`swap_prev_next`), for a hand that holds the player
                 // the other way up. The side keys only: headphones' own buttons keep their meaning.
                 // Read at the press, not at startup, because /contents can be unreadable then.

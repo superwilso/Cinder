@@ -630,7 +630,6 @@
   "ABOUT": "关于",
   "Palette · accent · volume display": "配色 · 强调色 · 音量显示",
   "What the shuffle button deals": "随机播放按钮的分组方式",
-  "Library · power saving · system": "曲库 · 节能 · 系统",
   "Swipe down from the top of the screen": "从屏幕顶部向下滑动",
   "Swipe down from screen top": "从屏幕顶部向下滑动",
   "Sleeps after 10 min idle, wakes on use": "闲置 10 分钟后关闭，使用时重新开启",
@@ -1169,5 +1168,14 @@
   "Adjusts to the signal as you move": "随信号自动调整",
   "Best sound · keep the player close": "音质最好 · 需要信号好",
   "A balance of sound and signal": "音质与信号平衡",
-  "Fewest dropouts in busy places": "断连最低"
+  "Fewest dropouts in busy places": "断连最低",
+  "Back arrow": "返回箭头",
+  "Track number": "曲目编号",
+  "Hold locks the buttons": "锁定时也锁按键",
+  "Top left, like the edge swipe": "左上角，同边缘滑动",
+  "Its place in what's playing": "在播放列表中的位置",
+  "Headphone buttons still work": "耳机按键仍可用",
+  "GESTURES & BUTTONS": "手势与按键",
+  "Library · Now Playing · gestures · system": "曲库 · 正在播放 · 手势 · 系统",
+  "Opens the screen you pick": "打开你选的页面"
 }

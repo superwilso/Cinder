@@ -803,6 +803,8 @@ void cinder_set_bt_negotiated_codec(int raw);
 /* What this boot's Bluetooth stack offers beyond Sony's four (the `bt-aac` component): aac = AAC,
    codec index 4; xq = SBC goes as SBC XQ. Sets state only. */
 void cinder_set_bt_codecs(int aac, int xq);
+/* Settings ▸ Hold locks the buttons: 1 = drop the side keys while Hold is on. */
+int cinder_get_hold_buttons(void);
 /* ^ the raw BtSoundCodec word from BtTransmitterService::GetSoundStatus (transmitter slot 26).
  * MEASURED 2026-08-17 on a live link, WH-1000XM4: 0x02 = LDAC, with the peer advertising
  * `ldac support:1` and neither aptX. It is SONY'S OWN ENUM, not the Bluetooth assigned-numbers
