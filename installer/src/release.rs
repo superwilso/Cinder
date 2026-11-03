@@ -310,6 +310,15 @@ mod tests {
         assert!(is_newer("v1.1.0-rc1", "v1.0.0"));
     }
 
+    /// An edge build is `<next version>-edge.<commit>`: the release it leads up to counts as newer,
+    /// the releases before it do not, so an edge tester is only told about a real release.
+    #[test]
+    fn an_edge_build_waits_for_its_own_release() {
+        assert!(!is_newer("v0.3.21", "0.3.22-edge.4cccb66"));
+        assert!(is_newer("v0.3.22", "0.3.22-edge.4cccb66"));
+        assert!(is_newer("v0.3.23", "0.3.22-edge.4cccb66"));
+    }
+
     #[test]
     fn junk_in_a_tag_does_not_panic() {
         assert!(!is_newer("", ""));

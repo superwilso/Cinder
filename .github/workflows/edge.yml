@@ -1,0 +1,216 @@
+name: edge
+
+# An untested build of one commit on main, for people who want to try what is coming before it is
+# in a release. Started by tools/edge.sh, never by a push: the player's binaries can only be built
+# on a maintainer's machine (they link against Sony's libraries), so edge.sh builds that payload,
+# uploads it to the draft release `edge-payload`, and starts this with the commit it came from.
+#
+# This checks the payload is for that commit and arrived intact, builds the Windows, Linux and
+# macOS installers around it exactly as release.yml does, and replaces the downloads on the
+# `edge` pre-release (its tag moved to the commit). The installer's update check reads
+# releases/latest, which skips pre-releases, so nobody is offered an edge build who did not go
+# looking for it.
+#
+# KEEP THE BUILD STEPS IN STEP WITH release.yml. They are copied rather than shared so that this
+# workflow can never change how a real release is built.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit the uploaded payload was built from (tools/edge.sh fills this in)"
+        required: true
+
+permissions:
+  contents: write
+
+# A newer edge build replaces an older one, so an older run still going is wasted.
+concurrency:
+  group: edge
+  cancel-in-progress: true
+
+env:
+  CINDER_CHANNEL: stable
+
+jobs:
+  payload:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+      - name: Fetch the payload and check it is this commit's, intact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          gh release download edge-payload -R "$GITHUB_REPOSITORY" -p edge-payload.tar.gz
+          mkdir p && tar -xzf edge-payload.tar.gz -C p
+          got="$(cat p/EDGE_COMMIT)"
+          [ "$got" = "$SHA" ] || { echo "the uploaded payload is for $got, not $SHA — run tools/edge.sh again"; exit 1; }
+          ( cd p && sha256sum -c --quiet SHA256SUMS )
+          bash tools/check_arm_payload.sh p/stable
+      - id: v
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          base="$(sed -n 's/^version = "\(.*\)"/\1/p' installer/Cargo.toml | head -1)"
+          echo "version=$base-edge.${SHA:0:7}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: edge-payload
+          path: p/stable
+          if-no-files-found: error
+
+  build:
+    needs: payload
+    runs-on: windows-latest
+    env:
+      CINDER_EDGE_VERSION: ${{ needs.payload.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: edge-payload
+          path: cinder-home/dist/stable
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        working-directory: installer
+        run: cargo test
+      - name: Build
+        working-directory: installer
+        run: cargo build --release
+      - name: Stage artifact
+        working-directory: installer
+        run: Copy-Item target/release/cinder-installer.exe cinder-installer-windows-x64.exe
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cinder-installer-windows-x64.exe
+          path: installer/cinder-installer-windows-x64.exe
+          if-no-files-found: error
+
+  build-linux:
+    needs: payload
+    runs-on: ubuntu-latest
+    env:
+      CINDER_EDGE_VERSION: ${{ needs.payload.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: edge-payload
+          path: cinder-home/dist/stable
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        working-directory: installer
+        run: cargo test --release
+      - name: Build
+        working-directory: installer
+        run: cargo build --release
+      - name: Stage artifact
+        working-directory: installer
+        run: cp target/release/cinder-installer cinder-installer-linux-x64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cinder-installer-linux-x64
+          path: installer/cinder-installer-linux-x64
+          if-no-files-found: error
+
+  build-macos:
+    needs: payload
+    runs-on: macos-latest
+    env:
+      CINDER_EDGE_VERSION: ${{ needs.payload.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: edge-payload
+          path: cinder-home/dist/stable
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Test
+        working-directory: installer
+        run: cargo test --release
+      - name: Build both and join them
+        working-directory: installer
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          lipo -create -output cinder-installer-macos \
+            target/aarch64-apple-darwin/release/cinder-installer \
+            target/x86_64-apple-darwin/release/cinder-installer
+      # libusb is linked statically (LGPL-2.1), so its licence ships beside the binary.
+      - name: Attach libusb's licence
+        working-directory: installer
+        run: |
+          cp "$(find ~/.cargo/registry/src -path '*/libusb1-sys-*/libusb/COPYING' | head -1)" \
+            LICENSE-libusb.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cinder-installer-macos
+          path: |
+            installer/cinder-installer-macos
+            installer/LICENSE-libusb.txt
+          if-no-files-found: error
+
+  publish:
+    needs: [payload, build, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cinder-installer-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: ( cd dist && sha256sum -- * | tee SHA256SUMS )
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Replace the edge downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+          VER: ${{ needs.payload.outputs.version }}
+        run: |
+          subject="$(git log -1 --format=%s "$SHA")"
+          cat > notes.md <<EOF
+          **Untested.** An automatic build of commit [\`${SHA:0:7}\`](https://github.com/$GITHUB_REPOSITORY/commit/$SHA) ($subject), built $(date -u '+%Y-%m-%d %H:%M UTC'). It is for trying what is coming before it is in a release, and it can be broken.
+
+          - **Install** with the installer for your computer below, the same way as a release.
+          - **Report** what you find in an issue, with the version the installer prints ($VER).
+          - **Go back** by running the latest release's installer: https://github.com/$GITHUB_REPOSITORY/releases/latest
+          - **If the player will not start Cinder**, follow [RECOVERY.md](https://github.com/$GITHUB_REPOSITORY/blob/main/RECOVERY.md).
+
+          What changed since the last release: [CHANGELOG.md, under Unreleased](https://github.com/$GITHUB_REPOSITORY/blob/$SHA/CHANGELOG.md).
+          EOF
+          if gh release view edge >/dev/null 2>&1; then
+              # Pushed with this run's token, which does not start other workflows.
+              git push -f origin "$SHA:refs/tags/edge"
+              for a in $(gh release view edge --json assets -q '.assets[].name'); do
+                  gh release delete-asset edge "$a" -y
+              done
+              gh release upload edge dist/*
+              gh release edit edge --prerelease --title "Edge $VER (untested)" --notes-file notes.md
+          else
+              gh release create edge dist/* --prerelease --target "$SHA" \
+                  --title "Edge $VER (untested)" --notes-file notes.md
+          fi

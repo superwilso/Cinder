@@ -29,7 +29,7 @@ pub const NAME: &str = "cinder-report.txt";
 pub fn build(root: Option<&Path>, session: &str) -> String {
     let mut r = format!(
         "Cinder report: installer {} ({} channel) on {} {}\n",
-        env!("CARGO_PKG_VERSION"),
+        crate::VERSION,
         crate::CHANNEL,
         std::env::consts::OS,
         std::env::consts::ARCH

@@ -16,6 +16,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Edge builds.** An untested build of the newest commit, for trying what's coming, on the
+  [edge](https://github.com/superwilso/Cinder/releases/tag/edge) pre-release with installers for
+  Windows, Linux and macOS. A maintainer publishes one with `tools/edge.sh`, which builds the
+  player's payload locally and has GitHub build the installers around it
+  (`.github/workflows/edge.yml`). An edge installer names its commit (`0.3.22-edge.<commit>`), and
+  the update check never offers one to anybody. *The payload build and the installer build around
+  it run locally; the workflow has not run on GitHub yet.*
+
 ### Changed
 
 - **No more cut-off sentences at large text sizes.** The USB Storage screen wraps its text
