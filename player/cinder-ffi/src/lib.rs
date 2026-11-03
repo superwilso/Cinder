@@ -399,6 +399,8 @@ pub(crate) static FRAMES_PRESENTED: std::sync::atomic::AtomicU64 =
 
 /// How frames leave the render thread: inline (the original serial path, kept as the flagged
 /// escape because it is strictly less machinery) or through the present thread (see present.rs).
+// One Sink per process, so the size of the larger variant costs nothing.
+#[allow(clippy::large_enum_variant)]
 enum Sink {
     Sync(Framebuffer),
     Threaded(present::PresentThread),
@@ -808,9 +810,11 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
             return -1;
         }
     };
-    let mut np = Np::default();
-    np.codec = "—".into();
-    np.battery = 100;
+    let np = Np {
+        codec: "—".into(),
+        battery: 100,
+        ..Default::default()
+    };
     *cell().lock().unwrap() = Some(Render {
         album_cover_id: None,
         grid_miss: Default::default(),
@@ -1031,6 +1035,7 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
 /// of the two was live (`setup`) and which one each output uses (`profile_*`). The live profile is
 /// NOT here — it is the ordinary `eq=` / `sound=` / `adv=` … keys, so a build from before the
 /// profiles existed reads the same file and finds what it expects.
+#[derive(Default)]
 struct ProfileLoad {
     bank: cinder_ui::nav::SoundSetup,
     /// The file had a spare at all. One written before A/B existed does not.
@@ -1048,22 +1053,6 @@ struct ProfileLoad {
     album_sounds: Vec<(String, u8)>,
     /// `album_prev_*`: the sound from before an album's preset took over, read like the spare.
     album_prev: Option<Box<ProfileLoad>>,
-}
-
-impl Default for ProfileLoad {
-    fn default() -> Self {
-        ProfileLoad {
-            bank: cinder_ui::nav::SoundSetup::default(),
-            bank_seen: false,
-            bank_adv_seen: false,
-            live_idx: 0,
-            presets: Vec::new(),
-            name: String::new(),
-            jack_eq: None,
-            album_sounds: Vec::new(),
-            album_prev: None,
-        }
-    }
 }
 
 impl ProfileLoad {
@@ -1850,7 +1839,7 @@ fn statvfs_mb(path: &str) -> (i32, i32) {
         return (0, 0);
     }
     let mb = |blocks: u64| (blocks as u128 * st.f_frsize as u128 / 1_048_576) as i32;
-    (mb(st.f_blocks as u64), mb(st.f_bavail as u64))
+    (mb(st.f_blocks), mb(st.f_bavail))
 }
 
 #[cfg(test)]
@@ -2046,12 +2035,12 @@ fn build_library_with(
             if t.added > *a {
                 *a = t.added;
             }
-            if !album_year.contains_key(&aid) {
+            if let std::collections::btree_map::Entry::Vacant(e) = album_year.entry(aid) {
                 if let Some(y) = t.releaseyear_id.and_then(|i| years.get(&i)) {
                     // Sony writes an unknown year as "0", not as nothing, and it printed as
                     // "0 · 10 tracks" under the album (seen on the owner's library, 2026-09-23).
                     if is_real_year(y) {
-                        album_year.insert(aid, y.clone());
+                        e.insert(y.clone());
                     }
                 }
             }
@@ -3046,10 +3035,10 @@ pub extern "C" fn cinder_render_tick() {
         // last report is at RASTER_LAST frames, a few minutes of real use, after which the whole
         // sampler switches off — see the `sampling` gate above, which is the point of the cap.
         const WINDOW: u32 = 300;
-        if n % WINDOW == 0 {
+        if n.is_multiple_of(WINDOW) {
             let win = n / WINDOW;
             // Every window early on (boot is where the interesting change is), then thin out.
-            if win <= 4 || win % 10 == 0 {
+            if win <= 4 || win.is_multiple_of(10) {
                 println!(
                     "cinder-ffi: raster — frames {}..{}, mean {:.2} ms/frame",
                     n - WINDOW + 1,
@@ -3213,7 +3202,7 @@ pub extern "C" fn cinder_art_probe(object_id: libc::c_longlong) -> libc::c_int {
         return -1;
     };
     let t0 = std::time::Instant::now();
-    match art_load::load(db, object_id as i64) {
+    match art_load::load(db, object_id) {
         Some(img) => {
             let ms = t0.elapsed().as_millis();
             println!(
@@ -3531,7 +3520,7 @@ fn track_info_rows(r: &Render, t: &cinder_db::Track) -> Vec<(String, String)> {
             if bytes >= 1 << 20 {
                 format!("{:.1} MB", bytes as f64 / (1u64 << 20) as f64)
             } else {
-                format!("{} KB", (bytes + 1023) / 1024)
+                format!("{} KB", bytes.div_ceil(1024))
             },
         );
     }
@@ -4522,7 +4511,7 @@ fn zappin_release_hold(r: &mut Render) {
         let track = r
             .last_track
             .clone()
-            .filter(|t| r.zappin_handoff_uris.iter().any(|u| *u == t.filename));
+            .filter(|t| r.zappin_handoff_uris.contains(&t.filename));
         if let Some(t) = track {
             let length_s = (t.duration_raw.unwrap_or(0).max(0) / 1000) as u32;
             r.listen.restart_track(&t.filename, length_s);
@@ -5695,7 +5684,7 @@ pub extern "C" fn cinder_tap(x: libc::c_int, y: libc::c_int) -> libc::c_int {
         r.app.quick_is_open(),
         r.app.shelf_is_open(),
     );
-    let actions = r.app.tap(x as i32, y as i32);
+    let actions = r.app.tap(x, y);
     if receiver_tap {
         eprintln!(
             "cinder-ffi: receiver tap ({x},{y}) radio={} rx={} locked={} modal={} quick={} shelf={} -> rx={} actions={actions:?}",
@@ -5722,9 +5711,7 @@ pub extern "C" fn cinder_tap(x: libc::c_int, y: libc::c_int) -> libc::c_int {
 pub extern "C" fn cinder_swipe(dir: libc::c_int, x: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let actions = r
-        .app
-        .swipe(if dir < 0 { -1 } else { 1 }, x as i32, y as i32);
+    let actions = r.app.swipe(if dir < 0 { -1 } else { 1 }, x, y);
     r.dirty = true;
     r.night = r.app.night;
     save_settings(r);
@@ -5747,7 +5734,7 @@ pub extern "C" fn cinder_swipe(dir: libc::c_int, x: libc::c_int, y: libc::c_int)
 pub extern "C" fn cinder_swipe_track(dx_px: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let took = r.app.swipe_track(dx_px as i32, y as i32);
+    let took = r.app.swipe_track(dx_px, y);
     r.dirty = true;
     took as libc::c_int
 }
@@ -5771,7 +5758,7 @@ pub extern "C" fn cinder_swipe_release() {
 pub extern "C" fn cinder_reorder_begin(x: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let took = r.app.reorder_begin(x as i32, y as i32);
+    let took = r.app.reorder_begin(x, y);
     r.dirty = true;
     took as libc::c_int
 }
@@ -5783,7 +5770,7 @@ pub extern "C" fn cinder_reorder_begin(x: libc::c_int, y: libc::c_int) -> libc::
 pub extern "C" fn cinder_reorder_begin_hold(x: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let took = r.app.reorder_begin_hold(x as i32, y as i32);
+    let took = r.app.reorder_begin_hold(x, y);
     if took {
         r.dirty = true;
     }
@@ -5796,7 +5783,7 @@ pub extern "C" fn cinder_reorder_begin_hold(x: libc::c_int, y: libc::c_int) -> l
 pub extern "C" fn cinder_hold(x: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -1 };
-    let Some(actions) = r.app.hold(x as i32, y as i32) else {
+    let Some(actions) = r.app.hold(x, y) else {
         return -1;
     };
     r.dirty = true;
@@ -5812,7 +5799,7 @@ pub extern "C" fn cinder_hold(x: libc::c_int, y: libc::c_int) -> libc::c_int {
 #[no_mangle]
 pub extern "C" fn cinder_reorder_track(dy_px: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.reorder_track(dy_px as i32);
+        r.app.reorder_track(dy_px);
         r.dirty = true;
     }
 }
@@ -5838,7 +5825,7 @@ pub extern "C" fn cinder_reorder_release() {
 pub extern "C" fn cinder_sbar_begin(x: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let took = r.app.sbar_begin(x as i32, y as i32);
+    let took = r.app.sbar_begin(x, y);
     r.dirty = true;
     took as libc::c_int
 }
@@ -5847,7 +5834,7 @@ pub extern "C" fn cinder_sbar_begin(x: libc::c_int, y: libc::c_int) -> libc::c_i
 #[no_mangle]
 pub extern "C" fn cinder_sbar_track(dy_px: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.sbar_track(dy_px as i32);
+        r.app.sbar_track(dy_px);
         r.dirty = true;
     }
 }
@@ -5867,7 +5854,7 @@ pub extern "C" fn cinder_sbar_release() {
 #[no_mangle]
 pub extern "C" fn cinder_touch_drag(dy_px: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.scroll_px(dy_px as i32);
+        r.app.scroll_px(dy_px);
         r.dirty = true;
     }
 }
@@ -6807,8 +6794,7 @@ pub extern "C" fn cinder_set_usb_dac_format(
     chans: libc::c_uint,
 ) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app
-            .set_usb_dac_format(rate as u32, bits as u32, chans as u32);
+        r.app.set_usb_dac_format(rate, bits, chans);
     }
 }
 
@@ -7037,9 +7023,11 @@ pub extern "C" fn cinder_set_volume(level: libc::c_int) {
 /// scrolls exactly as before.
 #[no_mangle]
 pub extern "C" fn cinder_quick_pull_begin(x: libc::c_int, y: libc::c_int) -> libc::c_int {
-    cell().lock().unwrap().as_ref().map_or(0, |r| {
-        r.app.quick_pull_begin(x as i32, y as i32) as libc::c_int
-    })
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |r| r.app.quick_pull_begin(x, y) as libc::c_int)
 }
 
 /// The pull travelled far enough: open the panel. 1 if it opened.
@@ -7060,7 +7048,7 @@ pub extern "C" fn cinder_quick_pull_open() -> libc::c_int {
 pub extern "C" fn cinder_np_swipe(dy: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let took = r.app.np_swipe(dy as i32);
+    let took = r.app.np_swipe(dy);
     if took {
         r.dirty = true;
     }
@@ -7235,7 +7223,7 @@ pub extern "C" fn cinder_bt_prompt_set(
             .into_owned()
     };
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_bt_prompt(kind as u8, &name, code as u32);
+        r.app.set_bt_prompt(kind as u8, &name, code);
     }
 }
 
@@ -7794,7 +7782,7 @@ pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int)
     if bands.is_null() || n <= 0 {
         return;
     }
-    let src = unsafe { std::slice::from_raw_parts(bands as *const i32, n as usize) };
+    let src = unsafe { std::slice::from_raw_parts(bands, n as usize) };
     if let Some(r) = cell().lock().unwrap().as_mut() {
         // The tap is drawing: the analyzer's last frames before the shell stops it must not be
         // mixed in, or the bars would flick between two sources for a second.
@@ -9704,7 +9692,7 @@ pub extern "C" fn cinder_scrub_hit(x: libc::c_int, y: libc::c_int) -> libc::c_in
     // The CLAIM lives in nav (`App::scrub_begin`) — one place that knows which horizontal
     // controls exist and where they are drawn, shared with the host sim. What stays here is the
     // millisecond math for the rail, which needs the track duration the UI doesn't carry.
-    if !r.app.scrub_begin(x as i32, y as i32) {
+    if !r.app.scrub_begin(x, y) {
         return 0;
     }
     // Anything that is NOT the progress rail is a settings slider: it applies to the UI, has no
@@ -10012,7 +10000,7 @@ pub extern "C" fn cinder_scrub_to(x: libc::c_int, y: libc::c_int) -> libc::c_int
         // A settings slider: applies live as the finger moves. No seek target to report, but it may
         // have work for the shell (the balance slider writes the codec's two attenuators on every
         // step), so the action is parked for `cinder_scrub_action` to hand over.
-        let acts = r.app.scrub_move(x as i32, y as i32);
+        let acts = r.app.scrub_move(x, y);
         stash_scrub_action(r, &acts);
         r.dirty = true;
         return -1;
@@ -10021,7 +10009,7 @@ pub extern "C" fn cinder_scrub_to(x: libc::c_int, y: libc::c_int) -> libc::c_int
         return -1;
     }
     // nav knows where the rail is in every style, the Winamp skin's landscape seek bar included.
-    r.app.scrub_move(x as i32, y as i32);
+    r.app.scrub_move(x, y);
     let frac = r.app.scrub_permille() as f32 / 1000.0;
     let target = (r.cur_duration_ms as f32 * frac) as i64;
     r.scrub_ms = Some(target);
@@ -10213,7 +10201,7 @@ pub extern "C" fn cinder_set_now_playing_uri(
             let changed = r
                 .last_track
                 .as_ref()
-                .map_or(true, |p| p.object_id != t.object_id);
+                .is_none_or(|p| p.object_id != t.object_id);
             apply_track(&mut r.np, &t);
             if changed {
                 r.cue = cue::load_for(&t.filename);
@@ -12375,16 +12363,18 @@ mod tests {
     #[test]
     fn rail_grab_band_is_thumb_sized_and_clears_the_transport_row() {
         use cinder_ui::now_playing::{RAIL_GRAB_BOT, RAIL_GRAB_TOP, RAIL_Y};
-        assert!(RAIL_GRAB_TOP <= RAIL_Y, "band must include the rail itself");
-        assert!(RAIL_GRAB_BOT >= RAIL_Y + 4);
-        assert!(
-            RAIL_GRAB_BOT - RAIL_GRAB_TOP >= 40,
-            "too thin to hit with a thumb"
-        );
-        assert!(
-            RAIL_GRAB_BOT < 692 - 44,
-            "band overlaps the play/pause target"
-        );
+        const {
+            assert!(RAIL_GRAB_TOP <= RAIL_Y, "band must include the rail itself");
+            assert!(RAIL_GRAB_BOT >= RAIL_Y + 4);
+            assert!(
+                RAIL_GRAB_BOT - RAIL_GRAB_TOP >= 40,
+                "too thin to hit with a thumb"
+            );
+            assert!(
+                RAIL_GRAB_BOT < 692 - 44,
+                "band overlaps the play/pause target"
+            );
+        }
     }
 
     // ── the settings file is not trusted input ──────────────────────────────────────────────
@@ -12446,9 +12436,11 @@ mod tests {
     fn zappin_render() -> Render {
         let present =
             Sink::Threaded(present::PresentThread::start(|| Ok(ZappinNullPresent)).unwrap());
-        let mut np = Np::default();
-        np.codec = "—".into();
-        np.battery = 100;
+        let np = Np {
+            codec: "—".into(),
+            battery: 100,
+            ..Default::default()
+        };
         Render {
             album_cover_id: None,
             grid_miss: Default::default(),

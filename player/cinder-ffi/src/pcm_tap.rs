@@ -78,7 +78,7 @@ impl Slot {
             && (8_000..=384_000).contains(&s.rate)
             && s.bytes > 0
             && s.bytes <= PAYLOAD_CAP
-            && s.bytes % frame == 0;
+            && s.bytes.is_multiple_of(frame);
         ok.then_some(s)
     }
 

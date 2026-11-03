@@ -162,7 +162,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
     // are still yours, they are just not doing anything yet.
     let live = tc.on && tc.overridden_by.is_none();
     let ink_fill = if live { t.acc } else { t.faint };
-    for i in 0..BANDS {
+    for (i, &name) in BAND_NAMES.iter().enumerate() {
         let bx = band_center_x(i);
         let db = tc.bands[i] as i32;
         let knob_y = mid - db * span / BAND_MAX as i32;
@@ -183,7 +183,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
         // The REAL decibels. Printing the raw half-dB number would claim twice the boost the DSP
         // applies — the exact mistake the 10-band screen shipped with for a month.
         let dbl = match band_db(tc.bands[i]) {
-            v if v == 0.0 => "0".to_string(),
+            0.0 => "0".to_string(),
             v if v.fract() == 0.0 => format!("{v:+.0}"),
             v => format!("{v:+.1}"),
         };
@@ -213,7 +213,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
             f,
             bx as f32,
             (by + 26) as f32,
-            BAND_NAMES[i],
+            name,
             &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.0),
         );
     }

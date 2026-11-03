@@ -372,7 +372,7 @@ pub fn draw_with_peaks(
             }
         }
         VizKind::Dots => {
-            let d = bw.min(4).max(2);
+            let d = bw.clamp(2, 4);
             for i in 0..n {
                 let lv = level(i);
                 let bx = x + i * (bw + gap) + (bw - d) / 2;

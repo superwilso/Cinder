@@ -56,12 +56,12 @@ pub fn lines(lib: &Library) -> Vec<Line> {
     let mut out = Vec::with_capacity(lib.books.len() * 2);
     let mut prev: Option<&crate::model::BookRow> = None;
     for (i, b) in lib.books.iter().enumerate() {
-        let new_author = prev.map_or(true, |p| !p.author.eq_ignore_ascii_case(&b.author));
+        let new_author = prev.is_none_or(|p| !p.author.eq_ignore_ascii_case(&b.author));
         if new_author && !b.author.is_empty() {
             out.push(Line::Author(i));
         }
         let new_series =
-            new_author || prev.map_or(true, |p| !p.series.eq_ignore_ascii_case(&b.series));
+            new_author || prev.is_none_or(|p| !p.series.eq_ignore_ascii_case(&b.series));
         if new_series && !b.series.is_empty() {
             out.push(Line::Series(i));
         }

@@ -261,11 +261,13 @@ impl Metrics {
 /// Build the slot list. `len`/`current` describe the sequence (`current == None` when nothing is
 /// playing); `hist` is the play history's length.
 pub fn layout(hist: usize, len: usize, current: Option<usize>) -> Layout {
-    let mut l = Layout::default();
     // RESERVE UP FRONT. Every track is a slot, and after a "Shuffle all songs" that is the whole
     // library — growing from empty meant a dozen reallocations and memcpys of a list that ends up
     // ~29 KB, once per painted frame. Three spare for the section headings.
-    l.slots = Vec::with_capacity(hist + len + 3);
+    let mut l = Layout {
+        slots: Vec::with_capacity(hist + len + 3),
+        ..Default::default()
+    };
     let mut y = 0;
     let push = |l: &mut Layout, s: Slot, y: &mut i32| {
         l.slots.push((s, *y));

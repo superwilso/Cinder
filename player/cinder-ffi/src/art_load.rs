@@ -6,6 +6,7 @@
 //!   2. `value` as BLOB — the image bytes stored inline in the DB row.
 //!   3. `value` as TEXT + `dataoffset`/`datasize` — the art blob EMBEDDED in that source music
 //!      file (ID3 APIC / FLAC PICTURE / MP4 covr) — raw JPEG or PNG bytes at that offset.
+//!
 //! Everything is best-effort: any parse/IO failure returns None and the UI keeps its
 //! gradient-placeholder fallback. Decode runs once per track change, never per frame.
 
@@ -492,9 +493,9 @@ mod tests {
         // top-left = green (file row 1 px 0, BGR 0,255,0 → RGB 0,255,0)
         assert_eq!(&img.rgb[0..3], &[0, 255, 0]);
         // bottom-left = blue (file row 0 px 0, BGR 255,0,0 → RGB 0,0,255)
-        assert_eq!(&img.rgb[(2 * 1 + 0) * 3..(2 * 1 + 0) * 3 + 3], &[0, 0, 255]);
+        assert_eq!(&img.rgb[2 * 3..2 * 3 + 3], &[0, 0, 255]);
         // bottom-right = red
-        assert_eq!(&img.rgb[(2 * 1 + 1) * 3..(2 * 1 + 1) * 3 + 3], &[255, 0, 0]);
+        assert_eq!(&img.rgb[(2 + 1) * 3..(2 + 1) * 3 + 3], &[255, 0, 0]);
     }
 
     // ── JPEG ────────────────────────────────────────────────────────────────────────────────

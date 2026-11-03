@@ -5,6 +5,9 @@
 //! primitives; `fontdue` rasterises the Cinder type scale (proportional Hanken
 //! Grotesk + mono JetBrains Mono). Backends (host PNG / device framebuffer)
 //! live in their own crates and just hand us a `Canvas`.
+// Draw helpers take position, size, colours and style as plain arguments, the way the rest of
+// the kit does; bundling them into structs would only move the same values around.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
 pub mod advanced;
 pub mod art;

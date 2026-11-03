@@ -183,7 +183,8 @@ fn main() {
         (Key::Enter, 4),
     ];
     // A contact: where it started, where it was last, and whether it has become a drag.
-    let mut touch: Option<((f32, f32), (f32, f32), bool)> = None;
+    type Point = (f32, f32);
+    let mut touch: Option<(Point, Point, bool)> = None;
     let mut last_second = Instant::now();
     while window.is_open() && !window.is_key_down(Key::Escape) && !window.is_key_down(Key::Q) {
         for &(k, code) in keys {

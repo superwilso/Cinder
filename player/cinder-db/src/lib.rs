@@ -1375,12 +1375,11 @@ impl Db {
             let clamp16 = |v: i64| v.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
             match Some(akey) {
                 k if k == a.channels => e.channels = v.clamp(0, u16::MAX as i64) as u16,
-                k if k == a.channel_id => {
-                    // One channel id instead of a bitmask: set its bit, and Sony's always-on bit 0
-                    // with it, so `analysed()` and `in_channel` behave as they do for a bitmask.
-                    if (0..SENSME_CHANNELS.len() as i64).contains(&v) {
-                        e.channels |= 1 | (1 << (v + 1)) as u16;
-                    }
+                // One channel id instead of a bitmask: set its bit, and Sony's always-on bit 0 with
+                // it, so `analysed()` and `in_channel` behave as they do for a bitmask. Out of range
+                // falls through to `_`: the attribute ids are distinct.
+                k if k == a.channel_id && (0..SENSME_CHANNELS.len() as i64).contains(&v) => {
+                    e.channels |= 1 | (1 << (v + 1)) as u16;
                 }
                 k if k == a.tempo => e.tempo = clamp16(v),
                 k if k == a.mood => e.mood = clamp16(v),

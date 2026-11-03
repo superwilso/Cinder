@@ -262,10 +262,12 @@ mod tests {
                 );
             }
         }
-        assert!(
-            REMOVE_X1 - REMOVE_X0 >= 44 && GRIP_X1 >= 44,
-            "both columns are real targets"
-        );
+        const {
+            assert!(
+                REMOVE_X1 - REMOVE_X0 >= 44 && GRIP_X1 >= 44,
+                "both columns are real targets"
+            )
+        };
         assert_eq!(row_at(n, 0, LIST_TOP - 1), None);
         assert_eq!(
             row_at(2, 0, LIST_TOP + 2 * RH()),

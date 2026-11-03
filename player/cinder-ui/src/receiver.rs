@@ -383,9 +383,11 @@ mod tests {
             let (x, y) = codec_pref_chip(pref);
             assert_eq!(codec_pref_hit(x, y), Some(pref as u8));
         }
-        assert!(CODEC_LABEL_Y > STATUS_Y);
-        assert!(CODEC_HINT_Y < SONY_Y);
-        assert!(LDAC_HINT_Y < SONY_Y);
+        const {
+            assert!(CODEC_LABEL_Y > STATUS_Y);
+            assert!(CODEC_HINT_Y < SONY_Y);
+            assert!(LDAC_HINT_Y < SONY_Y);
+        }
         assert!(SONY_Y + SONY_H() < 580, "clear of the notes section");
     }
 }

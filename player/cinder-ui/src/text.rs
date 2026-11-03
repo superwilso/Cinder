@@ -597,6 +597,105 @@ pub fn probe_glyph(fonts: &FontSet, ch: char) -> u8 {
     }
 }
 
+/// `draw` on the panel turned on its side (`winamp::to_land`): `(x, baseline)` and `max_w` are
+/// landscape pixels, and a glyph that would cross `x + max_w` is not drawn, nor any after it.
+/// Returns the pen x after.
+pub fn draw_land(
+    canvas: &mut Canvas,
+    fonts: &FontSet,
+    (x, baseline): (f32, f32),
+    s: &str,
+    st: &TextStyle,
+    max_w: f32,
+) -> f32 {
+    let size = scaled(st.size);
+    let track = st.tracking * size;
+    let w = crate::canvas::W as i32;
+    let mut pen = x;
+    for ch in s.chars() {
+        let (m, bitmap) = fonts.glyph(st.fam, st.weight, ch, size);
+        if pen + m.advance_width > x + max_w {
+            break;
+        }
+        let gx0 = (pen + m.xmin as f32).round() as i32;
+        let gy0 = (baseline - (m.height as f32 + m.ymin as f32)).round() as i32;
+        for gy in 0..m.height {
+            for gx in 0..m.width {
+                let a = bitmap[gy * m.width + gx];
+                if a > 0 {
+                    let (lx, ly) = (gx0 + gx as i32, gy0 + gy as i32);
+                    canvas.blend(w - 1 - ly, lx, st.color, a);
+                }
+            }
+        }
+        pen += m.advance_width + track;
+    }
+    pen
+}
+
+pub struct TextStyle {
+    pub fam: Family,
+    pub weight: Weight,
+    pub size: f32,
+    pub color: Rgb888,
+    pub tracking: f32, // em
+}
+
+/// Pixel width of `s` rendered with `st` (advances + tracking).
+/// MUST resolve per-char exactly as `draw` does. A fallback glyph is typically full-width where
+/// the primary's `.notdef` is half — measuring against the primary while drawing from the
+/// fallback would silently desync every truncation, centring and right-alignment on the screen.
+pub fn measure(fonts: &FontSet, s: &str, st: &TextStyle) -> f32 {
+    let size = scaled(st.size);
+    let track = st.tracking * size;
+    s.chars()
+        .map(|ch| {
+            let (_, font) = fonts.resolve(st.fam, st.weight, ch);
+            font.metrics(ch, size).advance_width + track
+        })
+        .sum()
+}
+
+/// Draw `s` with its baseline at (`x`, `baseline`). Returns the pen x after.
+pub fn draw(
+    canvas: &mut Canvas,
+    fonts: &FontSet,
+    x: f32,
+    baseline: f32,
+    s: &str,
+    st: &TextStyle,
+) -> f32 {
+    let size = scaled(st.size);
+    let track = st.tracking * size;
+    let mut pen = x;
+    // The collision audit (`Canvas::track_text`) is asked about ONCE per call, so with it off —
+    // always, at runtime — the glyph loop is the plain blend it always was.
+    let audit = canvas.tracking_text();
+    if audit {
+        canvas.text_run(s);
+    }
+    for ch in s.chars() {
+        let (m, bitmap) = fonts.glyph(st.fam, st.weight, ch, size); // cached rasterise
+        let gx0 = (pen + m.xmin as f32).round() as i32;
+        // fontdue: bitmap top is `ymin + height` above the baseline.
+        let gy0 = (baseline - (m.height as f32 + m.ymin as f32)).round() as i32;
+        for gy in 0..m.height {
+            for gx in 0..m.width {
+                let a = bitmap[gy * m.width + gx];
+                if a > 0 {
+                    if audit {
+                        canvas.blend_text(gx0 + gx as i32, gy0 + gy as i32, st.color, a);
+                    } else {
+                        canvas.blend(gx0 + gx as i32, gy0 + gy as i32, st.color, a);
+                    }
+                }
+            }
+        }
+        pen += m.advance_width + track;
+    }
+    pen
+}
+
 #[cfg(test)]
 mod localization_tests {
     use super::*;
@@ -696,103 +795,4 @@ mod localization_tests {
         draw(&mut zh, &fonts, 20.0, 40.0, "Settings", &st);
         assert_eq!(en.buf, zh.buf, "a song named Settings must keep its title");
     }
-}
-
-/// `draw` on the panel turned on its side (`winamp::to_land`): `(x, baseline)` and `max_w` are
-/// landscape pixels, and a glyph that would cross `x + max_w` is not drawn, nor any after it.
-/// Returns the pen x after.
-pub fn draw_land(
-    canvas: &mut Canvas,
-    fonts: &FontSet,
-    (x, baseline): (f32, f32),
-    s: &str,
-    st: &TextStyle,
-    max_w: f32,
-) -> f32 {
-    let size = scaled(st.size);
-    let track = st.tracking * size;
-    let w = crate::canvas::W as i32;
-    let mut pen = x;
-    for ch in s.chars() {
-        let (m, bitmap) = fonts.glyph(st.fam, st.weight, ch, size);
-        if pen + m.advance_width > x + max_w {
-            break;
-        }
-        let gx0 = (pen + m.xmin as f32).round() as i32;
-        let gy0 = (baseline - (m.height as f32 + m.ymin as f32)).round() as i32;
-        for gy in 0..m.height {
-            for gx in 0..m.width {
-                let a = bitmap[gy * m.width + gx];
-                if a > 0 {
-                    let (lx, ly) = (gx0 + gx as i32, gy0 + gy as i32);
-                    canvas.blend(w - 1 - ly, lx, st.color, a);
-                }
-            }
-        }
-        pen += m.advance_width + track;
-    }
-    pen
-}
-
-pub struct TextStyle {
-    pub fam: Family,
-    pub weight: Weight,
-    pub size: f32,
-    pub color: Rgb888,
-    pub tracking: f32, // em
-}
-
-/// Pixel width of `s` rendered with `st` (advances + tracking).
-/// MUST resolve per-char exactly as `draw` does. A fallback glyph is typically full-width where
-/// the primary's `.notdef` is half — measuring against the primary while drawing from the
-/// fallback would silently desync every truncation, centring and right-alignment on the screen.
-pub fn measure(fonts: &FontSet, s: &str, st: &TextStyle) -> f32 {
-    let size = scaled(st.size);
-    let track = st.tracking * size;
-    s.chars()
-        .map(|ch| {
-            let (_, font) = fonts.resolve(st.fam, st.weight, ch);
-            font.metrics(ch, size).advance_width + track
-        })
-        .sum()
-}
-
-/// Draw `s` with its baseline at (`x`, `baseline`). Returns the pen x after.
-pub fn draw(
-    canvas: &mut Canvas,
-    fonts: &FontSet,
-    x: f32,
-    baseline: f32,
-    s: &str,
-    st: &TextStyle,
-) -> f32 {
-    let size = scaled(st.size);
-    let track = st.tracking * size;
-    let mut pen = x;
-    // The collision audit (`Canvas::track_text`) is asked about ONCE per call, so with it off —
-    // always, at runtime — the glyph loop is the plain blend it always was.
-    let audit = canvas.tracking_text();
-    if audit {
-        canvas.text_run(s);
-    }
-    for ch in s.chars() {
-        let (m, bitmap) = fonts.glyph(st.fam, st.weight, ch, size); // cached rasterise
-        let gx0 = (pen + m.xmin as f32).round() as i32;
-        // fontdue: bitmap top is `ymin + height` above the baseline.
-        let gy0 = (baseline - (m.height as f32 + m.ymin as f32)).round() as i32;
-        for gy in 0..m.height {
-            for gx in 0..m.width {
-                let a = bitmap[gy * m.width + gx];
-                if a > 0 {
-                    if audit {
-                        canvas.blend_text(gx0 + gx as i32, gy0 + gy as i32, st.color, a);
-                    } else {
-                        canvas.blend(gx0 + gx as i32, gy0 + gy as i32, st.color, a);
-                    }
-                }
-            }
-        }
-        pen += m.advance_width + track;
-    }
-    pen
 }

@@ -183,7 +183,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
     }
     let live = !d.direct;
     let ink_fill = if live { t.acc } else { t.faint };
-    for i in 0..BANDS {
+    for (i, &name) in BAND_NAMES.iter().enumerate() {
         let bx = band_center_x(i);
         let ky = knob_y(d.bands[i]);
         fill_rect(c, bx - 1, sy, 2, by - sy, t.line);
@@ -203,7 +203,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         disc(c, bx, ky, k(if on { 18 } else { 15 }), ink_fill);
 
         let dbl = match band_db(d.bands[i]) {
-            v if v == 0.0 => "0".to_string(),
+            0.0 => "0".to_string(),
             v if v.fract() == 0.0 => format!("{v:+.0}"),
             v => format!("{v:+.1}"),
         };
@@ -233,7 +233,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
             f,
             bx as f32,
             (by + 26) as f32,
-            BAND_NAMES[i],
+            name,
             &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.0),
         );
     }

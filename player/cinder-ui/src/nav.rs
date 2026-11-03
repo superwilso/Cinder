@@ -1665,9 +1665,8 @@ pub struct App {
     liked_count: usize,
     /// Settings is taller than the panel, so it scrolls like the library lists.
     settings_scroll_px: i32,
-    /// Settings ▸ More settings is unfolded. For the session: the screen opens folded after a
-    /// restart, which is the short list the fold exists for.
-    settings_more: bool,
+    /// The Settings page on screen: `None` for home, else a `settings::GROUPS` index.
+    settings_page: Option<usize>,
     /// Screen-off (idle) timeout in SECONDS; 0 = off, which is the default — nothing changes unless
     /// the user opts in. `screen_off_idx` cycles the presets from the Settings row.
     screen_off_idx: usize,
@@ -2137,7 +2136,7 @@ impl Default for App {
             play_list: Vec::new(),
             liked_count: 0,
             settings_scroll_px: 0,
-            settings_more: false,
+            settings_page: None,
             // 30 s by default. This was OFF, deliberately, because "a failed wake looks like a dead
             // device" — but wake is now proven three ways (touch, the Power button, any key), the
             // auto-off path leaves the touch controller POWERED precisely so a tap can wake it, and
@@ -3797,6 +3796,11 @@ impl App {
             }
             // Arriving at Settings or Display re-reads the palette folder, so a palette copied over
             // USB is there to pick without a reboot. The shell does the reading; this only asks.
+            // Settings always opens on its home page.
+            if s == Screen::Settings {
+                self.settings_page = None;
+                self.settings_scroll_px = 0;
+            }
             if matches!(s, Screen::Settings | Screen::Display | Screen::Palette) {
                 self.palettes_stale = true;
             }
@@ -4287,6 +4291,15 @@ impl App {
         self.vol_overlay = crate::overlay::VOL_FRAMES;
     }
 
+    /// Show a Settings page (`None` = home) from its top, cursor on its first row.
+    fn open_settings_page(&mut self, page: Option<usize>) {
+        self.settings_page = page;
+        self.settings_scroll_px = 0;
+        if let Some(r) = crate::settings::page_rows(page, self.settings_lang()).first() {
+            self.settings_sel = *r;
+        }
+    }
+
     fn settings_activate(&mut self) -> Vec<Action> {
         // Touching any other row cancels a pending boot-to-stock confirmation, so the armed state
         // can never linger and turn a later, unrelated tap on that row into a restart.
@@ -4299,16 +4312,9 @@ impl App {
                 self.push(Screen::Language);
                 vec![]
             }
-            crate::settings::ROW_MORE => {
-                // Unfold with the first hidden row just under the header, so the tap visibly
-                // produces something; fold back to the top, where the whole short list shows.
-                self.settings_more = !self.settings_more;
-                self.settings_scroll_px = if self.settings_more {
-                    crate::settings::row_top_px(crate::settings::ROW_MORE)
-                        .min(crate::settings::max_scroll_px(true, self.settings_lang()))
-                } else {
-                    0
-                };
+            // A topic link on the home page: open its page, cursor on its first row.
+            r if crate::settings::group_of_link(r).is_some() => {
+                self.open_settings_page(crate::settings::group_of_link(r));
                 vec![]
             }
             crate::settings::ROW_DISPLAY => {
@@ -5307,7 +5313,7 @@ impl App {
                 if let Some(row) = crate::settings::row_at(
                     y,
                     self.settings_scroll_px,
-                    self.settings_more,
+                    self.settings_page,
                     self.settings_lang(),
                 ) {
                     self.settings_sel = row;
@@ -7419,7 +7425,7 @@ impl App {
                 self.palette_scroll_px = (self.palette_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Settings => {
-                let max = crate::settings::max_scroll_px(self.settings_more, self.settings_lang());
+                let max = crate::settings::max_scroll_px(self.settings_page, self.settings_lang());
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Advanced => {
@@ -7762,14 +7768,10 @@ impl App {
                 self.scrub_permille = self.rail_permille(x, y);
                 true
             }
-            Screen::NowPlaying => {
-                if self.np_layout().rail.grabs(x, y) {
-                    self.scrub = Scrub::Progress;
-                    self.scrub_permille = self.rail_permille(x, y);
-                    true
-                } else {
-                    false
-                }
+            Screen::NowPlaying if self.np_layout().rail.grabs(x, y) => {
+                self.scrub = Scrub::Progress;
+                self.scrub_permille = self.rail_permille(x, y);
+                true
             }
             Screen::Display => {
                 let row = (y >= crate::chrome::HEADER_BOTTOM)
@@ -7839,17 +7841,15 @@ impl App {
                 }
                 _ => false,
             },
-            Screen::Sound => {
-                if crate::sound::row_at(y, self.sound_scroll()) == Some(crate::sound::ROW_BALANCE)
-                    && crate::sound::balance_grab(y, self.sound_scroll())
-                {
-                    self.scrub = Scrub::Balance;
-                    self.sound_sel = crate::sound::ROW_BALANCE;
-                    self.snd_balance = crate::sound::balance_at(x);
-                    true
-                } else {
-                    false
-                }
+            Screen::Sound
+                if crate::sound::row_at(y, self.sound_scroll())
+                    == Some(crate::sound::ROW_BALANCE)
+                    && crate::sound::balance_grab(y, self.sound_scroll()) =>
+            {
+                self.scrub = Scrub::Balance;
+                self.sound_sel = crate::sound::ROW_BALANCE;
+                self.snd_balance = crate::sound::balance_at(x);
+                true
             }
             _ => false,
         }
@@ -9026,6 +9026,7 @@ impl App {
     ///     2026-09-11 against the old queue as "it plays the next in the album, then the queue";
     ///   * anything else is a deliberate jump (◁, an Up Next tap) — search forward from here
     ///     first, then from the top, so a track in the list twice lands on the NEXT copy.
+    ///
     /// Repeat album: the run of the list the playing song's album occupies, as `start..end`
     /// (`end` exclusive) — the rows either side of `context_idx` from the same album. `None` with
     /// nothing playing.
@@ -9915,32 +9916,32 @@ impl App {
                 }
             }
             Screen::Settings => match b {
-                Button::Up => {
-                    let lang = self.settings_lang();
-                    let mut r = self.settings_sel;
-                    while r > 0 {
-                        r -= 1;
-                        if crate::settings::shown(r, lang) {
-                            self.settings_sel = r;
-                            break;
-                        }
-                    }
-                    vec![]
-                }
-                Button::Down => {
-                    let lang = self.settings_lang();
-                    let mut r = self.settings_sel;
-                    while r + 1 < crate::settings::rows(self.settings_more) {
-                        r += 1;
-                        if crate::settings::shown(r, lang) {
-                            self.settings_sel = r;
-                            break;
-                        }
+                // The cursor walks the rows of the page on screen, as drawn.
+                Button::Up | Button::Down => {
+                    let rows = crate::settings::page_rows(self.settings_page, self.settings_lang());
+                    let at = rows
+                        .iter()
+                        .position(|r| *r == self.settings_sel)
+                        .unwrap_or(0);
+                    let to = if b == Button::Up {
+                        at.saturating_sub(1)
+                    } else {
+                        (at + 1).min(rows.len().saturating_sub(1))
+                    };
+                    if let Some(r) = rows.get(to) {
+                        self.settings_sel = *r;
                     }
                     vec![]
                 }
                 // Select (or Left/Right) acts on the focused row.
                 Button::Select | Button::Right | Button::Left => self.settings_activate(),
+                // Back from a topic page is the home page, cursor on the page's link.
+                Button::Back if self.settings_page.is_some() => {
+                    let g = self.settings_page.unwrap_or(0);
+                    self.open_settings_page(None);
+                    self.settings_sel = crate::settings::group_row(g);
+                    vec![]
+                }
                 Button::Back => {
                     self.pop();
                     vec![]
@@ -11073,7 +11074,7 @@ impl App {
                     bt_idle_off: self.bt_idle_off,
                     boot_stock: boot_stock_lbl,
                     clock: &clock_lbl,
-                    more: self.settings_more,
+                    page: self.settings_page,
                     languages: &self.languages,
                 };
                 crate::settings::render(
@@ -11560,7 +11561,7 @@ impl App {
         let mut animating = false;
         // Clamp: a long stall (deferred init, a USB-MSC session) must not teleport a fling or
         // swallow a whole toast in one step.
-        let dt = (dt_ms.max(1)).min(200) as f32;
+        let dt = dt_ms.clamp(1, 200) as f32;
         // Run the optimistic play/pause hold down in REAL time, like everything else here.
         self.playing_hold_ms = self.playing_hold_ms.saturating_sub(dt_ms);
         // A connect that has spun this long went nowhere the shell could see: free the row so it can
@@ -13970,8 +13971,8 @@ mod language_tests {
         a.set_languages(&[]);
         assert_eq!(a.language(), Language::English);
         // Hidden row: the cursor steps over it.
-        a.settings_more = true;
         a.go(Screen::Settings);
+        a.open_settings_page(crate::settings::page_of(crate::settings::ROW_RESET));
         a.settings_sel = crate::settings::ROW_RESET;
         a.press(Button::Down);
         assert_eq!(a.settings_sel, crate::settings::ROW_FIRMWARE);
@@ -14004,7 +14005,12 @@ mod language_tests {
             + crate::settings::row_top_px(crate::settings::ROW_LANGUAGE);
         let scroll = (top - 200).max(0);
         assert_eq!(
-            crate::settings::row_at(top - scroll + 20, scroll, true, true),
+            crate::settings::row_at(
+                top - scroll + 20,
+                scroll,
+                crate::settings::page_of(crate::settings::ROW_LANGUAGE),
+                true
+            ),
             Some(crate::settings::ROW_LANGUAGE)
         );
     }
@@ -14972,10 +14978,12 @@ mod tests {
             "less than 4px of dead space between shuffle and filter"
         );
         // Big enough to hit: 44 is the smallest row this UI uses anywhere.
-        assert!(
-            library::FILTER_H >= 44,
-            "the strip is smaller than a usable row"
-        );
+        const {
+            assert!(
+                library::FILTER_H >= 44,
+                "the strip is smaller than a usable row"
+            )
+        };
         // The band must not answer for a tap on the strip, and vice versa.
         for y in library::filter_top()..library::filter_top() + library::FILTER_H {
             assert!(
@@ -15002,10 +15010,7 @@ mod tests {
         use crate::library::{self, Tab};
         for tab in [Tab::Songs, Tab::Albums] {
             assert!(library::has_filter(tab));
-            assert_eq!(
-                library::list_top(tab) - library::filter_top() >= library::FILTER_H,
-                true
-            );
+            assert!(library::list_top(tab) - library::filter_top() >= library::FILTER_H);
             assert!(library::filter_hit(tab, library::filter_top() + 1));
         }
         for tab in [Tab::Artists, Tab::Playlists] {
@@ -15278,13 +15283,15 @@ mod tests {
     /// boundaries, so it silently drifts from render whenever a row is added.
     #[test]
     fn every_settings_row_is_reachable_at_some_scroll_position() {
-        use crate::settings::{max_scroll_px, row_at, ROWS};
+        use crate::settings::{max_scroll_px, row_at, GROUPS, ROWS};
         let mut hit: Vec<usize> = Vec::new();
-        for scroll in 0..=max_scroll_px(true, true) {
-            for y in 0..crate::canvas::H as i32 {
-                if let Some(r) = row_at(y, scroll, true, true) {
-                    if !hit.contains(&r) {
-                        hit.push(r);
+        for page in std::iter::once(None).chain((0..GROUPS.len()).map(Some)) {
+            for scroll in 0..=max_scroll_px(page, true) {
+                for y in 0..crate::canvas::H as i32 {
+                    if let Some(r) = row_at(y, scroll, page, true) {
+                        if r < ROWS && !hit.contains(&r) {
+                            hit.push(r);
+                        }
                     }
                 }
             }
@@ -17003,7 +17010,7 @@ mod tests {
         assert!(a.boot_stock_armed);
         let y = crate::settings::LIST_TOP + crate::kit::ROW_H() / 2;
         assert_eq!(
-            crate::settings::row_at(y, 0, false, false),
+            crate::settings::row_at(y, 0, None, false),
             Some(crate::settings::ROW_DISPLAY)
         );
         a.settings_scroll_px = 0;
@@ -17070,15 +17077,21 @@ mod tests {
     /// is too small leaves it half-clipped and awkward to hit.
     #[test]
     fn settings_scrolls_far_enough_to_reach_the_last_row() {
-        use crate::settings::{content_height, max_scroll_px};
+        use crate::settings::{content_height, max_scroll_px, GROUPS};
+        let _scale = lock_scale();
+        // Big view's taller rows are what make a page taller than the panel.
+        crate::scale::set_large(true);
         assert!(
-            max_scroll_px(true, true) > 0,
-            "content is taller than the panel; it must scroll"
+            max_scroll_px(None, true) > 0,
+            "the home page is taller than the panel in Big view; it must scroll"
         );
-        assert!(
-            content_height(true, true) - max_scroll_px(true, true) <= crate::canvas::H as i32,
-            "bottom of the content is still off-screen at full scroll"
-        );
+        for page in std::iter::once(None).chain((0..GROUPS.len()).map(Some)) {
+            assert!(
+                content_height(page, true) - max_scroll_px(page, true) <= crate::canvas::H as i32,
+                "bottom of page {page:?} is still off-screen at full scroll"
+            );
+        }
+        crate::scale::set_large(false);
     }
 
     /// The A–Z rail must land on a row that really is in that bucket, on every tab. A jump that
@@ -17586,7 +17599,7 @@ mod tests {
         assert!(!a.shelf_is_open());
         // Go to the Library, reopen the Shelf, and tap the pin's "GO ›" → back to Now Playing.
         a.tap(344, 22); // status bar, on the ☰ glyph (not the bookmark) → Menu
-        a.tap(200, 91 + 1 * 63 + 8); // Library row
+        a.tap(200, 91 + 63 + 8); // Library row
         assert_eq!(a.current(), Screen::Library);
         a.open_shelf();
         a.tap(380, crate::shelf::slot_center_y(0)); // slot 0 "GO ›" hit
@@ -17633,13 +17646,15 @@ mod tests {
         assert!(!a.quick_pull_open());
         assert!(!a.quick_is_open());
         // The list still scrolls: the guard that stops a scroll under an overlay is not tripped.
+        let _scale = lock_scale();
+        crate::scale::set_large(true); // the home page scrolls in Big view
         a.go(Screen::Settings);
-        a.settings_more = true;
         a.scroll_px(120);
         assert!(
             a.settings_scroll_px > 0,
             "a drag still scrolls Settings with the panel off"
         );
+        crate::scale::set_large(false);
     }
 
     /// Switched on: a pull from the status bar opens it, a drag anywhere else is still the list's,
@@ -18243,7 +18258,7 @@ mod tests {
             let bg = &rgb[(60 * 480 + 300) * 3..(60 * 480 + 300) * 3 + 3].to_vec();
             let n = (b.2..b.3)
                 .flat_map(|y| (b.0..b.1).map(move |x| (x, y)))
-                .filter(|&(x, y)| &rgb[(y * 480 + x) * 3..(y * 480 + x) * 3 + 3] != &bg[..])
+                .filter(|&(x, y)| rgb[(y * 480 + x) * 3..(y * 480 + x) * 3 + 3] != bg[..])
                 .count();
             crate::scale::set_large(false);
             crate::scale::set_big_bar(false);
@@ -19422,7 +19437,7 @@ mod tests {
         // The chip's target clears the heart, the transport and the paging swipe's taps.
         assert!(!np::hit_lyrics(np::HEART_CX, np::HEART_CY, true));
         assert!(!np::hit_lyrics(240, 300, true));
-        assert!(np::LYRICS_Y0 + np::LYRICS_H <= crate::chrome::STATUS_H + 44);
+        const { assert!(np::LYRICS_Y0 + np::LYRICS_H <= crate::chrome::STATUS_H + 44) };
     }
 
     /// Library search is opt-in: no button without the component. With it, the header button opens
@@ -19815,7 +19830,7 @@ mod tests {
         a.open_playlist(0); // "Mine", id -42, first of two
         let mut rows = a.lib.playlists.clone();
         rows[0].name = "Zzz last".into();
-        rows.sort_by(|x, y| x.name.to_lowercase().cmp(&y.name.to_lowercase()));
+        rows.sort_by_key(|x| x.name.to_lowercase());
         a.set_playlists(rows);
         assert_eq!(
             a.playlist_row().map(|p| p.id),
@@ -19973,23 +19988,28 @@ mod tests {
         assert_eq!(a.current(), Screen::Display);
         a.press(Button::Back);
         assert_eq!(a.current(), Screen::Settings);
-        // The cursor clamps at More settings while the list is folded…
+        // The cursor clamps at the last topic link on the home page…
         for _ in 0..30 {
             a.press(Button::Down);
         }
-        assert_eq!(a.settings_sel, crate::settings::ROW_MORE);
-        // …which unfolds the rest under the header, and then the last row is the clamp.
+        let last = crate::settings::group_row(crate::settings::GROUPS.len() - 1);
+        assert_eq!(a.settings_sel, last);
+        // …which opens System, cursor on its first row, and its last row is the clamp there.
         a.press(Button::Select);
-        assert!(a.settings_more && a.settings_scroll_px > 0);
+        assert_eq!(a.settings_page, Some(crate::settings::GROUPS.len() - 1));
+        // (One language installed here, so no Language row: System opens on Boot to stock.)
+        assert_eq!(a.settings_sel, crate::settings::ROW_BOOT_STOCK);
         for _ in 0..30 {
             a.press(Button::Down);
         }
-        assert_eq!(a.settings_sel, crate::settings::ROWS - 1);
-        // Folding it away puts the short list back at the top.
-        a.settings_sel = crate::settings::ROW_MORE;
-        a.press(Button::Select);
-        assert!(!a.settings_more);
-        assert_eq!(a.settings_scroll_px, 0);
+        assert_eq!(a.settings_sel, crate::settings::ROW_MODEL);
+        // Back is the home page, on System's link; Back again leaves Settings.
+        a.press(Button::Back);
+        assert_eq!(a.settings_page, None);
+        assert_eq!(a.settings_sel, last);
+        assert_eq!(a.current(), Screen::Settings);
+        a.press(Button::Back);
+        assert_ne!(a.current(), Screen::Settings);
     }
 
     /// Walk the Menu cursor to the row that leads to `want` and open it. Derived from MENU rather
@@ -20280,9 +20300,7 @@ mod tests {
     fn settings_usb_mode_enters_mass_storage() {
         let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
-        for _ in 0..settings_presses(crate::settings::ROW_USB_MODE) {
-            a.press(Button::Down);
-        }
+        walk_to_setting(&mut a, crate::settings::ROW_USB_MODE);
         assert_eq!(a.settings_sel, crate::settings::ROW_USB_MODE);
         assert_eq!(a.press(Button::Select), vec![Action::EnterUsbMsc]);
     }
@@ -20306,10 +20324,7 @@ mod tests {
     #[test]
     fn the_database_row_asks_for_a_rescan_and_the_label_always_recovers() {
         let mut a = open_from_menu(Screen::Settings);
-        a.settings_more = true;
-        for _ in 0..settings_presses(crate::settings::ROW_DATABASE) {
-            a.press(Button::Down);
-        }
+        walk_to_setting(&mut a, crate::settings::ROW_DATABASE);
         assert_eq!(a.settings_sel, crate::settings::ROW_DATABASE);
         assert!(!a.rescanning(), "nothing has been asked for yet");
 
@@ -20362,9 +20377,7 @@ mod tests {
         let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
         // move cursor to the Battery row
-        for _ in 0..settings_presses(crate::settings::ROW_BATTERY) {
-            a.press(Button::Down);
-        }
+        walk_to_setting(&mut a, crate::settings::ROW_BATTERY);
         assert_eq!(a.settings_sel, crate::settings::ROW_BATTERY);
         let was = a.battery_care();
         let acts = a.press(Button::Select);
@@ -20503,19 +20516,33 @@ mod tests {
         crate::scale::set_big_bar(false);
     }
 
-    /// Down presses from the top of Settings to `row`: the cursor steps over rows that are not
-    /// shown (Big view's extras while it is off).
-    fn settings_presses(row: usize) -> usize {
-        (0..row)
-            .filter(|r| crate::settings::shown(*r, true))
-            .count()
+    /// Walk the Settings cursor to `row` the way a user does, from the top of the home page: down
+    /// to the row, or to its topic's link, Select, and down the page.
+    fn walk_to_setting(a: &mut App, row: usize) {
+        let lang = a.settings_lang();
+        let press_to = |a: &mut App, target: usize, page: Option<usize>| {
+            let at = crate::settings::page_rows(page, lang)
+                .iter()
+                .position(|r| *r == target)
+                .expect("the row is on this page");
+            for _ in 0..at {
+                a.press(Button::Down);
+            }
+        };
+        match crate::settings::page_of(row) {
+            None => press_to(a, row, None),
+            Some(g) => {
+                press_to(a, crate::settings::group_row(g), None);
+                a.press(Button::Select);
+                press_to(a, row, Some(g));
+            }
+        }
+        assert_eq!(a.settings_sel, row);
     }
 
     /// Open Settings ▸ Device the way a user does.
     fn open_device(a: &mut App) {
-        for _ in 0..settings_presses(crate::settings::ROW_BATTERY) {
-            a.press(Button::Down);
-        }
+        walk_to_setting(a, crate::settings::ROW_BATTERY);
         a.press(Button::Select);
         assert_eq!(a.current(), Screen::Device);
     }
@@ -20725,9 +20752,7 @@ mod tests {
     #[test]
     fn settings_sleep_timer_cycles_presets() {
         let mut a = open_from_menu(Screen::Settings);
-        for _ in 0..settings_presses(crate::settings::ROW_SLEEP) {
-            a.press(Button::Down);
-        }
+        walk_to_setting(&mut a, crate::settings::ROW_SLEEP);
         assert_eq!(a.settings_sel, crate::settings::ROW_SLEEP);
         assert_eq!(a.sleep_min(), 0);
         assert_eq!(a.sleep_label(), "OFF");
@@ -21562,11 +21587,13 @@ mod tests {
     #[test]
     fn bt_volume_scale_is_finer_and_still_maps_onto_the_shared_hud() {
         use crate::overlay::{BT_VOL_MAX, BT_VOL_MAX_LEGACY, BT_VOL_MAX_LEGACY_64, VOL_MAX};
-        assert!(
-            BT_VOL_MAX > BT_VOL_MAX_LEGACY_64,
-            "the whole point is finer steps"
-        );
-        assert!(BT_VOL_MAX_LEGACY_64 > BT_VOL_MAX_LEGACY);
+        const {
+            assert!(
+                BT_VOL_MAX > BT_VOL_MAX_LEGACY_64,
+                "the whole point is finer steps"
+            );
+            assert!(BT_VOL_MAX_LEGACY_64 > BT_VOL_MAX_LEGACY);
+        }
         // 1:1 with the wire. Anything coarser throws away levels the sink can resolve; anything
         // finer is not representable in AVRCP's 7 bits and would be a lie on the bar.
         assert_eq!(BT_VOL_MAX, 127, "AVRCP absolute volume is 0..127");
@@ -23531,7 +23558,7 @@ mod tests {
         // cannot desync the UI from the physical switch.
         a.set_hold(true);
         let y = (0..crate::canvas::H as i32)
-            .find_map(|y| (hit(Ask::ResetSettings, 360, y) == Hit::Confirm).then_some(y))
+            .find(|&y| hit(Ask::ResetSettings, 360, y) == Hit::Confirm)
             .expect("no confirm pixel");
         assert_eq!(a.tap(360, y), vec![Action::SettingsReset]);
 
@@ -24343,12 +24370,11 @@ mod tests {
             crate::eq::BAND_MAX,
             "the grabbed band did not move"
         );
-        for b in 1..10 {
-            assert_eq!(
-                a.eq_bands[b], before[b],
-                "band {b} was rewritten by a sweep that only passed over it"
-            );
-        }
+        assert_eq!(
+            a.eq_bands[1..10],
+            before[1..10],
+            "a band was rewritten by a sweep that only passed over it"
+        );
     }
 
     /// Hand-editing a band drops the preset pill: it would otherwise keep claiming a name for a

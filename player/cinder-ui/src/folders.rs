@@ -122,7 +122,7 @@ fn name_style(t: &Theme, dir: bool) -> TextStyle {
             Weight::Regular
         },
         18.0,
-        if dir { t.ink } else { t.ink },
+        t.ink,
         0.0,
     )
 }

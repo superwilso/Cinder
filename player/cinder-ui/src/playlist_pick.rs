@@ -62,7 +62,7 @@ pub fn content_h(rows: usize) -> i32 {
 /// Which row is under `y` (content-space, honouring the pixel scroll). None = chrome or past the
 /// end, so a tap below a short list does nothing instead of hitting the last row.
 pub fn hit_row(rows: usize, scroll_px: i32, y: i32) -> Option<usize> {
-    if y < TOP || y >= BOTTOM {
+    if !(TOP..BOTTOM).contains(&y) {
         return None;
     }
     let index = ((y - TOP + scroll_px.max(0)) / ROW_H) as usize;
@@ -213,11 +213,10 @@ pub fn render_tracks(
     c.set_clip_y(LIST_TOP, BOTTOM);
     let first = (scroll_px.max(0) / ROW_H) as usize;
     let mut y = LIST_TOP - (scroll_px.max(0) % ROW_H);
-    for index in first..songs.len() {
+    for (index, &song) in songs.iter().enumerate().skip(first) {
         if y >= BOTTOM {
             break;
         }
-        let song = songs[index];
         let cy = y + ROW_H / 2;
         let inside = is_in(index);
         let title_style = sty(

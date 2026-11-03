@@ -1,11 +1,11 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row.
 //!
-//! TWO LENGTHS. The screen opens as ten rows that fit without scrolling: the things changed in an
-//! ordinary week (Display, Brightness, Screen-off timer, Sleep timer, Shuffle, Date & time, Device,
-//! USB mode, Power off) and a last row, More settings. That row unfolds the rest below it, in
-//! place — LIBRARY, POWER SAVING, SYSTEM, ABOUT — and folds it away again. Nothing was removed and
-//! no row changed what it does; the set-once rows no longer stand between a thumb and Brightness.
-//! Every row acts except Firmware and Model, which are information.
+//! PAGES (owner, 2026-11-03: "rework settings to make things easier to find"). The home page holds
+//! what is changed in an ordinary week (Display, Big view, Brightness, Sleep timer) and one row per
+//! topic — Playback, Now Playing, Library, Buttons & gestures, Power, Device & storage, System —
+//! each opening a page of its rows, its second line naming what is inside. The home page fits the
+//! glass. It replaced a More settings row that unfolded twenty rows in place. No row changed what
+//! it does; every row acts except Firmware and Model, which are information.
 //!
 //! Drawn with the redesign kit (`kit.rs`): 64 px rows, 34 px section labels. Theme, palette,
 //! accent, text size and the visualiser moved to Settings ▸ Display (`display.rs`, handoff 5k) —
@@ -16,20 +16,111 @@ use crate::text::FontSet;
 use crate::theme::Theme;
 use crate::Canvas;
 
-/// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 33;
-/// Rows shown while the list is folded: the everyday ones and `ROW_MORE` itself.
-pub const EVERYDAY: usize = 13;
-/// More settings: unfolds every row after it, in place, and folds them away again.
-pub const ROW_MORE: usize = 12;
+/// Number of real rows. The home page's topic links are row ids after them ([`group_row`]).
+pub const ROWS: usize = 32;
 
-/// How many rows are on the screen: all of them, or the everyday ones.
-pub fn rows(more: bool) -> usize {
-    if more {
-        ROWS
-    } else {
-        EVERYDAY
+/// The topic pages: title, the home row's second line (what is inside), and the rows, in order.
+/// Every row is on exactly one page: here, or [`HOME_ROWS`].
+pub const GROUPS: [(&str, &str, &[usize]); 7] = [
+    (
+        "Playback",
+        "Shuffle · volume limit",
+        &[ROW_SHUFFLE, ROW_VOLUME_LIMIT],
+    ),
+    (
+        "Now Playing",
+        "Swipes · back arrow · track number",
+        &[
+            ROW_SWIPE_UP,
+            ROW_SWIPE_DOWN,
+            ROW_NP_BUTTON,
+            ROW_NP_BACK,
+            ROW_NP_COUNT,
+        ],
+    ),
+    (
+        "Library",
+        "Folders tab · \"The\" · database",
+        &[ROW_FOLDERS_TAB, ROW_IGNORE_THE, ROW_DATABASE],
+    ),
+    (
+        "Buttons & gestures",
+        "Pull-down panel · Hold",
+        &[ROW_QUICK, ROW_HOLD_BUTTONS],
+    ),
+    (
+        "Power",
+        "Screen off · auto off · restart · power off",
+        &[
+            ROW_SCREEN_OFF,
+            ROW_AUTO_OFF,
+            ROW_BT_IDLE_OFF,
+            ROW_RESTART,
+            ROW_POWER_OFF,
+        ],
+    ),
+    (
+        "Device & storage",
+        "Battery · storage · USB · clock",
+        &[ROW_BATTERY, ROW_STORAGE, ROW_USB_MODE, ROW_CLOCK],
+    ),
+    (
+        "System",
+        "Language · boot to stock · reset · version",
+        &[
+            ROW_LANGUAGE,
+            ROW_BOOT_STOCK,
+            ROW_RESET,
+            ROW_FIRMWARE,
+            ROW_MODEL,
+        ],
+    ),
+];
+/// The home page's own rows, the ones changed in an ordinary week; the topic links follow.
+pub const HOME_ROWS: [usize; 6] = [
+    ROW_DISPLAY,
+    ROW_BIG,
+    ROW_BIG_BAR,
+    ROW_BIG_ICONS,
+    ROW_BRIGHTNESS,
+    ROW_SLEEP,
+];
+
+/// The home row that opens topic page `g`.
+pub const fn group_row(g: usize) -> usize {
+    ROWS + g
+}
+/// The topic page row `r` opens, if it is a topic link.
+pub fn group_of_link(r: usize) -> Option<usize> {
+    r.checked_sub(ROWS).filter(|g| *g < GROUPS.len())
+}
+/// The page row `r` is on: `None` for home (its own rows and the topic links).
+pub fn page_of(r: usize) -> Option<usize> {
+    if HOME_ROWS.contains(&r) || group_of_link(r).is_some() {
+        return None;
     }
+    GROUPS.iter().position(|(_, _, rows)| rows.contains(&r))
+}
+/// The rows on `page` as drawn, top to bottom (`lang`: the Language row is shown).
+pub fn page_rows(page: Option<usize>, lang: bool) -> Vec<usize> {
+    match page {
+        None => HOME_ROWS
+            .iter()
+            .copied()
+            .filter(|r| shown(*r, lang))
+            .chain((0..GROUPS.len()).map(group_row))
+            .collect(),
+        Some(g) => GROUPS[g.min(GROUPS.len() - 1)]
+            .2
+            .iter()
+            .copied()
+            .filter(|r| shown(*r, lang))
+            .collect(),
+    }
+}
+/// The page's header title.
+pub fn page_title(page: Option<usize>) -> &'static str {
+    crate::i18n::text(page.map_or("Settings", |g| GROUPS[g.min(GROUPS.len() - 1)].0))
 }
 /// Display ▸ — palette, accent, night, the volume readout, text size and the visualiser.
 pub const ROW_DISPLAY: usize = 0;
@@ -57,24 +148,24 @@ pub const ROW_SCREEN_OFF: usize = 5;
 /// night and the sleep timer. Asked for on the r/walkman thread; OFF by default, because the owner
 /// uses the Shelf and a new gesture must never arrive unasked (`docs/PLAN_community_2026-09-23.md`
 /// B1). With it off there is no gesture and nothing else on any screen changes.
-pub const ROW_QUICK: usize = 21;
+pub const ROW_QUICK: usize = 20;
 /// Swipe up / swipe down on Now Playing (#51): each opens the screen picked here, or nothing. OFF
 /// by default, like every community-asked gesture. They are the middle of the screen only: a swipe
 /// up from the bottom edge stays the Shelf's and a pull from the status bar the pull-down panel's.
-pub const ROW_SWIPE_UP: usize = 16;
-pub const ROW_SWIPE_DOWN: usize = 17;
+pub const ROW_SWIPE_UP: usize = 15;
+pub const ROW_SWIPE_DOWN: usize = 16;
 /// The third button on Now Playing's toolbar (#51): Bluetooth, as always, or Sound, Equalizer or the
 /// Menu. `now_playing::NpButton`.
-pub const ROW_NP_BUTTON: usize = 18;
+pub const ROW_NP_BUTTON: usize = 17;
 /// A back arrow at the top left of Now Playing (#51, plaquette): the same as the left-edge swipe,
 /// for anyone who does not know the swipe or finds it hard. OFF by default.
-pub const ROW_NP_BACK: usize = 19;
+pub const ROW_NP_BACK: usize = 18;
 /// The track's place in what is playing ("3 / 12") on Now Playing (#51, plaquette). OFF by default.
-pub const ROW_NP_COUNT: usize = 20;
+pub const ROW_NP_COUNT: usize = 19;
 /// Hold locks the player's own buttons too, not only the screen (#51, plaquette). Power still
 /// toggles the screen and headphone buttons still work. OFF by default: under Hold the side
 /// buttons have always controlled playback.
-pub const ROW_HOLD_BUTTONS: usize = 22;
+pub const ROW_HOLD_BUTTONS: usize = 21;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -84,7 +175,7 @@ pub const ROW_HOLD_BUTTONS: usize = 22;
 /// directly; the flag would be a control that accepts a write and changes nothing, which is
 /// exactly what "High gain output" turned out to be (see sound.rs). So the shell reads Sony's
 /// number and clamps in its own `apply_volume`.
-pub const ROW_VOLUME_LIMIT: usize = 25;
+pub const ROW_VOLUME_LIMIT: usize = 24;
 pub const ROW_SLEEP: usize = 6;
 /// What the shuffle button deals: SONGS (every track at random, as always), ALBUMS (whole albums
 /// at random, each in its own order) or ARTISTS. `shuffle.rs`. SONGS by default, so the button
@@ -93,23 +184,23 @@ pub const ROW_SHUFFLE: usize = 7;
 /// Ignore "The" in artists — sort "The Beatles" among the B's in the Artists tab, the Albums tab's
 /// artist groups and Songs by artist (and file it under B on the rail). OFF by default: artists
 /// sort as written. Titles and album names keep their "The" either way. See `collate`.
-pub const ROW_IGNORE_THE: usize = 13;
-pub const ROW_DATABASE: usize = 14;
+pub const ROW_IGNORE_THE: usize = 12;
+pub const ROW_DATABASE: usize = 13;
 /// Folders tab: a FOLDERS link at the end of the Library's tab strip that opens the folder browser
 /// (#45, asked for on GitHub). OFF by default, like every community-asked UI change: with it off the
 /// strip is exactly the four tabs it always was.
-pub const ROW_FOLDERS_TAB: usize = 15;
+pub const ROW_FOLDERS_TAB: usize = 14;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. 30 MIN by default since 2026-10-04 (it was OFF): the owner's rule
 /// is that no state may drain a player nobody is using. OFF is one tap away.
-pub const ROW_AUTO_OFF: usize = 23;
+pub const ROW_AUTO_OFF: usize = 22;
 /// Bluetooth auto off: switch the radio off after ten minutes of a dark screen with nothing
 /// playing over it. The radio (and a link carrying nothing) costs power for as long as it is up,
 /// and nothing but the user ever switched it off. ON by default since 2026-10-04, like Auto power
 /// off. It does not come back by itself.
-pub const ROW_BT_IDLE_OFF: usize = 24;
-pub const ROW_STORAGE: usize = 26;
+pub const ROW_BT_IDLE_OFF: usize = 23;
+pub const ROW_STORAGE: usize = 25;
 pub const ROW_BATTERY: usize = 9;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
@@ -119,20 +210,20 @@ pub const ROW_CLOCK: usize = 8;
 pub const ROW_USB_MODE: usize = 10; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 27;
+pub const ROW_BOOT_STOCK: usize = 26;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 28;
+pub const ROW_RESTART: usize = 27;
 pub const ROW_POWER_OFF: usize = 11;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 29;
+pub const ROW_RESET: usize = 28;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_LANGUAGE: usize = 30;
-pub const ROW_FIRMWARE: usize = 31;
-pub const ROW_MODEL: usize = 32;
+pub const ROW_LANGUAGE: usize = 29;
+pub const ROW_FIRMWARE: usize = 30;
+pub const ROW_MODEL: usize = 31;
 
 /// What a swipe on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -208,37 +299,10 @@ fn RH() -> i32 {
     kit::ROW_H()
 }
 
-/// Section labels and how many rows sit under each — the single source both `content_height` and
-/// `row_at` read, so a row added to one can't be missed by the other.
-/// The first group is the everyday list and has no label: a list that fits the screen needs none.
-///
-/// More settings is grouped by what a row is about (owner, 2026-11-03: "make things easier to
-/// find"): what the Library shows, what Now Playing shows and does, the gestures and buttons, power,
-/// then the system rows.
-const SECTIONS: [(&str, usize); 7] = [
-    ("", EVERYDAY),
-    ("LIBRARY", 3),
-    ("NOW PLAYING", 5),
-    ("GESTURES & BUTTONS", 2),
-    ("POWER SAVING", 2),
-    ("SYSTEM", 6),
-    ("ABOUT", 2),
-];
-/// Height of a section's label; the unlabelled first group has none.
-fn label_h(label: &str) -> i32 {
-    if label.is_empty() {
-        0
-    } else {
-        kit::SECTION_H
-    }
-}
-
 /// The Display row's second line: what is behind it (handoff 2c).
 pub const DISPLAY_SUB: &str = "Palette · accent · volume display";
 /// The Shuffle row's second line: which control the setting is about.
 pub const SHUFFLE_SUB: &str = "What the shuffle button deals";
-/// The More settings row's second line: what unfolds.
-pub const MORE_SUB: &str = "Library · Now Playing · gestures · system";
 /// The pull-down panel row's second line: where the gesture starts and what it opens.
 pub const QUICK_SUB: &str = "Swipe down from the top of the screen";
 /// The Big view row's second line: what it changes.
@@ -316,8 +380,8 @@ pub struct SettingsView<'a> {
     pub hold_buttons: bool,
     /// What shuffle deals (`ROW_SHUFFLE`): "SONGS", "ALBUMS" or "ARTISTS".
     pub shuffle_by: &'a str,
-    /// More settings is unfolded (`ROW_MORE`).
-    pub more: bool,
+    /// The page on screen: `None` for home, else a [`GROUPS`] index.
+    pub page: Option<usize>,
     /// The languages this install offers, from the installer. The Language row is shown only when
     /// there is more than one to switch between.
     pub languages: &'a [crate::i18n::Language],
@@ -331,19 +395,16 @@ pub fn language_title(languages: &[crate::i18n::Language]) -> String {
     words.join(" / ")
 }
 
-/// Total height of the row content, from the top of the screen to the bottom of the last row.
-/// Exceeds the 800px panel, which is why this screen scrolls.
-pub fn content_height(more: bool, lang: bool) -> i32 {
-    row_span(0, more, lang)
-        .last()
-        .map_or(LIST_TOP, |(_, top)| top + RH())
+/// Total height of the page, from the top of the screen to the bottom of the last row.
+pub fn content_height(page: Option<usize>, lang: bool) -> i32 {
+    LIST_TOP + page_rows(page, lang).len() as i32 * RH()
 }
 
-/// How far this screen can scroll. 0 would mean everything fits (it doesn't).
-pub fn max_scroll_px(more: bool, lang: bool) -> i32 {
-    // The 8 px margin under the last row is for a list that scrolls: one that fits (the folded
-    // everyday list ends at 795 since Big view joined it) must not scroll 3 px to show a margin.
-    let h = content_height(more, lang);
+/// How far the page can scroll: 0 when it fits (the home page does; Big view's taller rows may not).
+pub fn max_scroll_px(page: Option<usize>, lang: bool) -> i32 {
+    // The 8 px margin under the last row is for a list that scrolls: one that fits must not scroll
+    // 3 px to show a margin.
+    let h = content_height(page, lang);
     if h <= crate::canvas::H as i32 {
         0
     } else {
@@ -351,50 +412,27 @@ pub fn max_scroll_px(more: bool, lang: bool) -> i32 {
     }
 }
 
-/// Which selectable row is at touch-y `y`, given the current `scroll` offset? Mirrors `render`'s
-/// vertical layout exactly: header ends at 91, each section label is `kit::SECTION_H`, and every
-/// row is `RH()` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow). `lang`: the
-/// Language row is shown (`SettingsView::languages` has more than one).
-pub fn row_at(y: i32, scroll: i32, more: bool, lang: bool) -> Option<usize> {
-    row_span(scroll, more, lang)
-        .find(|(_, top)| y >= *top && y < *top + RH())
-        .map(|(r, _)| r)
-}
-
-/// Every row as `(index, screen-y of its top)`, in order — the one place the vertical layout is
-/// expressed. `render` walks the same section table, so the two cannot drift.
-fn row_span(scroll: i32, more: bool, lang: bool) -> impl Iterator<Item = (usize, i32)> {
-    let mut out = Vec::with_capacity(ROWS);
-    let mut yy = LIST_TOP - scroll;
-    let mut r = 0;
-    for (label, n) in SECTIONS.iter() {
-        if r >= rows(more) {
-            break;
-        }
-        yy += label_h(label);
-        for _ in 0..*n {
-            if !shown(r, lang) {
-                r += 1;
-                continue;
-            }
-            out.push((r, yy));
-            r += 1;
-            yy += RH();
-        }
+/// Which row is at touch-y `y` on `page`, given the `scroll` offset? Mirrors `render` exactly:
+/// the header ends at `LIST_TOP` and every row is `RH()` tall. A row id, a topic link
+/// ([`group_row`]) on home, or None.
+pub fn row_at(y: i32, scroll: i32, page: Option<usize>, lang: bool) -> Option<usize> {
+    let i = (y + scroll - LIST_TOP).div_euclid(RH());
+    if y < LIST_TOP || i < 0 {
+        return None;
     }
-    out.into_iter()
+    page_rows(page, lang).get(i as usize).copied()
 }
 
 /// Screen-y of the top of the row list (before scrolling). Exposed for tests and for nav's
 /// "keep the cursor visible" arithmetic — the layout constant lives here, not in the caller.
 pub const LIST_TOP: i32 = 91;
 
-/// Content-space top y of row `r` (i.e. at scroll 0, measured from LIST_TOP).
+/// Content-space top y of row `r` on its own page (at scroll 0, measured from LIST_TOP).
 pub fn row_top_px(r: usize) -> i32 {
-    row_span(0, true, true)
-        .find(|(i, _)| *i == r)
-        .map(|(_, top)| top - 91)
-        .unwrap_or(0)
+    page_rows(page_of(r), true)
+        .iter()
+        .position(|x| *x == r)
+        .map_or(0, |i| i as i32 * RH())
 }
 
 /// The trailing value of row `r`.
@@ -451,11 +489,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         // The value doubles as the confirmation prompt (see nav: first tap arms, second goes).
         ROW_BOOT_STOCK => Trail::Open(v.boot_stock),
         ROW_RESTART | ROW_POWER_OFF => Trail::Open(""),
-        ROW_MORE => Trail::Value(if v.more {
-            crate::i18n::text("HIDE")
-        } else {
-            crate::i18n::text("SHOW")
-        }),
+        r if group_of_link(r).is_some() => Trail::Open(""),
         // Names the SCOPE, since "reset" on a music player could just as easily mean the library.
         ROW_RESET => Trail::Open(crate::i18n::text("PREFERENCES")),
         ROW_FIRMWARE => Trail::Value(FIRMWARE_LABEL),
@@ -493,7 +527,7 @@ fn title(r: usize) -> &'static str {
         ROW_BOOT_STOCK => crate::i18n::text("Boot to stock"),
         ROW_RESTART => crate::i18n::text("Restart"),
         ROW_POWER_OFF => crate::i18n::text("Power off"),
-        ROW_MORE => crate::i18n::text("More settings"),
+        r if group_of_link(r).is_some() => page_title(group_of_link(r)),
         ROW_RESET => crate::i18n::text("Reset settings"),
         ROW_FIRMWARE => crate::i18n::text("Firmware"),
         _ => crate::i18n::text("Model"),
@@ -507,69 +541,58 @@ fn storage_parts(s: &str) -> (&str, &str) {
     s.split_once(", ").unwrap_or((s, ""))
 }
 
+/// A row's second line.
+fn sub_line<'a>(r: usize, v: &'a SettingsView) -> &'a str {
+    match r {
+        ROW_DISPLAY => crate::i18n::text(DISPLAY_SUB),
+        r if group_of_link(r).is_some() => {
+            crate::i18n::text(GROUPS[group_of_link(r).unwrap_or(0)].1)
+        }
+        ROW_QUICK => crate::i18n::text(if crate::scale::large() {
+            "Swipe down from screen top"
+        } else {
+            QUICK_SUB
+        }),
+        ROW_BIG => crate::i18n::text(BIG_SUB),
+        ROW_BIG_BAR => crate::i18n::text("Clock, battery and menu"),
+        ROW_BIG_ICONS => crate::i18n::text("Arrows and symbols"),
+        ROW_SWIPE_UP | ROW_SWIPE_DOWN => crate::i18n::text("Opens the screen you pick"),
+        ROW_NP_BUTTON => crate::i18n::text("The third one along the bottom"),
+        ROW_NP_BACK => crate::i18n::text("Top left, like the edge swipe"),
+        ROW_NP_COUNT => crate::i18n::text("Its place in what's playing"),
+        ROW_HOLD_BUTTONS => crate::i18n::text("Headphone buttons still work"),
+        ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
+        ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
+        ROW_STORAGE => storage_parts(v.storage).1,
+        _ => "",
+    }
+}
+
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v: &SettingsView) {
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Settings"), None);
-    // Content is taller than the panel, so it scrolls. Rows are drawn shifted up by `scroll`;
+    let y0 = crate::chrome::header(c, t, f, page_title(v.page), None);
+    // A page taller than the panel scrolls (Big view). Rows are drawn shifted up by `scroll`;
     // row_at applies the same shift, so the hit test can't drift from the render.
     //
-    // CLIP TO BELOW THE HEADER. Without this the scrolled rows keep painting upward past
-    // HEADER_BOTTOM and cover the "Settings" title and the back chevron — the header is drawn
-    // above, so whatever is drawn after simply wins. The library lists have always clipped; this
-    // screen gained pixel scrolling later and did not, which is why it was the one that showed it.
+    // CLIP TO BELOW THE HEADER, or the scrolled rows paint over the title and the back chevron.
     // (The status bar is safe either way: the navigator draws it AFTER every screen.)
     let mut y = y0 - scroll;
     c.set_clip_y(crate::chrome::HEADER_BOTTOM, crate::canvas::H as i32);
-    let mut r = 0usize;
-    for (label, n) in SECTIONS {
-        if r >= rows(v.more) {
-            break;
-        }
-        if !label.is_empty() {
-            y = kit::section_label(c, t, f, y, label, None);
-        }
-        for _ in 0..n {
-            if !shown(r, v.languages.len() >= 2) {
-                r += 1;
-                continue;
-            }
-            let sub = match r {
-                ROW_DISPLAY => crate::i18n::text(DISPLAY_SUB),
-                ROW_MORE => crate::i18n::text(MORE_SUB),
-                ROW_QUICK => crate::i18n::text(if crate::scale::large() {
-                    "Swipe down from screen top"
-                } else {
-                    QUICK_SUB
-                }),
-                ROW_BIG => crate::i18n::text(BIG_SUB),
-                ROW_BIG_BAR => crate::i18n::text("Clock, battery and menu"),
-                ROW_BIG_ICONS => crate::i18n::text("Arrows and symbols"),
-                ROW_SWIPE_UP | ROW_SWIPE_DOWN => crate::i18n::text("Opens the screen you pick"),
-                ROW_NP_BUTTON => crate::i18n::text("The third one along the bottom"),
-                ROW_NP_BACK => crate::i18n::text("Top left, like the edge swipe"),
-                ROW_NP_COUNT => crate::i18n::text("Its place in what's playing"),
-                ROW_HOLD_BUTTONS => crate::i18n::text("Headphone buttons still work"),
-                ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
-                ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
-                ROW_STORAGE => storage_parts(v.storage).1,
-                _ => "",
-            };
-            let language_title = language_title(v.languages);
-            let row = Row::new(if r == ROW_LANGUAGE {
-                &language_title
-            } else {
-                title(r)
-            })
-            .sub(sub)
-            .trail(trail(r, v))
-            .sel(sel == r);
-            y = if r == ROW_LANGUAGE {
-                crate::text::with_fixed_ui_glyphs(|| kit::row(c, t, f, y, RH(), &row))
-            } else {
-                kit::row(c, t, f, y, RH(), &row)
-            };
-            r += 1;
-        }
+    let language_title = language_title(v.languages);
+    for r in page_rows(v.page, v.languages.len() >= 2) {
+        let row = Row::new(if r == ROW_LANGUAGE {
+            &language_title
+        } else {
+            title(r)
+        })
+        .sub(sub_line(r, v))
+        .trail(trail(r, v))
+        .sel(sel == r);
+        y = if r == ROW_LANGUAGE {
+            crate::text::with_fixed_ui_glyphs(|| kit::row(c, t, f, y, RH(), &row))
+        } else {
+            kit::row(c, t, f, y, RH(), &row)
+        };
     }
     c.clear_clip();
 }
@@ -607,7 +630,7 @@ mod tests {
             ignore_the: false,
             quick: false,
             shuffle_by: "SONGS",
-            more: true,
+            page: None,
             languages: &crate::i18n::Language::ALL,
         }
     }
@@ -619,14 +642,11 @@ mod tests {
         let theme = Theme::day();
         let fonts = FontSet::load();
         let mut canvas = Canvas::new();
-        render(
-            &mut canvas,
-            &theme,
-            &fonts,
-            0,
-            max_scroll_px(true, true),
-            &view(),
-        );
+        let v = SettingsView {
+            page: page_of(ROW_LANGUAGE),
+            ..view()
+        };
+        render(&mut canvas, &theme, &fonts, 0, 0, &v);
 
         let glyph_font =
             crate::text::with_fixed_ui_glyphs(|| crate::text::probe_glyph(&fonts, '语'));
@@ -659,14 +679,8 @@ mod tests {
         canvas.track_text();
         let mut v = view();
         v.storage = "3.4 / 56 GB, SD 108 / 119 GB";
-        render(
-            &mut canvas,
-            &Theme::day(),
-            &fonts,
-            0,
-            max_scroll_px(true, true),
-            &v,
-        );
+        v.page = page_of(ROW_STORAGE);
+        render(&mut canvas, &Theme::day(), &fonts, 0, 0, &v);
         let runs = canvas.text_runs();
         assert!(runs.iter().any(|r| r == "3.4 / 56 GB"), "{runs:?}");
         assert!(runs.iter().any(|r| r == "SD 108 / 119 GB"), "{runs:?}");
@@ -688,13 +702,8 @@ mod tests {
         let mut base = Canvas::new();
         render(&mut base, &t, &f, 0, 0, &view());
 
-        for scroll in [
-            1,
-            17,
-            60,
-            max_scroll_px(true, true) / 2,
-            max_scroll_px(true, true),
-        ] {
+        // render draws at whatever scroll it is given; nav clamps it.
+        for scroll in [1, 17, 60, 150, 300] {
             let mut c = Canvas::new();
             render(&mut c, &t, &f, 0, scroll, &view());
             for y in 0..crate::chrome::HEADER_BOTTOM {
@@ -717,7 +726,7 @@ mod tests {
         let t = Theme::day();
         let f = FontSet::load();
         let mut c = Canvas::new();
-        render(&mut c, &t, &f, 0, max_scroll_px(true, true), &view());
+        render(&mut c, &t, &f, 0, 300, &view());
         // A full-screen fill must reach row 0 again; if the clip leaked, the top band stays put.
         c.fill(t.acc);
         assert_eq!(
@@ -736,7 +745,7 @@ mod tests {
         let mut a = Canvas::new();
         render(&mut a, &t, &f, 0, 0, &view());
         let mut b = Canvas::new();
-        render(&mut b, &t, &f, 0, max_scroll_px(true, true), &view());
+        render(&mut b, &t, &f, 0, 300, &view());
         let band = (crate::chrome::HEADER_BOTTOM as usize)..(crate::canvas::H);
         let differing = band
             .flat_map(|y| (0..crate::canvas::W).map(move |x| y * crate::canvas::W + x))
@@ -752,17 +761,18 @@ mod tests {
     /// in the hit test and the drawing alike.
     #[test]
     fn a_single_language_install_has_no_language_row() {
+        let system = page_of(ROW_LANGUAGE);
         let firmware = |lang| {
-            let top = row_span(0, true, lang)
-                .find(|(r, _)| *r == ROW_FIRMWARE)
-                .unwrap()
-                .1;
-            assert_eq!(row_at(top + RH() / 2, 0, true, lang), Some(ROW_FIRMWARE));
+            let at = page_rows(system, lang)
+                .iter()
+                .position(|r| *r == ROW_FIRMWARE)
+                .unwrap() as i32;
+            let top = LIST_TOP + at * RH();
+            assert_eq!(row_at(top + RH() / 2, 0, system, lang), Some(ROW_FIRMWARE));
             top
         };
         assert_eq!(firmware(false), firmware(true) - RH());
-        assert!(row_span(0, true, false).all(|(r, _)| r != ROW_LANGUAGE));
-        assert_eq!(max_scroll_px(true, false), max_scroll_px(true, true) - RH());
+        assert!(!page_rows(system, false).contains(&ROW_LANGUAGE));
 
         let _scale = crate::text::scale_guard();
         let (t, f) = (Theme::day(), FontSet::load());
@@ -770,10 +780,15 @@ mod tests {
         let single = [crate::i18n::Language::English];
         let v1 = SettingsView {
             languages: &single,
+            page: system,
             ..view()
         };
-        render(&mut one, &t, &f, 0, max_scroll_px(true, false), &v1);
-        render(&mut both, &t, &f, 0, max_scroll_px(true, true), &view());
+        let v2 = SettingsView {
+            page: system,
+            ..view()
+        };
+        render(&mut one, &t, &f, 0, 0, &v1);
+        render(&mut both, &t, &f, 0, 0, &v2);
         assert_ne!(one.buf, both.buf);
         assert_eq!(
             language_title(&crate::i18n::Language::ALL),
@@ -786,72 +801,73 @@ mod tests {
 mod volume_limit_tests {
     use super::*;
 
-    /// The section table and ROWS are two statements of the same number, and `row_span` walks the
-    /// table while every caller indexes by ROWS. A row added to one and not the other silently
-    /// drops off the bottom of the screen or hands out a row index nothing renders.
+    /// Every row is on exactly one page: the home page or one topic page. A row on none could not
+    /// be reached; a row on two would be drawn twice.
     #[test]
-    fn the_section_table_accounts_for_every_row() {
-        assert_eq!(
-            SECTIONS.iter().map(|(_, n)| n).sum::<usize>(),
-            ROWS,
-            "SECTIONS {SECTIONS:?} does not add up to ROWS {ROWS}"
-        );
+    fn every_row_is_on_exactly_one_page() {
+        for r in 0..ROWS {
+            let homes = HOME_ROWS.iter().filter(|x| **x == r).count();
+            let groups = GROUPS
+                .iter()
+                .filter(|(_, _, rows)| rows.contains(&r))
+                .count();
+            assert_eq!(homes + groups, 1, "row {r} is on {} pages", homes + groups);
+        }
     }
 
-    /// Every row must be reachable by a tap at scroll 0 or at the bottom of the scroll range —
-    /// including the last one, which is the one a miscounted section table loses first.
+    /// Every row is reachable by a tap on its page, at scroll 0 or scrolled to it, in both sizes.
     #[test]
-    fn every_row_including_the_new_one_is_hittable() {
-        for r in (0..ROWS).filter(|r| shown(*r, true)) {
-            let top = row_top_px(r) + LIST_TOP;
-            let scroll = (top + RH() / 2 - (crate::canvas::H as i32 / 2))
-                .clamp(0, max_scroll_px(true, true));
-            let y = top - scroll + RH() / 2;
-            assert_eq!(
-                row_at(y, scroll, true, true),
-                Some(r),
-                "row {r} not hittable at y={y} scroll={scroll}"
-            );
+    fn every_row_is_hittable_on_its_page() {
+        let _scale = crate::text::scale_guard();
+        for large in [false, true] {
+            crate::scale::set_large(large);
+            for r in (0..ROWS).filter(|r| shown(*r, true)) {
+                let page = page_of(r);
+                let top = row_top_px(r) + LIST_TOP;
+                let scroll = (top + RH() / 2 - (crate::canvas::H as i32 / 2))
+                    .clamp(0, max_scroll_px(page, true));
+                let y = top - scroll + RH() / 2;
+                assert_eq!(
+                    row_at(y, scroll, page, true),
+                    Some(r),
+                    "row {r} not hittable at y={y} scroll={scroll} (large {large})"
+                );
+            }
         }
+        crate::scale::set_large(false);
+    }
+
+    /// The home page fits the glass without scrolling, and ends on the seven topic links.
+    #[test]
+    fn the_home_page_fits_and_lists_the_topics() {
+        assert_eq!(
+            max_scroll_px(None, true),
+            0,
+            "the home page must not scroll"
+        );
+        let rows = page_rows(None, true);
+        assert_eq!(
+            &rows[rows.len() - GROUPS.len()..],
+            &(0..GROUPS.len()).map(group_row).collect::<Vec<_>>()[..]
+        );
+        for (g, group) in GROUPS.iter().enumerate() {
+            assert_eq!(group_of_link(group_row(g)), Some(g));
+            assert_eq!(page_of(group.2[0]), Some(g));
+        }
+        assert_eq!(group_of_link(ROW_MODEL), None);
     }
 
     /// #51: Big view's two extras sit under it and appear only while it is on.
     #[test]
     fn big_views_extras_show_only_with_big_view() {
         assert!(!shown(ROW_BIG_BAR, true) && !shown(ROW_BIG_ICONS, true));
-        assert!(row_at(LIST_TOP + RH() * 2 + 1, 0, false, true) == Some(ROW_BRIGHTNESS));
+        assert!(row_at(LIST_TOP + RH() * 2 + 1, 0, None, true) == Some(ROW_BRIGHTNESS));
         crate::scale::set_large(true);
         assert!(shown(ROW_BIG_BAR, true) && shown(ROW_BIG_ICONS, true));
         assert_eq!(
-            row_at(LIST_TOP + RH() * 2 + 1, 0, false, true),
+            row_at(LIST_TOP + RH() * 2 + 1, 0, None, true),
             Some(ROW_BIG_BAR)
         );
         crate::scale::set_large(false);
-    }
-
-    /// Folded, the list is the everyday rows only, ends on More settings, and fits the panel
-    /// without scrolling; unfolded, every row is there.
-    #[test]
-    fn folded_is_the_everyday_rows_and_fits_the_screen() {
-        assert_eq!(ROW_DISPLAY, 0);
-        assert_eq!(ROW_MORE + 1, EVERYDAY);
-        assert_eq!(
-            max_scroll_px(false, true),
-            0,
-            "the folded list must not scroll"
-        );
-        // Big view's two extras are hidden while it is off, which is how this list fits.
-        let visible = (0..EVERYDAY).filter(|r| shown(*r, true)).count() as i32;
-        let last = LIST_TOP + visible * RH() - RH() / 2;
-        assert_eq!(row_at(last, 0, false, true), Some(ROW_MORE));
-        assert_eq!(
-            row_at(last + RH(), 0, false, true),
-            None,
-            "nothing below More settings while folded"
-        );
-        assert_eq!(
-            row_at(last + RH() + kit::SECTION_H, 0, true, true),
-            Some(ROW_IGNORE_THE)
-        );
     }
 }
