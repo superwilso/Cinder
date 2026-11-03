@@ -73,7 +73,11 @@ gives the text interface. Both offer the same three things, and both drive the s
 └────────────────────────────────────────────────────────────────┘
 ```
 
-**Install** shows the component picker, stages what you chose, and flashes.
+**Install** shows the component picker, stages what you chose, and flashes. The last page,
+Device, also has **Build**: keep **Stable**, which is for almost everyone. **Developer** is the same
+player with a USB command line (adb) and test tools, for helping find a bug when someone asks you
+for it; anyone with a USB cable can run commands on a player with it. **Update** keeps whichever
+you chose.
 
 **Update** is the same mechanics — the device-side installer is idempotent, and re-running it is
 how a new build lands — with one difference that matters: it reads

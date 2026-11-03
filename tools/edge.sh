@@ -46,22 +46,25 @@ LOG="$WORK/build.log"
 restore() { git checkout -q -- cinder-home/dist/stable; }
 trap 'restore; [ -n "$DRY" ] || rm -rf "$WORK"' EXIT
 
-echo "edge: building the payload for $SHORT (log: $LOG) …"
-# The same three steps tools/release.sh runs, in the same order.
-bash cinder-home/build.sh stable >"$LOG" 2>&1 || { tail -20 "$LOG"; die "build failed"; }
-for model in nw-a50 nw-wm1a; do
-    bash cinder-home/tools/pack_upg.sh stable "$model" >>"$LOG" 2>&1 \
-        || { tail -20 "$LOG"; die "pack_upg $model failed"; }
-done
-bash tools/check_arm_payload.sh cinder-home/dist/stable >>"$LOG" 2>&1 \
-    || { tail -20 "$LOG"; die "the payload does not fit the player (check_arm_payload.sh)"; }
-
-# Pack: the payload, the commit it came from, and a checksum list the workflow verifies.
+echo "edge: building the payload for $SHORT, stable and developer (log: $LOG) …"
+# Both channels, each with the same three steps tools/release.sh runs: the installers carry both,
+# and the person installing picks one (the `channel` entry in components.conf).
 mkdir "$WORK/p"
-cp -a cinder-home/dist/stable "$WORK/p/stable"
+for ch in stable dev; do
+    bash cinder-home/build.sh "$ch" >>"$LOG" 2>&1 || { tail -20 "$LOG"; die "$ch build failed"; }
+    for model in nw-a50 nw-wm1a; do
+        bash cinder-home/tools/pack_upg.sh "$ch" "$model" >>"$LOG" 2>&1 \
+            || { tail -20 "$LOG"; die "pack_upg $ch $model failed"; }
+    done
+    bash tools/check_arm_payload.sh "cinder-home/dist/$ch" >>"$LOG" 2>&1 \
+        || { tail -20 "$LOG"; die "the $ch payload does not fit the player (check_arm_payload.sh)"; }
+    cp -a "cinder-home/dist/$ch" "$WORK/p/$ch"
+done
+
+# Pack: both payloads, the commit they came from, and a checksum list the workflow verifies.
 echo "$SHA" >"$WORK/p/EDGE_COMMIT"
-( cd "$WORK/p" && find stable -type f | LC_ALL=C sort | xargs sha256sum >SHA256SUMS )
-tar -czf "$WORK/edge-payload.tar.gz" -C "$WORK/p" EDGE_COMMIT SHA256SUMS stable
+( cd "$WORK/p" && find stable dev -type f | LC_ALL=C sort | xargs sha256sum >SHA256SUMS )
+tar -czf "$WORK/edge-payload.tar.gz" -C "$WORK/p" EDGE_COMMIT SHA256SUMS stable dev
 restore
 echo "edge: payload packed — $(du -h "$WORK/edge-payload.tar.gz" | cut -f1), $(wc -l <"$WORK/p/SHA256SUMS") files"
 

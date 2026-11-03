@@ -36,7 +36,16 @@ mod stage;
 #[cfg(windows)]
 mod gui;
 
-pub use payload::{CATALOGUE, CHANNEL, MISSING};
+pub use payload::CATALOGUE;
+
+/// The channels this installer carries, for the banners: "stable", or "stable + dev".
+pub fn channels() -> String {
+    payload::CHANNELS
+        .iter()
+        .map(|c| c.name)
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
 
 use stage::Action;
 use std::path::PathBuf;
@@ -50,7 +59,7 @@ pub const VERSION: &str = match option_env!("CINDER_EDGE_VERSION") {
 };
 
 fn help() {
-    println!("cinder-installer {VERSION} — channel {CHANNEL}");
+    println!("cinder-installer {VERSION} — channels {}", channels());
     println!();
     println!("USAGE:  cinder-installer [options] [<drive or mount point>]");
     println!();
@@ -84,14 +93,16 @@ fn help() {
 
 /// Payload problems that make this binary unable to do its job at all.
 fn check_payload() -> Result<(), i32> {
-    if !MISSING.is_empty() {
+    // Stable is the one that must be complete; the developer build is only embedded when it is.
+    let missing = payload::CHANNELS[0].missing;
+    if !missing.is_empty() {
         eprintln!("\nERROR: this build is incomplete — the following payload files were missing");
         eprintln!("when it was compiled:");
-        for m in MISSING {
+        for m in missing {
             eprintln!("    {m}");
         }
-        eprintln!("\nBuild them first:  cinder-home/build.sh {CHANNEL}");
-        eprintln!("                   cinder-home/tools/pack_upg.sh {CHANNEL}");
+        eprintln!("\nBuild them first:  cinder-home/build.sh stable");
+        eprintln!("                   cinder-home/tools/pack_upg.sh stable");
         return Err(2);
     }
     Ok(())
@@ -102,10 +113,12 @@ fn load_catalogue() -> Result<Vec<catalogue::Comp>, i32> {
         eprintln!("ERROR: no component catalogue embedded (deploy/components.conf missing).");
         return Err(2);
     };
-    catalogue::parse_catalogue(text).map_err(|e| {
+    let mut comps = catalogue::parse_catalogue(text).map_err(|e| {
         eprintln!("ERROR: {e}");
         2
-    })
+    })?;
+    payload::fit_catalogue(&mut comps);
+    Ok(comps)
 }
 
 /// Ask GitHub, print the answer. `--check` exists so the question can be asked without going
@@ -168,7 +181,7 @@ fn main() {
                 return;
             }
             "-V" | "--version" => {
-                println!("cinder-installer {VERSION} (channel {CHANNEL})");
+                println!("cinder-installer {VERSION} (channels {})", channels());
                 return;
             }
             other if other.starts_with('-') => {
@@ -200,7 +213,7 @@ fn main() {
         std::process::exit(gui::run(action, dry));
     }
 
-    println!("Cinder installer {VERSION} — channel {CHANNEL}");
+    println!("Cinder installer {VERSION} — channels {}", channels());
     if let Err(rc) = check_payload() {
         std::process::exit(rc);
     }

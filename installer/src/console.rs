@@ -26,7 +26,7 @@ fn show(comps: &[Comp], target: &Path, action: Action) {
     println!(
         "  Cinder {}  (channel: {})",
         action.verb().to_lowercase(),
-        crate::CHANNEL
+        crate::payload::chosen(comps).name
     );
     println!("  player: {}", target.display());
     println!("  ------------------------------------------------------------");
@@ -178,7 +178,7 @@ pub fn run(
             }
         }
 
-        let plan = match stage::plan(action, &comps, crate::CHANNEL, state.walkman_one) {
+        let plan = match stage::plan(action, &comps, state.walkman_one) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("\nERROR: {e}");
@@ -247,7 +247,7 @@ fn carry_out(action: Action, comps: &[Comp], target: &Path, dry: bool) -> i32 {
         target.display()
     );
     println!("    {}", device::package_line(target));
-    let r = stage::write_payload(action, comps, crate::CHANNEL, target, dry, |name, n| {
+    let r = stage::write_payload(action, comps, target, dry, |name, n| {
         println!("    {name:<22} {n:>9} bytes");
     });
     if let Err(e) = r {

@@ -57,11 +57,18 @@ jobs:
       # every dispatch run, and the dispatch path exists precisely to build a test .exe without
       # cutting a release. With no argument the script still verifies every payload hash; it only
       # skips the "verified for THIS tag" assertion, which is meaningless off a tag.
+      #
+      # On a tag this also fetches the DEVELOPER payload, which is not committed: release.sh uploaded
+      # it to the draft release payload-<tag>, and fetch_dev_payload.sh refuses it unless every file
+      # matches the committed manifest. A manual run has no such draft, so its installer carries
+      # stable alone (the Build choice is then not offered).
       - name: Payload matches the verified manifest
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
-              tools/verify_payload_manifest.sh "${GITHUB_REF_NAME}"
+              tools/fetch_dev_payload.sh "${GITHUB_REF_NAME}"
           else
               echo "manual run — checking payload hashes, skipping the tag assertion"
               tools/verify_payload_manifest.sh
@@ -116,6 +123,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # The developer payload, checked against the committed manifest (see the Windows job).
+      - name: Developer payload
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/fetch_dev_payload.sh "${GITHUB_REF_NAME}"
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
         working-directory: installer
@@ -151,6 +164,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      # The developer payload, checked against the committed manifest (see the Windows job).
+      - name: Developer payload
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/fetch_dev_payload.sh "${GITHUB_REF_NAME}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -263,3 +282,9 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           body_path: .github/release-notes.md
+
+      # The developer payload's draft has done its job: every installer above embeds it.
+      - name: Remove the payload draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "payload-${GITHUB_REF_NAME}" -y || echo "no payload draft to remove"

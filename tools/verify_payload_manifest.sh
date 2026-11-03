@@ -3,6 +3,13 @@
 #
 #   tools/verify_payload_manifest.sh v1.2.3    check the manifest describes this tree AND that tag
 #   tools/verify_payload_manifest.sh           check the hashes only (no tag assertion)
+#   tools/verify_payload_manifest.sh --with-dev [v1.2.3]
+#                                              ALSO the developer payload (cinder-home/dist/dev)
+#
+# THE DEVELOPER PAYLOAD IS NOT IN GIT. Only its checksums are: tools/release.sh builds it, writes
+# its lines into the manifest beside stable's, and uploads the files to a draft release that
+# release.yml downloads. So its lines are checked only with --with-dev, by release.yml after the
+# download; everywhere else (ci.yml's payload job, a fresh clone) checks stable alone.
 #
 # WHY THIS EXISTS. release.yml builds only the installer; the ARM payload it embeds is committed
 # under cinder-home/dist/ because building it needs a glibc-2.23 cross toolchain not worth
@@ -26,8 +33,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+WITH_DEV=
+if [ "${1:-}" = --with-dev ]; then WITH_DEV=1; shift; fi
 WANT_TAG="${1:-}"
 M=cinder-home/dist/PAYLOAD.sha256
+# The hash lines to check: stable's always, the developer payload's only with --with-dev.
+entries() {
+    if [ -n "$WITH_DEV" ]; then
+        grep -E '^[0-9a-f]{64}  ' "$M"
+    else
+        grep -E '^[0-9a-f]{64}  ' "$M" | grep -v '  cinder-home/dist/dev/' || true
+    fi
+}
 
 die() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error::$*"; exit 1; }
 ok()  { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
@@ -42,10 +59,14 @@ if [ -n "$WANT_TAG" ]; then
 fi
 
 # A manifest with no hashes would otherwise "pass" — sha256sum -c on empty input succeeds.
-n="$(grep -cE '^[0-9a-f]{64}  ' "$M" || true)"
+n="$(entries | wc -l | tr -d ' ')"
 [ "${n:-0}" -ge 1 ] || die "manifest lists no payload files — it is malformed"
+if [ -n "$WITH_DEV" ]; then
+    grep -q '  cinder-home/dist/dev/' "$M" \
+        || die "--with-dev, but the manifest lists no developer payload — it was prepared without one"
+fi
 
-if ! grep -E '^[0-9a-f]{64}  ' "$M" | sha256sum -c --strict - ; then
+if ! entries | sha256sum -c --strict - ; then
     # NAME THE LIKELY CAUSE. "dist/ changed after it was verified" is true but was actively
     # misleading the one time this fired for real (v0.1.7, run 33643552973): nothing had changed —
     # `windows-latest` checks out with core.autocrlf=true and rewrote LF→CRLF in the two TEXT
@@ -57,7 +78,7 @@ if ! grep -E '^[0-9a-f]{64}  ' "$M" | sha256sum -c --strict - ; then
     while read -r _ f; do
         [ -f "$f" ] || continue
         if grep -qIl '' "$f" 2>/dev/null; then txtfail=1; else binfail=1; fi
-    done < <(grep -E '^[0-9a-f]{64}  ' "$M" | sha256sum -c --strict - 2>/dev/null | grep ': FAILED$' | sed 's/: FAILED$//' | sed 's/^/x /')
+    done < <(entries | sha256sum -c --strict - 2>/dev/null | grep ': FAILED$' | sed 's/: FAILED$//' | sed 's/^/x /')
     if [ "$txtfail" = 1 ] && [ "$binfail" = 0 ]; then
         printf '\n  Only TEXT members failed and every binary passed. That is a line-ending\n'
         printf '  rewrite (Git core.autocrlf on a Windows runner), not a stale payload —\n'

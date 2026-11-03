@@ -22,6 +22,10 @@ It does three things:
 | **Update** | Reads the choices already on the player and keeps them, so a new build never silently resets a customised install. |
 | **Uninstall** | Restores Sony's launch config from the backup the install made and removes Cinder's binaries. Your music, playlists and settings are untouched. |
 
+**Stable is for almost everyone.** On the Device page, **Build** offers a Developer build too: the
+same player with a USB command line (adb) and test tools, for helping find a bug when someone asks
+you for it. Keep Stable otherwise.
+
 It reads what is on the player out of the device's own install log before offering
 anything — whether Cinder is there, which version put it there, and whether the last
 attempt succeeded, was reverted by the device's sanity gate, or never finished.

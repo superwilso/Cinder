@@ -54,8 +54,11 @@ cd "$REPO" || exit 0
 # git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
 FULL=0
 [ "${CINDER_PREPUSH:-}" = "full" ] && FULL=1
+MAIN_SHA=
 while read -r _lref _lsha rref _rsha; do
     case "$rref" in refs/tags/*) FULL=1 ;; esac
+    # A push that updates main (not one deleting it, which sends all zeroes).
+    [ "$rref" = refs/heads/main ] && [ "${_lsha//0/}" != "" ] && MAIN_SHA="$_lsha"
 done
 
 if [ -t 1 ]; then C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[36m'; C_0=$'\e[0m'
@@ -156,4 +159,15 @@ if [ -n "$FAILED" ]; then
 fi
 
 [ "$FULL" = "1" ] && printf '%spre-push: all green%s — CI should agree.\n' "$C_G" "$C_0"
+
+# ── edge build after a push to main, for a clone that opted in ────────────────────────────
+# `git config cinder.edgeOnPush true`. Off for everyone else: this hook is shared with every
+# contributor, and an edge build needs Sony's files and the device toolchain. The build runs in the
+# background, after the push lands, in a clone of its own (tools/edge-after-push.sh), so the push
+# returns at once and the working tree is never touched.
+if [ -n "$MAIN_SHA" ] && [ "$(git config --bool cinder.edgeOnPush 2>/dev/null)" = "true" ]; then
+    setsid nohup bash tools/edge-after-push.sh "$MAIN_SHA" >/dev/null 2>&1 < /dev/null &
+    printf '%sedge%s: building %s once GitHub has it — log in .git/edge/last.log\n' \
+        "$C_B" "$C_0" "${MAIN_SHA:0:7}"
+fi
 exit 0

@@ -52,16 +52,20 @@ jobs:
           [ "$got" = "$SHA" ] || { echo "the uploaded payload is for $got, not $SHA — run tools/edge.sh again"; exit 1; }
           ( cd p && sha256sum -c --quiet SHA256SUMS )
           bash tools/check_arm_payload.sh p/stable
+          bash tools/check_arm_payload.sh p/dev
       - id: v
         env:
           SHA: ${{ inputs.sha }}
         run: |
           base="$(sed -n 's/^version = "\(.*\)"/\1/p' installer/Cargo.toml | head -1)"
           echo "version=$base-edge.${SHA:0:7}" >> "$GITHUB_OUTPUT"
+      # Both channels; the installers embed both and the person installing picks one.
       - uses: actions/upload-artifact@v7
         with:
           name: edge-payload
-          path: p/stable
+          path: |
+            p/stable
+            p/dev
           if-no-files-found: error
 
   build:
@@ -76,7 +80,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: edge-payload
-          path: cinder-home/dist/stable
+          path: cinder-home/dist
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
         working-directory: installer
@@ -105,7 +109,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: edge-payload
-          path: cinder-home/dist/stable
+          path: cinder-home/dist
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
         working-directory: installer
@@ -134,7 +138,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: edge-payload
-          path: cinder-home/dist/stable
+          path: cinder-home/dist
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -195,7 +199,7 @@ jobs:
           cat > notes.md <<EOF
           **Untested.** An automatic build of commit [\`${SHA:0:7}\`](https://github.com/$GITHUB_REPOSITORY/commit/$SHA) ($subject), built $(date -u '+%Y-%m-%d %H:%M UTC'). It is for trying what is coming before it is in a release, and it can be broken.
 
-          - **Install** with the installer for your computer below, the same way as a release.
+          - **Install** with the installer for your computer below, the same way as a release. Keep **Build: Stable** on the Device page unless you were asked for the Developer build (it adds a USB command line and test tools).
           - **Report** what you find in an issue, with the version the installer prints ($VER).
           - **Go back** by running the latest release's installer: https://github.com/$GITHUB_REPOSITORY/releases/latest
           - **If the player will not start Cinder**, follow [RECOVERY.md](https://github.com/$GITHUB_REPOSITORY/blob/main/RECOVERY.md).
