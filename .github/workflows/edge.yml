@@ -213,7 +213,7 @@ jobs:
                   gh release delete-asset edge "$a" -y
               done
               gh release upload edge dist/*
-              gh release edit edge --prerelease --title "Edge $VER (untested)" --notes-file notes.md
+              gh release edit edge --prerelease --target "$SHA" --title "Edge $VER (untested)" --notes-file notes.md
           else
               gh release create edge dist/* --prerelease --target "$SHA" \
                   --title "Edge $VER (untested)" --notes-file notes.md
