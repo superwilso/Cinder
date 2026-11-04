@@ -68,7 +68,9 @@ ones. Read its safety rules first. Grouped by what each needs:
 - **DSEE AI**, and the SensMe channel id → name table.
 - **Wi-Fi.** The MT8590 has a Wi-Fi radio and the player ships its firmware
   (`/system/etc/firmware/WIFI_RAM_CODE_8590`); Sony's kernel leaves out the driver and `cfg80211`.
-  Whether the board's antenna path carries Wi-Fi is the open question.
+  **It works:** built from Sony's own kernel source, an NW-A55 scanned, joined a WPA2 network and
+  downloaded at about 8 Mbit/s (2026-11-04). Next: an opt-in install option, then wireless sync with
+  Flint, adb over Wi-Fi, scrobbling, clock sync, internet radio and streaming services.
 - **USB audio out to an external DAC.** Sony's player app has USB-host audio output code
   (`UsbHostDevice`, DSD output mode); nobody has tried it with a host cable and a DAC.
 - **`cinder-rescue` on Linux and macOS.** It builds for both (libusb) but has only run on Windows.

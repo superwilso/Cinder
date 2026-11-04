@@ -127,6 +127,8 @@ pub enum Screen {
     /// fields is too much for a row, and setting a clock is a deliberate act that deserves an
     /// explicit Set rather than applying live under the finger.
     ClockSet,
+    /// Settings ▸ Wi-Fi (`wifi.rs`). Reached only when the Wi-Fi install option is on the player.
+    Wifi,
     /// Genre filter picker, pushed from the Library's filter strip. A picker, not a browse tab:
     /// 95 genres on the reference device is too many for a chip cycle and too few to deserve its
     /// own place in the tab strip.
@@ -196,6 +198,8 @@ pub enum KbPurpose {
     ViewName,
     /// Sound ▸ Presets: name the sound being saved (None), or rename preset `i`.
     PresetName(Option<usize>),
+    /// Settings ▸ Wi-Fi: the password for `wifi_join_target`.
+    WifiPassword,
 }
 
 /// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
@@ -588,6 +592,13 @@ pub enum Action {
     /// Settings ▸ Date & time ▸ SET CLOCK. The shell reads `cinder_get_clock_epoch()` and runs the
     /// setuid `cinder-clock` helper, which writes BOTH the system clock and the RTC.
     ClockSet,
+    /// Settings ▸ Wi-Fi switch: `cinder-wifi on` / `off`. The shell answers with a status.
+    WifiPower(bool),
+    /// Settings ▸ Wi-Fi ▸ SCAN: `cinder-wifi scan`; the shell answers with the list.
+    WifiScan,
+    /// A network chosen (and its password typed): the shell takes it with `take_wifi_join`, feeds
+    /// it to `cinder-wifi join` on stdin, then runs `on`.
+    WifiJoin,
     SoundBypass(bool), // A/B: true = bypass whole chain (B), false = re-enable (A)
     SleepTimer(u32),   // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
     ShuffleToggle,     // Now Playing shuffle on/off (FFI rebuilds the active context)
@@ -1600,6 +1611,15 @@ pub struct App {
     /// out from under your finger.
     clock_fields: crate::clockset::Fields,
     clock_sel: usize,
+    /// Settings ▸ Wi-Fi: the last status and scan the shell reported, and whether a scan is out.
+    wifi_status: crate::wifi::Status,
+    wifi_networks: Vec<crate::wifi::Network>,
+    wifi_scanning: bool,
+    /// The network whose password the keyboard is asking for.
+    wifi_join_target: Option<Vec<u8>>,
+    /// A join for the shell to carry out (SSID bytes, password; empty for an open network). Taken
+    /// once by `take_wifi_join`, so the password does not stay in memory longer than it must.
+    wifi_join: Option<(Vec<u8>, String)>,
     /// A/B compare on the Sound screen: false = A (effects active), true = B (whole chain bypassed,
     /// "direct"). The Option button flips it for an instant listen test; the shell calls the DSP
     /// bypass. Independent of the per-effect toggles — flipping back to A restores them.
@@ -2111,6 +2131,11 @@ impl Default for App {
             clock_epoch: 0,
             clock_fields: [2026, 1, 1, 0, 0],
             clock_sel: 0,
+            wifi_status: crate::wifi::Status::default(),
+            wifi_networks: Vec::new(),
+            wifi_scanning: false,
+            wifi_join_target: None,
+            wifi_join: None,
             snd_ab_bypass: false,
             sound_sel: 0,
             storage: String::new(),
@@ -4349,6 +4374,20 @@ impl App {
                 self.push(Screen::ClockSet);
                 vec![]
             }
+            crate::settings::ROW_WIFI => {
+                self.push(Screen::Wifi);
+                // Opening the page with the radio on and nothing listed is a request to look.
+                if !matches!(
+                    self.wifi_status.state,
+                    crate::wifi::State::Off | crate::wifi::State::Busy
+                ) && self.wifi_networks.is_empty()
+                    && !self.wifi_scanning
+                {
+                    self.wifi_scanning = true;
+                    return vec![Action::WifiScan];
+                }
+                vec![]
+            }
             crate::settings::ROW_VOLUME_LIMIT => {
                 // Toggle only. There is deliberately no number to cycle: the cap is Sony's AVLS
                 // threshold for whatever output is live (`adapt=1`), read by the shell at the
@@ -5455,6 +5494,7 @@ impl App {
                 }
                 vec![]
             }
+            Screen::Wifi => self.tap_wifi(x, y),
             Screen::ClockSet => {
                 if crate::clockset::hit_set(x, y) {
                     self.notify(crate::i18n::text("Clock set"));
@@ -7029,7 +7069,89 @@ impl App {
                 vec![]
             }
             KbPurpose::PresetName(at) => self.preset_named(at),
+            KbPurpose::WifiPassword => match self.wifi_join_target.take() {
+                Some(ssid) => {
+                    self.wifi_join = Some((ssid, std::mem::take(&mut self.kb_text)));
+                    self.wifi_status.state = crate::wifi::State::Busy;
+                    self.wifi_status.note.clear();
+                    crate::wifi::note_state(crate::wifi::State::Busy);
+                    vec![Action::WifiJoin]
+                }
+                None => vec![],
+            },
         }
+    }
+
+    /// A tap on Settings ▸ Wi-Fi.
+    fn tap_wifi(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::wifi::{Hit, State};
+        let on = !matches!(self.wifi_status.state, State::Off);
+        match crate::wifi::hit(x, y, self.wifi_networks.len(), on) {
+            Hit::Toggle => {
+                if matches!(self.wifi_status.state, State::Busy) {
+                    return vec![];
+                }
+                self.wifi_status.state = State::Busy;
+                self.wifi_status.note.clear();
+                crate::wifi::note_state(State::Busy);
+                if on {
+                    self.wifi_networks.clear();
+                }
+                vec![Action::WifiPower(!on)]
+            }
+            Hit::Scan if !self.wifi_scanning => {
+                self.wifi_scanning = true;
+                vec![Action::WifiScan]
+            }
+            Hit::Network(i) => {
+                let Some(n) = self.wifi_networks.get(i).cloned() else {
+                    return vec![];
+                };
+                if matches!(n.security, crate::wifi::Security::Wep) {
+                    self.notify(crate::i18n::text("WEP networks are not supported"));
+                    return vec![];
+                }
+                if n.security.needs_password() {
+                    self.wifi_join_target = Some(n.ssid);
+                    self.open_keyboard(KbPurpose::WifiPassword);
+                    return vec![];
+                }
+                self.wifi_join = Some((n.ssid, String::new()));
+                self.wifi_status.state = State::Busy;
+                crate::wifi::note_state(State::Busy);
+                vec![Action::WifiJoin]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// The shell found (or did not find) the Wi-Fi install option. Without it the row is hidden.
+    pub fn set_wifi_installed(&mut self, on: bool) {
+        crate::wifi::set_installed(on);
+    }
+
+    /// `cinder-wifi status` output, after any Wi-Fi command or on the shell's own poll. `note`: the
+    /// helper's last line when a command failed, shown in the strip.
+    pub fn set_wifi_status(&mut self, text: &str, note: &str) {
+        let mut st = crate::wifi::parse_status(text);
+        st.note = note.chars().take(60).collect();
+        if matches!(st.state, crate::wifi::State::Off) {
+            self.wifi_networks.clear();
+            self.wifi_scanning = false;
+        }
+        crate::wifi::note_state(st.state);
+        self.wifi_status = st;
+    }
+
+    /// `cinder-wifi scan` output.
+    pub fn set_wifi_scan(&mut self, text: &str) {
+        self.wifi_networks = crate::wifi::parse_scan(text);
+        self.wifi_scanning = false;
+    }
+
+    /// The join the last `WifiJoin` asked for: SSID bytes and password. Taken once.
+    pub fn take_wifi_join(&mut self) -> Option<(Vec<u8>, String)> {
+        self.wifi_join.take()
     }
 
     /// What "Save Up Next" saves: the playing track and everything after it, in play order, as
@@ -11195,6 +11317,17 @@ impl App {
             Screen::ClockSet => {
                 crate::clockset::render(c, &theme, fonts, &self.clock_fields, self.clock_sel)
             }
+            Screen::Wifi => crate::wifi::render(
+                c,
+                &theme,
+                fonts,
+                &crate::wifi::View {
+                    status: &self.wifi_status,
+                    networks: &self.wifi_networks,
+                    scanning: self.wifi_scanning,
+                    sel: None,
+                },
+            ),
             Screen::Fm => {
                 let v = crate::fm::Fm {
                     khz: self.fm_khz,
@@ -11289,6 +11422,10 @@ impl App {
                     KbPurpose::PresetName(None) => (
                         crate::i18n::text("Save current sound").to_string(),
                         crate::i18n::text("Preset name"),
+                    ),
+                    KbPurpose::WifiPassword => (
+                        crate::i18n::text("Wi-Fi password").to_string(),
+                        crate::i18n::text("Password"),
                     ),
                     KbPurpose::PresetName(Some(_)) => (
                         crate::i18n::text("Rename preset").to_string(),
@@ -18081,6 +18218,7 @@ mod tests {
             Screen::Receiver,
             Screen::VizSet,
             Screen::ClockSet,
+            Screen::Wifi,
             Screen::GenreFilter,
             Screen::Folders,
             Screen::SensMe,
@@ -18429,6 +18567,7 @@ mod tests {
             UsbStorage,
             VizSet,
             ClockSet,
+            Wifi,
             GenreFilter,
             Folders,
             SensMe,

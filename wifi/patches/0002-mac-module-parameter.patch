@@ -1,0 +1,35 @@
+diff -ruN a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/gl_init.c b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/gl_init.c
+--- a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/gl_init.c	2026-11-04 23:13:48.169776192 +0000
++++ b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/gl_init.c	2026-11-04 23:13:48.169776192 +0000
+@@ -724,6 +724,13 @@
+ 
+ //4 2007/06/26, mikewu, now we don't use this, we just fix the number of wlan device to 1
+ static WLANDEV_INFO_T arWlanDevInfo[CFG_MAX_WLAN_DEVICES] = {{0}};
++
++/* cinder-wifi: the player has no Wi-Fi NVRAM, so without this the driver makes up 00:08:22 plus
++ * three bytes of the boot clock — a new address every power-on. `mac=xx:xx:xx:xx:xx:xx` at insmod
++ * switches on the driver's own (otherwise unused) host-supplied address path. */
++static char *mac;
++module_param(mac, charp, 0444);
++MODULE_PARM_DESC(mac, "station MAC address, xx:xx:xx:xx:xx:xx (default: generated per power-on)");
+ static UINT_32 u4WlanDevNum = 0; /* How many NICs coexist now */
+ 
+ /*******************************************************************************
+@@ -2406,6 +2413,17 @@
+     prGlueInfo->eParamMediaStateIndicated = PARAM_MEDIA_STATE_DISCONNECTED;
+     prGlueInfo->ePowerState = ParamDeviceStateD0;
+     prGlueInfo->fgIsMacAddrOverride = FALSE;
++    if (mac) {
++        unsigned int m[MAC_ADDR_LEN];
++        if (sscanf(mac, "%x:%x:%x:%x:%x:%x", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == MAC_ADDR_LEN
++                && !(m[0] & 1)) {
++            int i;
++            for (i = 0; i < MAC_ADDR_LEN; i++) prGlueInfo->rMacAddrOverride[i] = (UINT_8)m[i];
++            prGlueInfo->fgIsMacAddrOverride = TRUE;
++        } else {
++            printk(KERN_WARNING "wlan: ignoring mac=%s (want a unicast xx:xx:xx:xx:xx:xx)\n", mac);
++        }
++    }
+     prGlueInfo->fgIsRegistered = FALSE;
+     prGlueInfo->prScanRequest = NULL;
+ 

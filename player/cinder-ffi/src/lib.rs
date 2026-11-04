@@ -2538,7 +2538,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 50] = [
+const SCREEN_NAMES: [&str; 51] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2591,6 +2591,7 @@ const SCREEN_NAMES: [&str; 50] = [
     "VolCurve",
     "Skins",
     "Storage",
+    "Wifi",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2647,6 +2648,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Zappin => 46,
         S::Skins => 48,
         S::Storage => 49,
+        S::Wifi => 50,
     }
 }
 
@@ -5622,6 +5624,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::BootToSonyReceiver => 50, // shell stores stock's resume function, then boots to stock
         Action::BtDebugLog => 47,
         Action::ClockSet => 39,
+        Action::WifiPower(true) => 62,
+        Action::WifiPower(false) => 63,
+        Action::WifiScan => 64,
+        Action::WifiJoin => 65,
         Action::SoundBypass(_) => 15,
         Action::ShuffleToggle => {
             r.np.shuffle = !r.np.shuffle;
@@ -7200,6 +7206,80 @@ pub extern "C" fn cinder_set_bt_connected(name: *const libc::c_char) {
 /// Push the wall clock into the UI (UTC epoch seconds). Call it from the ~1 Hz housekeeping — the
 /// Settings ▸ Date & time row shows it, and the clock editor seeds from it. Ignored while the
 /// editor is open so a per-second push cannot drag a field out from under the user's finger.
+/// The Wi-Fi install option is on this player (`/system/vendor/cinder/wifi` and the `cinder-wifi`
+/// helper). Without it the Settings ▸ Wi-Fi row is not shown.
+#[no_mangle]
+pub extern "C" fn cinder_set_wifi_installed(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_wifi_installed(on != 0);
+    }
+}
+
+/// `cinder-wifi status` output (key=value lines), and the failing command's last line (or "").
+///
+/// # Safety
+/// Both are NUL-terminated strings or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_set_wifi_status(text: *const c_char, note: *const c_char) {
+    let (text, note) = (cstr(text), cstr(note));
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_wifi_status(&text, &note);
+    }
+}
+
+/// `cinder-wifi scan` output.
+///
+/// # Safety
+/// `text` is a NUL-terminated string or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_set_wifi_scan(text: *const c_char) {
+    let text = cstr(text);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_wifi_scan(&text);
+    }
+}
+
+/// What `cinder-wifi join` reads on stdin: the SSID line, then the password line.
+fn wifi_join_bytes(ssid: &[u8], pass: &str) -> Option<Vec<u8>> {
+    if ssid.is_empty() || ssid.len() > 32 || ssid.iter().any(|b| matches!(b, b'\n' | b'\r' | 0)) {
+        return None;
+    }
+    if pass.bytes().any(|b| matches!(b, b'\n' | b'\r' | 0)) {
+        return None;
+    }
+    let mut out = ssid.to_vec();
+    out.push(b'\n');
+    out.extend_from_slice(pass.as_bytes());
+    out.push(b'\n');
+    Some(out)
+}
+
+/// After CINDER_ACT_WIFI_JOIN: the bytes to write to `cinder-wifi join`'s stdin, NOT
+/// NUL-terminated. Returns their length; 0 if there is no join waiting; -1 if the name cannot be
+/// passed on (a line break in it) or the buffer is too small. Taken once: the password is dropped
+/// from the navigator either way.
+///
+/// # Safety
+/// `buf` must be valid for `cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_take_wifi_join(buf: *mut u8, cap: libc::c_int) -> libc::c_int {
+    let Some((ssid, pass)) = cell()
+        .lock()
+        .unwrap()
+        .as_mut()
+        .and_then(|r| r.app.take_wifi_join())
+    else {
+        return 0;
+    };
+    match wifi_join_bytes(&ssid, &pass) {
+        Some(b) if !buf.is_null() && cap > 0 && b.len() <= cap as usize => {
+            std::ptr::copy_nonoverlapping(b.as_ptr(), buf, b.len());
+            b.len() as libc::c_int
+        }
+        _ => -1,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_set_clock_epoch(epoch: i64) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
@@ -10871,6 +10951,7 @@ mod tests {
             S::Skins,
             S::VolCurve,
             S::Storage,
+            S::Wifi,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
         const RESERVED: usize = 1;

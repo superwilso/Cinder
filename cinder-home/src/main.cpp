@@ -3664,6 +3664,150 @@ static void apply_clock() {
     if (code == 0 || code == 5) cinder_set_clock_epoch((long long)::time(nullptr));
 }
 
+// ── Wi-Fi (Settings > Wi-Fi) ──────────────────────────────────────────────────────────────────────
+// The radio, its driver and wpa_supplicant are the Wi-Fi install option's (wifi/ in the repo:
+// modules built from Sony's own GPL kernel source). cinder-home runs as uid 100, so every step goes
+// through the setuid cinder-wifi helper: fixed paths, one verb, the password on stdin.
+//
+// OFF THE RENDER THREAD. `on` loads four modules, powers the radio, joins and waits for DHCP — about
+// ten seconds — and a scan waits four. One detached worker at a time runs the verb, then `status`,
+// and leaves the text for wifi_tick() (render thread) to hand to the UI. A second request while one
+// runs is dropped: the page shows WORKING… and its controls ignore taps until the answer lands.
+static const char* const WIFI_HELPER = "/system/vendor/cinder/bin/cinder-wifi";
+static pthread_mutex_t g_wifi_mu = PTHREAD_MUTEX_INITIALIZER;
+static bool g_wifi_running = false;      // a worker is out
+static bool g_wifi_ready = false;        // status (and maybe a scan) waiting for the render thread
+static bool g_wifi_scan_ready = false;
+static bool g_wifi_on = false;           // last status said the radio is on: poll it
+static std::string g_wifi_status, g_wifi_note, g_wifi_scan;
+
+struct WifiJob { int act; std::string join; };
+
+// Run the helper with `verb`; its stdout comes back in `out`. `in` (optional) is written to its
+// stdin. Returns the exit code, -1 when it could not be run.
+static int wifi_helper(const char* verb, const std::string* in, std::string* out) {
+    char cmd[160];
+    std::snprintf(cmd, sizeof cmd, "%s %s 2>&1", WIFI_HELPER, verb);
+    FILE* p = ::popen(cmd, in ? "w" : "r");
+    if (!p) return -1;
+    if (in) {
+        std::fwrite(in->data(), 1, in->size(), p);
+    } else if (out) {
+        char buf[512];
+        size_t n;
+        while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) out->append(buf, n);
+    }
+    int rc = ::pclose(p);
+    return rc == -1 ? -1 : ((rc >> 8) & 0xff);
+}
+
+static std::string last_line(const std::string& s) {
+    size_t end = s.find_last_not_of("\n");
+    if (end == std::string::npos) return "";
+    size_t start = s.rfind('\n', end);
+    return s.substr(start == std::string::npos ? 0 : start + 1, end - (start == std::string::npos ? 0 : start + 1) + 1);
+}
+
+static void* wifi_thread(void* arg) {
+    WifiJob* job = static_cast<WifiJob*>(arg);
+    std::string out, note, scan;
+    int rc = 0;
+    bool scanned = false;
+    switch (job->act) {
+        case CINDER_ACT_WIFI_ON:  rc = wifi_helper("on", nullptr, &out); break;
+        case CINDER_ACT_WIFI_OFF: rc = wifi_helper("off", nullptr, &out); break;
+        case CINDER_ACT_WIFI_SCAN: rc = wifi_helper("scan", nullptr, &scan); scanned = true; break;
+        case CINDER_ACT_WIFI_JOIN:
+            rc = wifi_helper("join", &job->join, nullptr);
+            if (rc == 0) rc = wifi_helper("on", nullptr, &out);
+            else out = rc == 2 ? "That password cannot be used" : "Could not save the network";
+            break;
+        default: break;   // a status poll
+    }
+    // Overwrite the password copy before freeing it.
+    std::fill(job->join.begin(), job->join.end(), '\0');
+    if (rc != 0) note = last_line(scanned ? scan : out);
+    if (scanned && rc != 0) scan.clear();
+    std::string st;
+    wifi_helper("status", nullptr, &st);
+    char m[200];
+    std::snprintf(m, sizeof m, "wifi: act %d -> rc=%d%s%s", job->act, rc, note.empty() ? "" : " ", note.c_str());
+    clog_(m);
+    delete job;
+    pthread_mutex_lock(&g_wifi_mu);
+    g_wifi_status = st;
+    g_wifi_note = note;
+    if (scanned) { g_wifi_scan = scan; g_wifi_scan_ready = true; }
+    g_wifi_ready = true;
+    g_wifi_running = false;
+    pthread_mutex_unlock(&g_wifi_mu);
+    return nullptr;
+}
+
+// Start a worker for `act` (0 = just a status poll). `join`: the stdin bytes for a join.
+static void wifi_start(int act, const std::string& join = std::string()) {
+    pthread_mutex_lock(&g_wifi_mu);
+    if (g_wifi_running) { pthread_mutex_unlock(&g_wifi_mu); clog_("wifi: busy — request dropped"); return; }
+    g_wifi_running = true;
+    pthread_mutex_unlock(&g_wifi_mu);
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_t th;
+    WifiJob* job = new WifiJob{act, join};
+    if (pthread_create(&th, &at, wifi_thread, job) != 0) {
+        delete job;
+        pthread_mutex_lock(&g_wifi_mu);
+        g_wifi_running = false;
+        pthread_mutex_unlock(&g_wifi_mu);
+        clog_("wifi: pthread_create FAILED");
+    }
+    pthread_attr_destroy(&at);
+}
+
+static void wifi_act(int act) {
+    if (act == CINDER_ACT_WIFI_JOIN) {
+        unsigned char buf[128];
+        int n = cinder_take_wifi_join(buf, (int)sizeof buf);
+        if (n <= 0) {
+            clog_(n == 0 ? "wifi: join with nothing to join" : "wifi: that network name cannot be joined");
+            cinder_set_wifi_status("state=off\n", n == 0 ? "" : "That network name cannot be joined");
+            return;
+        }
+        std::string join(reinterpret_cast<char*>(buf), (size_t)n);
+        std::memset(buf, 0, sizeof buf);
+        wifi_start(act, join);
+        return;
+    }
+    wifi_start(act);
+}
+
+// Housekeeping, once a second on the render thread: say whether Wi-Fi is installed (once), hand
+// finished results to the UI, and poll the status every 15 s while the radio is on.
+static void wifi_tick(long long now) {
+    static int installed = -1;
+    if (installed < 0) {
+        installed = ::access(WIFI_HELPER, X_OK) == 0
+                 && ::access("/system/vendor/cinder/wifi/wlan_mt.ko", R_OK) == 0;
+        cinder_set_wifi_installed(installed);
+        if (installed) { clog_("wifi: the Wi-Fi option is installed"); wifi_start(0); }
+    }
+    if (!installed) return;
+    std::string st, note, scan;
+    bool have = false, have_scan = false;
+    pthread_mutex_lock(&g_wifi_mu);
+    if (g_wifi_ready) { st = g_wifi_status; note = g_wifi_note; have = true; g_wifi_ready = false; }
+    if (g_wifi_scan_ready) { scan = g_wifi_scan; have_scan = true; g_wifi_scan_ready = false; }
+    pthread_mutex_unlock(&g_wifi_mu);
+    if (have) {
+        cinder_set_wifi_status(st.c_str(), note.c_str());
+        g_wifi_on = st.find("state=off") == std::string::npos;
+    }
+    if (have_scan) cinder_set_wifi_scan(scan.c_str());
+    static long long last_poll = 0;
+    if (g_wifi_on && now - last_poll >= 15000) { last_poll = now; wifi_start(0); }
+}
+
 // For the LIVE theme toggle: match the backlight to the current theme.
 void apply_backlight() { set_backlight(cinder_get_night()); }
 
@@ -11824,6 +11968,12 @@ void carry_out(int act) {
         case CINDER_ACT_CLOCK_SET:
             run_guarded("carry_out: set clock", 8, apply_clock);
             break;
+        case CINDER_ACT_WIFI_ON:
+        case CINDER_ACT_WIFI_OFF:
+        case CINDER_ACT_WIFI_SCAN:
+        case CINDER_ACT_WIFI_JOIN:
+            wifi_act(act);
+            break;
         case CINDER_ACT_BALANCE_CHANGED:
             // The balance slider, live under a finger. Just the two mixer writes — NOT
             // apply_sound_fn, which would run six EffectCtrlDmp round trips per motion event and
@@ -14609,6 +14759,7 @@ void* render_driver(void*) {
             mono_shim_poll();           // one access() on tmpfs; logs and repaints only on a change
             ambient_tick();             // a compare unless the play state or a setting moved
             hci_log_tick();             // one stat() while the Bluetooth debug log runs; else nothing
+            wifi_tick(house_now);       // one access() at boot; then results, and a poll while on
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             // Track info > ALBUM SOUND: a new album may have brought its preset (or put the
             // sound from before back). The FFI raised profile_apply during the poll; applied here,

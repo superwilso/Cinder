@@ -107,3 +107,9 @@ __pycache__/
 
 # The design handoff (prototypes, chats, exports): local working material, not part of the product.
 design/
+
+# === Wi-Fi (wifi/): build trees and built modules/programs ===
+# The kernel modules are built from Sony's GPL tree by wifi/build.sh; like the device payload they
+# are not committed (2026-11-04).
+wifi/work/
+wifi/out/
