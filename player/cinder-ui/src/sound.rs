@@ -17,7 +17,11 @@ use crate::Canvas;
 /// "High gain output" USED to sit between Clear+ and Balance. It was cut on 2026-08-17 after being
 /// measured on the device: the control (`headphone smaster gain mode` / `headphone smaster se gain
 /// mode`, numid 28/29) accepts `high`, reads back 1 and persists across a reboot — but the codec
-/// does nothing with it and the output is unchanged by ear. The A50's output stage simply doesn't
+/// does nothing with it and the output is unchanged by ear — and by measurement, 2026-11-04: jack →
+/// PC capture of the same segment, normal vs high on both controls, live and after the stream
+/// reopened, all within 0.2 dB (−44.0 vs −44.0 dB) — and every one of the codec's 210 registers
+/// (charge pump CPCTL1-3 and the HPOUT stages included) reads the same in both modes, so it cannot
+/// differ into a real headphone load either. The A50's output stage simply doesn't
 /// have the high-gain hardware the ZX/WM1 series does; the mixer control is inherited from the
 /// shared CXD3778GF driver. Kept here as a note so it isn't "discovered" and re-added: the write
 /// landing is NOT evidence the feature works — the recurring mistake catalogued as B2 in

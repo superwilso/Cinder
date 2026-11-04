@@ -299,6 +299,21 @@ int main(int argc, char** argv)
             lf = fopen(lp, "r");
             if (lf) { char ln[400]; while (fgets(ln, sizeof ln, lf)) late += strstr(ln, "bt: late") != NULL; fclose(lf); }
             check(rt == 0 && late == 1, "bt: a two-second pause is not a late write");
+
+            /* A NEW stream 150 ms after the old one's last write (a track skip re-opens the
+             * transmitter's socket): its first write is not late — it has no write before it. */
+            int cli2 = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (connect(cli2, (struct sockaddr*)&a, alen) != 0) { perror("connect 2"); return 2; }
+            int srv2 = accept(ls, NULL, NULL);
+            rt = roundtrip(cli2, srv2, hs, sizeof hs, got, 0);
+            rt |= roundtrip(cli, srv, pcm, sizeof pcm, got, 0);
+            nap(150);
+            rt |= roundtrip(cli2, srv2, pcm, sizeof pcm, got, 0);
+            late = 0;
+            lf = fopen(lp, "r");
+            if (lf) { char ln[400]; while (fgets(ln, sizeof ln, lf)) late += strstr(ln, "bt: late") != NULL; fclose(lf); }
+            check(rt == 0 && late == 1, "bt: a new stream's first write is not late against the old stream");
+            close(cli2); close(srv2);
         }
     }
 
