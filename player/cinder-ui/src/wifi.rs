@@ -7,6 +7,8 @@
 //!
 //!   ┌ Wi-Fi ───────────────────────────┐
 //!   │ Wi-Fi                     [■  ] │  the switch: radio on/off
+//!   │ Turn on at start          [   ] │  opt-in: the shell switches it on at boot
+//!   │ Set the clock             [   ] │  opt-in: NTP after each connect
 //!   │ CONNECTED · HOME · 192.168.1.20  │  the strip: what it is doing
 //!   │ NETWORKS                   SCAN  │
 //!   │ Home              WPA2 · strong  │  one row a network, strongest first; tap to join
@@ -241,6 +243,8 @@ const FOOT_H: i32 = 44;
 
 struct Layout {
     switch_y: i32,
+    auto_y: i32,
+    clock_y: i32,
     strip_y: i32,
     section_y: i32,
     list_y: i32,
@@ -249,12 +253,16 @@ struct Layout {
 
 fn layout(networks: usize) -> Layout {
     let switch_y = crate::chrome::HEADER_BOTTOM;
-    let strip_y = switch_y + kit::ROW_H();
+    let auto_y = switch_y + kit::ROW_H();
+    let clock_y = auto_y + kit::ROW_H();
+    let strip_y = clock_y + kit::ROW_H();
     let section_y = strip_y + kit::STRIP_H;
     let list_y = section_y + kit::SECTION_H;
     let room = (H as i32 - FOOT_H - list_y).max(0) / kit::ROW_H();
     Layout {
         switch_y,
+        auto_y,
+        clock_y,
         strip_y,
         section_y,
         list_y,
@@ -265,6 +273,8 @@ fn layout(networks: usize) -> Layout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
     Toggle,
+    AutoStart,
+    Clock,
     Scan,
     /// Network `i` of the list as given to `render`.
     Network(usize),
@@ -275,6 +285,12 @@ pub fn hit(x: i32, y: i32, networks: usize, on: bool) -> Hit {
     let l = layout(networks);
     if y >= l.switch_y && y < l.switch_y + kit::ROW_H() {
         return Hit::Toggle;
+    }
+    if y >= l.auto_y && y < l.auto_y + kit::ROW_H() {
+        return Hit::AutoStart;
+    }
+    if y >= l.clock_y && y < l.clock_y + kit::ROW_H() {
+        return Hit::Clock;
     }
     if !on {
         return Hit::None;
@@ -296,6 +312,9 @@ pub struct View<'a> {
     pub networks: &'a [Network],
     pub scanning: bool,
     pub sel: Option<usize>,
+    /// Settings: switch Wi-Fi on when the player starts; set the clock from the internet.
+    pub autostart: bool,
+    pub clock: bool,
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
@@ -312,6 +331,30 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
         &Row::new(crate::i18n::text("Wi-Fi"))
             .sub(crate::i18n::text("Uses battery while on"))
             .trail(Trail::Switch(on || matches!(v.status.state, State::Busy))),
+    );
+    kit::row(
+        c,
+        t,
+        f,
+        l.auto_y,
+        kit::ROW_H(),
+        &Row::new(crate::i18n::text("Turn on at start"))
+            .sub(crate::i18n::text(
+                "Joins your network when the player starts",
+            ))
+            .trail(Trail::Switch(v.autostart)),
+    );
+    kit::row(
+        c,
+        t,
+        f,
+        l.clock_y,
+        kit::ROW_H(),
+        &Row::new(crate::i18n::text("Set the clock"))
+            .sub(crate::i18n::text(
+                "From the internet, each time Wi-Fi connects",
+            ))
+            .trail(Trail::Switch(v.clock)),
     );
     kit::strip(c, t, f, l.strip_y, &strip_line(v.status));
     if !on {

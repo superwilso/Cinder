@@ -1398,6 +1398,12 @@ fn settings_body(r: &Render) -> String {
     // The pull-down panel (Settings ▸ Pull-down panel), OFF unless switched on.
     body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
     body.push_str(&format!("folders_tab={}\n", r.app.folders_tab() as u8));
+    // Settings ▸ Wi-Fi ▸ Turn on at start / Set the clock, OFF unless switched on.
+    body.push_str(&format!(
+        "wifi_autostart={}\nwifi_clock={}\n",
+        r.app.wifi_autostart() as u8,
+        r.app.wifi_clock() as u8
+    ));
     // Settings ▸ Swipe up / Swipe down: what each opens on Now Playing (#51), as words.
     let (up, down) = r.app.np_swipes();
     body.push_str(&format!(
@@ -5628,6 +5634,8 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::WifiPower(false) => 63,
         Action::WifiScan => 64,
         Action::WifiJoin => 65,
+        Action::WifiTimeSync => 66,
+        Action::WifiForget => 67,
         Action::SoundBypass(_) => 15,
         Action::ShuffleToggle => {
             r.np.shuffle = !r.np.shuffle;
@@ -7280,6 +7288,26 @@ pub unsafe extern "C" fn cinder_take_wifi_join(buf: *mut u8, cap: libc::c_int) -
     }
 }
 
+/// Settings ▸ Wi-Fi ▸ Turn on at start (1/0). Read once, after the settings are loaded.
+#[no_mangle]
+pub extern "C" fn cinder_wifi_autostart() -> libc::c_int {
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|r| r.app.wifi_autostart()) as libc::c_int
+}
+
+/// Settings ▸ Wi-Fi ▸ Set the clock (1/0): run `cinder-wifi timesync` after a successful `on`.
+#[no_mangle]
+pub extern "C" fn cinder_wifi_clock() -> libc::c_int {
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|r| r.app.wifi_clock()) as libc::c_int
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_set_clock_epoch(epoch: i64) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
@@ -8571,6 +8599,8 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
                     "folders_tab" => r.app.set_folders_tab(v == "1"),
                     "np_back" => r.app.set_np_back(v == "1"),
+                    "wifi_autostart" => r.app.set_wifi_autostart(v == "1"),
+                    "wifi_clock" => r.app.set_wifi_clock(v == "1"),
                     "np_count" => r.app.set_np_count(v == "1"),
                     "hold_buttons" => r.app.set_hold_buttons(v == "1"),
                     "big_bar" => cinder_ui::scale::set_big_bar(v == "1"),

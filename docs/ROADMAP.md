@@ -69,8 +69,10 @@ ones. Read its safety rules first. Grouped by what each needs:
 - **Wi-Fi.** The MT8590 has a Wi-Fi radio and the player ships its firmware
   (`/system/etc/firmware/WIFI_RAM_CODE_8590`); Sony's kernel leaves out the driver and `cfg80211`.
   **It works:** built from Sony's own kernel source, an NW-A55 scanned, joined a WPA2 network and
-  downloaded at about 8 Mbit/s (2026-11-04). Next: an opt-in install option, then wireless sync with
-  Flint, adb over Wi-Fi, scrobbling, clock sync, internet radio and streaming services.
+  downloaded at about 8 Mbit/s (2026-11-04). It is now the opt-in install option **Device ▸ Wi-Fi**
+  with **Settings ▸ Wi-Fi** and clock sync ([`wifi/README.md`](../wifi/README.md)). Next: WPA3 on a
+  real WPA3 network, the battery cost, wireless sync with Flint, adb over Wi-Fi, scrobbling,
+  internet radio and streaming services.
 - **USB audio out to an external DAC.** Sony's player app has USB-host audio output code
   (`UsbHostDevice`, DSD output mode); nobody has tried it with a host cable and a DAC.
 - **`cinder-rescue` on Linux and macOS.** It builds for both (libusb) but has only run on Windows.

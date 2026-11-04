@@ -34,6 +34,7 @@ mapfile -t SCRIPTS < <(find . -name '*.sh' \
     -not -path './artifacts/*' \
     -not -path './analysis/binwalk/*' \
     -not -path './cinder-aac/third_party/*' \
+    -not -path './wifi/work/*' \
     -not -path './flint/*' \
     -not -path './cinder-themes/*' \
     | sort)

@@ -292,7 +292,7 @@ fn keyboard_labels_fit_their_keys_at_every_scale() {
     for idx in 0..cinder_ui::text::SCALE_STEPS.len() {
         let _g = scale_lock(idx);
         let fonts = FontSet::load();
-        for page in [0u8, 1] {
+        for page in [0u8, 1, 2] {
             for row in 0..ROWS {
                 for col in 0.. {
                     let Some((_, _, w, _)) = key_rect(page, row, col) else {
@@ -305,6 +305,7 @@ fn keyboard_labels_fit_their_keys_at_every_scale() {
                         Key::Char(ch) => (ch.to_string(), 24.0),
                         Key::Shift => ("CAPS".to_string(), 15.0),
                         Key::Page => ("123".to_string(), 15.0),
+                        Key::Symbols => ("#+=".to_string(), 15.0),
                         Key::Space => ("SPACE".to_string(), 15.0),
                         Key::Backspace => ("DEL".to_string(), 15.0),
                         Key::Done => ("DONE".to_string(), 15.0),

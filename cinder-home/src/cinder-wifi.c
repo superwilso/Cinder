@@ -13,6 +13,7 @@
  *   cinder-wifi join      stdin: SSID line, then password line (empty = open network)  -> 0 / 2
  *                         writes the saved network; does not connect (run `on` after)
  *   cinder-wifi forget    delete the saved network                                     -> 0
+ *   cinder-wifi timesync  set the system clock and the RTC from the internet (NTP)     -> 0 / 1
  *
  * Exit codes: 0 done, 1 the operation failed (last line of output says why), 2 bad input,
  * 3 not running as root (the setuid bit is missing), 4 Wi-Fi is not installed.
@@ -24,6 +25,9 @@
 #define _GNU_SOURCE
 #endif
 #include <ctype.h>
+#include <linux/rtc.h>
+#include <sys/ioctl.h>
+#include <time.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -186,6 +190,8 @@ static int do_scan(void)
         char h[65];
         size_t n = unescape(f[4], raw, sizeof raw);
         if (n == 0 || raw[0] == 0) continue;             /* hidden network */
+        /* Not a network: the driver's complaint that it has no calibration file (wifi/README.md). */
+        if (n >= 13 && memcmp(raw, "NVRAM WARNING", 13) == 0) continue;
         hex(raw, n, h);
         const char* sec = strstr(f[3], "SAE") && !strstr(f[3], "PSK") ? "wpa3"
                         : strstr(f[3], "WPA") ? "wpa2" : strstr(f[3], "WEP") ? "wep" : "open";
@@ -234,9 +240,34 @@ static int do_join(void)
     return 0;
 }
 
+/* NTP through busybox ntpd (one query, then exit), then the RTC so the time survives a power-off —
+ * the same two clocks, same order and same range as cinder-clock. Only over a connected link. */
+static int do_timesync(void)
+{
+    if (access("/sys/class/net/wlan0", F_OK) != 0) { puts("wifi is off"); return 1; }
+    char* const a[] = { "/system/bin/sh", "-c", "busybox ntpd -n -q -p pool.ntp.org", NULL };
+    if (run(a) != 0) { puts("no answer from the time server"); return 1; }
+    time_t now = time(NULL);
+    if (now < 978307200L || now > 2145916800L) { puts("the time server gave a date out of range"); return 1; }
+    struct tm u;
+    struct rtc_time rt;
+    int fd = open("/dev/rtc0", O_WRONLY);
+    int ok = 0;
+    if (fd >= 0 && gmtime_r(&now, &u)) {
+        memset(&rt, 0, sizeof rt);
+        rt.tm_sec = u.tm_sec; rt.tm_min = u.tm_min; rt.tm_hour = u.tm_hour;
+        rt.tm_mday = u.tm_mday; rt.tm_mon = u.tm_mon; rt.tm_year = u.tm_year;
+        rt.tm_wday = u.tm_wday; rt.tm_yday = u.tm_yday;
+        ok = ioctl(fd, RTC_SET_TIME, &rt) == 0;
+    }
+    if (fd >= 0) close(fd);
+    puts(ok ? "clock set" : "clock set for now; the RTC refused it");
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
-    if (argc != 2) { fputs("usage: cinder-wifi on|off|status|scan|join|forget\n", stderr); return 2; }
+    if (argc != 2) { fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync\n", stderr); return 2; }
     if (setuid(0) != 0 || setgid(0) != 0) { puts("not root: the setuid bit is missing"); return 3; }
     const char* v = argv[1];
     if (access(DIR_ "/wlan_mt.ko", R_OK) != 0) { puts("Wi-Fi is not installed"); return 4; }
@@ -254,6 +285,7 @@ int main(int argc, char** argv)
     if (strcmp(v, "scan") == 0) return do_scan();
     if (strcmp(v, "join") == 0) return do_join();
     if (strcmp(v, "forget") == 0) { unlink(CONF); puts("forgotten"); return 0; }
-    fputs("usage: cinder-wifi on|off|status|scan|join|forget\n", stderr);
+    if (strcmp(v, "timesync") == 0) return do_timesync();
+    fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync\n", stderr);
     return 2;
 }

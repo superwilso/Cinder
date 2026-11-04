@@ -18,6 +18,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Wi-Fi (new, experimental, off by default).** The player's Wi-Fi radio, which Sony never
+  used, as the installer option **Device ▸ Wi-Fi**. **Settings ▸ Wi-Fi** then has a switch, the
+  networks in range (strongest first), and a password keyboard; WPA2 and WPA3 work, WEP does not.
+  Two more switches, both off unless turned on: **Turn on at start**, and **Set the clock**, which
+  sets the clock and the RTC from a time server each time Wi-Fi connects. Tap the joined network to
+  forget it. The driver is built from Sony's own GPL kernel source (`wifi/`, GPL-2.0, its own
+  LICENSE), with static `wpa_supplicant` 2.10 and `iw`; each player gets its own fixed address. The
+  keyboard gained a third page (`#+=`) with the rest of the ASCII symbols, so any Wi-Fi password
+  can be typed. *Device-verified on one player at the module and helper level (scan, WPA2 join,
+  DHCP, DNS, a download, cold start to online in about 9 s); the Settings page, the installer
+  option and the clock sync are host-tested only. WPA3 and the battery cost are not yet measured.*
 - **One installer, both builds.** Every installer (releases and edge) now carries the developer
   build as well as stable, and **Device ▸ Build** picks one: Stable, for almost everyone, or
   Developer, which adds adb and test tools. Files the two share are stored once, and Update keeps

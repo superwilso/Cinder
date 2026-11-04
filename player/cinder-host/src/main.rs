@@ -3982,6 +3982,48 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         save(&c, name);
         base_scale();
     }
+
+    // Settings ▸ Wi-Fi: off, then on and connected with three networks found, and the keyboard's
+    // third page (the symbols a Wi-Fi password may need). Last, like the blocks above.
+    {
+        use cinder_ui::nav::Screen;
+        let mut app = new_app();
+        app.set_wifi_installed(true);
+        app.go_for_preview(Screen::Wifi);
+        app.set_wifi_status("state=off\n", "");
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "wifi_off");
+        app.set_wifi_status(
+            "state=connected\nssid=486f6d65\nip=192.168.1.40\nfreq=2437\nsignal=-58\n",
+            "",
+        );
+        app.set_wifi_clock(true);
+        app.set_wifi_scan(
+            "-58\twpa2\t486f6d65\n-71\twpa3\t4e6578742044696f72\n-80\topen\t43616665\n",
+        );
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "wifi_connected");
+        app.set_wifi_status("state=on\n", "a WPA password is 8 to 63 characters");
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "wifi_failed");
+        app.set_wifi_installed(false);
+        let mut c = Canvas::new();
+        cinder_ui::keyboard::render(
+            &mut c,
+            &th(false, amber),
+            &fonts,
+            "Wi-Fi password",
+            "c0rr3ct~h0rse{}",
+            "Password",
+            2,
+            false,
+            false,
+        );
+        save(&c, "keyboard_more_symbols");
+    }
 }
 
 // ── Golden pixel hashes ────────────────────────────────────────────────────────────────────────
