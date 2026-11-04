@@ -8,8 +8,10 @@
 > put new state there, not here.
 >
 > **Licence rule:** Cinder is PolyForm Noncommercial. Wampy is GPLv3 + Commons Clause and Walkman
-> One is closed: take facts from them (paths, numbers, layouts), never code or their tuning data,
-> and keep anything GPL Cinder needs in a repo of its own.
+> One is closed: take facts from them (paths, numbers, layouts), never code or their tuning data.
+> Keep everything in the Cinder repo unless it is fundamentally different or cannot be legally safe
+> there; code under another licence lives in its own folder with its own LICENSE (`wifi/`,
+> `cinder-aac/`), never mixed into PolyForm files.
 >
 > **The live documents, in order of what you probably want:**
 > - **The redesign (2026-09-27 handoff):** [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) — every screen and every promised feature with a state and a phase; spec in [`docs/SPEC_redesign_2026-09.md`](docs/SPEC_redesign_2026-09.md); new screens draw with `player/cinder-ui/src/kit.rs`.

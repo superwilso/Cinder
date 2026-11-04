@@ -1,0 +1,61 @@
+diff -ruN a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/Makefile b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/Makefile
+--- a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/Makefile	2026-11-04 23:05:42.037877095 +0000
++++ b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/Makefile	2026-11-04 23:05:42.041877096 +0000
+@@ -15,7 +15,7 @@
+ # Compile Options
+ # ---------------------------------------------------
+ 
+-ccflags-y += -DLINUX -DMT6628
++ccflags-y += -DLINUX -DMT6628 -DCONFIG_NL80211_TESTMODE -DCONFIG_WEXT_PRIV
+ ccflags-y += -DCFG_SUPPORT_TSF_USING_BOOTTIME=1
+ 
+ ifeq ($(CONFIG_MTK_WAPI_SUPPORT), y)
+@@ -125,6 +125,7 @@
+ 			$(OS_DIR)gl_bow.o \
+ 			$(OS_DIR)gl_wext.o \
+ 			$(OS_DIR)gl_wext_priv.o \
++			$(OS_DIR)gl_wext_stub.o \
+ 			$(OS_DIR)gl_rst.o \
+ 			$(OS_DIR)gl_cfg80211.o \
+ 			$(OS_DIR)platform.o
+diff -ruN a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/nic/nic_pwr_mgt.c b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/nic/nic_pwr_mgt.c
+--- a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/nic/nic_pwr_mgt.c	2026-11-04 23:05:42.049877098 +0000
++++ b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/nic/nic_pwr_mgt.c	2026-11-04 23:05:42.049877098 +0000
+@@ -390,7 +390,7 @@
+ 				for(u4FwCnt=0; u4FwCnt<16; u4FwCnt++)
+ 					printk("0x%08x ", CONSYS_REG_READ(CONSYS_CPUPCR_REG));
+ #if CFG_ENABLE_DRIVER_OWN_FAIL_RESET
+-				mtk_wcn_wmt_assert(WMTDRV_TYPE_WIFI, 40);
++				mtk_wcn_wmt_assert(WMTDRV_TYPE_WIFI, 40, CHIP_TYPE_SOC);
+ #endif
+             }
+             break;
+diff -ruN a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/gl_wext_stub.c b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/gl_wext_stub.c
+--- a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/gl_wext_stub.c	1970-01-01 01:00:00.000000000 +0100
++++ b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/gl_wext_stub.c	2026-11-04 23:05:42.053877099 +0000
+@@ -0,0 +1,13 @@
++/*
++ * cinder-wifi: Sony's NW-A50 kernel is built without wireless extensions (CONFIG_WIRELESS_EXT and
++ * CONFIG_WEXT_CORE unset), so nothing can receive a wext event and the kernel has no
++ * wireless_send_event(). The driver reports to userspace through cfg80211/nl80211 instead; its
++ * wext events go nowhere, as they would on any kernel with no wext listener.
++ */
++#include <linux/netdevice.h>
++#include <net/iw_handler.h>
++
++void wireless_send_event(struct net_device *dev, unsigned int cmd, union iwreq_data *wrqu,
++                         const char *extra)
++{
++}
+diff -ruN a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/include/gl_rst.h b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/include/gl_rst.h
+--- a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/include/gl_rst.h	2026-11-04 23:05:42.045877097 +0000
++++ b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/os/linux/include/gl_rst.h	2026-11-04 23:05:42.045877097 +0000
+@@ -116,7 +116,7 @@
+ } ENUM_WIFI_NETLINK_GRP_T, *P_ENUM_WIFI_NETLINK_GRP_T;
+ 
+ #if CFG_ENABLE_DRIVER_OWN_FAIL_RESET
+-extern MTK_WCN_BOOL mtk_wcn_wmt_assert(ENUM_WMTDRV_TYPE_T type, UINT32 reason);
++extern MTK_WCN_BOOL mtk_wcn_wmt_assert(ENUM_WMTDRV_TYPE_T type, UINT32 reason, CHIP_TYPE_F chipType);
+ #endif
+ 
+ /*******************************************************************************

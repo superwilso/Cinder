@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of real rows. The home page's topic links are row ids after them ([`group_row`]).
-pub const ROWS: usize = 32;
+pub const ROWS: usize = 33;
 
 /// The topic pages: title, the home row's second line (what is inside), and the rows, in order.
 /// Every row is on exactly one page: here, or [`HOME_ROWS`].
@@ -62,7 +62,7 @@ pub const GROUPS: [(&str, &str, &[usize]); 7] = [
     (
         "Device & storage",
         "Battery · storage · USB · clock",
-        &[ROW_BATTERY, ROW_STORAGE, ROW_USB_MODE, ROW_CLOCK],
+        &[ROW_BATTERY, ROW_STORAGE, ROW_USB_MODE, ROW_WIFI, ROW_CLOCK],
     ),
     (
         "System",
@@ -139,6 +139,8 @@ pub fn shown(r: usize, lang: bool) -> bool {
     match r {
         ROW_LANGUAGE => lang,
         ROW_BIG_BAR | ROW_BIG_ICONS => crate::scale::large(),
+        // Only with the Wi-Fi install option: the player's own firmware has no Wi-Fi at all.
+        ROW_WIFI => crate::wifi::installed(),
         _ => true,
     }
 }
@@ -222,8 +224,10 @@ pub const ROW_POWER_OFF: usize = 11;
 pub const ROW_RESET: usize = 28;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
 pub const ROW_LANGUAGE: usize = 29;
-pub const ROW_FIRMWARE: usize = 30;
-pub const ROW_MODEL: usize = 31;
+pub const ROW_FIRMWARE: usize = 31;
+pub const ROW_MODEL: usize = 32;
+/// Wi-Fi (`wifi.rs`): shown only when the Wi-Fi install option is on the player.
+pub const ROW_WIFI: usize = 30;
 
 /// What a swipe on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -481,6 +485,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_BATTERY => Trail::Open(v.device),
         // The value is the live clock, so the row doubles as the place you notice it is wrong.
         ROW_CLOCK => Trail::Open(v.clock),
+        ROW_WIFI => Trail::Open(crate::wifi::row_value()),
         ROW_USB_MODE => Trail::Open(if v.usb_dac {
             "DAC"
         } else {
@@ -524,6 +529,7 @@ fn title(r: usize) -> &'static str {
         ROW_BATTERY => crate::i18n::text("Device"),
         ROW_CLOCK => crate::i18n::text("Date & time"),
         ROW_USB_MODE => crate::i18n::text("USB mode"),
+        ROW_WIFI => crate::i18n::text("Wi-Fi"),
         ROW_BOOT_STOCK => crate::i18n::text("Boot to stock"),
         ROW_RESTART => crate::i18n::text("Restart"),
         ROW_POWER_OFF => crate::i18n::text("Power off"),

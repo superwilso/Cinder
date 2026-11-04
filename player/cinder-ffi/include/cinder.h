@@ -233,6 +233,16 @@ typedef enum {
     CINDER_ACT_VOL_CURVE_CHANGED = 60,
     /* The Winamp skin's stop button: pause, then seek to 0:00. */
     CINDER_ACT_STOP = 61,
+    /* Settings > Wi-Fi switch on / off: run `cinder-wifi on` / `off` OFF the render thread (on takes
+     * ~10 s), then hand `cinder-wifi status` to cinder_set_wifi_status (with the failing command's
+     * last line as the note). */
+    CINDER_ACT_WIFI_ON = 62,
+    CINDER_ACT_WIFI_OFF = 63,
+    /* Settings > Wi-Fi > SCAN: run `cinder-wifi scan` and hand its output to cinder_set_wifi_scan. */
+    CINDER_ACT_WIFI_SCAN = 64,
+    /* A network chosen (password typed): cinder_take_wifi_join() gives the bytes for
+     * `cinder-wifi join`'s stdin; then run `on` and report the status as for CINDER_ACT_WIFI_ON. */
+    CINDER_ACT_WIFI_JOIN = 65,
     /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
      * resume function (Configuration 5008/5039), then boot to stock exactly as
      * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */
@@ -438,6 +448,13 @@ int  cinder_scrobble_open(const char *path, const char *client);
 void cinder_scrobble_tick(int playing);
 /* Refresh the status-bar/lock clock from local time (call ~1x/sec). Repaints only on minute change. */
 void cinder_clock_tick(void);
+
+/* Wi-Fi (Settings > Wi-Fi; only offered when the Wi-Fi install option is present). */
+void cinder_set_wifi_installed(int on);
+void cinder_set_wifi_status(const char *text, const char *note);
+void cinder_set_wifi_scan(const char *text);
+/* The bytes for `cinder-wifi join`'s stdin (not NUL-terminated): length, 0 none waiting, -1 bad. */
+int cinder_take_wifi_join(unsigned char *buf, int cap);
 /* Night on a schedule: call ~1x/sec. Returns CINDER_ACT_THEME_CHANGED when Night just came on or
  * went off (carry it out like the switch: the backlight follows), else CINDER_ACT_NONE. */
 int  cinder_night_tick(void);
