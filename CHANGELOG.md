@@ -62,6 +62,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   selected and scrolled into view. This replaces the "More settings" fold-out. *Pages and the edge
   swipe checked on the owner's player in Big view; the arrow and the scroll fix host-tested.*
 
+### Fixed
+
+- **Bluetooth logs no longer report a skip as a late write.** The late-write check timed every
+  stream against the one before it, so the first write after a track skip (which opens a new
+  connection to the transmitter) counted as late: 83 of 107 "bt: late" lines in one evening's
+  log were that. Each stream is now timed on its own. *Host-tested (a new test fails without the
+  fix, also under qemu with the player's libc); device-unverified.*
+
 ## [0.3.22] — 2026-10-28
 
 ### Changed

@@ -651,17 +651,23 @@ static void bt_mix_frames(void* ctx, uint8_t* p, size_t n, uint32_t rate)
  * than 40 ms was held (the stack was not taking it). Either is written to the log with the
  * monotonic clock, which is what lets a noise somebody heard be matched to what the player was
  * doing in that second. A gap of two seconds or more is a pause or a new stream, not a late write.
- * Two clock reads per write and no file access unless something was late. */
-static struct { long long prev_ms; long long late; long long since_said; int have; } g_btt;
+ * Two clock reads per write and no file access unless something was late.
+ *
+ * Timed PER STREAM (`gen`): the first write of a new connection is not late against the last one
+ * of the stream before it. Without that, every track skip that re-opens the transmitter's socket
+ * within two seconds logged one — 83 of the 107 "late" lines on the owner's player, 2026-11-04. */
+static struct { long long prev_ms; long long late; long long since_said; int have; unsigned gen; } g_btt;
 /* And the rate it is sent at, against the rate the stream declared (#44). The same measure runs in
  * the Bluetooth service (cinder-aac), so a wrong rate can be placed on one side or the other. */
 static pcm_rate g_btr;
 static long long g_btr_said = 0;
 static int g_btt_lines = 0;
 static long long ts_ms(const struct timespec* t) { return (long long)t->tv_sec * 1000 + t->tv_nsec / 1000000L; }
-static void bt_timing(size_t n, uint32_t rate, uint32_t ch, const struct timespec* t0, const struct timespec* t1)
+static void bt_timing(unsigned gen, size_t n, uint32_t rate, uint32_t ch, const struct timespec* t0,
+                      const struct timespec* t1)
 {
     if (!rate || !ch) return;
+    if (gen != g_btt.gen) { g_btt.gen = gen; g_btt.have = 0; }
     const long long a = ts_ms(t0);
     const long gap = g_btt.have ? (long)(a - g_btt.prev_ms) : -1;
     const long took = (long)(ts_ms(t1) - a);
@@ -724,7 +730,7 @@ static ssize_t bt_send(int fd, const void* buf, size_t n, ssize_t (*sendfn)(int,
         if (timed) {
             const int e = errno;
             clock_gettime(CLOCK_MONOTONIC, &t1);
-            bt_timing((size_t)r, st.rate, st.channels, &t0, &t1);
+            bt_timing(gen, (size_t)r, st.rate, st.channels, &t0, &t1);
             errno = e;
         }
         bt_commit(fd, gen, in, n, (size_t)r, to_send != buf ? mono : 0, said_now, (const uint8_t*)to_send);

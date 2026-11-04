@@ -66,6 +66,11 @@ ones. Read its safety rules first. Grouped by what each needs:
 - **Noise cancelling:** the ambient filter Walkman One removed, and whether the DAC EQ and the
   linear amp interact with NC.
 - **DSEE AI**, and the SensMe channel id → name table.
+- **Wi-Fi.** The MT8590 has a Wi-Fi radio and the player ships its firmware
+  (`/system/etc/firmware/WIFI_RAM_CODE_8590`); Sony's kernel leaves out the driver and `cfg80211`.
+  Whether the board's antenna path carries Wi-Fi is the open question.
+- **USB audio out to an external DAC.** Sony's player app has USB-host audio output code
+  (`UsbHostDevice`, DSD output mode); nobody has tried it with a host cable and a DAC.
 - **`cinder-rescue` on Linux and macOS.** It builds for both (libusb) but has only run on Windows.
   A `cinder-rescue dump` of your player (read-only) and a `verify` of it is the useful report.
   Results so far, licences and open questions:
