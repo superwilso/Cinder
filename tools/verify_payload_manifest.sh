@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Verify that cinder-home/dist/stable is the payload tools/release.sh actually checked.
+# Verify that cinder-home/dist is the payload tools/release.sh actually checked.
 #
 #   tools/verify_payload_manifest.sh v1.2.3    check the manifest describes this tree AND that tag
 #   tools/verify_payload_manifest.sh           check the hashes only (no tag assertion)
 #   tools/verify_payload_manifest.sh --with-dev [v1.2.3]
 #                                              ALSO the developer payload (cinder-home/dist/dev)
 #
-# THE DEVELOPER PAYLOAD IS NOT IN GIT. Only its checksums are: tools/release.sh builds it, writes
-# its lines into the manifest beside stable's, and uploads the files to a draft release that
-# release.yml downloads. So its lines are checked only with --with-dev, by release.yml after the
-# download; everywhere else (ci.yml's payload job, a fresh clone) checks stable alone.
+# THE PAYLOAD IS NOT IN GIT. Only its checksums are: tools/release.sh builds both channels, writes
+# their lines into this manifest, and uploads the files (cinder-payload.tar.gz); tools/fetch_payload.sh
+# downloads them and runs this, with --with-dev whenever the manifest lists the developer build.
+# Manifests from before 0.3.22 list stable alone, hence the option.
 #
-# WHY THIS EXISTS. release.yml builds only the installer; the ARM payload it embeds is committed
-# under cinder-home/dist/ because building it needs a glibc-2.23 cross toolchain not worth
-# reproducing on a runner. tools/release.sh rebuilds that payload from source and refuses to tag
+# WHY THIS EXISTS. release.yml builds only the installer; the ARM payload it embeds is built by a
+# maintainer because building it needs a glibc-2.23 cross toolchain not worth reproducing on a
+# runner. tools/release.sh rebuilds that payload from source and refuses to tag
 # unless every committed byte matches — real verification, and until now entirely OPT-IN, because
 # `git tag && git push --tags` reaches the workflow directly. A stale dist/ then shipped as an
 # installer full of last week's binaries, with a green tick and no warning.

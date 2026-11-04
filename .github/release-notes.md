@@ -78,6 +78,9 @@ relink either program against a different libusb, build it from this release's t
 > **The player has no update option in its own menus.** This generation never had one —
 > the upgrade is always triggered by the host over USB.
 
+`cinder-payload.tar.gz` is the device side every installer above embeds (both builds), for building
+an installer from this release's source; `PAYLOAD.sha256` in the tagged source lists its checksums.
+
 `cinder-extras.zip` holds the install and uninstall `.UPG` packages for that route and for
 advanced recovery use (`.nw-wm1a.upg` for a player running Walkman One; its README says which). On Windows, the one-click executable is the recommended
 path — it does the handoff for you.

@@ -9,9 +9,9 @@ name: ci
 #
 # The ARM LINK is still not done here: it needs a glibc-2.23 + libc++-3.9.0 cross toolchain matched
 # to the player's runtime, which is real machinery to maintain on a runner for little gain. The
-# device binaries are built by a maintainer and committed under cinder-home/dist/, and
-# `tools/release.sh` verifies that committed payload byte-for-byte against a fresh build before it
-# will tag.
+# device binaries are built by a maintainer: `tools/release.sh` verifies them byte-for-byte
+# against a fresh build, commits only their checksums (cinder-home/dist/PAYLOAD.sha256), and the
+# files ride on the release as cinder-payload.tar.gz, which `tools/fetch_payload.sh` downloads.
 #
 # But "we cannot LINK for ARM here" was quietly being read as "we cannot check the C++ at all", and
 # that left ~19,400 lines of C and C++ — the code that runs as root, owns the boot path and drives
@@ -81,6 +81,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ matrix.dir }}
+      # The installer embeds the device payload, which is not committed: this downloads the last
+      # release's and checks it against cinder-home/dist/PAYLOAD.sha256. Public, so forks work too.
+      - name: Fetch the device payload
+        if: matrix.dir == 'installer'
+        shell: bash
+        run: bash tools/fetch_payload.sh
       - name: Check generated localization catalog
         if: matrix.dir == 'player'
         working-directory: .
@@ -338,10 +344,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # PAYLOAD.sha256 is the list (tools/release.sh writes it from the files it verified), so this
-      # checks every file is present AND is the byte content that was verified.
-      - name: The committed payload is the one release.sh verified
-        run: bash tools/verify_payload_manifest.sh
+      # PAYLOAD.sha256 is the list (tools/release.sh writes it from the files it verified), and the
+      # fetch refuses any file that is missing or is not the byte content that was verified.
+      - name: The released payload is the one release.sh verified
+        run: bash tools/fetch_payload.sh
 
       # Architecture, glibc floor, allowed libraries, static helpers. A script, so it runs locally
       # exactly as here. It is NOT a link check: the link needs Sony's libraries, so that gate is

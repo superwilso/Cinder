@@ -101,8 +101,9 @@ fn check_payload() -> Result<(), i32> {
         for m in missing {
             eprintln!("    {m}");
         }
-        eprintln!("\nBuild them first:  cinder-home/build.sh stable");
-        eprintln!("                   cinder-home/tools/pack_upg.sh stable");
+        eprintln!("\nFetch the last release's:  tools/fetch_payload.sh");
+        eprintln!("or build them:             cinder-home/build.sh stable");
+        eprintln!("                           cinder-home/tools/pack_upg.sh stable");
         return Err(2);
     }
     Ok(())

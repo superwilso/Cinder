@@ -83,5 +83,5 @@ gh attestation verify cinder-installer-windows-x64.exe -R superwilso/Cinder
 A pass means the file was produced by `.github/workflows/release.yml` in this repository, from the
 commit the tag points at — signed through Sigstore, so it cannot be forged by whoever uploads a
 file. What it does not cover (D7): the installer is still unsigned for SmartScreen, and the ARM
-payload inside it is committed rather than built on the runner, so for those bytes the attestation
+payload inside it is built on a maintainer's machine rather than on the runner, so for those bytes the attestation
 leans on `tools/release.sh`'s rebuild-and-compare manifest (D4).

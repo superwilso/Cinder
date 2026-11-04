@@ -8,8 +8,8 @@
 # Log:      .git/edge/last.log (one per run, the newest linked as last.log)
 #
 # It builds in a THROWAWAY CLONE of exactly that commit, never in this working tree: edge.sh
-# refuses a tree with uncommitted changes, and while it runs it rewrites cinder-home/dist/stable,
-# which a `git add -A` in the meantime would commit (the CI-red mistake of 2026-10-22). What the
+# refuses a tree with uncommitted changes, and the build would overwrite this tree's own
+# cinder-home/dist with that commit's payload while you work. What the
 # build needs that git does not hold is linked in from here: Sony's files (artifacts/), the
 # player's runtime libraries (analysis/ramdisk/) and the AAC encoder source
 # (cinder-aac/third_party/). The Rust build cache for the ARM target lives in

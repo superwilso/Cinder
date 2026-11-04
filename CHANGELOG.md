@@ -26,6 +26,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   `PAYLOAD.sha256` and uploads it to a draft release, and every installer build refuses it unless
   it matches. *Host-tested, with the Build drop-down checked in the real Windows window; no release
   has been cut with it yet.*
+- **The device payload is no longer committed.** `cinder-home/dist/stable` follows `dist/dev` out
+  of git: only `PAYLOAD.sha256` stays, and each release carries the files as
+  `cinder-payload.tar.gz`. `tools/fetch_payload.sh` downloads them and refuses any file the
+  manifest does not describe; CI and the release workflow run it before building an installer, and
+  a fresh clone runs it once. Every release used to add about 8 MB of binaries to the history that
+  every clone downloads. *Host-tested (fresh clone, tampered archive refused); not yet run on
+  GitHub.*
 - **Edge builds.** An untested build of the newest commit, for trying what's coming, on the
   [edge](https://github.com/superwilso/Cinder/releases/tag/edge) pre-release with installers for
   Windows, Linux and macOS. A maintainer publishes one with `tools/edge.sh`, which builds the

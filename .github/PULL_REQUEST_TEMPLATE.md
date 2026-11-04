@@ -41,5 +41,5 @@ is a red tick there.
 - [ ] Not tested on hardware, and the change cannot reach the device
 - [ ] Not tested on hardware, and it **can** — say so plainly here so it is not merged as if it were
 
-<!-- If you rebuilt cinder-home/dist/, say so: those binaries are committed deliberately, and
-     tools/release.sh verifies the committed payload against a fresh build before it will tag. -->
+<!-- cinder-home/dist/ is not committed (only PAYLOAD.sha256 is, and tools/release.sh writes it):
+     leave both out of a pull request. -->
