@@ -119,6 +119,7 @@ WANT_ATRAC="$(comp_bool CINDER_ATRAC 0)"
 WANT_FMREC="$(comp_bool CINDER_FMREC 0)"
 WANT_LLUSBDAC="$(comp_bool CINDER_LLUSBDAC 0)"
 WANT_BT_SBC_XQ="$(comp_bool CINDER_BT_SBC_XQ 0)"
+WANT_WIFI="$(comp_bool CINDER_WIFI 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
 WANT_CHAIN="$(comp_chain)"
@@ -128,7 +129,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC"
+echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC wifi=$WANT_WIFI"
 
 
 # ── what was ALREADY mounted before we touched anything ──────────────────────────────────────
@@ -802,6 +803,58 @@ if [ "$WANT_LLUSBDAC" = 1 ]; then
 fi
 [ "$LLUSBDAC_IN" = 0 ] && "$BB" rm -f "$LLUSBDAC_KO" 2>/dev/null
 "$BB" rm -f /contents/llusbdac.ko 2>/dev/null
+
+# 1g8) Wi-Fi: the `wifi` component (wifi/, GPL-2.0). Twelve files into $VENDOR/wifi — four kernel
+#      modules, wpa_supplicant, wpa_cli, iw, curl and its CA list, and three scripts — then the setuid helper cinder-wifi
+#      LAST, because cinder-home shows Settings ▸ Wi-Fi only when the helper and wlan_mt.ko are
+#      both there. Nothing loads at boot: the radio stays off until the user switches it on, and
+#      the modules load then. The folder is filled under a temporary name and swapped in whole.
+#      Unticked, the folder, the helper and the saved network (it holds the password) all go.
+# >>> wifi
+WIFI_DIR=$VENDOR/wifi
+WIFI_FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem wifi-up.sh wifi-down.sh dhcp.sh"
+WIFI_IN=0
+if [ "$WANT_WIFI" = 1 ]; then
+    wifi_staged=1
+    for f in $WIFI_FILES cinder-wifi; do
+        case "$f" in cinder-wifi) src=/contents/cinder-wifi ;; *) src=/contents/cinder-wifi-$f ;; esac
+        [ -s "$src" ] || wifi_staged=0
+    done
+    if [ "$wifi_staged" = 0 ]; then
+        echo "WARN: wifi selected but its files are not all staged — not installed."
+    else
+        "$BB" rm -rf "$WIFI_DIR.new" 2>/dev/null
+        "$BB" mkdir -p "$WIFI_DIR.new" && "$BB" chmod 755 "$WIFI_DIR.new"
+        wifi_ok=1
+        for f in $WIFI_FILES; do
+            btaac_put "/contents/cinder-wifi-$f" "$WIFI_DIR.new/$f" || { wifi_ok=0; break; }
+            case "$f" in *.ko|*.pem) ;; *) "$BB" chmod 755 "$WIFI_DIR.new/$f" ;; esac
+        done
+        if [ "$wifi_ok" = 1 ]; then
+            "$BB" rm -rf "$WIFI_DIR" 2>/dev/null
+            "$BB" mv "$WIFI_DIR.new" "$WIFI_DIR" || wifi_ok=0
+        fi
+        if [ "$wifi_ok" = 1 ]; then
+            "$BB" cat /contents/cinder-wifi > "$BIN/cinder-wifi.tmp" 2>/dev/null
+            if [ -s "$BIN/cinder-wifi.tmp" ] && "$BB" cmp -s /contents/cinder-wifi "$BIN/cinder-wifi.tmp"; then
+                "$BB" chown 0:0 "$BIN/cinder-wifi.tmp" 2>/dev/null
+                "$BB" chmod 4755 "$BIN/cinder-wifi.tmp"
+                "$BB" mv -f "$BIN/cinder-wifi.tmp" "$BIN/cinder-wifi" && WIFI_IN=1
+            fi
+        fi
+        if [ "$WIFI_IN" = 1 ]; then
+            echo "wifi: installed (Settings ▸ Wi-Fi)"
+        else
+            echo "WARN: wifi — a file did not copy whole; not installed."
+        fi
+    fi
+fi
+if [ "$WIFI_IN" = 0 ]; then
+    "$BB" rm -f "$BIN/cinder-wifi" "$BIN/cinder-wifi.tmp" 2>/dev/null
+    "$BB" rm -rf "$WIFI_DIR" "$WIFI_DIR.new" 2>/dev/null
+    [ "$WANT_WIFI" = 1 ] || "$BB" rm -rf /data/cinder/wifi 2>/dev/null
+fi
+# <<< wifi
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
 #    the .appcfg (otherwise the stock launch config is lost with no .real to restore).

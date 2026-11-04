@@ -38,6 +38,8 @@ HELPERS=(cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-vol
 # cinder-hagowrap (the `preload` component) stands in front of every Sony service: static, like the
 # helpers. In dist/stable from the release after 0.3.14; checked when present.
 [ -f "$DIR/cinder-hagowrap" ] && HELPERS+=(cinder-hagowrap)
+# The `wifi` component's helper and programs (static, like every helper) when this build has them.
+for b in cinder-wifi wifi-wpa_supplicant wifi-wpa_cli wifi-iw wifi-curl; do [ -f "$DIR/$b" ] && HELPERS+=("$b"); done
 
 # Every shared library the dynamic binaries may need: Sony's service clients from vendor/sony/lib,
 # the firmware's libc++ 3.9 runtime, ALSA, and glibc 2.23 itself. libMali_linux.so (the deleted GPU
@@ -119,6 +121,20 @@ else
     [ -z "$extra" ] || bad "$b" "needs more than glibc inside a Sony service:$extra"
     [ -z "$too_new$extra" ] && good "$b" "ARM shared object, glibc <= 2.23, needs only: $needed"
 fi
+done
+
+# The Wi-Fi kernel modules: ARM relocatable objects built for the player's exact kernel, or the
+# kernel refuses them (and an insmod of the wrong one can take the radio's WMT core down with it).
+for b in wifi-compat.ko wifi-cfg80211.ko wifi-mtk_wmt_wifi_soc.ko wifi-wlan_mt.ko; do
+    f="$DIR/$b"
+    [ -f "$f" ] || continue
+    if ! file -b "$f" | grep -q 'ELF 32-bit LSB relocatable, ARM'; then
+        bad "$b" "not a 32-bit ARM kernel module: $(file -b "$f")"
+    elif ! grep -aq 'vermagic=3.10.26 SMP preempt mod_unload ARMv7' "$f"; then
+        bad "$b" "not built for the player's kernel (vermagic 3.10.26 SMP preempt mod_unload ARMv7)"
+    else
+        good "$b" "ARM module, vermagic 3.10.26"
+    fi
 done
 
 if [ "$FAIL" = 0 ]; then

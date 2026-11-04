@@ -272,6 +272,13 @@ echo "[6e] build cinder-clock (setuid-root clock helper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-clock" "$HERE/src/cinder-clock.c"
 echo "built: $HERE/cinder-clock ($(stat -c %s "$HERE/cinder-clock") bytes)"
 
+# cinder-wifi: setuid-root Wi-Fi helper, the `wifi` component — loads the radio's modules, runs
+# wpa_supplicant and udhcpc, and saves the network (src/cinder-wifi.c). Its modules and programs
+# come from wifi/ (GPL-2.0, own LICENSE), staged below.
+echo "[6e2] build cinder-wifi (setuid-root Wi-Fi helper, static)…"
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-wifi" "$HERE/src/cinder-wifi.c"
+echo "built: $HERE/cinder-wifi ($(stat -c %s "$HERE/cinder-wifi") bytes)"
+
 # cinder-voltable: seventh setuid-root helper — install one of Sony's OUTPUT VOLUME TABLES into
 # /proc/icx_audio_cxd3778gf_data/{ovt,ovt_dsd}, which are root-only. The stock A50 curve has two
 # dead zones (vol 40-60 and 100-120 do nothing, measured) and coarsens toward the top where the
@@ -382,6 +389,31 @@ cp -f "$AAC_DIR/build/libfdk-aac-enc.so" "$DIST/libfdk-aac-enc.so"
 cp -f "$HERE/cinder-fm" "$DIST/cinder-fm"
 cp -f "$HERE/cinder-voltable" "$DIST/cinder-voltable"
 cp -f "$HERE/cinder-battery" "$DIST/cinder-battery"
+cp -f "$HERE/cinder-wifi" "$DIST/cinder-wifi"
+# wifi/: the four kernel modules (built from Sony's GPL kernel tree, which most clones do not have)
+# and the static wpa_supplicant/wpa_cli/iw. Built when missing and the inputs are here; otherwise
+# skipped, and the installer leaves the `wifi` option out (installer/build.rs: not required).
+WIFI_DIR="$REPO/wifi"
+WIFI_KO="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko"
+WIFI_BIN="wpa_supplicant wpa_cli iw curl cacert.pem"
+WIFI_SH="wifi-up.sh wifi-down.sh dhcp.sh"
+echo "[6n] stage wifi…"
+for f in $WIFI_KO; do
+    [ -s "$WIFI_DIR/out/$f" ] || { bash "$WIFI_DIR/build.sh" >/dev/null 2>&1 || true; break; }
+done
+for f in $WIFI_BIN; do
+    [ -s "$WIFI_DIR/out/$f" ] || { bash "$WIFI_DIR/build-userland.sh" >/dev/null 2>&1 || true; break; }
+done
+wifi_ok=1
+for f in $WIFI_KO $WIFI_BIN; do [ -s "$WIFI_DIR/out/$f" ] || wifi_ok=0; done
+if [ "$wifi_ok" = 1 ]; then
+    for f in $WIFI_KO $WIFI_BIN; do cp -f "$WIFI_DIR/out/$f" "$DIST/wifi-$f"; done
+    for f in $WIFI_SH; do cp -f "$WIFI_DIR/device/$f" "$DIST/wifi-$f"; done
+    echo "staged wifi -> $DIST/wifi-*"
+else
+    rm -f "$DIST"/wifi-*
+    echo "WARN: wifi/out is incomplete (needs Sony's kernel tree and the musl toolchain) — no wifi in this build."
+fi
 # cinder-probe, the RE workbench, ships on the DEV channel only: nothing on a stable player (no adb)
 # can run it, and it was 48% of the stable payload.
 if [ "$CHANNEL" = "dev" ]; then

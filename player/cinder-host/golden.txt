@@ -35,7 +35,7 @@ b9a67fd05fccf6bc playlist_page_day
 340260933fe9cb55 playlist_page_own_day
 53cc9fdc547e57ef library_playlists_own_day
 07326c2d9a004bad keyboard_day
-fdb5222ad41269ab keyboard_symbols_day
+277d43f7f8ac3d20 keyboard_symbols_day
 d32dd86eb5746d53 playlist_pick_day
 3ce0daef0f3e9fbc track_pick_day
 4a104027e4326b13 track_pick_search_day
@@ -147,7 +147,7 @@ d0723831dc349c13 sound_tone_control_night
 b5f38ce5616003d6 playlist_page_own_night
 d36f8d9fdac08c6a library_playlists_own_night
 183cd38c964d24d3 keyboard_night
-b96860058ba883bd keyboard_symbols_night
+1ef0ce51ae444e20 keyboard_symbols_night
 e28464a4f53905a3 playlist_pick_night
 b65cc69131d80ea4 track_pick_night
 8c9adbccdab7bd52 track_pick_search_night
@@ -444,3 +444,7 @@ ff48fc9411bcf7d6 big_extras_settings
 c6bf06fd52c636a1 usb_storage
 5bd059d8d8a7fda6 usb_storage_big
 20bfb8b3a769e2f7 usb_storage_140
+51b11e61c3670691 wifi_off
+7c1cb5a3db3887bc wifi_connected
+963bb9b91df19ab8 wifi_failed
+1aad37d87fe5677d keyboard_more_symbols

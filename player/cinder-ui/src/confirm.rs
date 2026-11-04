@@ -53,6 +53,8 @@ pub enum Ask {
     /// Deleting a smart playlist (a saved view) from its editor. A card, like `DeletePlaylist`:
     /// the rules took a minute to set up and there is no undo once the file is rewritten.
     DeleteView,
+    /// Settings ▸ Wi-Fi ▸ the joined network: forget it (and its password) and switch off.
+    WifiForget,
 }
 
 /// Every question the modal can ask. Exists so the overflow audit can render all of them without
@@ -67,6 +69,7 @@ pub const ALL: &[Ask] = &[
     Ask::ClearQueue,
     Ask::SonyReceiver,
     Ask::DeleteView,
+    Ask::WifiForget,
 ];
 
 impl Ask {
@@ -104,6 +107,11 @@ impl Ask {
                 crate::i18n::text("Delete this smart playlist?"),
                 crate::i18n::text("Its rules are deleted. The music it listed stays on the device."),
                 crate::i18n::text("Delete"),
+            ),
+            Ask::WifiForget => (
+                crate::i18n::text("Forget this network?"),
+                crate::i18n::text("Its password is deleted from the player and Wi-Fi switches off. Join it again from the list."),
+                crate::i18n::text("Forget"),
             ),
             Ask::SonyReceiver => (
                 crate::i18n::text("Use Sony's receiver?"),

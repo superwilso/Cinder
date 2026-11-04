@@ -1,5 +1,6 @@
 #!/system/bin/sh
 # udhcpc event script: apply the lease to the interface, record the DNS servers.
+# shellcheck disable=SC2154  # udhcpc sets interface, ip, subnet, router and dns
 case "$1" in
   bound|renew)
     busybox ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}" up

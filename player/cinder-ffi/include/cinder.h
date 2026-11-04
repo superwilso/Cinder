@@ -243,6 +243,10 @@ typedef enum {
     /* A network chosen (password typed): cinder_take_wifi_join() gives the bytes for
      * `cinder-wifi join`'s stdin; then run `on` and report the status as for CINDER_ACT_WIFI_ON. */
     CINDER_ACT_WIFI_JOIN = 65,
+    /* Settings > Wi-Fi > Set the clock, switched on while connected: run `cinder-wifi timesync`. */
+    CINDER_ACT_WIFI_TIMESYNC = 66,
+    /* Settings > Wi-Fi > the joined network > Forget: `cinder-wifi forget`, then `off`. */
+    CINDER_ACT_WIFI_FORGET = 67,
     /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
      * resume function (Configuration 5008/5039), then boot to stock exactly as
      * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */
@@ -455,6 +459,9 @@ void cinder_set_wifi_status(const char *text, const char *note);
 void cinder_set_wifi_scan(const char *text);
 /* The bytes for `cinder-wifi join`'s stdin (not NUL-terminated): length, 0 none waiting, -1 bad. */
 int cinder_take_wifi_join(unsigned char *buf, int cap);
+/* Settings > Wi-Fi > Turn on at start / Set the clock (1/0). */
+int cinder_wifi_autostart(void);
+int cinder_wifi_clock(void);
 /* Night on a schedule: call ~1x/sec. Returns CINDER_ACT_THEME_CHANGED when Night just came on or
  * went off (carry it out like the switch: the backlight follows), else CINDER_ACT_NONE. */
 int  cinder_night_tick(void);

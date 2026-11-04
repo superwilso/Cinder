@@ -3681,7 +3681,7 @@ static bool g_wifi_scan_ready = false;
 static bool g_wifi_on = false;           // last status said the radio is on: poll it
 static std::string g_wifi_status, g_wifi_note, g_wifi_scan;
 
-struct WifiJob { int act; std::string join; };
+struct WifiJob { int act; std::string join; bool clock; };
 
 // Run the helper with `verb`; its stdout comes back in `out`. `in` (optional) is written to its
 // stdin. Returns the exit code, -1 when it could not be run.
@@ -3722,7 +3722,22 @@ static void* wifi_thread(void* arg) {
             if (rc == 0) rc = wifi_helper("on", nullptr, &out);
             else out = rc == 2 ? "That password cannot be used" : "Could not save the network";
             break;
+        case CINDER_ACT_WIFI_TIMESYNC: rc = wifi_helper("timesync", nullptr, &out); break;
+        case CINDER_ACT_WIFI_FORGET:
+            rc = wifi_helper("forget", nullptr, &out);
+            wifi_helper("off", nullptr, nullptr);
+            break;
         default: break;   // a status poll
+    }
+    // Settings > Wi-Fi > Set the clock: once connected, ask a time server. A failure here is only
+    // logged; the link is up and the page should say so, not that the clock could not be set.
+    bool connected = (job->act == CINDER_ACT_WIFI_ON || job->act == CINDER_ACT_WIFI_JOIN) && rc == 0;
+    if (connected && job->clock) {
+        std::string ts;
+        int trc = wifi_helper("timesync", nullptr, &ts);
+        char tm[160];
+        std::snprintf(tm, sizeof tm, "wifi: timesync -> rc=%d %s", trc, last_line(ts).c_str());
+        clog_(tm);
     }
     // Overwrite the password copy before freeing it.
     std::fill(job->join.begin(), job->join.end(), '\0');
@@ -3754,7 +3769,7 @@ static void wifi_start(int act, const std::string& join = std::string()) {
     pthread_attr_init(&at);
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     pthread_t th;
-    WifiJob* job = new WifiJob{act, join};
+    WifiJob* job = new WifiJob{act, join, cinder_wifi_clock() != 0};
     if (pthread_create(&th, &at, wifi_thread, job) != 0) {
         delete job;
         pthread_mutex_lock(&g_wifi_mu);
@@ -3790,7 +3805,11 @@ static void wifi_tick(long long now) {
         installed = ::access(WIFI_HELPER, X_OK) == 0
                  && ::access("/system/vendor/cinder/wifi/wlan_mt.ko", R_OK) == 0;
         cinder_set_wifi_installed(installed);
-        if (installed) { clog_("wifi: the Wi-Fi option is installed"); wifi_start(0); }
+        if (installed) {
+            clog_("wifi: the Wi-Fi option is installed");
+            // Settings > Wi-Fi > Turn on at start (off unless switched on).
+            wifi_start(cinder_wifi_autostart() ? CINDER_ACT_WIFI_ON : 0);
+        }
     }
     if (!installed) return;
     std::string st, note, scan;
@@ -11972,6 +11991,8 @@ void carry_out(int act) {
         case CINDER_ACT_WIFI_OFF:
         case CINDER_ACT_WIFI_SCAN:
         case CINDER_ACT_WIFI_JOIN:
+        case CINDER_ACT_WIFI_TIMESYNC:
+        case CINDER_ACT_WIFI_FORGET:
             wifi_act(act);
             break;
         case CINDER_ACT_BALANCE_CHANGED:

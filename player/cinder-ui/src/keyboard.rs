@@ -28,6 +28,8 @@ pub enum Key {
     Shift,
     /// Letters ⇄ numbers/symbols.
     Page,
+    /// Numbers ⇄ more symbols (page 1 ⇄ page 2): what a Wi-Fi password may need and a name never does.
+    Symbols,
     Space,
     Backspace,
     /// Commit. The header's Back arrow cancels — the same "leave without applying" this UI uses
@@ -60,6 +62,8 @@ pub const TEXT_W: i32 = W as i32 - 44;
 /// shift/mode and backspace, so only the middle characters are listed.
 const LETTERS: [&str; 3] = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
 const SYMBOLS: [&str; 3] = ["1234567890", "-_'&()!?,", ".:;/@#\""];
+/// Page 2: the rest of printable ASCII, so any WPA passphrase can be typed.
+const MORE: [&str; 3] = ["[]{}#%^*+=", "_\\|~<>$`", ".,?!'\"&"];
 
 /// How many keys row `r` has on `page` (row 2 counts its two wide keys, row 3 its three).
 fn row_len(page: u8, row: usize) -> usize {
@@ -71,10 +75,10 @@ fn row_len(page: u8, row: usize) -> usize {
 }
 
 fn chars_of(page: u8, row: usize) -> &'static str {
-    if page == 0 {
-        LETTERS[row.min(2)]
-    } else {
-        SYMBOLS[row.min(2)]
+    match page {
+        0 => LETTERS[row.min(2)],
+        1 => SYMBOLS[row.min(2)],
+        _ => MORE[row.min(2)],
     }
 }
 
@@ -132,7 +136,7 @@ pub fn key_at(page: u8, row: usize, col: usize) -> Option<Key> {
                 if page == 0 {
                     Key::Shift
                 } else {
-                    Key::Char('+')
+                    Key::Symbols
                 }
             } else if col == last {
                 Key::Backspace
@@ -192,6 +196,7 @@ pub fn apply(key: Key, text: &mut String, shift: &mut bool, page: &mut u8) -> bo
             *page = if *page == 0 { 1 } else { 0 };
             *shift = false;
         }
+        Key::Symbols => *page = if *page == 1 { 2 } else { 1 },
         Key::Done => return !text.trim().is_empty(),
     }
     false
@@ -305,6 +310,7 @@ fn label_of(key: Key, page: u8, shift: bool) -> (String, bool) {
         }
         Key::Shift => (crate::i18n::text("CAPS").to_string(), true),
         Key::Page => (if page == 0 { "123" } else { "ABC" }.to_string(), true),
+        Key::Symbols => (if page == 1 { "#+=" } else { "123" }.to_string(), true),
         Key::Space => (crate::i18n::text("SPACE").to_string(), true),
         Key::Backspace => (crate::i18n::text("DEL").to_string(), true),
         Key::Done => (crate::i18n::text("DONE").to_string(), true),
@@ -343,7 +349,7 @@ mod tests {
 
     #[test]
     fn every_key_is_reachable_by_a_tap_at_its_centre() {
-        for page in [0u8, 1] {
+        for page in [0u8, 1, 2] {
             for row in 0..ROWS {
                 for col in 0..row_len(page, row) {
                     let (x, y, w, h) = key_rect(page, row, col).unwrap();
@@ -360,7 +366,7 @@ mod tests {
 
     #[test]
     fn keys_stay_on_the_panel_and_do_not_overlap() {
-        for page in [0u8, 1] {
+        for page in [0u8, 1, 2] {
             let mut boxes: Vec<(i32, i32, i32, i32)> = Vec::new();
             for row in 0..ROWS {
                 for col in 0..row_len(page, row) {
@@ -434,6 +440,31 @@ mod tests {
         assert_eq!(text, "1");
         apply(Key::Page, &mut text, &mut shift, &mut page);
         assert_eq!(page, 0);
+    }
+
+    /// A WPA passphrase is any printable ASCII; every one of those characters must be typeable.
+    #[test]
+    fn every_printable_ascii_character_has_a_key() {
+        for ch in '!'..='~' {
+            let want = ch.to_ascii_lowercase();
+            let found = (0..3u8).any(|page| {
+                (0..ROWS).any(|r| (0..12).any(|c| key_at(page, r, c) == Some(Key::Char(want))))
+            });
+            assert!(found, "{ch:?} has no key");
+        }
+    }
+
+    #[test]
+    fn the_more_symbols_key_flips_between_pages_one_and_two() {
+        let (mut text, mut shift, mut page) = (String::new(), false, 1u8);
+        assert_eq!(key_at(1, 2, 0), Some(Key::Symbols));
+        apply(Key::Symbols, &mut text, &mut shift, &mut page);
+        assert_eq!(page, 2);
+        apply(Key::Symbols, &mut text, &mut shift, &mut page);
+        assert_eq!(page, 1);
+        page = 2;
+        apply(Key::Page, &mut text, &mut shift, &mut page);
+        assert_eq!(page, 0, "ABC goes back to letters from either symbol page");
     }
 
     #[test]

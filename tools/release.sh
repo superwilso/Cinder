@@ -336,6 +336,19 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/libfdk-aac-enc.so
     cinder-home/dist/stable/libcinder_atrac.so
     cinder-home/dist/stable/libcinder_fmrec.so
+    cinder-home/dist/stable/cinder-wifi
+    cinder-home/dist/stable/wifi-compat.ko
+    cinder-home/dist/stable/wifi-cfg80211.ko
+    cinder-home/dist/stable/wifi-mtk_wmt_wifi_soc.ko
+    cinder-home/dist/stable/wifi-wlan_mt.ko
+    cinder-home/dist/stable/wifi-wpa_supplicant
+    cinder-home/dist/stable/wifi-wpa_cli
+    cinder-home/dist/stable/wifi-iw
+    cinder-home/dist/stable/wifi-curl
+    cinder-home/dist/stable/wifi-cacert.pem
+    cinder-home/dist/stable/wifi-wifi-up.sh
+    cinder-home/dist/stable/wifi-wifi-down.sh
+    cinder-home/dist/stable/wifi-dhcp.sh
     cinder-home/dist/stable/cinder_components.conf
     cinder-home/dist/stable/cinder_home_install.upg
     cinder-home/dist/stable/cinder_home_uninstall.upg

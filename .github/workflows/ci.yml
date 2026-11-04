@@ -273,6 +273,11 @@ jobs:
       - name: Install migration and the .appcfg backup
         run: bash cinder-home/tools/test_migrate.sh
 
+      # The `wifi` component: ten files swapped in whole, the helper setuid and last, and unticking
+      # takes the saved network (it holds the password) with the rest.
+      - name: Install the Wi-Fi component
+        run: bash cinder-home/tools/test_wifi_install.sh
+
   # ── the dependency tree, which nothing looked at ───────────────────────────────────────────────
   # ~130 crates reach the binary that runs as the device's Home app, and until now no gate checked
   # any of them against the RustSec advisory database. The installer has no dependencies on Windows

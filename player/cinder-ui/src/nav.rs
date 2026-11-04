@@ -599,6 +599,11 @@ pub enum Action {
     /// A network chosen (and its password typed): the shell takes it with `take_wifi_join`, feeds
     /// it to `cinder-wifi join` on stdin, then runs `on`.
     WifiJoin,
+    /// Settings ▸ Wi-Fi ▸ Set the clock switched on while connected: `cinder-wifi timesync` now
+    /// (otherwise the shell runs it after each successful `on` while the setting is on).
+    WifiTimeSync,
+    /// Settings ▸ Wi-Fi ▸ the joined network ▸ Forget: `cinder-wifi forget`, then `off`.
+    WifiForget,
     SoundBypass(bool), // A/B: true = bypass whole chain (B), false = re-enable (A)
     SleepTimer(u32),   // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
     ShuffleToggle,     // Now Playing shuffle on/off (FFI rebuilds the active context)
@@ -1620,6 +1625,9 @@ pub struct App {
     /// A join for the shell to carry out (SSID bytes, password; empty for an open network). Taken
     /// once by `take_wifi_join`, so the password does not stay in memory longer than it must.
     wifi_join: Option<(Vec<u8>, String)>,
+    /// Settings ▸ Wi-Fi ▸ Turn on at start / Set the clock. Saved; both off unless switched on.
+    wifi_autostart: bool,
+    wifi_clock: bool,
     /// A/B compare on the Sound screen: false = A (effects active), true = B (whole chain bypassed,
     /// "direct"). The Option button flips it for an instant listen test; the shell calls the DSP
     /// bypass. Independent of the per-effect toggles — flipping back to A restores them.
@@ -2136,6 +2144,8 @@ impl Default for App {
             wifi_scanning: false,
             wifi_join_target: None,
             wifi_join: None,
+            wifi_autostart: false,
+            wifi_clock: false,
             snd_ab_bypass: false,
             sound_sel: 0,
             storage: String::new(),
@@ -4861,6 +4871,13 @@ impl App {
                         }
                     }
                     crate::confirm::Ask::DeleteView => self.delete_edited_view(),
+                    crate::confirm::Ask::WifiForget => {
+                        self.wifi_status.state = crate::wifi::State::Busy;
+                        self.wifi_status.note.clear();
+                        self.wifi_networks.clear();
+                        crate::wifi::note_state(crate::wifi::State::Busy);
+                        vec![Action::WifiForget]
+                    }
                     // The menus never produce a bare Confirm (their hit test returns named rows).
                     _ => vec![],
                 },
@@ -7099,6 +7116,17 @@ impl App {
                 }
                 vec![Action::WifiPower(!on)]
             }
+            Hit::AutoStart => {
+                self.wifi_autostart = !self.wifi_autostart;
+                vec![]
+            }
+            Hit::Clock => {
+                self.wifi_clock = !self.wifi_clock;
+                if self.wifi_clock && matches!(self.wifi_status.state, State::Connected) {
+                    return vec![Action::WifiTimeSync];
+                }
+                vec![]
+            }
             Hit::Scan if !self.wifi_scanning => {
                 self.wifi_scanning = true;
                 vec![Action::WifiScan]
@@ -7107,6 +7135,13 @@ impl App {
                 let Some(n) = self.wifi_networks.get(i).cloned() else {
                     return vec![];
                 };
+                // The network it is on: the one thing to do with it is forget it.
+                if matches!(self.wifi_status.state, State::Connected | State::Connecting)
+                    && n.ssid == self.wifi_status.ssid
+                {
+                    self.confirm = Some(crate::confirm::Ask::WifiForget);
+                    return vec![];
+                }
                 if matches!(n.security, crate::wifi::Security::Wep) {
                     self.notify(crate::i18n::text("WEP networks are not supported"));
                     return vec![];
@@ -7134,7 +7169,13 @@ impl App {
     /// helper's last line when a command failed, shown in the strip.
     pub fn set_wifi_status(&mut self, text: &str, note: &str) {
         let mut st = crate::wifi::parse_status(text);
-        st.note = note.chars().take(60).collect();
+        // The helper's lines are lower-case sentences ("no saved network"); the strip starts with
+        // a capital like every other note.
+        let mut cs = note.trim().chars();
+        st.note = cs
+            .next()
+            .map(|c| c.to_uppercase().chain(cs.take(59)).collect())
+            .unwrap_or_default();
         if matches!(st.state, crate::wifi::State::Off) {
             self.wifi_networks.clear();
             self.wifi_scanning = false;
@@ -7147,6 +7188,21 @@ impl App {
     pub fn set_wifi_scan(&mut self, text: &str) {
         self.wifi_networks = crate::wifi::parse_scan(text);
         self.wifi_scanning = false;
+    }
+
+    /// Settings ▸ Wi-Fi ▸ Turn on at start: the shell reads it once, at boot.
+    pub fn wifi_autostart(&self) -> bool {
+        self.wifi_autostart
+    }
+    pub fn set_wifi_autostart(&mut self, on: bool) {
+        self.wifi_autostart = on;
+    }
+    /// Settings ▸ Wi-Fi ▸ Set the clock: the shell runs `timesync` after each successful `on`.
+    pub fn wifi_clock(&self) -> bool {
+        self.wifi_clock
+    }
+    pub fn set_wifi_clock(&mut self, on: bool) {
+        self.wifi_clock = on;
     }
 
     /// The join the last `WifiJoin` asked for: SSID bytes and password. Taken once.
@@ -11326,6 +11382,8 @@ impl App {
                     networks: &self.wifi_networks,
                     scanning: self.wifi_scanning,
                     sel: None,
+                    autostart: self.wifi_autostart,
+                    clock: self.wifi_clock,
                 },
             ),
             Screen::Fm => {
@@ -26119,5 +26177,114 @@ mod r4_tests {
         for (x, y) in [(240, 590), (240, 670)] {
             assert!(a.tap(x, y).is_empty(), "disabled preview tap at ({x}, {y})");
         }
+    }
+
+    /// The y of the first row Settings ▸ Wi-Fi's hit test gives `want` for, found through the same
+    /// hit test the finger goes through.
+    fn wifi_y(networks: usize, on: bool, want: crate::wifi::Hit) -> i32 {
+        (0..crate::canvas::H as i32)
+            .find(|&y| crate::wifi::hit(240, y, networks, on) == want)
+            .expect("that row is on the page")
+    }
+
+    /// Settings ▸ Wi-Fi: the switch asks the shell once (a second tap while it works does
+    /// nothing), a secured network goes through the password keyboard, an open one joins at once,
+    /// WEP is refused, and the join is handed over exactly once.
+    #[test]
+    fn wifi_switch_password_and_join_reach_the_shell_once() {
+        use crate::wifi::Hit;
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::Wifi);
+        a.set_wifi_status("state=off\n", "");
+        let y = wifi_y(0, false, Hit::Toggle);
+        assert_eq!(a.tap(240, y), vec![Action::WifiPower(true)]);
+        assert!(a.tap(240, y).is_empty(), "busy: no second command");
+        a.set_wifi_status("state=on\n", "");
+        a.set_wifi_scan("-50\twpa2\t6162\n-60\topen\t6364\n-70\twep\t6566\n");
+
+        let y0 = wifi_y(3, true, Hit::Network(0));
+        assert!(
+            a.tap(240, y0).is_empty(),
+            "a secured network asks for its password first"
+        );
+        assert_eq!(a.current(), Screen::Keyboard);
+        a.kb_text_for_test("pass word1");
+        let done = (0..crate::keyboard::ROWS)
+            .flat_map(|r| (0..12).map(move |c| (r, c)))
+            .find(|&(r, c)| crate::keyboard::key_at(0, r, c) == Some(crate::keyboard::Key::Done))
+            .and_then(|(r, c)| crate::keyboard::key_rect(0, r, c))
+            .unwrap();
+        assert_eq!(
+            a.tap(done.0 + done.2 / 2, done.1 + done.3 / 2),
+            vec![Action::WifiJoin]
+        );
+        assert_eq!(a.current(), Screen::Wifi);
+        assert_eq!(
+            a.take_wifi_join(),
+            Some((b"ab".to_vec(), "pass word1".to_string()))
+        );
+        assert_eq!(a.take_wifi_join(), None, "the password is handed over once");
+
+        a.set_wifi_status("state=on\n", "");
+        let y1 = wifi_y(3, true, Hit::Network(1));
+        assert_eq!(
+            a.tap(240, y1),
+            vec![Action::WifiJoin],
+            "an open network joins at once"
+        );
+        assert_eq!(a.take_wifi_join(), Some((b"cd".to_vec(), String::new())));
+
+        a.set_wifi_status("state=on\n", "");
+        let y2 = wifi_y(3, true, Hit::Network(2));
+        assert!(a.tap(240, y2).is_empty(), "WEP is refused");
+        assert_eq!(a.take_wifi_join(), None);
+
+        let on = wifi_y(3, true, Hit::Toggle);
+        assert_eq!(a.tap(240, on), vec![Action::WifiPower(false)]);
+        a.set_wifi_status("state=off\n", "");
+        assert!(a.wifi_networks.is_empty(), "off forgets the list");
+    }
+
+    /// Turn on at start and Set the clock are plain saved switches, off by default; Set the clock
+    /// switched on while connected syncs at once. Tapping the joined network asks before forgetting.
+    #[test]
+    fn wifi_options_and_forget() {
+        use crate::wifi::Hit;
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::Wifi);
+        assert!(
+            !a.wifi_autostart() && !a.wifi_clock(),
+            "both off on a fresh install"
+        );
+        a.set_wifi_status("state=off\n", "");
+        assert!(a.tap(240, wifi_y(0, false, Hit::AutoStart)).is_empty());
+        assert!(a.wifi_autostart());
+        assert!(
+            a.tap(240, wifi_y(0, false, Hit::Clock)).is_empty(),
+            "off: nothing to sync over"
+        );
+        assert!(a.wifi_clock());
+        a.tap(240, wifi_y(0, false, Hit::Clock));
+        a.set_wifi_status("state=connected\nssid=6162\n", "");
+        assert_eq!(
+            a.tap(240, wifi_y(0, true, Hit::Clock)),
+            vec![Action::WifiTimeSync]
+        );
+
+        a.set_wifi_scan("-50\twpa2\t6162\n");
+        assert!(a.tap(240, wifi_y(1, true, Hit::Network(0))).is_empty());
+        assert_eq!(
+            a.confirm,
+            Some(crate::confirm::Ask::WifiForget),
+            "the joined network asks first"
+        );
+        let yes = (0..crate::canvas::H as i32)
+            .find(|&y| {
+                crate::confirm::hit(crate::confirm::Ask::WifiForget, 300, y)
+                    == crate::confirm::Hit::Confirm
+            })
+            .unwrap();
+        assert_eq!(a.tap(300, yes), vec![Action::WifiForget]);
+        assert_eq!(a.take_wifi_join(), None, "forgetting is not a join");
     }
 }

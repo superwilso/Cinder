@@ -5,6 +5,8 @@
 #   out/wpa_supplicant, out/wpa_cli   join a network (WPA2, WPA3/SAE, OWE), OpenSSL 3.0 inside
 #   out/iw                            inspect the radio
 #   out/wifiscan                      a scan with no libraries (tools/wifiscan.c)
+#   out/curl, out/cacert.pem          HTTPS for scrobbling and update checks (curl licence; Mozilla's
+#                                     CA list, MPL-2.0, as curl.se publishes it)
 #
 # Needs an ARM musl cross compiler (MUSL, default ~/arm-linux-musleabihf-cross, from musl.cc) and,
 # for libnl 3, bison and flex on the build machine. Every download is pinned by sha256.
@@ -17,13 +19,15 @@ W="$HERE/work/userland"; OUT="$HERE/out"; SRC="$W/src"; P="$W/prefix"
 mkdir -p "$SRC" "$P" "$OUT"
 
 fetch() {  # fetch URL SHA256
-    local f="$SRC/$(basename "$1")"
+    local f; f="$SRC/$(basename "$1")"
     echo "$2  $f" | sha256sum -c --status 2>/dev/null || { curl -fsSL --retry 3 -o "$f" "$1"; echo "$2  $f" | sha256sum -c; }
 }
 fetch https://www.openssl.org/source/openssl-3.0.15.tar.gz 23c666d0edf20f14249b3d8f0368acaee9ab585b09e1de82107c66e1f3ec9533
 fetch https://w1.fi/releases/wpa_supplicant-2.10.tar.gz 20df7ae5154b3830355f8ab4269123a87affdea59fe74fe9292a91d0d7e17b2f
 fetch https://github.com/thom311/libnl/releases/download/libnl3_7_0/libnl-3.7.0.tar.gz 9fe43ccbeeea72c653bdcf8c93332583135cda46a79507bfd0a483bb57f65939
 fetch https://mirrors.edge.kernel.org/pub/software/network/iw/iw-5.19.tar.xz f167bbe947dd53bb9ebc0c1dcef5db6ad73ac1d6084f2c6f9376c5c360cc4d4e
+fetch https://curl.se/download/curl-8.22.0.tar.xz f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
+fetch https://curl.se/ca/cacert-2026-10-20.pem 796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe
 LIBNL_TINY_COMMIT=40493a655d8caa2ccf5206dde1e733abe2920432
 [ -d "$SRC/libnl-tiny" ] || git clone -q https://github.com/openwrt/libnl-tiny.git "$SRC/libnl-tiny"
 git -C "$SRC/libnl-tiny" -c advice.detachedHead=false checkout -q "$LIBNL_TINY_COMMIT"
@@ -64,12 +68,26 @@ if [ ! -f "$P/lib/libnl-genl-3.a" ]; then
           --disable-shared --disable-cli --disable-debug && make -j"$(nproc)" && make install ) >"$W/libnl.log" 2>&1
 fi
 [ -d "$W/iw-5.19" ] || tar xJf "$SRC/iw-5.19.tar.xz" -C "$W"
-PKG_CONFIG_LIBDIR="$P/lib/pkgconfig" PKG_CONFIG_PATH= make -C "$W/iw-5.19" -j"$(nproc)" CC=$CC LDFLAGS=-static >"$W/iw.log" 2>&1
+PKG_CONFIG_LIBDIR="$P/lib/pkgconfig" PKG_CONFIG_PATH='' make -C "$W/iw-5.19" -j"$(nproc)" CC=$CC LDFLAGS=-static >"$W/iw.log" 2>&1
+
+echo "== curl 8.22.0 (HTTPS only)"
+if [ ! -f "$W/curl-8.22.0/src/curl" ]; then
+    [ -d "$W/curl-8.22.0" ] || tar xJf "$SRC/curl-8.22.0.tar.xz" -C "$W"
+    ( cd "$W/curl-8.22.0" && ./configure --host=arm-linux-musleabihf --with-openssl="$P" --disable-shared \
+          --enable-static --disable-ldap --disable-ftp --disable-file --disable-dict --disable-telnet \
+          --disable-tftp --disable-pop3 --disable-imap --disable-smtp --disable-gopher --disable-mqtt \
+          --disable-rtsp --disable-smb --disable-manual --disable-docs --without-libpsl --without-zlib \
+          --without-brotli --without-zstd --without-nghttp2 --without-libidn2 --without-ca-bundle \
+          --without-ca-path LDFLAGS="-static -L$P/lib" CPPFLAGS="-I$P/include" LIBS="-lssl -lcrypto" \
+          && make -j"$(nproc)" LDFLAGS="-all-static -L$P/lib" ) >"$W/curl.log" 2>&1
+fi
+cp -f "$SRC/cacert-2026-10-20.pem" "$OUT/cacert.pem"
 
 echo "== wifiscan"
 $CC -static -Os -Wall -Wextra -o "$W/wifiscan" "$HERE/tools/wifiscan.c"
 
-for b in "$WPA/wpa_supplicant/wpa_supplicant" "$WPA/wpa_supplicant/wpa_cli" "$W/iw-5.19/iw" "$W/wifiscan"; do
+for b in "$WPA/wpa_supplicant/wpa_supplicant" "$WPA/wpa_supplicant/wpa_cli" "$W/iw-5.19/iw" "$W/wifiscan" \
+         "$W/curl-8.22.0/src/curl"; do
     arm-linux-musleabihf-strip -o "$OUT/$(basename "$b")" "$b"
 done
-( cd "$OUT" && sha256sum wpa_supplicant wpa_cli iw wifiscan | tee SHA256SUMS.userland )
+( cd "$OUT" && sha256sum wpa_supplicant wpa_cli iw wifiscan curl cacert.pem | tee SHA256SUMS.userland )
