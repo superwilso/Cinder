@@ -15,9 +15,6 @@
 #
 # What it is not: a release. No version bump, no changelog fold, no tag a user's installer will
 # ever see — the installer's update check reads releases/latest, which skips pre-releases.
-#
-# The committed dist/stable is put back afterwards, whatever happens: the build rewrites it in
-# place, and a rebuilt dist/stable committed by accident is what turned CI red on 2026-10-22.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -43,8 +40,7 @@ fi
 
 WORK="$(mktemp -d)"
 LOG="$WORK/build.log"
-restore() { git checkout -q -- cinder-home/dist/stable; }
-trap 'restore; [ -n "$DRY" ] || rm -rf "$WORK"' EXIT
+trap '[ -n "$DRY" ] || rm -rf "$WORK"' EXIT
 
 echo "edge: building the payload for $SHORT, stable and developer (log: $LOG) …"
 # Both channels, each with the same three steps tools/release.sh runs: the installers carry both,
@@ -65,7 +61,6 @@ done
 echo "$SHA" >"$WORK/p/EDGE_COMMIT"
 ( cd "$WORK/p" && find stable dev -type f | LC_ALL=C sort | xargs sha256sum >SHA256SUMS )
 tar -czf "$WORK/edge-payload.tar.gz" -C "$WORK/p" EDGE_COMMIT SHA256SUMS stable dev
-restore
 echo "edge: payload packed — $(du -h "$WORK/edge-payload.tar.gz" | cut -f1), $(wc -l <"$WORK/p/SHA256SUMS") files"
 
 if [ -n "$DRY" ]; then

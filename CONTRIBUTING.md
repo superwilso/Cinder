@@ -166,7 +166,8 @@ It refuses to tag unless all of these hold:
 * the tree is clean;
 * the installer's version and the player's `cinder_version!()` match the tag;
 * every embedded payload file exists;
-* a fresh `build.sh stable` reproduces the committed `dist/` byte for byte;
+* a fresh build of both channels matches the checksums in `cinder-home/dist/PAYLOAD.sha256` (a
+  changed build rewrites them, and that joins the release commit);
 * the installer's tests pass.
 
 It also repacks the `.UPG`s from the current install scripts. It never commits anything: staging

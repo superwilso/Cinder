@@ -2,14 +2,15 @@
 # Cut a release: prepare everything in ONE pass, then tag and push.
 #
 # WHY A SCRIPT AND NOT "git tag && git push". The release workflow builds ONLY the installer. The
-# ARM payload it embeds — cinder-home, the setuid helpers, the .UPG — is committed
-# under cinder-home/dist/, because building it needs a glibc-2.23 + libc++-3.9.0 cross toolchain
-# matched to the player's runtime, which is not worth reproducing on a hosted runner.
+# ARM payload it embeds — cinder-home, the setuid helpers, the .UPG — is built HERE, because
+# building it needs a glibc-2.23 + libc++-3.9.0 cross toolchain matched to the player's runtime,
+# which is not worth reproducing on a hosted runner.
 #
-# That split has one failure mode, and it is silent: tag a commit whose dist/ is STALE and the
+# That split has one failure mode, and it is silent: tag a commit whose payload is STALE and the
 # release ships an installer full of last week's binaries, with a green tick and no warning. This
-# script exists to make that impossible — it rebuilds from source and refuses to tag unless every
-# committed payload byte matches what the current tree produces.
+# script exists to make that impossible — it rebuilds from source, commits the checksums of what it
+# built (cinder-home/dist/PAYLOAD.sha256; the binaries themselves are not in git), and uploads the
+# files for release.yml, which refuses any byte the manifest does not describe.
 #
 #   tools/release.sh v1.2.3            prepare, or (once that is committed) tag and push
 #   tools/release.sh v1.2.3 --dry-run  say what would change; edit nothing, tag nothing
@@ -197,11 +198,10 @@ else
 fi
 
 # ── 3. rebuild the payload, so what ships is what the tree produces ─────────────────────────
-# This is the whole point of the script. The build writes into dist/stable in place; if that
-# changes anything, the committed payload was stale and the rebuilt one is now staged for the
-# single commit at the end — rather than stopping to demand a commit of its own.
+# This is the whole point of the script. If the build comes out different from what the manifest
+# records, the manifest is rewritten in step 5 and joins the single commit at the end — rather than
+# stopping to demand a commit of its own.
 note "rebuilding the stable channel …"
-BEFORE="$(find cinder-home/dist/stable -type f -exec md5sum {} + | sort -k2)"
 bash cinder-home/build.sh stable >/tmp/cinder-release-build.log 2>&1 \
     || { tail -20 /tmp/cinder-release-build.log; die "build failed — see /tmp/cinder-release-build.log"; }
 
@@ -220,12 +220,10 @@ for model in nw-a50 nw-wm1a; do
     bash cinder-home/tools/pack_upg.sh stable "$model" >>/tmp/cinder-release-build.log 2>&1 \
         || { tail -20 /tmp/cinder-release-build.log; die "pack_upg $model failed — see /tmp/cinder-release-build.log"; }
 done
-AFTER="$(find cinder-home/dist/stable -type f -exec md5sum {} + | sort -k2)"
 
 # AND THE DEVELOPER BUILD. Every installer carries both channels and the person installing picks
-# one (the `channel` entry in components.conf). dist/dev is NOT committed — its checksums go into
-# the manifest below, and the files themselves are uploaded to a draft release just before the tag
-# is pushed (step 8), where release.yml downloads them and checks them against those checksums.
+# one (the `channel` entry in components.conf). Like stable, only its checksums are committed (the
+# manifest below); the files are uploaded with stable's just before the tag is pushed (step 8).
 # The build is reproducible, so run 2 writes the same checksums run 1 did.
 note "building the developer channel …"
 bash cinder-home/build.sh dev >>/tmp/cinder-release-build.log 2>&1 \
@@ -238,13 +236,6 @@ bash tools/check_arm_payload.sh cinder-home/dist/dev >>/tmp/cinder-release-build
     || { tail -20 /tmp/cinder-release-build.log; die "the developer payload does not fit the player — see /tmp/cinder-release-build.log"; }
 ok "developer channel built"
 
-if [ "$BEFORE" != "$AFTER" ]; then
-    diff <(echo "$BEFORE") <(echo "$AFTER") | sed 's/^/    /' || true
-    act "dist/stable was STALE — rebuilt from source (the files above changed)"
-    CHANGED+=("payload binaries")
-else
-    ok "dist/stable matches a fresh build"
-fi
 
 # ── 3b. the README's screenshots must show the UI this release ships ────────────────────────
 # They are cinder-host previews copied into docs/screenshots, and for as long as copying them was a
@@ -373,7 +364,7 @@ ok "all payload files present"
 # use. "The release integrity guard is real, correct, and opt-in."
 #
 # The runner cannot re-run the check itself — the byte-for-byte comparison needs the glibc-2.23
-# cross toolchain, which is the whole reason dist/ is committed in the first place. So instead this
+# cross toolchain, which is the whole reason the payload is built here in the first place. So instead this
 # records WHAT WAS VERIFIED, and the runner checks the record still describes the tree:
 #
 #   * the sha256 of every payload file, so a payload edited after verification fails;
@@ -469,19 +460,20 @@ if [ -n "$STALE_TAG" ]; then
     git tag -d "$TAG" >/dev/null
     note "removed the unpushed $TAG left by an earlier run"
 fi
-# The developer payload goes up BEFORE the tag: pushing the tag starts release.yml, which downloads
-# it from this draft release and refuses it unless every file matches the committed manifest. A
-# draft is visible to maintainers only and creates no tag of its own.
-DEVPAY="$(mktemp -d)/dev-payload.tar.gz"
-tar -czf "$DEVPAY" -C cinder-home/dist dev
+# The payload goes up BEFORE the tag: pushing the tag starts release.yml, which downloads it from
+# this draft release, refuses it unless every file matches the committed manifest, and attaches it
+# to the published release (where ci.yml fetches it from until the next one). A draft is visible
+# to maintainers only and creates no tag of its own.
+PAYLOAD="$(mktemp -d)/cinder-payload.tar.gz"
+tar -czf "$PAYLOAD" -C cinder-home/dist stable dev
 if ! gh release view "payload-$TAG" >/dev/null 2>&1; then
     gh release create "payload-$TAG" --draft --title "payload for $TAG (for release.yml, not for download)" \
-        --notes "The developer payload for $TAG, uploaded by tools/release.sh and read by release.yml. Deleted once $TAG is published." >/dev/null \
-        || die "could not create the draft release payload-$TAG for the developer payload"
+        --notes "The device payload for $TAG, uploaded by tools/release.sh and read by release.yml. Deleted once $TAG is published." >/dev/null \
+        || die "could not create the draft release payload-$TAG for the payload"
 fi
-gh release upload "payload-$TAG" "$DEVPAY" --clobber \
-    || die "could not upload the developer payload to payload-$TAG"
-ok "uploaded the developer payload to the draft release payload-$TAG"
+gh release upload "payload-$TAG" "$PAYLOAD" --clobber \
+    || die "could not upload the payload to payload-$TAG"
+ok "uploaded the payload to the draft release payload-$TAG"
 
 git tag -a "$TAG" -m "Cinder $TAG"
 ok "tagged $TAG"

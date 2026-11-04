@@ -4,14 +4,13 @@ name: release
 # download mode) and attaches both to a GitHub release.
 #
 # Only the INSTALLER is built here. The device binaries it embeds (cinder-home, the
-# setuid helpers, the .UPG) are committed under cinder-home/dist/ because building them needs a
-# glibc-2.23 + libc++-3.9.0 cross toolchain matched to the player's own runtime — see
-# cinder-home/build.sh. Reproducing that on a hosted runner would be a lot of machinery to
-# maintain for no gain, so the ARM side is built by a maintainer and committed.
-#
-# That means: BUILD AND COMMIT dist/ BEFORE TAGGING, or the release ships whatever was last
-# committed. The installer's build.rs fails loudly if a payload file is missing, so a stale or
-# incomplete dist/ breaks the build here rather than shipping a broken .exe.
+# setuid helpers, the .UPG) need a glibc-2.23 + libc++-3.9.0 cross toolchain matched to the
+# player's own runtime — see cinder-home/build.sh — so tools/release.sh builds them on a
+# maintainer's machine. They are NOT committed: only their checksums are (PAYLOAD.sha256). The
+# files go up to the draft release payload-<tag> before the tag is pushed, every job here fetches
+# them with tools/fetch_payload.sh, which refuses anything the manifest does not describe, and the
+# release job attaches the same cinder-payload.tar.gz to the published release, where ci.yml and
+# fresh clones fetch it until the next release.
 
 on:
   push:
@@ -46,8 +45,8 @@ jobs:
       # then ships as an installer full of last week's binaries, green tick and all.
       #
       # The runner cannot repeat that comparison — it needs the glibc-2.23 cross toolchain, which
-      # is the whole reason dist/ is committed rather than built here. So release.sh leaves a
-      # manifest of what it verified and this checks the manifest still describes the tree AND was
+      # is the whole reason dist/ is built by a maintainer rather than here. So release.sh leaves a
+      # manifest of what it verified and this checks the fetched payload matches it AND that it was
       # written for THIS tag; a tag cut without the script finds one naming the previous version.
       #
       # Via a SCRIPT, deliberately: the same rule the shellcheck gate is under. A check a
@@ -58,21 +57,14 @@ jobs:
       # cutting a release. With no argument the script still verifies every payload hash; it only
       # skips the "verified for THIS tag" assertion, which is meaningless off a tag.
       #
-      # On a tag this also fetches the DEVELOPER payload, which is not committed: release.sh uploaded
-      # it to the draft release payload-<tag>, and fetch_dev_payload.sh refuses it unless every file
-      # matches the committed manifest. A manual run has no such draft, so its installer carries
-      # stable alone (the Build choice is then not offered).
-      - name: Payload matches the verified manifest
+      # The payload is not committed (see the top of this file). On a tag it comes from the draft
+      # release.sh uploaded, checked against the manifest AND the tag; a manual run fetches the last
+      # release's, so its installer is that release's payload around this commit's installer code.
+      - name: Fetch the payload the manifest describes
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then
-              tools/fetch_dev_payload.sh "${GITHUB_REF_NAME}"
-          else
-              echo "manual run — checking payload hashes, skipping the tag assertion"
-              tools/verify_payload_manifest.sh
-          fi
+        run: bash tools/fetch_payload.sh ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -123,12 +115,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The developer payload, checked against the committed manifest (see the Windows job).
-      - name: Developer payload
-        if: github.ref_type == 'tag'
+      # The payload, checked against the manifest (see the Windows job).
+      - name: Fetch the payload the manifest describes
         env:
           GH_TOKEN: ${{ github.token }}
-        run: tools/fetch_dev_payload.sh "${GITHUB_REF_NAME}"
+        run: bash tools/fetch_payload.sh ${{ github.ref_type == 'tag' && github.ref_name || '' }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
         working-directory: installer
@@ -164,12 +155,11 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      # The developer payload, checked against the committed manifest (see the Windows job).
-      - name: Developer payload
-        if: github.ref_type == 'tag'
+      # The payload, checked against the manifest (see the Windows job).
+      - name: Fetch the payload the manifest describes
         env:
           GH_TOKEN: ${{ github.token }}
-        run: tools/fetch_dev_payload.sh "${GITHUB_REF_NAME}"
+        run: bash tools/fetch_payload.sh ${{ github.ref_type == 'tag' && github.ref_name || '' }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -235,6 +225,15 @@ jobs:
           merge-multiple: true
           path: dist
 
+      # The payload the installers embed: needed below for the .UPGs, and attached to the release
+      # as cinder-payload.tar.gz, which is where ci.yml and fresh clones fetch it from.
+      - name: Fetch the payload, and attach it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash tools/fetch_payload.sh "$GITHUB_REF_NAME"
+          gh release download "payload-$GITHUB_REF_NAME" -p cinder-payload.tar.gz -D dist
+
       # Beside the programs, ONE more download: the .UPG packages (already inside every installer;
       # these are for flashing by hand) and libusb's licence, so the release page lists the
       # programs and little else.
@@ -283,7 +282,8 @@ jobs:
           fail_on_unmatched_files: true
           body_path: .github/release-notes.md
 
-      # The developer payload's draft has done its job: every installer above embeds it.
+      # The payload's draft has done its job: every installer above embeds it, and the release
+      # itself now carries cinder-payload.tar.gz.
       - name: Remove the payload draft
         env:
           GH_TOKEN: ${{ github.token }}

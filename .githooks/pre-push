@@ -30,7 +30,7 @@
 # pushes over a compiler bug. A TAG push still runs them, because release.yml tests only the
 # installer — for a release, this is the only player gate before the installers are built.
 #
-#   git push                      # branch: dist/stable warning only; CI does the checking
+#   git push                      # branch: CI does the checking
 #   git push origin v1.2.3        # tag: the full check (tools/release.sh does this)
 #   CINDER_PREPUSH=full git push  # the full check on any push
 #
@@ -132,24 +132,6 @@ else
         "$(git remote get-url origin 2>/dev/null | sed -e 's#.*github.com[:/]##' -e 's#\.git$##' \
            -e 's#^#https://github.com/#' -e 's#$#/actions#')"
     printf '          (CINDER_PREPUSH=full git push runs them here first)\n'
-fi
-
-# ── repository weight: dist/stable on a non-release push ───────────────────────────────────────
-# NOT a failure — shipping the binaries is the point of dist/stable, and a release must carry them.
-# But committing them on ORDINARY pushes is what took .git to 1.3 GB (docs/AUDIT_2026-09-01.md D1).
-# Stripped ARM ELFs share no deltas, so every touch rewrites all 8.7 MB in full, and dist/stable is
-# up to 41 revisions — most of them on feature commits, one of them on a docs-only commit. The
-# audit's recommendation (2) is "a binary per tag, not per push"; this is the reminder at the only
-# moment anyone can act on it.
-if git rev-parse --verify -q origin/main >/dev/null 2>&1; then
-    dist_changed="$(git diff --name-only origin/main..HEAD -- cinder-home/dist/stable/ 2>/dev/null | wc -l | tr -d ' ')"
-    if [ "${dist_changed:-0}" -gt 0 ] && [ -z "$(git tag --points-at HEAD 2>/dev/null)" ]; then
-        printf '%swarn%s  %s file(s) under cinder-home/dist/stable/ in this push, and HEAD is not tagged.\n' \
-               "$C_Y" "$C_0" "$dist_changed"
-        printf '      That is ~8.7 MB of ARM binaries added to history permanently, on a commit\n'
-        printf '      nobody installs. Release commits should carry them; feature commits should not.\n'
-        printf '      (docs/AUDIT_2026-09-01.md D1 — .git is 1.3 GB, ~356 MB of it this file set.)\n'
-    fi
 fi
 
 if [ -n "$FAILED" ]; then

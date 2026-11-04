@@ -270,8 +270,9 @@ fn main() {
 
     for w in &warn {
         println!(
-            "cargo:warning=cinder-installer: {w} — run cinder-home/build.sh <channel> && \
-             cinder-home/tools/pack_upg.sh <channel> first"
+            "cargo:warning=cinder-installer: {w} — run tools/fetch_payload.sh (the last \
+             release's), or build it: cinder-home/build.sh <channel> && \
+             cinder-home/tools/pack_upg.sh <channel>"
         );
     }
 

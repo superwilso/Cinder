@@ -469,9 +469,11 @@ hands the process comctl32 v5 and every button paints in the Windows 95 style, o
 target skips it (it would need `windres`) and prints a warning saying so.
 
 Releases are cut by [`.github/workflows/release.yml`](.github/workflows/release.yml) on a `v*` tag.
-It builds **only** the installer; the ARM binaries under `cinder-home/dist/` are committed, because
-reproducing that cross toolchain on a hosted runner is a lot of machinery for no gain. **So build
-and commit `dist/` before tagging.**
+It builds **only** the installer; the ARM binaries it embeds are built by `tools/release.sh` on a
+maintainer's machine, because reproducing that cross toolchain on a hosted runner is a lot of
+machinery for no gain. Only their checksums are committed (`cinder-home/dist/PAYLOAD.sha256`); the
+files ride on each release as `cinder-payload.tar.gz`. **To build the installer from a fresh
+clone, run `tools/fetch_payload.sh` first**: it downloads the last release's payload and checks it.
 
 ---
 
