@@ -243,7 +243,7 @@ pub fn settings_value(s: &Status) -> &'static str {
 const FOOT_H: i32 = 44;
 
 /// Settings ▸ Wi-Fi ▸ Options, in order. Each is a saved switch, off unless switched on.
-pub const OPTIONS: [Hit; 7] = [
+pub const OPTIONS: [Hit; 8] = [
     Hit::AutoStart,
     Hit::Clock,
     Hit::ListenBrainz,
@@ -251,6 +251,7 @@ pub const OPTIONS: [Hit; 7] = [
     Hit::Lyrics,
     Hit::Art,
     Hit::PlayTo,
+    Hit::Drive,
 ];
 
 struct Layout {
@@ -316,6 +317,8 @@ pub enum Hit {
     Art,
     /// Play to this player: the DLNA renderer.
     PlayTo,
+    /// Share the drive (WebDAV), on until the player restarts.
+    Drive,
     None,
 }
 
@@ -449,18 +452,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
 
 pub struct OptionsView<'a> {
     /// The saved switches, in [`OPTIONS`] order.
-    pub options: [bool; 7],
+    pub options: [bool; 8],
     /// What the last ListenBrainz send and update check said ("Sent 12 songs", "0.3.23 is out").
     pub lb_note: &'a str,
     pub update_note: &'a str,
     /// What the renderer is doing ("Shows up as Walkman (Cinder)", "Playing So What").
     pub play_to_note: &'a str,
+    /// The shared drive's address while it is on ("http://192.168.1.20:8081/k7m2qx9p").
+    pub drive_note: &'a str,
 }
 
 pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, crate::i18n::text("Wi-Fi options"), None);
-    let rows: [(&str, &str); 7] = [
+    let rows: [(&str, &str); 8] = [
         (
             crate::i18n::text("Turn on at start"),
             crate::i18n::text("Joins your network when the player starts"),
@@ -499,6 +504,14 @@ pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
                 crate::i18n::text("Phones and computers can send music here")
             } else {
                 v.play_to_note
+            },
+        ),
+        (
+            crate::i18n::text("Share the drive"),
+            if v.drive_note.is_empty() {
+                crate::i18n::text("Map it on a computer · off at each start")
+            } else {
+                v.drive_note
             },
         ),
     ];

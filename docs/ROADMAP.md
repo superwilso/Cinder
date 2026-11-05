@@ -73,7 +73,7 @@ ones. Read its safety rules first. Grouped by what each needs:
   with **Settings ▸ Wi-Fi**: clock sync, ListenBrainz, an update check, lyrics and album-art
   fetch, internet radio (MP3, AAC, HLS) and a phone remote with upload
   ([`wifi/README.md`](../wifi/README.md)). Open: WPA3 on a real WPA3 network, the battery cost,
-  internet radio over Bluetooth, HLS playlists in byte ranges, wireless sync with Flint, adb over
+  internet radio over Bluetooth, HLS playlists in byte ranges, adb over
   Wi-Fi, and streaming services.
 - **AirPlay receiver.** shairport-sync (its own licence, ALAC and an mDNS responder built in) with
   its `stdout` output into the same path internet radio plays through (jack, or Bluetooth at
@@ -88,6 +88,9 @@ ones. Read its safety rules first. Grouped by what each needs:
   stops at 24-bit/48 kHz, 16-bit on S1, and plays no DSD) are skipped rather than converted; the
   player's live output (radio, Cinder's sound effects) is not cast; AirPlay speakers need AirPlay
   sending (RAOP), not built.
+- **Wireless sync.** Built: **Share the drive** (Settings ▸ Wi-Fi ▸ Options) serves the drive
+  over WebDAV, which Windows and macOS map as a drive, and Flint syncs to that as to the cable.
+  Open: the SD card (only internal memory is shared), and folder COPY within the share.
 - **The player as a network speaker.** Built: **Play to this player** (Settings ▸ Wi-Fi ▸
   Options) is a UPnP/DLNA media renderer that plays what a controller sends through the internet
   radio's decoders. Open: FLAC and WAV links (the radio decodes MP3 and AAC only), pause that

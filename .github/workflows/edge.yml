@@ -206,15 +206,27 @@ jobs:
 
           What changed since the last release: [CHANGELOG.md, under Unreleased](https://github.com/$GITHUB_REPOSITORY/blob/$SHA/CHANGELOG.md).
           EOF
+          # GitHub's release API fails now and then (a 500 on an asset delete, a 403 on the edit, 504s:
+          # 11-05), and one failure used to leave the release half replaced. Every call is tried
+          # again, and the downloads are replaced in place (--clobber) instead of deleted first.
+          retry() {
+              for try in 1 2 3 4 5; do
+                  "$@" && return 0
+                  echo "::warning::try $try failed: $*"; sleep $((try * 15))
+              done
+              return 1
+          }
           if gh release view edge >/dev/null 2>&1; then
               # Pushed with this run's token, which does not start other workflows.
-              git push -f origin "$SHA:refs/tags/edge"
+              retry git push -f origin "$SHA:refs/tags/edge"
+              # Only names this build no longer makes are deleted; the rest are overwritten.
+              keep=" $(cd dist && echo *) "
               for a in $(gh release view edge --json assets -q '.assets[].name'); do
-                  gh release delete-asset edge "$a" -y
+                  case "$keep" in *" $a "*) ;; *) retry gh release delete-asset edge "$a" -y ;; esac
               done
-              gh release upload edge dist/*
-              gh release edit edge --prerelease --target "$SHA" --title "Edge $VER (untested)" --notes-file notes.md
+              retry gh release upload edge dist/* --clobber
+              retry gh release edit edge --prerelease --target "$SHA" --title "Edge $VER (untested)" --notes-file notes.md
           else
-              gh release create edge dist/* --prerelease --target "$SHA" \
+              retry gh release create edge dist/* --prerelease --target "$SHA" \
                   --title "Edge $VER (untested)" --notes-file notes.md
           fi
