@@ -126,6 +126,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **An album whose first song's cover will not load now takes the cover from its other songs**
+  (#53, plaquette). The album page and the grid read each album's cover from ONE song, the first
+  the media database names a picture for; when that picture would not decode (or the song was
+  re-tagged after the scan), the album drew a coloured square while its other songs showed their
+  cover on Now Playing. The cache builder now tries the album's other songs, and an album opened
+  with no cover yet looks through its songs once, in the background, and shows what it finds.
+  *Host-tested (a test album whose first song's art is broken gets its second song's cover);
+  device-unverified.*
+- **A playlist's Shuffle follows Settings ▸ Shuffle** (#53, plaquette). The Shuffle band on a
+  playlist's page, and "Random playlist · shuffled" on the Playlists tab, always shuffled song by
+  song; set to albums or artists they now keep each album (or artist) together, as the transport's
+  shuffle and a saved view's band already did. *Host-tested; device-unverified.*
 - **Bluetooth logs no longer report a skip as a late write.** The late-write check timed every
   stream against the one before it, so the first write after a track skip (which opens a new
   connection to the transmitter) counted as late: 83 of 107 "bt: late" lines in one evening's
