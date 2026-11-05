@@ -5,15 +5,16 @@
 //! The shell runs the helper and hands this module its text output ([`parse_status`],
 //! [`parse_scan`]); everything here is pure, so the parsing and the layout are host-tested.
 //!
-//!   ┌ Wi-Fi ───────────────────────────┐
-//!   │ Wi-Fi                     [■  ] │  the switch: radio on/off
-//!   │ Turn on at start          [   ] │  opt-in: the shell switches it on at boot
-//!   │ Set the clock             [   ] │  opt-in: NTP after each connect
-//!   │ CONNECTED · HOME · 192.168.1.20  │  the strip: what it is doing
-//!   │ NETWORKS                   SCAN  │
-//!   │ Home              WPA2 · strong  │  one row a network, strongest first; tap to join
-//!   │ …                                │
-//!   └ Uses battery while on.  ─────────┘
+//!   ┌ Wi-Fi ───────────────────────────┐    ┌ Network ─────────────────────────┐
+//!   │ Wi-Fi                     [■  ] │    │ NETWORKS                   SCAN  │
+//!   │ CONNECTED · HOME · 192.168.1.20  │    │ Home              WPA2 · strong  │
+//!   │ Network  Home                  › │ →  │ Cafe                OPEN · weak  │
+//!   │ Internet radio                 › │    │ …  strongest first; tap to join, │
+//!   │ Phone remote                   › │    │    the joined one to forget it   │
+//!   │ AirPlay                   [   ] │    └──────────────────────────────────┘
+//!   │ Options                        › │ →  Turn on at start · Set the clock ·
+//!   └──────────────────────────────────┘    ListenBrainz · Check for updates · lyrics
+//!                                          (every switch off unless switched on)
 
 use crate::canvas::{Canvas, H, W};
 use crate::kit::{self, Row, Trail};
@@ -237,91 +238,128 @@ pub fn settings_value(s: &Status) -> &'static str {
     }
 }
 
-// ── layout: one function, shared by render and hit ──────────────────────────────────────────────
+// ── Settings ▸ Wi-Fi: one function for layout, shared by render and hit ──────────────────────────
 
 const FOOT_H: i32 = 44;
 
+/// Settings ▸ Wi-Fi ▸ Options, in order. Each is a saved switch, off unless switched on.
+pub const OPTIONS: [Hit; 5] = [
+    Hit::AutoStart,
+    Hit::Clock,
+    Hit::ListenBrainz,
+    Hit::Updates,
+    Hit::Lyrics,
+];
+
 struct Layout {
     switch_y: i32,
-    auto_y: i32,
-    clock_y: i32,
     strip_y: i32,
-    section_y: i32,
-    list_y: i32,
-    rows: usize,
+    /// "Network ›", "Internet radio ›" and "Phone remote ›", only while the radio is on.
+    net_y: Option<i32>,
+    radio_y: Option<i32>,
+    remote_y: Option<i32>,
+    airplay_y: i32,
+    options_y: i32,
 }
 
-fn layout(networks: usize) -> Layout {
+fn layout(on: bool) -> Layout {
     let switch_y = crate::chrome::HEADER_BOTTOM;
-    let auto_y = switch_y + kit::ROW_H();
-    let clock_y = auto_y + kit::ROW_H();
-    let strip_y = clock_y + kit::ROW_H();
-    let section_y = strip_y + kit::STRIP_H;
-    let list_y = section_y + kit::SECTION_H;
-    let room = (H as i32 - FOOT_H - list_y).max(0) / kit::ROW_H();
+    let strip_y = switch_y + kit::ROW_H();
+    let mut y = strip_y + kit::STRIP_H;
+    let mut next = || {
+        y += kit::ROW_H();
+        y - kit::ROW_H()
+    };
+    let net_y = on.then(&mut next);
+    let radio_y = on.then(&mut next);
+    let remote_y = on.then(&mut next);
+    let airplay_y = next();
+    let options_y = next();
     Layout {
         switch_y,
-        auto_y,
-        clock_y,
         strip_y,
-        section_y,
-        list_y,
-        rows: networks.min(room as usize),
+        net_y,
+        radio_y,
+        remote_y,
+        airplay_y,
+        options_y,
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
     Toggle,
+    /// "Network ›": the list of networks in range.
+    Networks,
+    /// "Internet radio ›".
+    Radio,
+    /// "Phone remote ›".
+    Remote,
+    /// The AirPlay receiver's switch.
+    AirPlay,
+    /// "Options ›".
+    Options,
+    // Settings ▸ Wi-Fi ▸ Options:
     AutoStart,
     Clock,
-    Scan,
-    /// Network `i` of the list as given to `render`.
-    Network(usize),
+    ListenBrainz,
+    Updates,
+    Lyrics,
     None,
 }
 
-pub fn hit(x: i32, y: i32, networks: usize, on: bool) -> Hit {
-    let l = layout(networks);
-    if y >= l.switch_y && y < l.switch_y + kit::ROW_H() {
+pub fn hit(_x: i32, y: i32, on: bool) -> Hit {
+    let l = layout(on);
+    let within = |top: i32| y >= top && y < top + kit::ROW_H();
+    if within(l.switch_y) {
         return Hit::Toggle;
     }
-    if y >= l.auto_y && y < l.auto_y + kit::ROW_H() {
-        return Hit::AutoStart;
-    }
-    if y >= l.clock_y && y < l.clock_y + kit::ROW_H() {
-        return Hit::Clock;
-    }
-    if !on {
-        return Hit::None;
-    }
-    if kit::section_action_hit(l.section_y, x, y) {
-        return Hit::Scan;
-    }
-    if y >= l.list_y && x >= 0 && x < W as i32 {
-        let i = ((y - l.list_y) / kit::ROW_H()) as usize;
-        if i < l.rows {
-            return Hit::Network(i);
+    for (row, h) in [
+        (l.net_y, Hit::Networks),
+        (l.radio_y, Hit::Radio),
+        (l.remote_y, Hit::Remote),
+    ] {
+        if row.is_some_and(within) {
+            return h;
         }
+    }
+    if within(l.airplay_y) {
+        return Hit::AirPlay;
+    }
+    if within(l.options_y) {
+        return Hit::Options;
     }
     Hit::None
 }
 
+/// Settings ▸ Wi-Fi ▸ Options: which switch a tap is on.
+pub fn hit_options(y: i32) -> Hit {
+    let top = crate::chrome::HEADER_BOTTOM;
+    if y < top {
+        return Hit::None;
+    }
+    OPTIONS
+        .get(((y - top) / kit::ROW_H()) as usize)
+        .copied()
+        .unwrap_or(Hit::None)
+}
+
 pub struct View<'a> {
     pub status: &'a Status,
-    pub networks: &'a [Network],
-    pub scanning: bool,
-    pub sel: Option<usize>,
-    /// Settings: switch Wi-Fi on when the player starts; set the clock from the internet.
-    pub autostart: bool,
-    pub clock: bool,
+    /// The Internet radio row's second line: what is playing, or how many stations.
+    pub radio_note: &'a str,
+    /// The Phone remote row's second line: off, or the address to open.
+    pub remote_note: &'a str,
+    /// The AirPlay switch (saved), and what the receiver is doing.
+    pub airplay: bool,
+    pub airplay_note: &'a str,
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, crate::i18n::text("Wi-Fi"), None);
     let on = !matches!(v.status.state, State::Off);
-    let l = layout(v.networks.len());
+    let l = layout(on);
     kit::row(
         c,
         t,
@@ -332,44 +370,166 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
             .sub(crate::i18n::text("Uses battery while on"))
             .trail(Trail::Switch(on || matches!(v.status.state, State::Busy))),
     );
-    kit::row(
-        c,
-        t,
-        f,
-        l.auto_y,
-        kit::ROW_H(),
-        &Row::new(crate::i18n::text("Turn on at start"))
-            .sub(crate::i18n::text(
-                "Joins your network when the player starts",
-            ))
-            .trail(Trail::Switch(v.autostart)),
-    );
-    kit::row(
-        c,
-        t,
-        f,
-        l.clock_y,
-        kit::ROW_H(),
-        &Row::new(crate::i18n::text("Set the clock"))
-            .sub(crate::i18n::text(
-                "From the internet, each time Wi-Fi connects",
-            ))
-            .trail(Trail::Switch(v.clock)),
-    );
     kit::strip(c, t, f, l.strip_y, &strip_line(v.status));
-    if !on {
-        return;
+    let joined = matches!(v.status.state, State::Connected | State::Connecting);
+    let name = String::from_utf8_lossy(&v.status.ssid).into_owned();
+    let open_rows: [(Option<i32>, &str, &str); 3] = [
+        (
+            l.net_y,
+            crate::i18n::text("Network"),
+            if joined {
+                name.as_str()
+            } else {
+                crate::i18n::text("Choose a network")
+            },
+        ),
+        (l.radio_y, crate::i18n::text("Internet radio"), v.radio_note),
+        (l.remote_y, crate::i18n::text("Phone remote"), v.remote_note),
+    ];
+    for (y, title, sub) in open_rows {
+        if let Some(y) = y {
+            kit::row(
+                c,
+                t,
+                f,
+                y,
+                kit::ROW_H(),
+                &Row::new(title).sub(sub).trail(Trail::Open("")),
+            );
+        }
     }
+    kit::row(
+        c,
+        t,
+        f,
+        l.airplay_y,
+        kit::ROW_H(),
+        &Row::new(crate::i18n::text("AirPlay"))
+            .sub(if v.airplay_note.is_empty() {
+                crate::i18n::text("Play from an iPhone or a Mac")
+            } else {
+                v.airplay_note
+            })
+            .trail(Trail::Switch(v.airplay)),
+    );
+    kit::row(
+        c,
+        t,
+        f,
+        l.options_y,
+        kit::ROW_H(),
+        &Row::new(crate::i18n::text("Options"))
+            .sub(crate::i18n::text("Start · clock · ListenBrainz · updates"))
+            .trail(Trail::Open("")),
+    );
+}
+
+pub struct OptionsView<'a> {
+    /// The saved switches, in [`OPTIONS`] order.
+    pub options: [bool; 5],
+    /// What the last ListenBrainz send and update check said ("Sent 12 songs", "0.3.23 is out").
+    pub lb_note: &'a str,
+    pub update_note: &'a str,
+}
+
+pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
+    c.fill(t.bg);
+    crate::chrome::header(c, t, f, crate::i18n::text("Wi-Fi options"), None);
+    let rows: [(&str, &str); 5] = [
+        (
+            crate::i18n::text("Turn on at start"),
+            crate::i18n::text("Joins your network when the player starts"),
+        ),
+        (
+            crate::i18n::text("Set the clock"),
+            crate::i18n::text("From the internet; keeps your time zone"),
+        ),
+        (
+            crate::i18n::text("Send plays to ListenBrainz"),
+            if v.lb_note.is_empty() {
+                crate::i18n::text("Put your token in cinder_listenbrainz.txt on the drive")
+            } else {
+                v.lb_note
+            },
+        ),
+        (
+            crate::i18n::text("Check for updates"),
+            if v.update_note.is_empty() {
+                crate::i18n::text("Says when a new Cinder is out")
+            } else {
+                v.update_note
+            },
+        ),
+        (
+            crate::i18n::text("Fetch missing lyrics"),
+            crate::i18n::text("From LRCLIB, saved beside the song"),
+        ),
+    ];
+    let mut y = crate::chrome::HEADER_BOTTOM;
+    for ((title, sub), on) in rows.iter().zip(v.options) {
+        y = kit::row(
+            c,
+            t,
+            f,
+            y,
+            kit::ROW_H(),
+            &Row::new(title).sub(sub).trail(Trail::Switch(on)),
+        );
+    }
+}
+
+// ── Settings ▸ Wi-Fi ▸ Network: the networks in range ───────────────────────────────────────────
+
+fn list_layout(networks: usize) -> (i32, i32, usize) {
+    let section_y = crate::chrome::HEADER_BOTTOM;
+    let list_y = section_y + kit::SECTION_H;
+    let room = (H as i32 - FOOT_H - list_y).max(0) / kit::ROW_H();
+    (section_y, list_y, networks.min(room as usize))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListHit {
+    Scan,
+    /// Network `i` of the list as given to `render_list`.
+    Network(usize),
+    None,
+}
+
+pub fn hit_list(x: i32, y: i32, networks: usize) -> ListHit {
+    let (section_y, list_y, rows) = list_layout(networks);
+    if kit::section_action_hit(section_y, x, y) {
+        return ListHit::Scan;
+    }
+    if y >= list_y && x >= 0 && x < W as i32 {
+        let i = ((y - list_y) / kit::ROW_H()) as usize;
+        if i < rows {
+            return ListHit::Network(i);
+        }
+    }
+    ListHit::None
+}
+
+pub struct ListView<'a> {
+    pub status: &'a Status,
+    pub networks: &'a [Network],
+    pub scanning: bool,
+    pub sel: Option<usize>,
+}
+
+pub fn render_list(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ListView) {
+    c.fill(t.bg);
+    crate::chrome::header(c, t, f, crate::i18n::text("Network"), None);
+    let (section_y, list_y, rows) = list_layout(v.networks.len());
     kit::section_label(
         c,
         t,
         f,
-        l.section_y,
+        section_y,
         "NETWORKS",
         Some(if v.scanning { "SCANNING…" } else { "SCAN" }),
     );
-    let mut y = l.list_y;
-    for (i, n) in v.networks.iter().take(l.rows).enumerate() {
+    let mut y = list_y;
+    for (i, n) in v.networks.iter().take(rows).enumerate() {
         let joined = matches!(v.status.state, State::Connected | State::Connecting)
             && n.ssid == v.status.ssid;
         let name = n.name();
@@ -388,16 +548,117 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
             .sel(v.sel == Some(i));
         y = kit::row(c, t, f, y, kit::ROW_H(), &row);
     }
-    if v.networks.is_empty() && !v.scanning {
+    if v.networks.is_empty() {
+        let (title, sub) = if matches!(v.status.state, State::Off) {
+            ("Wi-Fi is off", "Switch it on first")
+        } else if v.scanning {
+            ("Looking for networks…", "This takes a few seconds")
+        } else {
+            ("No networks yet", "Tap SCAN")
+        };
         kit::row(
             c,
             t,
             f,
             y,
             kit::ROW_H(),
-            &Row::new(crate::i18n::text("No networks yet")).sub(crate::i18n::text("Tap SCAN")),
+            &Row::new(crate::i18n::text(title)).sub(crate::i18n::text(sub)),
         );
     }
+}
+
+// ── Settings ▸ Wi-Fi ▸ Phone remote ─────────────────────────────────────────────────────────────
+
+/// The page's one control: the switch. Everything else on it is text to read.
+pub fn hit_remote(y: i32) -> bool {
+    let top = crate::chrome::HEADER_BOTTOM;
+    y >= top && y < top + kit::ROW_H()
+}
+
+pub struct RemoteView<'a> {
+    pub on: bool,
+    pub wifi_connected: bool,
+    /// `http://192.168.0.20:8080` while on.
+    pub address: &'a str,
+    pub code: &'a str,
+}
+
+pub fn render_remote(c: &mut Canvas, t: &Theme, f: &FontSet, v: &RemoteView) {
+    use crate::text::{Family, Weight};
+    c.fill(t.bg);
+    crate::chrome::header(c, t, f, crate::i18n::text("Phone remote"), None);
+    let mut y = kit::row(
+        c,
+        t,
+        f,
+        crate::chrome::HEADER_BOTTOM,
+        kit::ROW_H(),
+        &Row::new(crate::i18n::text("Phone remote"))
+            .sub(crate::i18n::text(
+                "Play, skip, volume and sending music, from a phone",
+            ))
+            .trail(Trail::Switch(v.on)),
+    );
+    let line = |c: &mut Canvas, y: i32, s: &str, size: f32, w: Weight, ink| {
+        crate::widgets::center(
+            c,
+            f,
+            (W / 2) as f32,
+            y as f32,
+            s,
+            &crate::widgets::sty(Family::Sans, w, size, ink, 0.0),
+        );
+    };
+    if !v.wifi_connected {
+        kit::strip(c, t, f, y, crate::i18n::text("CONNECT TO WI-FI FIRST"));
+        return;
+    }
+    if !v.on {
+        kit::strip(c, t, f, y, crate::i18n::text("OFF"));
+        return;
+    }
+    y += 70;
+    line(
+        c,
+        y,
+        crate::i18n::text("On a phone on this Wi-Fi, open"),
+        18.0,
+        Weight::Regular,
+        t.dim,
+    );
+    y += 44;
+    line(c, y, v.address, 24.0, Weight::SemiBold, t.ink);
+    y += 70;
+    line(
+        c,
+        y,
+        crate::i18n::text("and enter the code"),
+        18.0,
+        Weight::Regular,
+        t.dim,
+    );
+    y += 64;
+    let spaced: String = v
+        .code
+        .chars()
+        .enumerate()
+        .flat_map(|(i, ch)| {
+            (i == 3)
+                .then_some(' ')
+                .into_iter()
+                .chain(std::iter::once(ch))
+        })
+        .collect();
+    line(c, y, &spaced, 48.0, Weight::SemiBold, t.acc);
+    y += 70;
+    line(
+        c,
+        y,
+        crate::i18n::text("A new code each time you switch it on."),
+        15.0,
+        Weight::Regular,
+        t.faint,
+    );
 }
 
 #[cfg(test)]
@@ -435,19 +696,43 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_answers_when_off_and_nothing_else_does() {
-        let l = layout(3);
-        assert_eq!(hit(200, l.switch_y + 5, 3, false), Hit::Toggle);
-        assert_eq!(hit(200, l.list_y + 5, 3, false), Hit::None);
-        assert_eq!(hit(200, l.list_y + 5, 3, true), Hit::Network(0));
+    fn the_rows_answer_where_they_are_drawn() {
+        let off = layout(false);
+        assert_eq!(hit(200, off.switch_y + 5, false), Hit::Toggle);
+        assert!(off.net_y.is_none() && off.radio_y.is_none() && off.remote_y.is_none());
+        assert_eq!(hit(200, off.airplay_y + 5, false), Hit::AirPlay);
+        assert_eq!(hit(200, off.options_y + 5, false), Hit::Options);
+        let on = layout(true);
+        assert_eq!(hit(200, on.net_y.unwrap() + 5, true), Hit::Networks);
+        assert_eq!(hit(200, on.radio_y.unwrap() + 5, true), Hit::Radio);
+        assert_eq!(hit(200, on.remote_y.unwrap() + 5, true), Hit::Remote);
+        assert_eq!(hit(200, on.airplay_y + 5, true), Hit::AirPlay);
+        assert_eq!(hit(200, on.options_y + 5, true), Hit::Options);
+        assert!(
+            on.options_y + kit::ROW_H() <= H as i32,
+            "every row fits at this size"
+        );
+        let top = crate::chrome::HEADER_BOTTOM;
+        for (i, want) in OPTIONS.iter().enumerate() {
+            assert_eq!(hit_options(top + i as i32 * kit::ROW_H() + 5), *want);
+        }
+        assert_eq!(hit_options(top + 5 * kit::ROW_H() + 5), Hit::None);
+    }
+
+    #[test]
+    fn the_network_list_answers_its_rows_only() {
+        let (_, list_y, _) = list_layout(3);
+        assert_eq!(hit_list(200, list_y + 5, 3), ListHit::Network(0));
         assert_eq!(
-            hit(200, l.list_y + kit::ROW_H() + 5, 3, true),
-            Hit::Network(1)
+            hit_list(200, list_y + kit::ROW_H() + 5, 3),
+            ListHit::Network(1)
         );
         assert_eq!(
-            hit(200, l.list_y + 3 * kit::ROW_H() + 5, 3, true),
-            Hit::None
+            hit_list(200, list_y + 3 * kit::ROW_H() + 5, 3),
+            ListHit::None
         );
+        let (_, _, rows) = list_layout(40);
+        assert!(rows >= 9, "the list page has room for {rows} networks");
     }
 
     #[test]

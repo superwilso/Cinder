@@ -19,16 +19,46 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 ### Added
 
 - **Wi-Fi (new, experimental, off by default).** The player's Wi-Fi radio, which Sony never
-  used, as the installer option **Device ▸ Wi-Fi**. **Settings ▸ Wi-Fi** then has a switch, the
-  networks in range (strongest first), and a password keyboard; WPA2 and WPA3 work, WEP does not.
-  Two more switches, both off unless turned on: **Turn on at start**, and **Set the clock**, which
-  sets the clock and the RTC from a time server each time Wi-Fi connects. Tap the joined network to
-  forget it. The driver is built from Sony's own GPL kernel source (`wifi/`, GPL-2.0, its own
-  LICENSE), with static `wpa_supplicant` 2.10 and `iw`; each player gets its own fixed address. The
-  keyboard gained a third page (`#+=`) with the rest of the ASCII symbols, so any Wi-Fi password
-  can be typed. *Device-verified on one player at the module and helper level (scan, WPA2 join,
-  DHCP, DNS, a download, cold start to online in about 9 s); the Settings page, the installer
-  option and the clock sync are host-tested only. WPA3 and the battery cost are not yet measured.*
+  used, as the installer option **Device ▸ Wi-Fi**. **Settings ▸ Wi-Fi** has the switch, a status
+  line, **Network** (the networks in range, strongest first, with a password keyboard; WPA2 and
+  WPA3, not WEP; tap the joined one to forget it) and **Options ›**, four switches, each off unless switched on:
+  - **Turn on at start.**
+  - **Set the clock**: from a time server each time Wi-Fi connects, clock and RTC. It keeps your
+    time zone: the player has none, so the zone is read from the clock you set, rounded to 15
+    minutes, and only the drift is corrected.
+  - **Send plays to ListenBrainz**: the `.scrobbler.log`'s finished songs, in real UTC, after each
+    connect and every 15 minutes. Put your ListenBrainz token in `cinder_listenbrainz.txt` on the
+    drive. The log is left as it is for Flint and other uploaders.
+  - **Check for updates**: once a day, says when a newer Cinder release is out.
+  - **Fetch missing lyrics**: a song that starts with no lyrics is looked up on LRCLIB (free, no
+    account) and its words, synced when LRCLIB has them, saved beside it as a `.lrc`.
+
+  **Internet radio** (Settings ▸ Wi-Fi ▸ Internet radio): MP3 stations from `cinder_radio.txt` on
+  the drive (`Name | URL`, an .m3u, or .pls links; the install writes a starter list of four when
+  there is none), through the headphone jack or Bluetooth, with the song title stations send.
+  Music, FM, USB-DAC and the receiver take the output back and stop it.
+
+  **Phone remote** (Settings ▸ Wi-Fi ▸ Phone remote, on for one boot at a time): a page on the
+  home network, `http://<player>:8080`, locked by a 6-digit code the player shows (new each time;
+  five wrong tries lock it for a minute). It shows the song playing, has play/pause, previous,
+  next and volume, and sends music to the player: files land in `MUSIC/Uploads` and the library
+  rescans itself.
+
+  **AirPlay** (Settings ▸ Wi-Fi ▸ AirPlay): the player shows up as "Walkman (Cinder)" to iPhones and
+  Macs and plays what they send, through the jack or Bluetooth. AirPlay 1 (Shairport Sync, MIT);
+  AirPlay 2 is not supported.
+
+  The driver is built from Sony's own GPL kernel source (`wifi/`, GPL-2.0, its own LICENSE), with
+  static `wpa_supplicant` 2.10, `iw` and `curl` 8.22 with Mozilla's CA list; each player gets its
+  own fixed address. The keyboard gained a third page (`#+=`) with the rest of the ASCII symbols,
+  so any Wi-Fi password can be typed. *Device-verified on one player (installed through Sony's
+  updater; joined from the page; clock set from NTP, 63 s of drift corrected; HTTPS to GitHub and
+  ListenBrainz with certificate checks; the update check; a ListenBrainz send refused for a wrong
+  token; internet radio from three stations through the jack, titles shown, Play handing back to
+  music; the phone remote from a computer on the network, code, buttons and an upload landing in
+  the library). Not yet verified: WPA3 against a WPA3 network, a real ListenBrainz account,
+  internet radio and AirPlay over Bluetooth, AirPlay from an iPhone (the receiver answers on the
+  player; nothing has sent to it yet), and the battery cost.*
 - **One installer, both builds.** Every installer (releases and edge) now carries the developer
   build as well as stable, and **Device ▸ Build** picks one: Stable, for almost everyone, or
   Developer, which adds adb and test tools. Files the two share are stored once, and Update keeps

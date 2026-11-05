@@ -444,7 +444,11 @@ ff48fc9411bcf7d6 big_extras_settings
 c6bf06fd52c636a1 usb_storage
 5bd059d8d8a7fda6 usb_storage_big
 20bfb8b3a769e2f7 usb_storage_140
-51b11e61c3670691 wifi_off
-7c1cb5a3db3887bc wifi_connected
-963bb9b91df19ab8 wifi_failed
+c5fadf061989cb1a wifi_off
+f60f8daa673f7c0c wifi_connected
+56707d779ea3ffa7 wifi_networks
+84414f39ac019465 netradio_playing
+e774c6674407efb8 wifi_remote_on
+76208b81da7fcffa wifi_options
+38e10d92fb308aa9 wifi_failed
 1aad37d87fe5677d keyboard_more_symbols

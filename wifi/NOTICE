@@ -1,0 +1,22 @@
+Third-party software in the Wi-Fi install option
+
+wifi/ itself (the build scripts, patches, device scripts and tools/) is GPL-2.0, see LICENSE. The
+files it builds and the player receives come from these projects, each under its own licence:
+
+  compat.ko, cfg80211.ko,         Linux backports 3.17.1 and MediaTek's mt_soc drivers, from Sony's
+  mtk_wmt_wifi_soc.ko, wlan_mt.ko   GPL source release for the NW-A50 series            GPL-2.0
+  wpa_supplicant, wpa_cli         wpa_supplicant 2.10, w1.fi                            BSD-3-Clause
+                                  libnl-tiny (OpenWrt)                                  LGPL-2.1
+  iw                              iw 5.19, kernel.org                                   ISC
+                                  libnl 3.7.0                                           LGPL-2.1
+  curl                            curl 8.22.0, curl.se                                  curl (MIT-style)
+  cacert.pem                      Mozilla's CA certificate list, as curl.se publishes it  MPL-2.0
+  shairport-sync                  Shairport Sync 5.5.2, Mike Brady and contributors     MIT
+                                  (with tinysvcmdns, BSD-3-Clause; ALAC decoder, David Hammerton)
+                                  popt 1.19                                             MIT
+                                  libconfig 1.7.3                                       LGPL-2.1
+  (all of the above)              OpenSSL 3.0.15                                        Apache-2.0
+
+The LGPL-2.1 libraries are linked statically. Their source is fetched by build-userland.sh at the
+versions above (each pinned by SHA-256), and the same script relinks every program against a
+modified copy: change the library's source under work/userland and run it again.

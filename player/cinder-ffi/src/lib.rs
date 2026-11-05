@@ -17,9 +17,11 @@ mod books;
 mod cue;
 mod likes;
 mod lyrics;
+mod net;
 mod pcm_tap;
 mod playlists;
 mod present;
+mod remote;
 mod scrobble;
 mod series;
 mod shared;
@@ -1045,6 +1047,58 @@ fn codec_label(filename: &str, is_hires: bool) -> (String, String) {
 /// Fill the now-playing string fields from a resolved library Track + playback progress.
 // Track metadata only (title/artist/codec/badge). Position is set separately by set_progress so the
 // local play-clock can advance it each second.
+// Lyrics fetched from LRCLIB (net::fetch_lyrics), one song at a time, off the render thread, asked
+// by cinder_clock_tick for the song playing when it has none (so a song already playing when Wi-Fi
+// connects is looked up too). A song is asked once a boot, whatever the answer. LYRICS_DONE names a
+// song whose .lrc was just written, for the tick to reload while it is still the one playing.
+static LYRICS_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LYRICS_DONE: Mutex<Option<String>> = Mutex::new(None);
+static LYRICS_MISSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn lyrics_fetch(path: &str, artist: &str, title: &str, album: &str, length_s: u32) {
+    use std::sync::atomic::Ordering;
+    if title.is_empty() || LYRICS_BUSY.load(Ordering::SeqCst) {
+        return;
+    }
+    {
+        let mut asked = LYRICS_MISSED.lock().unwrap();
+        if asked.iter().any(|p| p == path) {
+            return;
+        }
+        asked.push(path.to_string());
+    }
+    if LYRICS_BUSY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let (p, a, t, al) = (
+        path.to_string(),
+        artist.to_string(),
+        title.to_string(),
+        album.to_string(),
+    );
+    let spawned = std::thread::Builder::new()
+        .name("cinder-lyrics".into())
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let r = net::fetch_lyrics(&p, &a, &t, &al, length_s, cinder_ui::cinder_version!());
+            eprintln!(
+                "cinder-ffi: lyrics: {a} - {t} ({length_s} s) -> {}",
+                match &r {
+                    Ok(true) => "saved".to_string(),
+                    Ok(false) => "LRCLIB has none".to_string(),
+                    Err(e) => e.clone(),
+                }
+            );
+            if let Ok(true) = r {
+                *LYRICS_DONE.lock().unwrap() = Some(p);
+            }
+            LYRICS_BUSY.store(false, Ordering::SeqCst);
+        });
+    if spawned.is_err() {
+        LYRICS_BUSY.store(false, Ordering::SeqCst);
+    }
+}
+
 fn apply_track(np: &mut Np, t: &cinder_db::Track) {
     np.title = if t.title.is_empty() {
         t.filename.rsplit('/').next().unwrap_or("").to_string()
@@ -1400,10 +1454,14 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("folders_tab={}\n", r.app.folders_tab() as u8));
     // Settings ▸ Wi-Fi ▸ Turn on at start / Set the clock, OFF unless switched on.
     body.push_str(&format!(
-        "wifi_autostart={}\nwifi_clock={}\n",
+        "wifi_autostart={}\nwifi_clock={}\nwifi_lb={}\nwifi_updates={}\nwifi_airplay={}\n",
         r.app.wifi_autostart() as u8,
-        r.app.wifi_clock() as u8
+        r.app.wifi_clock() as u8,
+        r.app.wifi_lb() as u8,
+        r.app.wifi_updates() as u8,
+        r.app.wifi_airplay() as u8
     ));
+    body.push_str(&format!("wifi_lyrics={}\n", r.app.wifi_lyrics() as u8));
     // Settings ▸ Swipe up / Swipe down: what each opens on Now Playing (#51), as words.
     let (up, down) = r.app.np_swipes();
     body.push_str(&format!(
@@ -2544,7 +2602,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 51] = [
+const SCREEN_NAMES: [&str; 55] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2598,6 +2656,10 @@ const SCREEN_NAMES: [&str; 51] = [
     "Skins",
     "Storage",
     "Wifi",
+    "WifiNetworks",
+    "NetRadio",
+    "WifiRemote",
+    "WifiOptions",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2655,6 +2717,10 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Skins => 48,
         S::Storage => 49,
         S::Wifi => 50,
+        S::WifiNetworks => 51,
+        S::NetRadio => 52,
+        S::WifiRemote => 53,
+        S::WifiOptions => 54,
     }
 }
 
@@ -5636,6 +5702,30 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::WifiJoin => 65,
         Action::WifiTimeSync => 66,
         Action::WifiForget => 67,
+        Action::WifiListenBrainz => 68,
+        Action::WifiUpdateCheck => 69,
+        Action::RadioOpen => 70,
+        Action::RadioPlay => 71,
+        Action::RadioStop => 72,
+        Action::WifiAirPlay => 73,
+        // The phone remote is cinder-ffi's own: start or stop the server here, tell the page.
+        Action::Remote(on) => {
+            if *on {
+                let code = remote::new_code();
+                match remote::start(&code) {
+                    Ok(port) => r.app.set_remote(true, &code, port),
+                    Err(_) => {
+                        r.app.set_remote(false, "", 0);
+                        r.app
+                            .notify(cinder_ui::i18n::text("The phone remote could not start"));
+                    }
+                }
+            } else {
+                remote::stop();
+                r.app.set_remote(false, "", 0);
+            }
+            return None;
+        }
         Action::SoundBypass(_) => 15,
         Action::ShuffleToggle => {
             r.np.shuffle = !r.np.shuffle;
@@ -7288,6 +7378,219 @@ pub unsafe extern "C" fn cinder_take_wifi_join(buf: *mut u8, cap: libc::c_int) -
     }
 }
 
+/// Phone remote: the next button the page pressed (a cinder_button_t), or 0 for none (the page
+/// never sends UP, so 0 is free — and it is what a stub returns, so a stub can never invent a press).
+/// Call every frame
+/// and feed each through cinder_input, as for a side key. Also stops the server when the Wi-Fi
+/// link went, and keeps the page's "now playing" current.
+#[no_mangle]
+pub extern "C" fn cinder_remote_take_button() -> libc::c_int {
+    if !remote::running() {
+        return 0;
+    }
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if r.app.take_remote_dropped() {
+            remote::stop();
+            return 0;
+        }
+        remote::set_now(&r.np.title, &r.np.artist, r.np.playing);
+    }
+    remote::take_button().unwrap_or(0)
+}
+
+/// Phone remote: how many uploads finished since the last call. The shell rescans the library
+/// once they stop arriving.
+#[no_mangle]
+pub extern "C" fn cinder_remote_take_uploaded() -> libc::c_int {
+    remote::take_uploaded().min(i32::MAX as u32) as libc::c_int
+}
+
+/// Settings ▸ Wi-Fi ▸ AirPlay (1/0): the receiver runs while this is on and Wi-Fi is connected.
+#[no_mangle]
+pub extern "C" fn cinder_wifi_airplay() -> libc::c_int {
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|r| r.app.wifi_airplay()) as libc::c_int
+}
+
+/// What the AirPlay receiver is doing, for the switch's second line ("" = the default text).
+///
+/// # Safety
+/// `text` is a NUL-terminated string or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_set_airplay_note(text: *const c_char) {
+    let text = cstr(text);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_airplay_note(&text);
+    }
+}
+
+/// Internet radio: cinder_radio.txt's text, after CINDER_ACT_RADIO_OPEN (and once at start).
+///
+/// # Safety
+/// `text` is a NUL-terminated string or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_set_radio_stations(text: *const c_char) {
+    let text = cstr(text);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_radio_stations(&text);
+    }
+}
+
+/// Internet radio: the player's status (`state=`, `station=`, `title=`, `note=` lines).
+///
+/// # Safety
+/// `text` is a NUL-terminated string or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_set_radio_status(text: *const c_char) {
+    let text = cstr(text);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_radio_status(&text);
+    }
+}
+
+/// After CINDER_ACT_RADIO_PLAY: the station's URL into `buf` (NUL-terminated). Returns the
+/// station's index, or -1 when there is none waiting or it does not fit.
+///
+/// # Safety
+/// `buf` must be valid for `cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_take_radio(buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
+    let Some((i, url)) = cell()
+        .lock()
+        .unwrap()
+        .as_mut()
+        .and_then(|r| r.app.take_radio())
+    else {
+        return -1;
+    };
+    if buf.is_null() || cap <= 0 || url.len() >= cap as usize {
+        return -1;
+    }
+    std::ptr::copy_nonoverlapping(url.as_ptr() as *const c_char, buf, url.len());
+    *buf.add(url.len()) = 0;
+    i.min(i32::MAX as usize) as libc::c_int
+}
+
+/// Settings ▸ Wi-Fi ▸ Send plays to ListenBrainz (1/0) and Check for updates (1/0).
+#[no_mangle]
+pub extern "C" fn cinder_wifi_lb() -> libc::c_int {
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|r| r.app.wifi_lb()) as libc::c_int
+}
+#[no_mangle]
+pub extern "C" fn cinder_wifi_updates() -> libc::c_int {
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|r| r.app.wifi_updates()) as libc::c_int
+}
+
+/// What the last ListenBrainz send and update check said, for their rows. Null leaves one as is.
+///
+/// # Safety
+/// Both are NUL-terminated strings or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_set_wifi_notes(lb: *const c_char, update: *const c_char) {
+    let (lbs, ups) = (
+        (!lb.is_null()).then(|| cstr(lb)),
+        (!update.is_null()).then(|| cstr(update)),
+    );
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if let Some(t) = lbs {
+            r.app.set_wifi_lb_note(&t);
+        }
+        if let Some(t) = ups {
+            r.app.set_wifi_update_note(&t);
+        }
+    }
+}
+
+/// Copy `text` into `out` (cap bytes, NUL-terminated, cut on a char boundary).
+unsafe fn put_note(text: &str, out: *mut c_char, cap: libc::c_int) {
+    if out.is_null() || cap <= 0 {
+        return;
+    }
+    let mut n = text.len().min(cap as usize - 1);
+    while !text.is_char_boundary(n) {
+        n -= 1;
+    }
+    std::ptr::copy_nonoverlapping(text.as_ptr() as *const c_char, out, n);
+    *out.add(n) = 0;
+}
+
+/// Send the `.scrobbler.log`'s new listens to ListenBrainz (net.rs). BLOCKING (the network): call
+/// from the Wi-Fi worker, never the render thread; it takes no lock. `offset_s` is the clock minus
+/// UTC (`utc_offset=` from `cinder-wifi status`, 0 if never synced). Returns how many were sent, or
+/// -1 with the reason in `note`.
+///
+/// # Safety
+/// `log` is a NUL-terminated path; `note` is valid for `cap` bytes or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_lb_submit(
+    log: *const c_char,
+    offset_s: i64,
+    note: *mut c_char,
+    cap: libc::c_int,
+) -> libc::c_int {
+    match net::lb_submit(&cstr(log), offset_s, cinder_ui::cinder_version!()) {
+        Ok(0) => {
+            put_note("", note, cap);
+            0
+        }
+        Ok(n) => {
+            let t = if n == 1 {
+                cinder_ui::i18n::text("Sent 1 song").to_string()
+            } else {
+                cinder_ui::ui_format!("Sent {} songs", n)
+            };
+            put_note(&t, note, cap);
+            n.min(i32::MAX as usize) as libc::c_int
+        }
+        Err(e) => {
+            put_note(&e, note, cap);
+            -1
+        }
+    }
+}
+
+/// Ask GitHub whether a newer Cinder is out (net.rs). BLOCKING, like cinder_lb_submit. 1 = newer
+/// (`note` says which), 0 = this is the newest, -1 = could not tell (`note` says why).
+///
+/// # Safety
+/// `note` is valid for `cap` bytes or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_update_check(note: *mut c_char, cap: libc::c_int) -> libc::c_int {
+    match net::update_check(cinder_ui::cinder_version!()) {
+        Ok(Some(tag)) => {
+            put_note(
+                &cinder_ui::ui_format!("Cinder {} is out: update with the installer", tag),
+                note,
+                cap,
+            );
+            1
+        }
+        Ok(None) => {
+            put_note(
+                cinder_ui::i18n::text("This is the newest Cinder"),
+                note,
+                cap,
+            );
+            0
+        }
+        Err(e) => {
+            put_note(&e, note, cap);
+            -1
+        }
+    }
+}
+
 /// Settings ▸ Wi-Fi ▸ Turn on at start (1/0). Read once, after the settings are loaded.
 #[no_mangle]
 pub extern "C" fn cinder_wifi_autostart() -> libc::c_int {
@@ -8257,6 +8560,21 @@ pub extern "C" fn cinder_night_tick() -> libc::c_int {
 #[no_mangle]
 pub extern "C" fn cinder_clock_tick() {
     if let Some(r) = cell().lock().unwrap().as_mut() {
+        // Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing lyrics: the song playing has none — ask.
+        if r.app.wifi_lyrics() && r.app.wifi_connected() && !r.app.has_lyrics() && r.cue.is_none() {
+            if let Some(t) = r.last_track.as_ref() {
+                let len = (t.duration_raw.unwrap_or(0).max(0) / 1000) as u32;
+                lyrics_fetch(&t.filename, &t.artist, &t.title, &t.album, len);
+            }
+        }
+        // Lyrics just fetched for the song still playing: show them now, not at its next start.
+        let done = LYRICS_DONE.lock().unwrap().take();
+        if let Some(path) = done {
+            if r.last_track.as_ref().is_some_and(|t| t.filename == path) {
+                r.app.set_lyrics(lyrics::load_for(&path));
+                r.dirty = true;
+            }
+        }
         let hhmm = current_hhmm();
         if !hhmm.is_empty() && hhmm != r.np.clock {
             r.np.clock = hhmm;
@@ -8601,6 +8919,10 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "np_back" => r.app.set_np_back(v == "1"),
                     "wifi_autostart" => r.app.set_wifi_autostart(v == "1"),
                     "wifi_clock" => r.app.set_wifi_clock(v == "1"),
+                    "wifi_lb" => r.app.set_wifi_lb(v == "1"),
+                    "wifi_updates" => r.app.set_wifi_updates(v == "1"),
+                    "wifi_airplay" => r.app.set_wifi_airplay(v == "1"),
+                    "wifi_lyrics" => r.app.set_wifi_lyrics(v == "1"),
                     "np_count" => r.app.set_np_count(v == "1"),
                     "hold_buttons" => r.app.set_hold_buttons(v == "1"),
                     "big_bar" => cinder_ui::scale::set_big_bar(v == "1"),
@@ -10982,6 +11304,10 @@ mod tests {
             S::VolCurve,
             S::Storage,
             S::Wifi,
+            S::WifiNetworks,
+            S::NetRadio,
+            S::WifiRemote,
+            S::WifiOptions,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
         const RESERVED: usize = 1;

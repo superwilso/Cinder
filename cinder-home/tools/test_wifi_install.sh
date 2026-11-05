@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# test_wifi_install.sh — install_cinderhome.sh step 1g8 (the `wifi` component) on the host.
+# test_wifi_install.sh — install_cinderhome.sh step 1g8 (the `wifi` component) on the host, and the
+# time-zone rounding of `cinder-wifi timesync` (tools/tz_offset_selftest.c).
 #
 # Same shape as test_migrate.sh: the lines between `# >>> wifi` and `# <<< wifi` run as they are,
 # with /system, /contents and /data pointed into a scratch root and $BB the host's tools.
@@ -10,7 +11,7 @@ pass=0; fail=0
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; pass=$((pass+1));
   else echo "  FAIL $1 (got '$2', want '$3')"; fail=$((fail+1)); fi; }
 INST="$HERE/deploy/install_cinderhome.sh"
-FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem wifi-up.sh wifi-down.sh dhcp.sh"
+FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync wifi-up.sh wifi-down.sh dhcp.sh"
 
 R=
 fresh() {
@@ -18,7 +19,8 @@ fresh() {
   mkdir -p "$R/system/vendor/cinder/bin" "$R/contents" "$R/data/cinder/wifi"
   echo 'network={}' > "$R/data/cinder/wifi/wpa.conf"
 }
-stage() { for f in $FILES; do echo "$f body" > "$R/contents/cinder-wifi-$f"; done; echo helper > "$R/contents/cinder-wifi"; }
+stage() { for f in $FILES; do echo "$f body" > "$R/contents/cinder-wifi-$f"; done; echo helper > "$R/contents/cinder-wifi"
+  echo "Starter | http://example.org/s" > "$R/contents/cinder-wifi-cinder_radio.txt"; }
 run() {  # run <WANT_WIFI>
   { echo 'BB='
     echo "VENDOR=$R/system/vendor/cinder; BIN=\$VENDOR/bin; WANT_WIFI=$1"
@@ -34,7 +36,7 @@ H() { echo "$R/system/vendor/cinder/bin/cinder-wifi"; }
 
 echo "ticked, everything staged"
 fresh; stage; mkdir -p "$(W)"; echo old > "$(W)/stale"; run 1
-check "all twelve files are in the folder" "$(find "$(W)" -type f | wc -l | tr -d ' ')" 12
+check "all thirteen files are in the folder" "$(find "$(W)" -type f | wc -l | tr -d ' ')" 13
 check "a module is 644" "$(stat -c %a "$(W)/wlan_mt.ko")" 644
 check "a program is 755" "$(stat -c %a "$(W)/wpa_supplicant")" 755
 check "the CA list is 644" "$(stat -c %a "$(W)/cacert.pem")" 644
@@ -44,6 +46,9 @@ check "the helper is setuid" "$(stat -c %a "$(H)")" 4755
 check "no temporary folder is left" "$([ -e "$(W).new" ] && echo left || echo none)" none
 check "the saved network stays" "$(cat "$R/data/cinder/wifi/wpa.conf")" 'network={}'
 check "it says so" "$(grep -c 'wifi: installed' "$R/out")" 1
+check "a starter station list where there was none" "$(cat "$R/contents/cinder_radio.txt")" "Starter | http://example.org/s"
+fresh; stage; echo "Mine | http://example.org/m" > "$R/contents/cinder_radio.txt"; run 1
+check "the user's own station list is kept" "$(cat "$R/contents/cinder_radio.txt")" "Mine | http://example.org/m"
 
 echo "ticked, one file missing"
 fresh; stage; rm "$R/contents/cinder-wifi-iw"; mkdir -p "$(W)"; echo x > "$(H)"; run 1
@@ -56,6 +61,13 @@ fresh; stage; run 1; run 0
 check "the folder goes" "$([ -e "$(W)" ] && echo kept || echo gone)" gone
 check "the helper goes" "$([ -e "$(H)" ] && echo kept || echo gone)" gone
 check "the saved network (and its password) goes" "$([ -e "$R/data/cinder/wifi" ] && echo kept || echo gone)" gone
+
+echo "timesync keeps the time zone"
+if ${CC:-cc} -O1 -Wall -Werror -I"$HERE/src" -o "$T/tz" "$HERE/tools/tz_offset_selftest.c" && "$T/tz" >"$T/tz.out"; then
+  pass=$((pass+1)); echo "  ok   tz_offset self-test ($(grep -c '  ok' "$T/tz.out") checks)"
+else
+  fail=$((fail+1)); cat "$T/tz.out" 2>/dev/null; echo "  FAIL tz_offset self-test"
+fi
 
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

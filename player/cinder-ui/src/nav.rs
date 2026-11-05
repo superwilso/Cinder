@@ -129,6 +129,14 @@ pub enum Screen {
     ClockSet,
     /// Settings ▸ Wi-Fi (`wifi.rs`). Reached only when the Wi-Fi install option is on the player.
     Wifi,
+    /// Settings ▸ Wi-Fi ▸ Network: the networks in range; tap one to join, the joined one to forget.
+    WifiNetworks,
+    /// Settings ▸ Wi-Fi ▸ Internet radio (`netradio.rs`).
+    NetRadio,
+    /// Settings ▸ Wi-Fi ▸ Phone remote: the switch, the address and the code.
+    WifiRemote,
+    /// Settings ▸ Wi-Fi ▸ Options: Turn on at start, Set the clock, ListenBrainz, Check for updates.
+    WifiOptions,
     /// Genre filter picker, pushed from the Library's filter strip. A picker, not a browse tab:
     /// 95 genres on the reference device is too many for a chip cycle and too few to deserve its
     /// own place in the tab strip.
@@ -604,6 +612,25 @@ pub enum Action {
     WifiTimeSync,
     /// Settings ▸ Wi-Fi ▸ the joined network ▸ Forget: `cinder-wifi forget`, then `off`.
     WifiForget,
+    /// Settings ▸ Wi-Fi ▸ Send plays to ListenBrainz switched on while connected: send now
+    /// (otherwise the shell sends after each connect and every 15 minutes while on).
+    WifiListenBrainz,
+    /// Settings ▸ Wi-Fi ▸ Check for updates switched on while connected: check now (otherwise once
+    /// a day while connected).
+    WifiUpdateCheck,
+    /// Settings ▸ Wi-Fi ▸ Internet radio opened: the shell reads cinder_radio.txt again and hands
+    /// it over with `set_radio_stations` (a file edited over USB shows up without a restart).
+    RadioOpen,
+    /// A station tapped: the shell takes it with `take_radio` and plays it.
+    RadioPlay,
+    /// The playing station tapped again: stop.
+    RadioStop,
+    /// Settings ▸ Wi-Fi ▸ Phone remote switched on (true) or off. cinder-ffi starts and stops the
+    /// server itself; the shell only drains its button presses and uploads.
+    Remote(bool),
+    /// Settings ▸ Wi-Fi ▸ AirPlay switched: the shell reads `cinder_wifi_airplay()` and starts or
+    /// stops the receiver to match.
+    WifiAirPlay,
     SoundBypass(bool), // A/B: true = bypass whole chain (B), false = re-enable (A)
     SleepTimer(u32),   // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
     ShuffleToggle,     // Now Playing shuffle on/off (FFI rebuilds the active context)
@@ -1628,6 +1655,27 @@ pub struct App {
     /// Settings ▸ Wi-Fi ▸ Turn on at start / Set the clock. Saved; both off unless switched on.
     wifi_autostart: bool,
     wifi_clock: bool,
+    /// Settings ▸ Wi-Fi ▸ Send plays to ListenBrainz / Check for updates. Saved; off by default.
+    wifi_lb: bool,
+    wifi_updates: bool,
+    /// Settings ▸ Wi-Fi ▸ AirPlay. Saved; off by default. And what the receiver is doing.
+    wifi_airplay: bool,
+    airplay_note: String,
+    /// Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing lyrics. Saved; off by default.
+    wifi_lyrics: bool,
+    /// What the shell last said about each (shown as the row's second line).
+    wifi_lb_note: String,
+    wifi_update_note: String,
+    /// Internet radio: the stations from the drive, what the shell says, and the pick it takes.
+    radio_stations: Vec<crate::netradio::Station>,
+    radio_status: crate::netradio::Status,
+    radio_pick: Option<usize>,
+    /// Settings ▸ Wi-Fi ▸ Phone remote: on for this boot only (never saved), its code and port.
+    remote_on: bool,
+    remote_code: String,
+    remote_port: u16,
+    /// The link went while the remote was on: cinder-ffi stops the server at the next frame.
+    remote_dropped: bool,
     /// A/B compare on the Sound screen: false = A (effects active), true = B (whole chain bypassed,
     /// "direct"). The Option button flips it for an instant listen test; the shell calls the DSP
     /// bypass. Independent of the per-effect toggles — flipping back to A restores them.
@@ -2146,6 +2194,20 @@ impl Default for App {
             wifi_join: None,
             wifi_autostart: false,
             wifi_clock: false,
+            wifi_lb: false,
+            wifi_updates: false,
+            wifi_airplay: false,
+            airplay_note: String::new(),
+            wifi_lyrics: false,
+            wifi_lb_note: String::new(),
+            wifi_update_note: String::new(),
+            radio_stations: Vec::new(),
+            radio_status: crate::netradio::Status::default(),
+            radio_pick: None,
+            remote_on: false,
+            remote_code: String::new(),
+            remote_port: 0,
+            remote_dropped: false,
             snd_ab_bypass: false,
             sound_sel: 0,
             storage: String::new(),
@@ -4386,16 +4448,6 @@ impl App {
             }
             crate::settings::ROW_WIFI => {
                 self.push(Screen::Wifi);
-                // Opening the page with the radio on and nothing listed is a request to look.
-                if !matches!(
-                    self.wifi_status.state,
-                    crate::wifi::State::Off | crate::wifi::State::Busy
-                ) && self.wifi_networks.is_empty()
-                    && !self.wifi_scanning
-                {
-                    self.wifi_scanning = true;
-                    return vec![Action::WifiScan];
-                }
                 vec![]
             }
             crate::settings::ROW_VOLUME_LIMIT => {
@@ -5512,6 +5564,10 @@ impl App {
                 vec![]
             }
             Screen::Wifi => self.tap_wifi(x, y),
+            Screen::WifiNetworks => self.tap_wifi_list(x, y),
+            Screen::NetRadio => self.tap_radio(x, y),
+            Screen::WifiRemote => self.tap_remote(x, y),
+            Screen::WifiOptions => self.tap_wifi_options(x, y),
             Screen::ClockSet => {
                 if crate::clockset::hit_set(x, y) {
                     self.notify(crate::i18n::text("Clock set"));
@@ -7103,7 +7159,7 @@ impl App {
     fn tap_wifi(&mut self, x: i32, y: i32) -> Vec<Action> {
         use crate::wifi::{Hit, State};
         let on = !matches!(self.wifi_status.state, State::Off);
-        match crate::wifi::hit(x, y, self.wifi_networks.len(), on) {
+        match crate::wifi::hit(x, y, on) {
             Hit::Toggle => {
                 if matches!(self.wifi_status.state, State::Busy) {
                     return vec![];
@@ -7116,22 +7172,181 @@ impl App {
                 }
                 vec![Action::WifiPower(!on)]
             }
+            Hit::Networks => {
+                self.push(Screen::WifiNetworks);
+                // Opening the list with nothing in it is a request to look.
+                if !matches!(self.wifi_status.state, State::Busy)
+                    && self.wifi_networks.is_empty()
+                    && !self.wifi_scanning
+                {
+                    self.wifi_scanning = true;
+                    return vec![Action::WifiScan];
+                }
+                vec![]
+            }
+            Hit::Radio => {
+                self.push(Screen::NetRadio);
+                vec![Action::RadioOpen]
+            }
+            Hit::Remote => {
+                self.push(Screen::WifiRemote);
+                vec![]
+            }
+            Hit::AirPlay => {
+                self.wifi_airplay = !self.wifi_airplay;
+                if !self.wifi_airplay {
+                    self.airplay_note.clear();
+                }
+                vec![Action::WifiAirPlay]
+            }
+            Hit::Options => {
+                self.push(Screen::WifiOptions);
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// A tap on Settings ▸ Wi-Fi ▸ Options.
+    fn tap_wifi_options(&mut self, _x: i32, y: i32) -> Vec<Action> {
+        use crate::wifi::{Hit, State};
+        let connected = matches!(self.wifi_status.state, State::Connected);
+        match crate::wifi::hit_options(y) {
             Hit::AutoStart => {
                 self.wifi_autostart = !self.wifi_autostart;
                 vec![]
             }
             Hit::Clock => {
                 self.wifi_clock = !self.wifi_clock;
-                if self.wifi_clock && matches!(self.wifi_status.state, State::Connected) {
+                if self.wifi_clock && connected {
                     return vec![Action::WifiTimeSync];
                 }
                 vec![]
             }
-            Hit::Scan if !self.wifi_scanning => {
+            Hit::ListenBrainz => {
+                self.wifi_lb = !self.wifi_lb;
+                if !self.wifi_lb {
+                    self.wifi_lb_note.clear();
+                } else if connected {
+                    return vec![Action::WifiListenBrainz];
+                }
+                vec![]
+            }
+            Hit::Lyrics => {
+                self.wifi_lyrics = !self.wifi_lyrics;
+                vec![]
+            }
+            Hit::Updates => {
+                self.wifi_updates = !self.wifi_updates;
+                if !self.wifi_updates {
+                    self.wifi_update_note.clear();
+                } else if connected {
+                    return vec![Action::WifiUpdateCheck];
+                }
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// `http://<ip>:<port>` while the phone remote is on.
+    fn remote_address(&self) -> String {
+        format!("http://{}:{}", self.wifi_status.ip, self.remote_port)
+    }
+    fn remote_row_note(&self) -> String {
+        if self.remote_on {
+            self.remote_address()
+        } else {
+            crate::i18n::text("Off").to_string()
+        }
+    }
+    /// A tap on Settings ▸ Wi-Fi ▸ Phone remote: the switch, and only while connected.
+    fn tap_remote(&mut self, _x: i32, y: i32) -> Vec<Action> {
+        if !crate::wifi::hit_remote(y) {
+            return vec![];
+        }
+        if !self.remote_on && !matches!(self.wifi_status.state, crate::wifi::State::Connected) {
+            return vec![];
+        }
+        self.remote_on = !self.remote_on;
+        if !self.remote_on {
+            self.remote_code.clear();
+        }
+        vec![Action::Remote(self.remote_on)]
+    }
+    /// cinder-ffi: the server is up with this code on this port (or did not start: `on` false).
+    pub fn set_remote(&mut self, on: bool, code: &str, port: u16) {
+        self.remote_on = on;
+        self.remote_code = code.to_string();
+        self.remote_port = port;
+    }
+    pub fn remote_on(&self) -> bool {
+        self.remote_on
+    }
+    /// True once after the link took the remote down (cinder-ffi then stops the server).
+    pub fn take_remote_dropped(&mut self) -> bool {
+        std::mem::take(&mut self.remote_dropped)
+    }
+
+    /// The Wi-Fi page's Internet radio row, second line.
+    fn radio_row_note(&self) -> String {
+        use crate::netradio::State;
+        match self.radio_status.state {
+            State::Off => match self.radio_stations.len() {
+                0 => crate::i18n::text("Stations from cinder_radio.txt").to_string(),
+                1 => crate::i18n::text("1 station").to_string(),
+                n => crate::ui_format!("{} stations", n),
+            },
+            _ => crate::netradio::strip_line(&self.radio_status, &self.radio_stations),
+        }
+    }
+
+    /// A tap on Settings ▸ Wi-Fi ▸ Internet radio: a station plays, the playing one stops.
+    fn tap_radio(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::netradio::State;
+        let Some(i) = crate::netradio::hit(x, y, self.radio_stations.len()) else {
+            return vec![];
+        };
+        if self.radio_status.station == Some(i) && !matches!(self.radio_status.state, State::Off) {
+            self.radio_status.state = State::Off;
+            self.radio_status.note.clear();
+            return vec![Action::RadioStop];
+        }
+        self.radio_pick = Some(i);
+        self.radio_status = crate::netradio::Status {
+            state: State::Connecting,
+            station: Some(i),
+            ..Default::default()
+        };
+        vec![Action::RadioPlay]
+    }
+
+    /// cinder_radio.txt's text (or "" when there is none).
+    pub fn set_radio_stations(&mut self, text: &str) {
+        self.radio_stations = crate::netradio::parse_stations(text);
+    }
+    /// The shell's radio status (`netradio::parse_status`).
+    pub fn set_radio_status(&mut self, text: &str) {
+        self.radio_status = crate::netradio::parse_status(text);
+    }
+    /// The station the last `RadioPlay` asked for: its index and URL. Taken once.
+    pub fn take_radio(&mut self) -> Option<(usize, String)> {
+        let i = self.radio_pick.take()?;
+        self.radio_stations.get(i).map(|s| (i, s.url.clone()))
+    }
+
+    /// A tap on Settings ▸ Wi-Fi ▸ Network.
+    fn tap_wifi_list(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::wifi::{ListHit, State};
+        if matches!(self.wifi_status.state, State::Off | State::Busy) {
+            return vec![];
+        }
+        match crate::wifi::hit_list(x, y, self.wifi_networks.len()) {
+            ListHit::Scan if !self.wifi_scanning => {
                 self.wifi_scanning = true;
                 vec![Action::WifiScan]
             }
-            Hit::Network(i) => {
+            ListHit::Network(i) => {
                 let Some(n) = self.wifi_networks.get(i).cloned() else {
                     return vec![];
                 };
@@ -7180,6 +7395,17 @@ impl App {
             self.wifi_networks.clear();
             self.wifi_scanning = false;
         }
+        // The remote serves on the Wi-Fi link only; with the link gone it goes too.
+        if self.remote_on
+            && !matches!(
+                st.state,
+                crate::wifi::State::Connected | crate::wifi::State::Busy
+            )
+        {
+            self.remote_on = false;
+            self.remote_code.clear();
+            self.remote_dropped = true;
+        }
         crate::wifi::note_state(st.state);
         self.wifi_status = st;
     }
@@ -7203,6 +7429,55 @@ impl App {
     }
     pub fn set_wifi_clock(&mut self, on: bool) {
         self.wifi_clock = on;
+    }
+
+    /// Settings ▸ Wi-Fi ▸ Send plays to ListenBrainz: the shell sends after each connect and
+    /// every 15 minutes while connected.
+    pub fn wifi_lb(&self) -> bool {
+        self.wifi_lb
+    }
+    pub fn set_wifi_lb(&mut self, on: bool) {
+        self.wifi_lb = on;
+    }
+    /// Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing lyrics: cinder-ffi asks LRCLIB for a song that
+    /// starts with no lyrics, while connected.
+    pub fn wifi_lyrics(&self) -> bool {
+        self.wifi_lyrics
+    }
+    pub fn set_wifi_lyrics(&mut self, on: bool) {
+        self.wifi_lyrics = on;
+    }
+    /// Wi-Fi is connected (the last status said so).
+    pub fn wifi_connected(&self) -> bool {
+        matches!(self.wifi_status.state, crate::wifi::State::Connected)
+    }
+
+    /// Settings ▸ Wi-Fi ▸ AirPlay: the receiver runs while this is on and Wi-Fi is connected.
+    pub fn wifi_airplay(&self) -> bool {
+        self.wifi_airplay
+    }
+    pub fn set_wifi_airplay(&mut self, on: bool) {
+        self.wifi_airplay = on;
+    }
+    /// What the AirPlay receiver is doing ("Shows up as Walkman (Cinder)", "Playing from AirPlay").
+    pub fn set_airplay_note(&mut self, note: &str) {
+        self.airplay_note = note.chars().take(60).collect();
+    }
+
+    /// Settings ▸ Wi-Fi ▸ Check for updates: the shell checks once a day while connected.
+    pub fn wifi_updates(&self) -> bool {
+        self.wifi_updates
+    }
+    pub fn set_wifi_updates(&mut self, on: bool) {
+        self.wifi_updates = on;
+    }
+    /// What the last ListenBrainz send said ("Sent 12 songs", "ListenBrainz refused the token").
+    pub fn set_wifi_lb_note(&mut self, note: &str) {
+        self.wifi_lb_note = note.chars().take(60).collect();
+    }
+    /// What the last update check said ("Cinder v0.3.23 is out — update with the installer").
+    pub fn set_wifi_update_note(&mut self, note: &str) {
+        self.wifi_update_note = note.chars().take(60).collect();
     }
 
     /// The join the last `WifiJoin` asked for: SSID bytes and password. Taken once.
@@ -11379,11 +11654,51 @@ impl App {
                 fonts,
                 &crate::wifi::View {
                     status: &self.wifi_status,
+                    radio_note: &self.radio_row_note(),
+                    remote_note: &self.remote_row_note(),
+                    airplay: self.wifi_airplay,
+                    airplay_note: &self.airplay_note,
+                },
+            ),
+            Screen::WifiOptions => crate::wifi::render_options(
+                c,
+                &theme,
+                fonts,
+                &crate::wifi::OptionsView {
+                    options: [
+                        self.wifi_autostart,
+                        self.wifi_clock,
+                        self.wifi_lb,
+                        self.wifi_updates,
+                        self.wifi_lyrics,
+                    ],
+                    lb_note: &self.wifi_lb_note,
+                    update_note: &self.wifi_update_note,
+                },
+            ),
+            Screen::NetRadio => {
+                crate::netradio::render(c, &theme, fonts, &self.radio_stations, &self.radio_status)
+            }
+            Screen::WifiRemote => crate::wifi::render_remote(
+                c,
+                &theme,
+                fonts,
+                &crate::wifi::RemoteView {
+                    on: self.remote_on,
+                    wifi_connected: matches!(self.wifi_status.state, crate::wifi::State::Connected),
+                    address: &self.remote_address(),
+                    code: &self.remote_code,
+                },
+            ),
+            Screen::WifiNetworks => crate::wifi::render_list(
+                c,
+                &theme,
+                fonts,
+                &crate::wifi::ListView {
+                    status: &self.wifi_status,
                     networks: &self.wifi_networks,
                     scanning: self.wifi_scanning,
                     sel: None,
-                    autostart: self.wifi_autostart,
-                    clock: self.wifi_clock,
                 },
             ),
             Screen::Fm => {
@@ -18277,6 +18592,10 @@ mod tests {
             Screen::VizSet,
             Screen::ClockSet,
             Screen::Wifi,
+            Screen::WifiNetworks,
+            Screen::NetRadio,
+            Screen::WifiRemote,
+            Screen::WifiOptions,
             Screen::GenreFilter,
             Screen::Folders,
             Screen::SensMe,
@@ -18626,6 +18945,10 @@ mod tests {
             VizSet,
             ClockSet,
             Wifi,
+            WifiNetworks,
+            NetRadio,
+            WifiRemote,
+            WifiOptions,
             GenreFilter,
             Folders,
             SensMe,
@@ -26181,28 +26504,39 @@ mod r4_tests {
 
     /// The y of the first row Settings ▸ Wi-Fi's hit test gives `want` for, found through the same
     /// hit test the finger goes through.
-    fn wifi_y(networks: usize, on: bool, want: crate::wifi::Hit) -> i32 {
+    fn wifi_y(on: bool, want: crate::wifi::Hit) -> i32 {
         (0..crate::canvas::H as i32)
-            .find(|&y| crate::wifi::hit(240, y, networks, on) == want)
+            .find(|&y| crate::wifi::hit(240, y, on) == want)
+            .expect("that row is on the page")
+    }
+    fn wifi_list_y(networks: usize, want: crate::wifi::ListHit) -> i32 {
+        (0..crate::canvas::H as i32)
+            .find(|&y| crate::wifi::hit_list(240, y, networks) == want)
             .expect("that row is on the page")
     }
 
     /// Settings ▸ Wi-Fi: the switch asks the shell once (a second tap while it works does
-    /// nothing), a secured network goes through the password keyboard, an open one joins at once,
-    /// WEP is refused, and the join is handed over exactly once.
+    /// nothing); Network opens the list and scans; a secured network goes through the password
+    /// keyboard and back to the list, an open one joins at once, WEP is refused, and the join is
+    /// handed over exactly once.
     #[test]
     fn wifi_switch_password_and_join_reach_the_shell_once() {
-        use crate::wifi::Hit;
+        use crate::wifi::{Hit, ListHit};
         let mut a = App::unlocked();
         a.push_for_test(Screen::Wifi);
         a.set_wifi_status("state=off\n", "");
-        let y = wifi_y(0, false, Hit::Toggle);
+        let y = wifi_y(false, Hit::Toggle);
         assert_eq!(a.tap(240, y), vec![Action::WifiPower(true)]);
         assert!(a.tap(240, y).is_empty(), "busy: no second command");
         a.set_wifi_status("state=on\n", "");
+        assert_eq!(
+            a.tap(240, wifi_y(true, Hit::Networks)),
+            vec![Action::WifiScan]
+        );
+        assert_eq!(a.current(), Screen::WifiNetworks);
         a.set_wifi_scan("-50\twpa2\t6162\n-60\topen\t6364\n-70\twep\t6566\n");
 
-        let y0 = wifi_y(3, true, Hit::Network(0));
+        let y0 = wifi_list_y(3, ListHit::Network(0));
         assert!(
             a.tap(240, y0).is_empty(),
             "a secured network asks for its password first"
@@ -26218,7 +26552,7 @@ mod r4_tests {
             a.tap(done.0 + done.2 / 2, done.1 + done.3 / 2),
             vec![Action::WifiJoin]
         );
-        assert_eq!(a.current(), Screen::Wifi);
+        assert_eq!(a.current(), Screen::WifiNetworks);
         assert_eq!(
             a.take_wifi_join(),
             Some((b"ab".to_vec(), "pass word1".to_string()))
@@ -26226,53 +26560,137 @@ mod r4_tests {
         assert_eq!(a.take_wifi_join(), None, "the password is handed over once");
 
         a.set_wifi_status("state=on\n", "");
-        let y1 = wifi_y(3, true, Hit::Network(1));
+        let y1 = wifi_list_y(3, ListHit::Network(1));
         assert_eq!(
             a.tap(240, y1),
             vec![Action::WifiJoin],
             "an open network joins at once"
         );
         assert_eq!(a.take_wifi_join(), Some((b"cd".to_vec(), String::new())));
+        assert!(a.tap(240, y1).is_empty(), "busy: the list ignores taps");
 
         a.set_wifi_status("state=on\n", "");
-        let y2 = wifi_y(3, true, Hit::Network(2));
+        let y2 = wifi_list_y(3, ListHit::Network(2));
         assert!(a.tap(240, y2).is_empty(), "WEP is refused");
         assert_eq!(a.take_wifi_join(), None);
 
-        let on = wifi_y(3, true, Hit::Toggle);
-        assert_eq!(a.tap(240, on), vec![Action::WifiPower(false)]);
+        a.pop();
+        assert_eq!(
+            a.tap(240, wifi_y(true, Hit::Toggle)),
+            vec![Action::WifiPower(false)]
+        );
         a.set_wifi_status("state=off\n", "");
         assert!(a.wifi_networks.is_empty(), "off forgets the list");
     }
 
-    /// Turn on at start and Set the clock are plain saved switches, off by default; Set the clock
-    /// switched on while connected syncs at once. Tapping the joined network asks before forgetting.
+    /// Phone remote: only while connected; on and off reach cinder-ffi; the link going takes it down.
     #[test]
-    fn wifi_options_and_forget() {
-        use crate::wifi::Hit;
+    fn phone_remote_switch() {
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::WifiRemote);
+        let y = crate::chrome::HEADER_BOTTOM + 5;
+        a.set_wifi_status("state=on\n", "");
+        assert!(
+            a.tap(240, y).is_empty(),
+            "not connected: nothing to serve on"
+        );
+        a.set_wifi_status("state=connected\nssid=6162\nip=192.0.2.5\n", "");
+        assert_eq!(a.tap(240, y), vec![Action::Remote(true)]);
+        a.set_remote(true, "123456", 8080);
+        assert_eq!(a.remote_address(), "http://192.0.2.5:8080");
+        a.set_wifi_status("state=off\n", "");
+        assert!(
+            !a.remote_on() && a.take_remote_dropped(),
+            "the link going takes the remote down"
+        );
+        assert!(!a.take_remote_dropped(), "once");
+        a.set_wifi_status("state=connected\nssid=6162\nip=192.0.2.5\n", "");
+        a.set_remote(true, "123456", 8080);
+        assert_eq!(a.tap(240, y), vec![Action::Remote(false)]);
+    }
+
+    /// Internet radio: opening it asks for the file, a station plays (its URL handed over once),
+    /// the playing one stops.
+    #[test]
+    fn radio_plays_and_stops() {
         let mut a = App::unlocked();
         a.push_for_test(Screen::Wifi);
-        assert!(
-            !a.wifi_autostart() && !a.wifi_clock(),
-            "both off on a fresh install"
-        );
-        a.set_wifi_status("state=off\n", "");
-        assert!(a.tap(240, wifi_y(0, false, Hit::AutoStart)).is_empty());
-        assert!(a.wifi_autostart());
-        assert!(
-            a.tap(240, wifi_y(0, false, Hit::Clock)).is_empty(),
-            "off: nothing to sync over"
-        );
-        assert!(a.wifi_clock());
-        a.tap(240, wifi_y(0, false, Hit::Clock));
         a.set_wifi_status("state=connected\nssid=6162\n", "");
         assert_eq!(
-            a.tap(240, wifi_y(0, true, Hit::Clock)),
-            vec![Action::WifiTimeSync]
+            a.tap(240, wifi_y(true, crate::wifi::Hit::Radio)),
+            vec![Action::RadioOpen]
+        );
+        assert_eq!(a.current(), Screen::NetRadio);
+        a.set_radio_stations("A | http://a.example/1\nB | https://b.example/2\n");
+        let y1 = (0..crate::canvas::H as i32)
+            .find(|&y| crate::netradio::hit(240, y, 2) == Some(1))
+            .unwrap();
+        assert_eq!(a.tap(240, y1), vec![Action::RadioPlay]);
+        assert_eq!(a.take_radio(), Some((1, "https://b.example/2".to_string())));
+        assert_eq!(a.take_radio(), None, "taken once");
+        a.set_radio_status("state=playing\nstation=1\ntitle=X - Y\n");
+        assert_eq!(
+            a.tap(240, y1),
+            vec![Action::RadioStop],
+            "the playing one stops"
+        );
+        assert!(a.take_radio().is_none());
+    }
+
+    /// The four options are plain saved switches, off by default. Set the clock, ListenBrainz and
+    /// Check for updates switched on while connected act at once. Tapping the joined network asks
+    /// before forgetting it.
+    #[test]
+    fn wifi_options_and_forget() {
+        use crate::wifi::{Hit, ListHit};
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::Wifi);
+        assert!(!a.wifi_autostart() && !a.wifi_clock() && !a.wifi_lb() && !a.wifi_updates());
+        assert!(!a.wifi_airplay(), "AirPlay off on a fresh install");
+        a.set_wifi_status("state=off\n", "");
+        assert_eq!(
+            a.tap(240, wifi_y(false, Hit::AirPlay)),
+            vec![Action::WifiAirPlay]
+        );
+        assert!(a.wifi_airplay());
+        a.tap(240, wifi_y(false, Hit::Options));
+        assert_eq!(a.current(), Screen::WifiOptions);
+        let opt_y = |h| {
+            (0..crate::canvas::H as i32)
+                .find(|&y| crate::wifi::hit_options(y) == h)
+                .unwrap()
+        };
+        for h in crate::wifi::OPTIONS {
+            assert!(a.tap(240, opt_y(h)).is_empty(), "off: {h:?} only saves");
+        }
+        assert!(a.wifi_autostart() && a.wifi_clock() && a.wifi_lb() && a.wifi_updates());
+        assert!(a.wifi_lyrics());
+        for h in crate::wifi::OPTIONS {
+            a.tap(240, opt_y(h));
+        }
+        assert!(!a.wifi_autostart() && !a.wifi_clock() && !a.wifi_lb() && !a.wifi_updates());
+
+        a.set_wifi_status("state=connected\nssid=6162\n", "");
+        assert_eq!(a.tap(240, opt_y(Hit::Clock)), vec![Action::WifiTimeSync]);
+        assert_eq!(
+            a.tap(240, opt_y(Hit::ListenBrainz)),
+            vec![Action::WifiListenBrainz]
+        );
+        assert_eq!(
+            a.tap(240, opt_y(Hit::Updates)),
+            vec![Action::WifiUpdateCheck]
+        );
+        assert!(a.tap(240, opt_y(Hit::AutoStart)).is_empty());
+        a.set_wifi_lb_note("Sent 3 songs");
+        a.tap(240, opt_y(Hit::ListenBrainz));
+        assert!(
+            a.wifi_lb_note.is_empty(),
+            "switching it off clears its note"
         );
 
+        a.push_for_test(Screen::WifiNetworks);
         a.set_wifi_scan("-50\twpa2\t6162\n");
-        assert!(a.tap(240, wifi_y(1, true, Hit::Network(0))).is_empty());
+        assert!(a.tap(240, wifi_list_y(1, ListHit::Network(0))).is_empty());
         assert_eq!(
             a.confirm,
             Some(crate::confirm::Ask::WifiForget),

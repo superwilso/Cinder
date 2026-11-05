@@ -395,7 +395,7 @@ cp -f "$HERE/cinder-wifi" "$DIST/cinder-wifi"
 # skipped, and the installer leaves the `wifi` option out (installer/build.rs: not required).
 WIFI_DIR="$REPO/wifi"
 WIFI_KO="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko"
-WIFI_BIN="wpa_supplicant wpa_cli iw curl cacert.pem"
+WIFI_BIN="wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync"
 WIFI_SH="wifi-up.sh wifi-down.sh dhcp.sh"
 echo "[6n] stage wifi…"
 for f in $WIFI_KO; do
@@ -408,7 +408,7 @@ wifi_ok=1
 for f in $WIFI_KO $WIFI_BIN; do [ -s "$WIFI_DIR/out/$f" ] || wifi_ok=0; done
 if [ "$wifi_ok" = 1 ]; then
     for f in $WIFI_KO $WIFI_BIN; do cp -f "$WIFI_DIR/out/$f" "$DIST/wifi-$f"; done
-    for f in $WIFI_SH; do cp -f "$WIFI_DIR/device/$f" "$DIST/wifi-$f"; done
+    for f in $WIFI_SH cinder_radio.txt; do cp -f "$WIFI_DIR/device/$f" "$DIST/wifi-$f"; done
     echo "staged wifi -> $DIST/wifi-*"
 else
     rm -f "$DIST"/wifi-*

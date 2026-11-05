@@ -9,7 +9,10 @@ case "$1" in
       for r in $router; do busybox route add default gw "$r" dev "$interface"; break; done
     fi
     echo "$dns" > "${WIFI_RUN:-/tmp/cinder-wifi}/dns"
-    for d in $dns; do echo "nameserver $d"; done > /tmp/resolv.conf  # Sony ships /etc/resolv.conf -> /tmp/resolv.conf
+    # Sony ships /etc/resolv.conf -> /tmp/resolv.conf. World-readable: cinder-home (uid 100) runs
+    # curl itself and must be able to read the DNS servers.
+    for d in $dns; do echo "nameserver $d"; done > /tmp/resolv.conf.new
+    chmod 644 /tmp/resolv.conf.new && mv /tmp/resolv.conf.new /tmp/resolv.conf
     echo "lease: ip=$ip router=$router dns=$dns"
     ;;
   deconfig) busybox ifconfig "$interface" 0.0.0.0 ;;

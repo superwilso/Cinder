@@ -24,6 +24,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 #include <poll.h>
+#include <sys/wait.h>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <dirent.h>
@@ -3681,7 +3682,11 @@ static bool g_wifi_scan_ready = false;
 static bool g_wifi_on = false;           // last status said the radio is on: poll it
 static std::string g_wifi_status, g_wifi_note, g_wifi_scan;
 
-struct WifiJob { int act; std::string join; bool clock; };
+struct WifiJob { int act; std::string join; bool clock; bool lb; bool update; };
+static bool g_wifi_notes_ready = false, g_wifi_lb_set = false, g_wifi_up_set = false, g_wifi_newer = false;
+static std::string g_wifi_lb_note, g_wifi_up_note;
+static bool g_wifi_connected = false;     // last status said connected (render thread only)
+static long long g_wifi_last_update = -1; // monotonic ms of the last update check that ran
 
 // Run the helper with `verb`; its stdout comes back in `out`. `in` (optional) is written to its
 // stdin. Returns the exit code, -1 when it could not be run.
@@ -3723,6 +3728,8 @@ static void* wifi_thread(void* arg) {
             else out = rc == 2 ? "That password cannot be used" : "Could not save the network";
             break;
         case CINDER_ACT_WIFI_TIMESYNC: rc = wifi_helper("timesync", nullptr, &out); break;
+        case CINDER_ACT_WIFI_LISTENBRAINZ:
+        case CINDER_ACT_WIFI_UPDATE_CHECK: break;   // after the status below: they need the link
         case CINDER_ACT_WIFI_FORGET:
             rc = wifi_helper("forget", nullptr, &out);
             wifi_helper("off", nullptr, nullptr);
@@ -3745,6 +3752,32 @@ static void* wifi_thread(void* arg) {
     if (scanned && rc != 0) scan.clear();
     std::string st;
     wifi_helper("status", nullptr, &st);
+    // Over the link, as cinder-home itself (it is in the inet group): ListenBrainz and the update
+    // check. Both only when the status says connected, and each only when its switch is on.
+    bool online = st.find("state=connected") != std::string::npos;
+    bool do_lb = online && job->lb && (connected || job->act == CINDER_ACT_WIFI_LISTENBRAINZ);
+    bool do_up = online && job->update;
+    std::string lb_note, up_note;
+    int up_rc = -2;
+    if (do_lb) {
+        long long off = 0;
+        size_t at = st.find("utc_offset=");
+        if (at != std::string::npos) off = std::atoll(st.c_str() + at + 11);
+        char nb[96];
+        int n = cinder_lb_submit("/contents/.scrobbler.log", off, nb, (int)sizeof nb);
+        lb_note = nb;
+        char lm[200];
+        std::snprintf(lm, sizeof lm, "wifi: listenbrainz -> %d %s", n, nb);
+        clog_(lm);
+    }
+    if (do_up) {
+        char nb[96];
+        up_rc = cinder_update_check(nb, (int)sizeof nb);
+        up_note = nb;
+        char lm[200];
+        std::snprintf(lm, sizeof lm, "wifi: update check -> %d %s", up_rc, nb);
+        clog_(lm);
+    }
     char m[200];
     std::snprintf(m, sizeof m, "wifi: act %d -> rc=%d%s%s", job->act, rc, note.empty() ? "" : " ", note.c_str());
     clog_(m);
@@ -3753,6 +3786,9 @@ static void* wifi_thread(void* arg) {
     g_wifi_status = st;
     g_wifi_note = note;
     if (scanned) { g_wifi_scan = scan; g_wifi_scan_ready = true; }
+    // A send with nothing new keeps the last note ("Sent 3 songs") rather than blanking it.
+    if (do_lb && !lb_note.empty()) { g_wifi_lb_note = lb_note; g_wifi_lb_set = true; g_wifi_notes_ready = true; }
+    if (do_up) { g_wifi_up_note = up_note; g_wifi_up_set = true; g_wifi_newer = up_rc == 1; g_wifi_notes_ready = true; }
     g_wifi_ready = true;
     g_wifi_running = false;
     pthread_mutex_unlock(&g_wifi_mu);
@@ -3769,7 +3805,17 @@ static void wifi_start(int act, const std::string& join = std::string()) {
     pthread_attr_init(&at);
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     pthread_t th;
-    WifiJob* job = new WifiJob{act, join, cinder_wifi_clock() != 0};
+    // The update check: when its switch asks, else once a day on a job that may find the link up.
+    // g_wifi_last_update moves only when a check actually ran (wifi_tick), so a poll before the
+    // link is up does not use the day's check.
+    struct timespec ts_now;
+    ::clock_gettime(CLOCK_MONOTONIC, &ts_now);
+    long long now_ms = (long long)ts_now.tv_sec * 1000 + ts_now.tv_nsec / 1000000;
+    bool due = g_wifi_last_update < 0 || now_ms - g_wifi_last_update > 24LL * 3600 * 1000;
+    bool want_up = cinder_wifi_updates() != 0
+                && (act == CINDER_ACT_WIFI_UPDATE_CHECK
+                    || (due && (act == CINDER_ACT_WIFI_ON || act == CINDER_ACT_WIFI_JOIN || g_wifi_connected)));
+    WifiJob* job = new WifiJob{act, join, cinder_wifi_clock() != 0, cinder_wifi_lb() != 0, want_up};
     if (pthread_create(&th, &at, wifi_thread, job) != 0) {
         delete job;
         pthread_mutex_lock(&g_wifi_mu);
@@ -3821,10 +3867,34 @@ static void wifi_tick(long long now) {
     if (have) {
         cinder_set_wifi_status(st.c_str(), note.c_str());
         g_wifi_on = st.find("state=off") == std::string::npos;
+        g_wifi_connected = st.find("state=connected") != std::string::npos;
     }
     if (have_scan) cinder_set_wifi_scan(scan.c_str());
-    static long long last_poll = 0;
-    if (g_wifi_on && now - last_poll >= 15000) { last_poll = now; wifi_start(0); }
+    std::string lbn, upn;
+    bool lb_set = false, up_set = false, newer = false;
+    pthread_mutex_lock(&g_wifi_mu);
+    if (g_wifi_notes_ready) {
+        lbn = g_wifi_lb_note; upn = g_wifi_up_note; lb_set = g_wifi_lb_set; up_set = g_wifi_up_set;
+        newer = g_wifi_newer;
+        g_wifi_notes_ready = g_wifi_lb_set = g_wifi_up_set = g_wifi_newer = false;
+    }
+    pthread_mutex_unlock(&g_wifi_mu);
+    if (up_set) {
+        struct timespec t;
+        ::clock_gettime(CLOCK_MONOTONIC, &t);
+        g_wifi_last_update = (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+    }
+    if (lb_set || up_set) cinder_set_wifi_notes(lb_set ? lbn.c_str() : nullptr, up_set ? upn.c_str() : nullptr);
+    if (newer) cinder_toast(upn.c_str());
+    // While on: the status every 15 s, and (only with its switch on) a ListenBrainz send every
+    // 15 minutes, which is the same worker with the link already up.
+    static long long last_poll = 0, last_lb = 0;
+    if (g_wifi_on && now - last_poll >= 15000) {
+        last_poll = now;
+        bool lb_due = cinder_wifi_lb() && now - last_lb >= 15LL * 60 * 1000;
+        if (lb_due) last_lb = now;
+        wifi_start(lb_due ? CINDER_ACT_WIFI_LISTENBRAINZ : 0);
+    }
 }
 
 // For the LIVE theme toggle: match the backlight to the current theme.
@@ -11287,14 +11357,20 @@ static bool g_amb_bt_source_held = false;       // SetCurrentSource(true) is our
 //   radio     the tuner is powered — an analogue path, no stream of ours is open
 //   usb-dac   the host has opened a stream since DAC mode was entered
 //   ambient   a soundscape on its own, jack or Bluetooth
+// Internet radio is playing (its thread is out). Declared here for audible_now; the player is
+// with the soundscape block.
+static volatile sig_atomic_t g_radio_alive = 0;
+// The AirPlay receiver has the output open (its block is beside the radio's).
+static volatile sig_atomic_t g_ap_out_open = 0;
 struct Audible {
-    bool library, receiver, radio, usb_dac, ambient;
-    bool any() const { return library || receiver || radio || usb_dac || ambient; }
+    bool library, receiver, radio, usb_dac, ambient, net;
+    bool any() const { return library || receiver || radio || usb_dac || ambient || net; }
     // Sources stage 1 has never been run under. Library music and a soundscape have (jack and
     // Bluetooth, 2026-09-28 and 10-04) and the receiver has ridden the same test since it shipped;
     // the radio is an analogue path through the codec and USB-DAC has the gadget streaming, and
     // neither has been through the early-suspend chain. They hold the SoC awake until one has.
-    bool unproven_in_stage1() const { return radio || usb_dac; }
+    // Internet radio also needs the Wi-Fi link awake, which early suspend has never been run with.
+    bool unproven_in_stage1() const { return radio || usb_dac || net; }
 };
 static Audible audible_now() {
     Audible a;
@@ -11303,6 +11379,7 @@ static Audible audible_now() {
     a.radio    = g_fm_on;
     a.usb_dac  = g_uac_playing;
     a.ambient  = g_amb_alive || g_amb_bt_alive;
+    a.net      = g_radio_alive || g_ap_out_open;
     return a;
 }
 static long long g_amb_hold_until = 0;               // a yield keeps the player off this long
@@ -11514,7 +11591,11 @@ static void amb_bt_start() {
     amb_spawn(amb_bt_thread);
 }
 
+static void radio_yield(const char* why);
+static void airplay_yield();
 void ambient_yield_for_music() {
+    radio_yield("Stopped: other audio started");
+    airplay_yield();
     const bool had = g_amb_alive || g_amb_bt_alive;
     if (g_amb_alive) g_amb_run = 0;
     if (g_amb_bt_alive) { g_amb_bt_run = 0; g_ldac_run = 0; }
@@ -11538,6 +11619,597 @@ static bool amb_can_play_jack() {
     return ok == 1;
 }
 
+
+// ── Internet radio (Settings > Wi-Fi > Internet radio) ───────────────────────────────────────────
+// Stations from /contents/cinder_radio.txt (parsed by the UI, netradio.rs). An MP3 stream from
+// curl (the Wi-Fi option's, run as cinder-home itself: it is in the inet group), decoded by
+// minimp3 (third_party/, CC0) and played the way a soundscape plays on its own: straight to the
+// jack PCM, or over Bluetooth through the transmitter's socket at 44.1 kHz. It is a bridge in the
+// same sense as the soundscape's: music, FM, USB-DAC, the receiver and USB storage each take the
+// output back through ambient_yield_for_music, which stops the radio first.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wall"
+#pragma GCC diagnostic ignored "-Wextra"
+#pragma GCC diagnostic ignored "-Wshorten-64-to-32"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#define MINIMP3_IMPLEMENTATION
+#define MINIMP3_ONLY_MP3
+#include "../third_party/minimp3/minimp3.h"
+#pragma GCC diagnostic pop
+#include "icy.h"
+
+static const char* const RADIO_CURL = "/system/vendor/cinder/wifi/curl";
+static const char* const RADIO_CA = "/system/vendor/cinder/wifi/cacert.pem";
+static const char* const RADIO_HDR = "/tmp/cinder-radio.hdr";
+static volatile sig_atomic_t g_radio_run = 0;
+static bool g_radio_bt = false;           // this play goes to Bluetooth (decided at start)
+static bool g_radio_source_held = false;  // we asked the transmitter for its source
+static bool g_radio_source_want = false;
+static pthread_mutex_t g_radio_mu = PTHREAD_MUTEX_INITIALIZER;
+static std::string g_radio_url, g_radio_status = "state=off\n";
+static int g_radio_station = -1;
+static bool g_radio_dirty = false;
+
+static void radio_say(const char* state, const std::string& title, const std::string& note) {
+    std::string t = "state=" + std::string(state) + "\nstation=" + std::to_string(g_radio_station) +
+                    "\ntitle=" + title + "\nnote=" + note + "\n";
+    pthread_mutex_lock(&g_radio_mu);
+    g_radio_status = t;
+    g_radio_dirty = true;
+    pthread_mutex_unlock(&g_radio_mu);
+}
+
+// curl, by argv (never a shell: the URL is the user's text), stdout to a pipe. -1 on failure.
+static pid_t radio_spawn(const std::string& url, int* fd_out) {
+    int fd[2];
+    if (::pipe(fd) < 0) return -1;
+    pid_t p = ::fork();
+    if (p < 0) { ::close(fd[0]); ::close(fd[1]); return -1; }
+    if (p == 0) {
+        ::dup2(fd[1], 1);
+        int nul = ::open("/dev/null", O_WRONLY);
+        if (nul >= 0) ::dup2(nul, 2);
+        for (int i = 3; i < 256; i++) ::close(i);
+        // Abort a stream that delivers under 1 byte a second for 20 s: a dead station must not
+        // leave the page saying PLAYING over silence.
+        ::execl(RADIO_CURL, "curl", "-sS", "-L", "--max-redirs", "5", "--connect-timeout", "15",
+                "--speed-limit", "1", "--speed-time", "20", "--cacert", RADIO_CA, "-A", "Cinder",
+                "-H", "Icy-MetaData: 1", "-D", RADIO_HDR, "--", url.c_str(), (char*)nullptr);
+        ::_exit(127);
+    }
+    ::close(fd[1]);
+    *fd_out = fd[0];
+    return p;
+}
+
+static void radio_reap(pid_t p, int fd) {
+    if (fd >= 0) ::close(fd);
+    if (p > 0) { ::kill(p, SIGTERM); ::waitpid(p, nullptr, 0); }
+}
+
+// Read up to n bytes, waiting at most 1 s (so a stop is seen within a second). 0 = nothing yet,
+// -1 = the stream ended.
+static ssize_t radio_read(int fd, unsigned char* b, size_t n) {
+    struct pollfd pf = { fd, POLLIN, 0 };
+    int r = ::poll(&pf, 1, 1000);
+    if (r <= 0) return r == 0 ? 0 : -1;
+    ssize_t k = ::read(fd, b, n);
+    return k > 0 ? k : -1;
+}
+
+// The LAST response's header (curl -L appends one block per redirect), lower-cased names.
+static std::string radio_header(const char* name) {
+    FILE* f = std::fopen(RADIO_HDR, "r");
+    if (!f) return "";
+    char line[512];
+    std::string v;
+    const size_t n = std::strlen(name);
+    while (std::fgets(line, sizeof line, f)) {
+        if (::strncasecmp(line, name, n) == 0 && line[n] == ':') {
+            const char* p = line + n + 1;
+            while (*p == ' ') p++;
+            v = p;
+            while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
+        }
+    }
+    std::fclose(f);
+    return v;
+}
+
+// A playlist's first stream: .pls "File1=http..." or an .m3u's first http line.
+static std::string radio_playlist_url(const std::string& body) {
+    size_t at = 0;
+    while (at < body.size()) {
+        size_t end = body.find('\n', at);
+        std::string l = body.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        at = end == std::string::npos ? body.size() : end + 1;
+        while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        size_t eq = l.find('=');
+        if (::strncasecmp(l.c_str(), "file", 4) == 0 && eq != std::string::npos) l = l.substr(eq + 1);
+        if (l.compare(0, 7, "http://") == 0 || l.compare(0, 8, "https://") == 0) return l;
+    }
+    return "";
+}
+
+struct RadioOut {
+    snd_pcm_t* pcm = nullptr;
+    int fd = -1;
+    unsigned rate = 0, src_rate = 0;
+    double pos = 0;               // resampler: position in the source, for Bluetooth's 44.1 kHz
+    short last[2] = { 0, 0 };
+    std::vector<short> tmp;
+};
+
+static bool radio_out_open(RadioOut& o, unsigned src_rate, bool bt) {
+    o.src_rate = src_rate;
+    if (bt) {
+        o.fd = ldac_connect_socket(44100, 2);
+        o.rate = 44100;
+        return o.fd >= 0;
+    }
+    for (const char* d : { "hw:0,4", "hw:0,0" }) {
+        if (g_alsa.open(&o.pcm, d, /*PLAYBACK*/0, 0) >= 0) break;
+        o.pcm = nullptr;
+    }
+    if (!o.pcm) return false;
+    if (g_alsa.set_params(o.pcm, /*S16_LE*/2, /*RW_INTERLEAVED*/3, 2, src_rate, 1, 250000) < 0) {
+        g_alsa.close(o.pcm);
+        o.pcm = nullptr;
+        return false;
+    }
+    o.rate = src_rate;
+    return true;
+}
+
+// Write interleaved stereo. Over Bluetooth a stream that is not 44.1 kHz is resampled linearly.
+// ponytail: linear interpolation; a windowed-sinc resampler if 48 kHz stations sound dull over BT.
+static bool radio_out_write(RadioOut& o, const short* pcm, unsigned frames) {
+    if (o.pcm) {
+        while (frames) {
+            long w = g_alsa.writei(o.pcm, pcm, frames);
+            if (w == -EPIPE || w == -ESTRPIPE || w == -EINTR) { g_alsa.prepare(o.pcm); continue; }
+            if (w < 0) return false;
+            pcm += w * 2;
+            frames -= (unsigned)w;
+        }
+        return true;
+    }
+    if (o.fd < 0) return false;
+    const short* out = pcm;
+    size_t n = frames;
+    if (o.src_rate != o.rate) {
+        const double step = (double)o.src_rate / o.rate;
+        o.tmp.clear();
+        for (; o.pos < frames; o.pos += step) {
+            unsigned i = (unsigned)o.pos;
+            double fr = o.pos - i;
+            for (int c = 0; c < 2; c++) {
+                short a = i == 0 ? o.last[c] : pcm[(i - 1) * 2 + c];
+                short b = pcm[i * 2 + c];
+                o.tmp.push_back((short)(a + (b - a) * fr));
+            }
+        }
+        o.pos -= frames;
+        o.last[0] = pcm[(frames - 1) * 2];
+        o.last[1] = pcm[(frames - 1) * 2 + 1];
+        out = o.tmp.data();
+        n = o.tmp.size() / 2;
+    }
+    const unsigned char* p = (const unsigned char*)out;
+    size_t want = n * 4;
+    while (want) {
+        ssize_t w = ::send(o.fd, p, want, MSG_NOSIGNAL);
+        if (w < 0) { if (errno == EINTR) continue; return false; }
+        p += w;
+        want -= (size_t)w;
+    }
+    return true;
+}
+
+static void radio_out_close(RadioOut& o) {
+    if (o.pcm) { if (g_alsa.drop) g_alsa.drop(o.pcm); g_alsa.close(o.pcm); o.pcm = nullptr; }
+    if (o.fd >= 0) { ::close(o.fd); o.fd = -1; }
+}
+
+static void* radio_thread(void*) {
+    g_radio_alive = 1;
+    if (g_radio_bt) { g_ldac_alive = 1; }
+    pthread_mutex_lock(&g_radio_mu);
+    std::string url = g_radio_url;
+    pthread_mutex_unlock(&g_radio_mu);
+    std::string note, title;
+    static unsigned char buf[16384];
+    int fd = -1;
+    pid_t pid = -1;
+    long metaint = 0;
+    std::vector<unsigned char> in;
+    // Connect; a playlist link is followed to its first stream (twice at most).
+    for (int hop = 0; hop < 3 && g_radio_run; hop++) {
+        ::unlink(RADIO_HDR);
+        pid = radio_spawn(url, &fd);
+        if (pid < 0) { note = "Could not start the download"; break; }
+        ssize_t n = 0;
+        for (int waited = 0; n == 0 && waited < 25 && g_radio_run; waited++) n = radio_read(fd, buf, sizeof buf);
+        if (n <= 0) { note = n == 0 ? "The station did not answer" : "The station did not answer"; break; }
+        std::string ctype = radio_header("content-type");
+        for (char& c : ctype) c = (char)std::tolower((unsigned char)c);
+        std::string head((const char*)buf, (size_t)n);
+        const bool list = ctype.find("mpegurl") != std::string::npos || ctype.find("scpls") != std::string::npos ||
+                          head.compare(0, 7, "#EXTM3U") == 0 || head.compare(0, 10, "[playlist]") == 0;
+        if (list) {
+            if (head.find("#EXT-X-") != std::string::npos) { note = "HLS streams are not supported yet"; break; }
+            std::string next = radio_playlist_url(head);
+            radio_reap(pid, fd); pid = -1; fd = -1;
+            if (next.empty()) { note = "The playlist names no stream"; break; }
+            url = next;
+            continue;
+        }
+        if (ctype.find("aac") != std::string::npos || ctype.find("ogg") != std::string::npos ||
+            ctype.find("flac") != std::string::npos || ctype.find("opus") != std::string::npos) {
+            note = "Only MP3 stations for now";
+            break;
+        }
+        metaint = std::atol(radio_header("icy-metaint").c_str());
+        in.assign(buf, buf + n);
+        break;
+    }
+    if (note.empty() && !in.empty()) {
+        mp3dec_t dec;
+        mp3dec_init(&dec);
+        mp3dec_frame_info_t info;
+        static short pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+        static short st[MINIMP3_MAX_SAMPLES_PER_FRAME];
+        RadioOut out;
+        bool opened = false, playing_said = false;
+        IcySplit icy(metaint);
+        std::vector<unsigned char> audio;
+        size_t junk = 0;
+        // Audio into `audio`; a new song title goes straight to the page.
+        auto take = [&](const unsigned char* b, size_t n) {
+            if (icy.feed(b, n, audio, title) && opened) radio_say("playing", title, "");
+        };
+        take(in.data(), in.size());
+        // Buffer about two seconds of a 128 kbit/s stream before the first sound, so a weak link
+        // does not stutter at the start.
+        while (g_radio_run && audio.size() < 32768) {
+            ssize_t n = radio_read(fd, buf, sizeof buf);
+            if (n < 0) break;
+            take(buf, (size_t)n);
+        }
+        while (g_radio_run) {
+            size_t used = 0;
+            while (g_radio_run && audio.size() - used > 0) {
+                int samples = mp3dec_decode_frame(&dec, audio.data() + used, (int)(audio.size() - used), pcm, &info);
+                if (info.frame_bytes == 0) break;          // needs more data
+                used += (size_t)info.frame_bytes;
+                if (samples == 0) { junk += (size_t)info.frame_bytes; if (junk > 65536 && !opened) break; continue; }
+                if (!opened) {
+                    if (!radio_out_open(out, (unsigned)info.hz, g_radio_bt)) {
+                        note = g_radio_bt ? "Bluetooth would not take the stream" : "The headphone output is busy";
+                        g_radio_run = 0;
+                        break;
+                    }
+                    opened = true;
+                    char m[160];
+                    std::snprintf(m, sizeof m, "radio: playing %d Hz %d ch, %s", info.hz, info.channels,
+                                  g_radio_bt ? "Bluetooth" : "the jack");
+                    clog_(m);
+                }
+                const short* frame = pcm;
+                if (info.channels == 1) {
+                    for (int i = 0; i < samples; i++) st[2 * i] = st[2 * i + 1] = pcm[i];
+                    frame = st;
+                }
+                if (!radio_out_write(out, frame, (unsigned)samples)) { note = "The output closed"; g_radio_run = 0; break; }
+                if (!playing_said) { radio_say("playing", title, ""); playing_said = true; }
+            }
+            if (!opened && junk > 65536) { note = "Only MP3 stations for now"; break; }
+            audio.erase(audio.begin(), audio.begin() + (long)used);
+            if (!g_radio_run) break;
+            ssize_t n = radio_read(fd, buf, sizeof buf);
+            if (n < 0) { note = "The station stopped sending"; break; }
+            take(buf, (size_t)n);
+        }
+        radio_out_close(out);
+    } else if (note.empty() && g_radio_run) {
+        note = "The station did not answer";
+    }
+    radio_reap(pid, fd);
+    ::unlink(RADIO_HDR);
+    {
+        char m[200];
+        std::snprintf(m, sizeof m, "radio: stopped%s%s", note.empty() ? "" : " — ", note.c_str());
+        clog_(m);
+    }
+    radio_say("off", "", note);
+    if (g_radio_bt) { g_ldac_run = 0; g_ldac_alive = 0; }
+    g_radio_run = 0;
+    g_radio_alive = 0;
+    return nullptr;
+}
+
+static void radio_bt_source(bool on) {
+    g_radio_source_want = on;
+    amb_guarded("radio: SetCurrentSource", []() {
+        enum { VIDX_SetCurrentSource = 12 };
+        void* x = bt_xmit();
+        if (!x) return;
+        bool v = g_radio_source_want;
+        typedef int (*fnb)(void*, const bool*);
+        ((fnb)bt_slot(x, VIDX_SetCurrentSource))(x, &v);
+    });
+    g_radio_source_held = on;
+}
+
+// Stop the radio and wait (at most 2 s) for its output to be free. `why` goes to the page.
+static void radio_yield(const char* why) {
+    if (!g_radio_alive) return;
+    g_radio_run = 0;
+    if (g_radio_bt) g_ldac_run = 0;
+    for (int i = 0; i < 400 && g_radio_alive; i++) usleep(5000);
+    if (g_radio_source_held && !g_radio_alive) radio_bt_source(false);
+    if (why && *why) radio_say("off", "", why);
+    clog_(g_radio_alive ? "radio: yield TIMED OUT" : "radio: the output is free");
+}
+
+static void radio_play() {
+    char url[600];
+    int idx = cinder_take_radio(url, (int)sizeof url);
+    if (idx < 0) return;
+    radio_yield(nullptr);
+    g_radio_station = idx;
+    if (::access(RADIO_CURL, X_OK) != 0) { radio_say("off", "", "Needs the Wi-Fi option"); return; }
+    const bool bridge = g_ldac_alive && !g_amb_bt_alive;
+    if (g_msc_active || g_rx_active || g_fm_on || bridge) {
+        radio_say("off", "", g_fm_on ? "FM radio is using the output" : "The output is in use");
+        return;
+    }
+    // Music and a soundscape give the output up first.
+    if (g_playing) {
+        set_transport(false);
+        run_guarded("radio: pause", 6, []() { cinder_audio_pause(); });
+    }
+    if (g_amb_alive) g_amb_run = 0;
+    if (g_amb_bt_alive) { g_amb_bt_run = 0; g_ldac_run = 0; }
+    for (int i = 0; i < 60 && (g_amb_alive || g_amb_bt_alive); i++) usleep(5000);
+    if (g_amb_bt_source_held && !g_amb_bt_alive) amb_bt_source(false);
+    g_radio_bt = g_bt_link_last == 1;
+    if (!g_radio_bt && !amb_can_play_jack()) { radio_say("off", "", "The headphone output cannot be opened"); return; }
+    if (g_radio_bt) {
+        amb_guarded("radio: codec", apply_bt_codec);
+        radio_bt_source(true);
+        g_ldac_run = 1;
+    }
+    pthread_mutex_lock(&g_radio_mu);
+    g_radio_url = url;
+    pthread_mutex_unlock(&g_radio_mu);
+    radio_say("connecting", "", "");
+    g_radio_run = 1;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&at, 256 * 1024);   // the decoder's state is ~7 KB; frames are static
+    pthread_t th;
+    if (pthread_create(&th, &at, radio_thread, nullptr) != 0) {
+        g_radio_run = 0;
+        if (g_radio_bt) { g_ldac_run = 0; radio_bt_source(false); }
+        radio_say("off", "", "Could not start the player");
+    }
+    pthread_attr_destroy(&at);
+    clog_("radio: play requested");
+}
+
+static void radio_act(int act) {
+    if (act == CINDER_ACT_RADIO_OPEN) {
+        std::string text;
+        if (FILE* f = std::fopen("/contents/cinder_radio.txt", "r")) {
+            char b[4096];
+            size_t n;
+            while ((n = std::fread(b, 1, sizeof b, f)) > 0 && text.size() < 65536) text.append(b, n);
+            std::fclose(f);
+        }
+        cinder_set_radio_stations(text.c_str());
+        return;
+    }
+    if (act == CINDER_ACT_RADIO_PLAY) { radio_play(); return; }
+    if (act == CINDER_ACT_RADIO_STOP) radio_yield("");
+}
+
+// Render thread, once a second: hand the status to the UI, and give the transmitter's source back
+// once a Bluetooth play has ended.
+static void radio_tick() {
+    std::string st;
+    pthread_mutex_lock(&g_radio_mu);
+    bool dirty = g_radio_dirty;
+    if (dirty) { st = g_radio_status; g_radio_dirty = false; }
+    pthread_mutex_unlock(&g_radio_mu);
+    if (dirty) cinder_set_radio_status(st.c_str());
+    if (g_radio_source_held && !g_radio_alive) radio_bt_source(false);
+}
+
+
+// ── AirPlay receiver (Settings > Wi-Fi > AirPlay) ─────────────────────────────────────────────────
+// shairport-sync (the Wi-Fi option's; MIT) runs while the switch is on and Wi-Fi is connected, as
+// cinder-home's own user (in the inet group: RTSP on TCP 5000, mDNS on UDP 5353, RTP above 6000, all
+// unprivileged). Its `stdout` output is raw 44.1 kHz S16 stereo — AirPlay's own rate, and the rate
+// the Bluetooth transmitter takes, so nothing is resampled. A reader thread drains it always (a
+// sender that is not read stalls); when audio arrives it asks the render thread for the output
+// (airplay_tick does what radio_play does: music pauses, the radio and a soundscape stop), plays it
+// through the radio's output code, and gives the output back after 2 s of silence. Music, FM and
+// the rest take it back through ambient_yield_for_music, like the radio's.
+static const char* const AP_BIN = "/system/vendor/cinder/wifi/shairport-sync";
+static const char* const AP_NAME = "Walkman (Cinder)";
+static pid_t g_ap_pid = -1;
+static int g_ap_fd = -1;
+static volatile sig_atomic_t g_ap_reader_alive = 0, g_ap_stop = 0;
+static volatile sig_atomic_t g_ap_want = 0;     // reader: audio is arriving, may I play it
+static volatile sig_atomic_t g_ap_granted = 0;  // tick: yes (route in g_ap_bt)
+static volatile sig_atomic_t g_ap_yielded = 0;  // someone else took the output: drop until silence
+static bool g_ap_bt = false, g_ap_source_held = false, g_ap_source_want = false;
+static long long g_ap_retry_at = 0;
+static std::string g_ap_note_sent = "-";
+
+static void* airplay_reader(void*) {
+    g_ap_reader_alive = 1;
+    static unsigned char buf[17640];          // 100 ms of 44.1 kHz S16 stereo
+    RadioOut out;
+    long long last_audio = 0;
+    size_t carry = 0;                         // a frame split across reads (4 bytes a frame)
+    while (!g_ap_stop) {
+        struct pollfd pf = { g_ap_fd, POLLIN, 0 };
+        int r = ::poll(&pf, 1, 500);
+        long long now = now_ms();
+        if (r > 0) {
+            ssize_t n = ::read(g_ap_fd, buf + carry, sizeof buf - carry);
+            if (n <= 0) break;                // the receiver exited
+            size_t have = carry + (size_t)n, frames = have / 4;
+            last_audio = now;
+            if (g_ap_yielded) {
+                if (g_ap_out_open) { radio_out_close(out); g_ap_out_open = 0; }
+            } else if (!g_ap_granted) {
+                g_ap_want = 1;                // the first ~100 ms is dropped while the tick decides
+            } else {
+                if (!g_ap_out_open) {
+                    if (!radio_out_open(out, 44100, g_ap_bt)) { g_ap_yielded = 1; clog_("airplay: the output would not open"); }
+                    else { g_ap_out_open = 1; clog_(g_ap_bt ? "airplay: playing over Bluetooth" : "airplay: playing on the jack"); }
+                }
+                if (g_ap_out_open && !radio_out_write(out, (const short*)buf, (unsigned)frames)) {
+                    radio_out_close(out);
+                    g_ap_out_open = 0;
+                    g_ap_yielded = 1;
+                }
+            }
+            carry = have - frames * 4;
+            if (carry) std::memmove(buf, buf + frames * 4, carry);
+        }
+        // Two seconds without audio: the sender paused or left. Give the output back.
+        if ((g_ap_want || g_ap_granted || g_ap_yielded) && now - last_audio > 2000) {
+            if (g_ap_out_open) { radio_out_close(out); g_ap_out_open = 0; clog_("airplay: idle — the output is free"); }
+            g_ap_want = 0;
+            g_ap_granted = 0;
+            g_ap_yielded = 0;
+        }
+    }
+    if (g_ap_out_open) { radio_out_close(out); g_ap_out_open = 0; }
+    g_ap_want = 0;
+    g_ap_granted = 0;
+    g_ap_reader_alive = 0;
+    return nullptr;
+}
+
+static void airplay_bt_source(bool on) {
+    g_ap_source_want = on;
+    amb_guarded("airplay: SetCurrentSource", []() {
+        enum { VIDX_SetCurrentSource = 12 };
+        void* x = bt_xmit();
+        if (!x) return;
+        bool v = g_ap_source_want;
+        typedef int (*fnb)(void*, const bool*);
+        ((fnb)bt_slot(x, VIDX_SetCurrentSource))(x, &v);
+    });
+    g_ap_source_held = on;
+}
+
+static void airplay_stop(const char* why) {
+    if (g_ap_pid < 0) return;
+    g_ap_stop = 1;
+    ::kill(g_ap_pid, SIGTERM);
+    for (int i = 0; i < 200 && g_ap_reader_alive; i++) usleep(10000);
+    ::waitpid(g_ap_pid, nullptr, 0);
+    if (g_ap_fd >= 0) ::close(g_ap_fd);
+    g_ap_pid = -1;
+    g_ap_fd = -1;
+    if (g_ap_bt) { g_ldac_run = 0; g_ldac_alive = 0; }
+    if (g_ap_source_held) airplay_bt_source(false);
+    char m[96];
+    std::snprintf(m, sizeof m, "airplay: receiver stopped (%s)", why);
+    clog_(m);
+}
+
+static bool airplay_start() {
+    int fd[2];
+    if (::pipe(fd) < 0) return false;
+    pid_t p = ::fork();
+    if (p < 0) { ::close(fd[0]); ::close(fd[1]); return false; }
+    if (p == 0) {
+        ::dup2(fd[1], 1);
+        int nul = ::open("/dev/null", O_WRONLY);
+        if (nul >= 0) ::dup2(nul, 2);
+        for (int i = 3; i < 256; i++) ::close(i);
+        ::chdir("/tmp");
+        ::execl(AP_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", (char*)nullptr);
+        ::_exit(127);
+    }
+    ::close(fd[1]);
+    g_ap_pid = p;
+    g_ap_fd = fd[0];
+    g_ap_stop = 0;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&at, 128 * 1024);
+    pthread_t th;
+    bool ok = pthread_create(&th, &at, airplay_reader, nullptr) == 0;
+    pthread_attr_destroy(&at);
+    if (!ok) { airplay_stop("no reader thread"); return false; }
+    clog_("airplay: receiver started");
+    return true;
+}
+
+// Music, FM, USB-DAC and the rest want the output: AirPlay lets go until its sender goes quiet.
+static void airplay_yield() {
+    if (!g_ap_granted && !g_ap_out_open) return;
+    g_ap_yielded = 1;
+    for (int i = 0; i < 200 && g_ap_out_open; i++) usleep(5000);
+}
+
+// Render thread, once a second: run the receiver when it should run, and hand it the output.
+static void airplay_tick(long long now) {
+    const bool want = cinder_wifi_airplay() && g_wifi_connected;
+    if (g_ap_pid >= 0 && !g_ap_reader_alive) {           // it exited on its own
+        airplay_stop("it exited");
+        g_ap_retry_at = now + 30000;
+    }
+    if (!want && g_ap_pid >= 0) airplay_stop(cinder_wifi_airplay() ? "Wi-Fi is not connected" : "switched off");
+    if (want && g_ap_pid < 0 && now >= g_ap_retry_at && ::access(AP_BIN, X_OK) == 0) {
+        if (!airplay_start()) g_ap_retry_at = now + 30000;
+    }
+    if (g_ap_want && !g_ap_granted && !g_ap_yielded) {
+        const bool bridge = g_ldac_alive && !g_amb_bt_alive && !(g_ap_bt && g_ap_out_open);
+        if (g_msc_active || g_rx_active || g_fm_on || bridge) {
+            g_ap_yielded = 1;
+            clog_("airplay: the output is in use — not playing this stream");
+        } else {
+            if (g_playing) {
+                set_transport(false);
+                run_guarded("airplay: pause", 6, []() { cinder_audio_pause(); });
+            }
+            radio_yield("Stopped for AirPlay");
+            if (g_amb_alive) g_amb_run = 0;
+            if (g_amb_bt_alive) { g_amb_bt_run = 0; g_ldac_run = 0; }
+            for (int i = 0; i < 60 && (g_amb_alive || g_amb_bt_alive); i++) usleep(5000);
+            if (g_amb_bt_source_held && !g_amb_bt_alive) amb_bt_source(false);
+            g_ap_bt = g_bt_link_last == 1;
+            if (g_ap_bt) {
+                amb_guarded("airplay: codec", apply_bt_codec);
+                airplay_bt_source(true);
+                g_ldac_run = 1;
+                g_ldac_alive = 1;
+            }
+            g_ap_granted = 1;
+        }
+    }
+    if (g_ap_bt && !g_ap_granted && !g_ap_out_open && (g_ap_source_held || g_ldac_alive)) {
+        g_ldac_run = 0;
+        g_ldac_alive = 0;
+        if (g_ap_source_held) airplay_bt_source(false);
+        g_ap_bt = false;
+    }
+    const char* note = g_ap_pid < 0 ? "" : g_ap_out_open ? "Playing from AirPlay"
+                     : g_ap_yielded ? "AirPlay is waiting: the output is in use" : "Shows up as Walkman (Cinder)";
+    if (g_ap_note_sent != note) { g_ap_note_sent = note; cinder_set_airplay_note(note); }
+}
+
 static void ambient_tick() {
     int ma = 0, mm = 0;
     const int sound = cinder_get_ambient(&ma, &mm);
@@ -11547,7 +12219,7 @@ static void ambient_tick() {
     const bool music = amb_music_on();
     const bool bridge = g_ldac_alive && !g_amb_bt_alive;          // USB-DAC or FM over Bluetooth
     const bool fm_jack = g_fm_on && !bridge;                       // the radio on the jack
-    const bool busy = g_msc_active || g_rx_active || fm_jack;
+    const bool busy = g_msc_active || g_rx_active || fm_jack || g_radio_alive || g_ap_out_open;
     amb_write_control(sound, sound ? ((music || g_fm_on) ? mm : ma) : 0);
 
     const bool off = !sound || ma <= 0;      // a running player fades itself out and finishes
@@ -11993,7 +12665,17 @@ void carry_out(int act) {
         case CINDER_ACT_WIFI_JOIN:
         case CINDER_ACT_WIFI_TIMESYNC:
         case CINDER_ACT_WIFI_FORGET:
+        case CINDER_ACT_WIFI_LISTENBRAINZ:
+        case CINDER_ACT_WIFI_UPDATE_CHECK:
             wifi_act(act);
+            break;
+        case CINDER_ACT_RADIO_OPEN:
+        case CINDER_ACT_RADIO_PLAY:
+        case CINDER_ACT_RADIO_STOP:
+            radio_act(act);
+            break;
+        case CINDER_ACT_WIFI_AIRPLAY:
+            airplay_tick(now_ms());   // start or stop now rather than at the next second
             break;
         case CINDER_ACT_BALANCE_CHANGED:
             // The balance slider, live under a finger. Just the two mixer writes — NOT
@@ -13298,6 +13980,11 @@ void input_pump() {
             // one that is not drains 15,000 events a second, which no input device approaches.
             if (++rounds >= 8) break;
         }
+    }
+    // Phone remote (Settings > Wi-Fi > Phone remote): its presses take the side keys' own path.
+    for (int b, k = 0; k < 8 && (b = cinder_remote_take_button()) > 0; k++) {
+        int act = cinder_input(b);
+        if (act != CINDER_ACT_NONE) carry_out_input(act);
     }
     // Held rocker: the events are all drained, so anything still down is a genuine hold.
     vol_repeat_tick();
@@ -14780,7 +15467,25 @@ void* render_driver(void*) {
             mono_shim_poll();           // one access() on tmpfs; logs and repaints only on a change
             ambient_tick();             // a compare unless the play state or a setting moved
             hci_log_tick();             // one stat() while the Bluetooth debug log runs; else nothing
-            wifi_tick(house_now);       // one access() at boot; then results, and a poll while on
+            wifi_tick(house_now);
+            radio_tick();
+            airplay_tick(house_now);
+            // Music sent from the phone remote: rescan once uploads have stopped for 20 s, the same
+            // campaign a USB storage session ends with. Never during one (it rescans itself).
+            {
+                static long long last_upload = 0;
+                static int pending = 0;
+                int n = cinder_remote_take_uploaded();
+                if (n > 0) { pending += n; last_upload = house_now; }
+                if (pending > 0 && !g_msc_active && house_now - last_upload >= 20000) {
+                    char m[96];
+                    std::snprintf(m, sizeof m, "remote: %d upload(s) — rescanning the library", pending);
+                    clog_(m);
+                    pending = 0;
+                    media_rescan();
+                    rescan_campaign_arm();
+                }
+            }       // one access() at boot; then results, and a poll while on
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             // Track info > ALBUM SOUND: a new album may have brought its preset (or put the
             // sound from before back). The FFI raised profile_apply during the poll; applied here,

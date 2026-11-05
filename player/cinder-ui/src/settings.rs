@@ -552,7 +552,13 @@ fn sub_line<'a>(r: usize, v: &'a SettingsView) -> &'a str {
     match r {
         ROW_DISPLAY => crate::i18n::text(DISPLAY_SUB),
         r if group_of_link(r).is_some() => {
-            crate::i18n::text(GROUPS[group_of_link(r).unwrap_or(0)].1)
+            match GROUPS[group_of_link(r).unwrap_or(0)].1 {
+                // The page has a Wi-Fi row only with the Wi-Fi option installed; say so when it does.
+                "Battery · storage · USB · clock" if crate::wifi::installed() => {
+                    crate::i18n::text("Battery · storage · USB · Wi-Fi · clock")
+                }
+                sub => crate::i18n::text(sub),
+            }
         }
         ROW_QUICK => crate::i18n::text(if crate::scale::large() {
             "Swipe down from screen top"

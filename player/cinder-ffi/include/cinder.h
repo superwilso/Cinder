@@ -247,6 +247,20 @@ typedef enum {
     CINDER_ACT_WIFI_TIMESYNC = 66,
     /* Settings > Wi-Fi > the joined network > Forget: `cinder-wifi forget`, then `off`. */
     CINDER_ACT_WIFI_FORGET = 67,
+    /* Settings > Wi-Fi > Send plays to ListenBrainz, switched on while connected: send now. */
+    CINDER_ACT_WIFI_LISTENBRAINZ = 68,
+    /* Settings > Wi-Fi > Check for updates, switched on while connected: check now. */
+    CINDER_ACT_WIFI_UPDATE_CHECK = 69,
+    /* Settings > Wi-Fi > Internet radio opened: read /contents/cinder_radio.txt, hand it to
+     * cinder_set_radio_stations. */
+    CINDER_ACT_RADIO_OPEN = 70,
+    /* A station tapped: cinder_take_radio() gives its URL; play it, report cinder_set_radio_status. */
+    CINDER_ACT_RADIO_PLAY = 71,
+    /* The playing station tapped again: stop the radio. */
+    CINDER_ACT_RADIO_STOP = 72,
+    /* Settings > Wi-Fi > AirPlay switched: read cinder_wifi_airplay() and start or stop the
+     * receiver to match (it runs only while Wi-Fi is connected). */
+    CINDER_ACT_WIFI_AIRPLAY = 73,
     /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
      * resume function (Configuration 5008/5039), then boot to stock exactly as
      * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */
@@ -462,6 +476,30 @@ int cinder_take_wifi_join(unsigned char *buf, int cap);
 /* Settings > Wi-Fi > Turn on at start / Set the clock (1/0). */
 int cinder_wifi_autostart(void);
 int cinder_wifi_clock(void);
+/* Settings > Wi-Fi > Send plays to ListenBrainz / Check for updates (1/0). */
+int cinder_wifi_lb(void);
+int cinder_wifi_updates(void);
+/* The rows' second lines after a send / a check. NULL leaves one as it is. */
+void cinder_set_wifi_notes(const char *lb, const char *update);
+/* BLOCKING network calls (curl from the Wi-Fi option), for the Wi-Fi worker thread only; no lock.
+ * cinder_lb_submit: listens sent (0 none new), -1 failed; note = what to show either way.
+ * cinder_update_check: 1 newer Cinder out, 0 newest, -1 could not tell; note says which. */
+int cinder_lb_submit(const char *log, long long offset_s, char *note, int cap);
+int cinder_update_check(char *note, int cap);
+/* Internet radio (Settings > Wi-Fi > Internet radio). */
+void cinder_set_radio_stations(const char *text);
+void cinder_set_radio_status(const char *text);
+/* After CINDER_ACT_RADIO_PLAY: the URL into buf; returns the station index, -1 if none. */
+int cinder_take_radio(char *buf, int cap);
+/* Phone remote (Settings > Wi-Fi > Phone remote; the server is cinder-ffi's own). Every frame:
+ * a button the page pressed (cinder_button_t; 0 = none — the page never sends UP) to feed through
+ * cinder_input; and how many
+ * uploads finished since the last call (rescan the library once they stop). */
+int cinder_remote_take_button(void);
+/* Settings > Wi-Fi > AirPlay (1/0), and the line the shell shows under it. */
+int cinder_wifi_airplay(void);
+void cinder_set_airplay_note(const char *text);
+int cinder_remote_take_uploaded(void);
 /* Night on a schedule: call ~1x/sec. Returns CINDER_ACT_THEME_CHANGED when Night just came on or
  * went off (carry it out like the switch: the backlight follows), else CINDER_ACT_NONE. */
 int  cinder_night_tick(void);
