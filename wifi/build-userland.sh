@@ -7,6 +7,8 @@
 #   out/wifiscan                      a scan with no libraries (tools/wifiscan.c)
 #   out/curl, out/cacert.pem          HTTPS for scrobbling and update checks (curl licence; Mozilla's
 #                                     CA list, MPL-2.0, as curl.se publishes it)
+#   out/shairport-sync                the AirPlay receiver (MIT; popt MIT, libconfig LGPL-2.1, both
+#                                     static) — AirPlay 1, OpenSSL, tinysvcmdns, audio to stdout
 #
 # Needs an ARM musl cross compiler (MUSL, default ~/arm-linux-musleabihf-cross, from musl.cc) and,
 # for libnl 3, bison and flex on the build machine. Every download is pinned by sha256.
@@ -28,6 +30,9 @@ fetch https://github.com/thom311/libnl/releases/download/libnl3_7_0/libnl-3.7.0.
 fetch https://mirrors.edge.kernel.org/pub/software/network/iw/iw-5.19.tar.xz f167bbe947dd53bb9ebc0c1dcef5db6ad73ac1d6084f2c6f9376c5c360cc4d4e
 fetch https://curl.se/download/curl-8.22.0.tar.xz f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
 fetch https://curl.se/ca/cacert-2026-10-20.pem 796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe
+fetch https://ftp.osuosl.org/pub/rpm/popt/releases/popt-1.x/popt-1.19.tar.gz c25a4838fc8e4c1c8aacb8bd620edb3084a3d63bf8987fdad3ca2758c63240f9
+fetch https://github.com/hyperrealm/libconfig/releases/download/v1.7.3/libconfig-1.7.3.tar.gz 545166d6cac037744381d1e9cc5a5405094e7bfad16a411699bcff40bbb31ee7
+fetch https://github.com/mikebrady/shairport-sync/archive/refs/tags/5.5.2.tar.gz abcdb59674b6eedb4f3f6228f3c702e65d2cdc037231b0c48617fd90891b49e9
 LIBNL_TINY_COMMIT=40493a655d8caa2ccf5206dde1e733abe2920432
 [ -d "$SRC/libnl-tiny" ] || git clone -q https://github.com/openwrt/libnl-tiny.git "$SRC/libnl-tiny"
 git -C "$SRC/libnl-tiny" -c advice.detachedHead=false checkout -q "$LIBNL_TINY_COMMIT"
@@ -83,11 +88,30 @@ if [ ! -f "$W/curl-8.22.0/src/curl" ]; then
 fi
 cp -f "$SRC/cacert-2026-10-20.pem" "$OUT/cacert.pem"
 
+echo "== shairport-sync 5.5.2 (AirPlay 1), with popt 1.19 and libconfig 1.7.3"
+for t in popt-1.19 libconfig-1.7.3; do [ -d "$W/$t" ] || tar xzf "$SRC/$t.tar.gz" -C "$W"; done
+[ -f "$P/lib/libpopt.a" ] || ( cd "$W/popt-1.19" && ./configure --host=arm-linux-musleabihf --prefix="$P" \
+    --enable-static --disable-shared --disable-nls && make -j"$(nproc)" && make install ) >"$W/popt.log" 2>&1
+[ -f "$P/lib/libconfig.a" ] || ( cd "$W/libconfig-1.7.3" && ./configure --host=arm-linux-musleabihf --prefix="$P" \
+    --enable-static --disable-shared --disable-cxx --disable-examples --disable-tests && make -j"$(nproc)" -C lib \
+    && make -C lib install ) >"$W/libconfig.log" 2>&1
+SS="$W/shairport-sync-5.5.2"
+[ -d "$SS" ] || tar xzf "$SRC/5.5.2.tar.gz" -C "$W"
+# No autotools: the GitHub archive has no configure script, and the build needs only the sources
+# below and the config.h beside this script (airplay/config.h).
+cp -f "$HERE/airplay/config.h" "$SS/config.h"
+( cd "$SS" && $CC -Os -static -pthread -include config.h --include=utilities/debug.h -I. -I"$P/include" \
+    -DSYSCONFDIR=\"/system/vendor/cinder/wifi\" -w -o "$W/shairport-sync" \
+    shairport.c bonjour_strings.c mdns.c common.c rtp.c player.c audio.c loudness.c activity_monitor.c \
+    rtsp.c utilities/debug.c utilities/network_utilities.c utilities/rtsp_message_utilities.c \
+    utilities/string_utilities.c utilities/exit.c alac.c mdns_tinysvcmdns.c tinysvcmdns.c \
+    audio_stdout.c audio_pipe.c -L"$P/lib" -lpopt -lconfig -lssl -lcrypto -lm ) >"$W/shairport.log" 2>&1
+
 echo "== wifiscan"
 $CC -static -Os -Wall -Wextra -o "$W/wifiscan" "$HERE/tools/wifiscan.c"
 
 for b in "$WPA/wpa_supplicant/wpa_supplicant" "$WPA/wpa_supplicant/wpa_cli" "$W/iw-5.19/iw" "$W/wifiscan" \
-         "$W/curl-8.22.0/src/curl"; do
+         "$W/curl-8.22.0/src/curl" "$W/shairport-sync"; do
     arm-linux-musleabihf-strip -o "$OUT/$(basename "$b")" "$b"
 done
-( cd "$OUT" && sha256sum wpa_supplicant wpa_cli iw wifiscan curl cacert.pem | tee SHA256SUMS.userland )
+( cd "$OUT" && sha256sum wpa_supplicant wpa_cli iw wifiscan curl cacert.pem shairport-sync | tee SHA256SUMS.userland )

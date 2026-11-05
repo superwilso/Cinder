@@ -3999,12 +3999,36 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             "",
         );
         app.set_wifi_clock(true);
+        app.set_wifi_lb(true);
+        app.set_wifi_lb_note("Sent 12 songs");
+        app.set_wifi_airplay(true);
+        app.set_airplay_note("Shows up as Walkman (Cinder)");
         app.set_wifi_scan(
             "-58\twpa2\t486f6d65\n-71\twpa3\t4e6578742044696f72\n-80\topen\t43616665\n",
         );
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "wifi_connected");
+        app.go_for_preview(Screen::WifiNetworks);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "wifi_networks");
+        app.set_radio_stations(include_str!("../../../wifi/device/cinder_radio.txt"));
+        app.set_radio_status("state=playing\nstation=0\ntitle=Pink Floyd - Time\n");
+        app.go_for_preview(Screen::NetRadio);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "netradio_playing");
+        app.set_remote(true, "482913", 8080);
+        app.go_for_preview(Screen::WifiRemote);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "wifi_remote_on");
+        app.go_for_preview(Screen::WifiOptions);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "wifi_options");
+        app.go_for_preview(Screen::Wifi);
         app.set_wifi_status("state=on\n", "a WPA password is 8 to 63 characters");
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);

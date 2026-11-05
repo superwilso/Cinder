@@ -44,6 +44,11 @@ i=0; while [ $i -lt 30 ]; do
 done
 [ $i -lt 30 ] || { say "did not join a network in 30 s"; exit 1; }
 
+# 802.11 power save: the radio sleeps between beacons while nothing is sent, which is what phones
+# do. The driver starts with it off. With it on, internet radio streamed 58 s of 58 without a stall
+# (2026-11-05); the battery saving itself is not yet measured.
+"$D/iw" dev wlan0 set power_save on 2>/dev/null
+
 busybox udhcpc -i wlan0 -b -p "$RUN/udhcpc.pid" -t 8 -s "$D/dhcp.sh" >/dev/null 2>&1
 i=0; while ! busybox ifconfig wlan0 | grep -q 'inet addr' && [ $i -lt 15 ]; do sleep 1; i=$((i + 1)); done
 busybox ifconfig wlan0 | grep -q 'inet addr' || { say "joined, but no address from DHCP"; exit 1; }

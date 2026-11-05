@@ -131,9 +131,12 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     ("dist/{ch}/wifi-iw", "cinder-wifi-iw", "wifi", false),
     ("dist/{ch}/wifi-curl", "cinder-wifi-curl", "wifi", false),
     ("dist/{ch}/wifi-cacert.pem", "cinder-wifi-cacert.pem", "wifi", false),
+    ("dist/{ch}/wifi-shairport-sync", "cinder-wifi-shairport-sync", "wifi", false),
     ("dist/{ch}/wifi-wifi-up.sh", "cinder-wifi-wifi-up.sh", "wifi", false),
     ("dist/{ch}/wifi-wifi-down.sh", "cinder-wifi-wifi-down.sh", "wifi", false),
     ("dist/{ch}/wifi-dhcp.sh", "cinder-wifi-dhcp.sh", "wifi", false),
+    // The starter list of internet radio stations; copied to the drive only when there is none.
+    ("dist/{ch}/wifi-cinder_radio.txt", "cinder-wifi-cinder_radio.txt", "wifi", false),
     // Every advanced switch, commented out: the user renames it to cinder_advanced.conf to use one.
     // Read from deploy/, not dist/: it is text that changes with the source, not a build output.
     (

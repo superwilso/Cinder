@@ -346,9 +346,11 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/wifi-iw
     cinder-home/dist/stable/wifi-curl
     cinder-home/dist/stable/wifi-cacert.pem
+    cinder-home/dist/stable/wifi-shairport-sync
     cinder-home/dist/stable/wifi-wifi-up.sh
     cinder-home/dist/stable/wifi-wifi-down.sh
     cinder-home/dist/stable/wifi-dhcp.sh
+    cinder-home/dist/stable/wifi-cinder_radio.txt
     cinder-home/dist/stable/cinder_components.conf
     cinder-home/dist/stable/cinder_home_install.upg
     cinder-home/dist/stable/cinder_home_uninstall.upg

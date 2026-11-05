@@ -804,15 +804,15 @@ fi
 [ "$LLUSBDAC_IN" = 0 ] && "$BB" rm -f "$LLUSBDAC_KO" 2>/dev/null
 "$BB" rm -f /contents/llusbdac.ko 2>/dev/null
 
-# 1g8) Wi-Fi: the `wifi` component (wifi/, GPL-2.0). Twelve files into $VENDOR/wifi — four kernel
-#      modules, wpa_supplicant, wpa_cli, iw, curl and its CA list, and three scripts — then the setuid helper cinder-wifi
+# 1g8) Wi-Fi: the `wifi` component (wifi/, GPL-2.0). Thirteen files into $VENDOR/wifi — four kernel
+#      modules, wpa_supplicant, wpa_cli, iw, curl and its CA list, shairport-sync, and three scripts — then the setuid helper cinder-wifi
 #      LAST, because cinder-home shows Settings ▸ Wi-Fi only when the helper and wlan_mt.ko are
 #      both there. Nothing loads at boot: the radio stays off until the user switches it on, and
 #      the modules load then. The folder is filled under a temporary name and swapped in whole.
 #      Unticked, the folder, the helper and the saved network (it holds the password) all go.
 # >>> wifi
 WIFI_DIR=$VENDOR/wifi
-WIFI_FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem wifi-up.sh wifi-down.sh dhcp.sh"
+WIFI_FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync wifi-up.sh wifi-down.sh dhcp.sh"
 WIFI_IN=0
 if [ "$WANT_WIFI" = 1 ]; then
     wifi_staged=1
@@ -844,6 +844,12 @@ if [ "$WANT_WIFI" = 1 ]; then
         fi
         if [ "$WIFI_IN" = 1 ]; then
             echo "wifi: installed (Settings ▸ Wi-Fi)"
+            # A starter list of internet radio stations, only where the user has none: theirs is
+            # never overwritten.
+            if [ ! -f /contents/cinder_radio.txt ] && [ -s /contents/cinder-wifi-cinder_radio.txt ]; then
+                "$BB" cp /contents/cinder-wifi-cinder_radio.txt /contents/cinder_radio.txt 2>/dev/null \
+                    && echo "wifi: wrote a starter cinder_radio.txt"
+            fi
         else
             echo "WARN: wifi — a file did not copy whole; not installed."
         fi

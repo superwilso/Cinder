@@ -34,8 +34,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include "tz_offset.h"
 
 #ifndef DIR_
 #define DIR_ "/system/vendor/cinder/wifi"   /* a test build may say otherwise; the release never does */
@@ -43,6 +46,7 @@
 #define DATA "/data/cinder/wifi"
 #define CONF DATA "/wpa.conf"
 #define RUN "/tmp/cinder-wifi"
+#define OFFSET DATA "/utc_offset"
 
 static char* const ENV[] = { "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/bin", "HOME=/", NULL };
 
@@ -160,6 +164,9 @@ static int do_status(void)
         const char* s = strstr(link, "signal: ");
         if (s) printf("signal=%d\n", atoi(s + 8));
     }
+    FILE* o = fopen(OFFSET, "r");
+    if (o && fgets(v, sizeof v, o)) printf("utc_offset=%s", v);
+    if (o) fclose(o);
     FILE* m = fopen("/sys/class/net/wlan0/address", "r");
     if (m && fgets(v, sizeof v, m)) printf("mac=%s", v);
     if (m) fclose(m);
@@ -240,20 +247,37 @@ static int do_join(void)
     return 0;
 }
 
-/* NTP through busybox ntpd (one query, then exit), then the RTC so the time survives a power-off —
- * the same two clocks, same order and same range as cinder-clock. Only over a connected link. */
+/* The player's clock keeps LOCAL time: Cinder has no time zone, so the epoch it holds is the wall
+ * time the user set, read as if it were UTC (the RTC holds the same). A time server gives UTC.
+ * Keep the zone: the offset is the clock's distance from UTC rounded to 15 minutes (every zone on
+ * Earth is a multiple of that), so drift is corrected and the zone is not. A summer-time change is
+ * then one manual clock set, and every sync after it keeps the new offset. The last good offset
+ * is saved for a clock too far gone to measure one (a flat RTC back at 2000). */
 static int do_timesync(void)
 {
     if (access("/sys/class/net/wlan0", F_OK) != 0) { puts("wifi is off"); return 1; }
+    time_t before = time(NULL);
     char* const a[] = { "/system/bin/sh", "-c", "busybox ntpd -n -q -p pool.ntp.org", NULL };
     if (run(a) != 0) { puts("no answer from the time server"); return 1; }
-    time_t now = time(NULL);
-    if (now < 978307200L || now > 2145916800L) { puts("the time server gave a date out of range"); return 1; }
+    time_t utc = time(NULL);
+    if (utc < 978307200L || utc > 2145916800L) { puts("the time server gave a date out of range"); return 1; }
+    long saved = 0;
+    int have = 0;
+    FILE* f = fopen(OFFSET, "r");
+    if (f) { have = fscanf(f, "%ld", &saved) == 1; fclose(f); }
+    long off = tz_offset((long)(before - utc), saved, have);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    tv.tv_sec += off;
+    if (settimeofday(&tv, NULL) != 0) { puts("could not set the clock"); return 1; }
+    f = fopen(OFFSET ".tmp", "w");
+    if (f) { fprintf(f, "%ld\n", off); fclose(f); rename(OFFSET ".tmp", OFFSET); }
+    time_t local = tv.tv_sec;
     struct tm u;
     struct rtc_time rt;
     int fd = open("/dev/rtc0", O_WRONLY);
     int ok = 0;
-    if (fd >= 0 && gmtime_r(&now, &u)) {
+    if (fd >= 0 && gmtime_r(&local, &u)) {
         memset(&rt, 0, sizeof rt);
         rt.tm_sec = u.tm_sec; rt.tm_min = u.tm_min; rt.tm_hour = u.tm_hour;
         rt.tm_mday = u.tm_mday; rt.tm_mon = u.tm_mon; rt.tm_year = u.tm_year;
@@ -261,7 +285,8 @@ static int do_timesync(void)
         ok = ioctl(fd, RTC_SET_TIME, &rt) == 0;
     }
     if (fd >= 0) close(fd);
-    puts(ok ? "clock set" : "clock set for now; the RTC refused it");
+    printf("clock set, UTC%c%02ld:%02ld%s\n", off < 0 ? '-' : '+', labs(off) / 3600, labs(off) % 3600 / 60,
+           ok ? "" : " (the RTC refused it)");
     return 0;
 }
 
@@ -269,6 +294,9 @@ int main(int argc, char** argv)
 {
     if (argc != 2) { fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync\n", stderr); return 2; }
     if (setuid(0) != 0 || setgid(0) != 0) { puts("not root: the setuid bit is missing"); return 3; }
+    /* cinder-home's umask is 077; files the scripts make for everyone (/tmp/resolv.conf) must not
+     * inherit it. Private files (the saved network) are created with explicit modes regardless. */
+    umask(022);
     const char* v = argv[1];
     if (access(DIR_ "/wlan_mt.ko", R_OK) != 0) { puts("Wi-Fi is not installed"); return 4; }
     if (strcmp(v, "on") == 0) {

@@ -1,0 +1,8 @@
+# Internet radio stations for Cinder: Settings > Wi-Fi > Internet radio.
+#
+# One station a line: Name | URL. MP3 streams (Icecast and SHOUTcast); a .pls or .m3u link works
+# too. Edit this file over USB; the list is read again each time you open Internet radio.
+Radio Paradise | https://stream.radioparadise.com/mp3-192
+KEXP 90.3 FM | https://kexp-mp3-128.streamguys1.com/kexp128.mp3
+SomaFM Groove Salad | https://somafm.com/groovesalad.pls
+SomaFM Drone Zone | https://somafm.com/dronezone.pls
