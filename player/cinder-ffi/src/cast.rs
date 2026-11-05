@@ -525,7 +525,7 @@ fn random_token() -> String {
 
 /// The player's own address on the way to `url`'s host (no packet is sent: a UDP connect only
 /// picks the route).
-fn own_ip_towards(url: &str) -> Result<IpAddr, String> {
+pub(crate) fn own_ip_towards(url: &str) -> Result<IpAddr, String> {
     let host = url
         .split_once("://")
         .and_then(|(_, r)| r.split('/').next())

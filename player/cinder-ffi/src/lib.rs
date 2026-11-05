@@ -24,6 +24,7 @@ mod pcm_tap;
 mod playlists;
 mod present;
 mod remote;
+mod renderer;
 mod scrobble;
 mod series;
 mod shared;
@@ -1564,6 +1565,7 @@ fn settings_body(r: &Render) -> String {
     ));
     body.push_str(&format!("wifi_lyrics={}\n", r.app.wifi_lyrics() as u8));
     body.push_str(&format!("wifi_art={}\n", r.app.wifi_art() as u8));
+    body.push_str(&format!("wifi_play_to={}\n", r.app.wifi_play_to() as u8));
     // Settings ▸ Swipe up / Swipe down: what each opens on Now Playing (#51), as words.
     let (up, down) = r.app.np_swipes();
     body.push_str(&format!(
@@ -5217,6 +5219,7 @@ fn cast_start(r: &mut Render, sp: cast::Speaker, start_ms: i64) {
 /// The cast's state into the UI, once a tick: the Speakers page, and Now Playing (the song, its
 /// cover, play/pause and the position all come from the speaker while it has the music).
 fn cast_tick(r: &mut Render) {
+    renderer_tick(r);
     if let Some(found) = RADIO_FOUND.lock().unwrap().take() {
         match found {
             Ok(v) => r.app.set_radio_found(v, String::new()),
@@ -7874,8 +7877,74 @@ pub unsafe extern "C" fn cinder_set_radio_stations(text: *const c_char) {
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_radio_status(text: *const c_char) {
     let text = cstr(text);
+    renderer::radio_status(&text);
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_radio_status(&text);
+    }
+}
+
+/// Play to this player (the DLNA renderer), polled by the shell once a second: 1 = play the URL
+/// now in `buf` (NUL-terminated) as radio station -2, 2 = stop it, 0 = nothing asked.
+///
+/// # Safety
+/// `buf` must be valid for `cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_renderer_take(buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
+    match renderer::take() {
+        Some(renderer::Ask::Play(url)) if !buf.is_null() && cap > 0 && url.len() < cap as usize => {
+            std::ptr::copy_nonoverlapping(url.as_ptr() as *const c_char, buf, url.len());
+            *buf.add(url.len()) = 0;
+            1
+        }
+        Some(renderer::Ask::Stop) => 2,
+        _ => 0,
+    }
+}
+
+/// When the renderer may next try to start, after it could not.
+static RENDER_RETRY: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// Start the renderer while its switch is on and Wi-Fi is connected; stop it otherwise.
+fn renderer_tick(r: &mut Render) {
+    let want = r.app.wifi_play_to() && r.app.wifi_connected();
+    if want && !renderer::running() {
+        let mut retry = RENDER_RETRY.lock().unwrap();
+        if retry.is_some_and(|t| std::time::Instant::now() < t) {
+            return;
+        }
+        let ip = match cast::own_ip_towards("http://239.255.255.250:1900") {
+            Ok(std::net::IpAddr::V4(ip)) => Ok(ip),
+            Ok(_) => Err("no IPv4 address".to_string()),
+            Err(e) => Err(e),
+        };
+        let mac = std::fs::read_to_string("/sys/class/net/wlan0/address").unwrap_or_default();
+        match ip
+            .and_then(|ip| renderer::start(ip, "Walkman (Cinder)", &renderer::uuid_from_mac(&mac)))
+        {
+            Ok(port) => {
+                *retry = None;
+                eprintln!("cinder-ffi: renderer: on, port {port}");
+            }
+            Err(e) => {
+                *retry = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+                eprintln!("cinder-ffi: renderer: could not start: {e}");
+                r.app.set_play_to_note(&e);
+                r.dirty = true;
+                return;
+            }
+        }
+    } else if !want && renderer::running() {
+        renderer::stop();
+        eprintln!("cinder-ffi: renderer: off");
+    }
+    let note = if renderer::running() {
+        renderer::note()
+    } else {
+        String::new()
+    };
+    if r.app.wifi_play_to() && note != r.app.play_to_note() {
+        r.app.set_play_to_note(&note);
+        r.dirty = true;
     }
 }
 
@@ -9369,6 +9438,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "wifi_airplay" => r.app.set_wifi_airplay(v == "1"),
                     "wifi_lyrics" => r.app.set_wifi_lyrics(v == "1"),
                     "wifi_art" => r.app.set_wifi_art(v == "1"),
+                    "wifi_play_to" => r.app.set_wifi_play_to(v == "1"),
                     "np_count" => r.app.set_np_count(v == "1"),
                     "hold_buttons" => r.app.set_hold_buttons(v == "1"),
                     "big_bar" => cinder_ui::scale::set_big_bar(v == "1"),

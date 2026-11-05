@@ -243,13 +243,14 @@ pub fn settings_value(s: &Status) -> &'static str {
 const FOOT_H: i32 = 44;
 
 /// Settings ▸ Wi-Fi ▸ Options, in order. Each is a saved switch, off unless switched on.
-pub const OPTIONS: [Hit; 6] = [
+pub const OPTIONS: [Hit; 7] = [
     Hit::AutoStart,
     Hit::Clock,
     Hit::ListenBrainz,
     Hit::Updates,
     Hit::Lyrics,
     Hit::Art,
+    Hit::PlayTo,
 ];
 
 struct Layout {
@@ -313,6 +314,8 @@ pub enum Hit {
     Updates,
     Lyrics,
     Art,
+    /// Play to this player: the DLNA renderer.
+    PlayTo,
     None,
 }
 
@@ -446,16 +449,18 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
 
 pub struct OptionsView<'a> {
     /// The saved switches, in [`OPTIONS`] order.
-    pub options: [bool; 6],
+    pub options: [bool; 7],
     /// What the last ListenBrainz send and update check said ("Sent 12 songs", "0.3.23 is out").
     pub lb_note: &'a str,
     pub update_note: &'a str,
+    /// What the renderer is doing ("Shows up as Walkman (Cinder)", "Playing So What").
+    pub play_to_note: &'a str,
 }
 
 pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, crate::i18n::text("Wi-Fi options"), None);
-    let rows: [(&str, &str); 6] = [
+    let rows: [(&str, &str); 7] = [
         (
             crate::i18n::text("Turn on at start"),
             crate::i18n::text("Joins your network when the player starts"),
@@ -487,6 +492,14 @@ pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
         (
             crate::i18n::text("Fetch missing album art"),
             crate::i18n::text("From MusicBrainz, saved as cover.jpg"),
+        ),
+        (
+            crate::i18n::text("Play to this player"),
+            if v.play_to_note.is_empty() {
+                crate::i18n::text("Phones and computers can send music here")
+            } else {
+                v.play_to_note
+            },
         ),
     ];
     let mut y = crate::chrome::HEADER_BOTTOM;
@@ -869,9 +882,12 @@ mod tests {
         for (i, want) in OPTIONS.iter().enumerate() {
             assert_eq!(hit_options(top + i as i32 * kit::ROW_H() + 5), *want);
         }
-        assert_eq!(hit_options(top + 6 * kit::ROW_H() + 5), Hit::None);
+        assert_eq!(
+            hit_options(top + OPTIONS.len() as i32 * kit::ROW_H() + 5),
+            Hit::None
+        );
         assert!(
-            top + 6 * kit::ROW_H() <= H as i32,
+            top + OPTIONS.len() as i32 * kit::ROW_H() <= H as i32,
             "every option fits at this size"
         );
     }
