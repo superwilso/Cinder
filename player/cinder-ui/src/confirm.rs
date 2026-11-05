@@ -55,6 +55,10 @@ pub enum Ask {
     DeleteView,
     /// Settings ▸ Wi-Fi ▸ the joined network: forget it (and its password) and switch off.
     WifiForget,
+    /// Track information ▸ DELETE (Settings ▸ Delete music on): the playing song's file goes.
+    DeleteTrack,
+    /// The album page's DELETE: every file the album lists goes.
+    DeleteAlbum,
 }
 
 /// Every question the modal can ask. Exists so the overflow audit can render all of them without
@@ -70,6 +74,8 @@ pub const ALL: &[Ask] = &[
     Ask::SonyReceiver,
     Ask::DeleteView,
     Ask::WifiForget,
+    Ask::DeleteTrack,
+    Ask::DeleteAlbum,
 ];
 
 impl Ask {
@@ -112,6 +118,16 @@ impl Ask {
                 crate::i18n::text("Forget this network?"),
                 crate::i18n::text("Its password is deleted from the player and Wi-Fi switches off. Join it again from the list."),
                 crate::i18n::text("Forget"),
+            ),
+            Ask::DeleteTrack => (
+                crate::i18n::text("Delete this song?"),
+                crate::i18n::text("Its file is deleted from the player. This cannot be undone."),
+                crate::i18n::text("Delete"),
+            ),
+            Ask::DeleteAlbum => (
+                crate::i18n::text("Delete this album?"),
+                crate::i18n::text("Every song file in it is deleted from the player. This cannot be undone."),
+                crate::i18n::text("Delete"),
             ),
             Ask::SonyReceiver => (
                 crate::i18n::text("Use Sony's receiver?"),

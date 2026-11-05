@@ -269,6 +269,23 @@ jobs:
         with:
           subject-checksums: dist/SHA256SUMS
 
+      # The body: this version's own page when it has one (v0.4.0-rc2 uses v0.4.0's), its images
+      # pinned to this tag's tree, then the install and verify text every release shares.
+      - name: Write the release notes
+        run: |
+          page=".github/release-notes/${GITHUB_REF_NAME%%-*}.md"
+          {
+              if [ -f "$page" ]; then
+                  sed "s|{{TAG}}|$GITHUB_REF_NAME|g" "$page"
+              else
+                  printf '%s\n\n%s\n%s\n' '## What changed' \
+                      'See [CHANGELOG.md](../blob/main/CHANGELOG.md) for the curated entry for this version, including which' \
+                      'items were verified on hardware and which are still device-gated. The generated commit list follows below.'
+              fi
+              echo
+              cat .github/release-notes.md
+          } > release-body.md
+
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
@@ -280,7 +297,7 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          body_path: .github/release-notes.md
+          body_path: release-body.md
 
       # The payload's draft has done its job: every installer above embeds it, and the release
       # itself now carries cinder-payload.tar.gz.

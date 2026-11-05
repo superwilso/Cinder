@@ -54,6 +54,7 @@ b11c7ab7a90cb2fe library_artists_day
 2bfe7199d0f99d21 artist_day
 cb15b3756938b24c artist_songs_open_day
 107e440e935d57e2 album_rated_day
+6cabb77353ed695e album_delete_day
 7ff00f41bde9d35c artist_played_day
 2baf88dddcb9bc9a library_playlists_smart_day
 352813f87d59fdd8 playlist_page_smart_day
@@ -84,6 +85,7 @@ f03b100881e17747 sensme_grid_follow_day
 2d54b7dac79c13ac books_list_day
 14de4d643ba103d6 books_empty_day
 563d3897bfa43f58 track_info_day
+64840f591ecaa7e8 track_info_delete_day
 f639417a99b94d6f lyrics_day
 5b41b16e8f3e3f82 search_day
 486140eb4d116f4b library_search_button_day
@@ -166,6 +168,7 @@ f41a98b654ebf68f library_playlists_band_hidden_night
 0730e1787ba9a362 artist_night
 8c820fd6073ee092 artist_songs_open_night
 7bdfb6688b9e37f6 album_rated_night
+0be3ee8593864815 album_delete_night
 bffa9799a4586807 artist_played_night
 e202d16538d71916 library_playlists_smart_night
 4333bcd4bc203da8 playlist_page_smart_night
@@ -196,6 +199,7 @@ d0e967029854a122 sensme_channels_night
 69f7b9637c2df5b0 books_list_night
 6b618a68377acc74 books_empty_night
 01bb0c4376729d8c track_info_night
+3b59eb98c883124b track_info_delete_night
 cac7ec63b511ce42 lyrics_night
 636383f17edea446 search_night
 27d43fb616816533 library_search_button_night

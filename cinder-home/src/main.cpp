@@ -11621,9 +11621,10 @@ static bool amb_can_play_jack() {
 
 
 // ── Internet radio (Settings > Wi-Fi > Internet radio) ───────────────────────────────────────────
-// Stations from /contents/cinder_radio.txt (parsed by the UI, netradio.rs). An MP3 or AAC stream
-// (Icecast/SHOUTcast, or HLS) from curl (the Wi-Fi option's, run as cinder-home itself: it is in
-// the inet group), decoded by minimp3 (third_party/, CC0) or the firmware's own AAC decoder, and
+// Stations from /contents/cinder_radio.txt (parsed by the UI, netradio.rs). An MP3, AAC, FLAC or
+// WAV stream (Icecast/SHOUTcast, HLS, or a song a phone sends with Play to this player) from curl
+// (the Wi-Fi option's, run as cinder-home itself: it is in the inet group), decoded by minimp3
+// (third_party/, CC0), the firmware's own AAC decoder, or lossless.h (dr_flac; WAV by hand), and
 // played the way a soundscape plays on its own: straight to the
 // jack PCM, or over Bluetooth through the transmitter's socket at 44.1 kHz. It is a bridge in the
 // same sense as the soundscape's: music, FM, USB-DAC, the receiver and USB storage each take the
@@ -11639,6 +11640,12 @@ static bool amb_can_play_jack() {
 #pragma GCC diagnostic pop
 #include "icy.h"
 #include "hls.h"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wall"
+#pragma GCC diagnostic ignored "-Wextra"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#include "lossless.h"
+#pragma GCC diagnostic pop
 
 static const char* const RADIO_CURL = "/system/vendor/cinder/wifi/curl";
 static const char* const RADIO_CA = "/system/vendor/cinder/wifi/cacert.pem";
@@ -11981,34 +11988,28 @@ static bool radio_out_open(RadioOut& o, unsigned src_rate, bool bt) {
         o.rate = 44100;
         return o.fd >= 0;
     }
-    for (const char* d : { "hw:0,4", "hw:0,0" }) {
-        if (g_alsa.open(&o.pcm, d, /*PLAYBACK*/0, 0) >= 0) break;
-        o.pcm = nullptr;
+    // The stream's own rate first; a rate the jack will not take (a hi-res file) is resampled to
+    // its family's base rate.
+    const unsigned base = src_rate % 11025 == 0 ? 44100 : 48000;
+    for (unsigned rate : { src_rate, base }) {
+        for (const char* d : { "hw:0,4", "hw:0,0" }) {
+            if (g_alsa.open(&o.pcm, d, /*PLAYBACK*/0, 0) < 0) { o.pcm = nullptr; continue; }
+            if (g_alsa.set_params(o.pcm, /*S16_LE*/2, /*RW_INTERLEAVED*/3, 2, rate, 1, 250000) >= 0) {
+                o.rate = rate;
+                return true;
+            }
+            g_alsa.close(o.pcm);
+            o.pcm = nullptr;
+        }
     }
-    if (!o.pcm) return false;
-    if (g_alsa.set_params(o.pcm, /*S16_LE*/2, /*RW_INTERLEAVED*/3, 2, src_rate, 1, 250000) < 0) {
-        g_alsa.close(o.pcm);
-        o.pcm = nullptr;
-        return false;
-    }
-    o.rate = src_rate;
-    return true;
+    return false;
 }
 
-// Write interleaved stereo. Over Bluetooth a stream that is not 44.1 kHz is resampled linearly.
+// Write interleaved stereo. A stream at another rate than the output's (any stream not 44.1 kHz
+// over Bluetooth, a hi-res one on the jack) is resampled linearly.
 // ponytail: linear interpolation; a windowed-sinc resampler if 48 kHz stations sound dull over BT.
 static bool radio_out_write(RadioOut& o, const short* pcm, unsigned frames) {
-    if (o.pcm) {
-        while (frames) {
-            long w = g_alsa.writei(o.pcm, pcm, frames);
-            if (w == -EPIPE || w == -ESTRPIPE || w == -EINTR) { g_alsa.prepare(o.pcm); continue; }
-            if (w < 0) return false;
-            pcm += w * 2;
-            frames -= (unsigned)w;
-        }
-        return true;
-    }
-    if (o.fd < 0) return false;
+    if (!o.pcm && o.fd < 0) return false;
     const short* out = pcm;
     size_t n = frames;
     if (o.src_rate != o.rate) {
@@ -12028,6 +12029,16 @@ static bool radio_out_write(RadioOut& o, const short* pcm, unsigned frames) {
         o.last[1] = pcm[(frames - 1) * 2 + 1];
         out = o.tmp.data();
         n = o.tmp.size() / 2;
+    }
+    if (o.pcm) {
+        while (n) {
+            long w = g_alsa.writei(o.pcm, out, n);
+            if (w == -EPIPE || w == -ESTRPIPE || w == -EINTR) { g_alsa.prepare(o.pcm); continue; }
+            if (w < 0) return false;
+            out += w * 2;
+            n -= (size_t)w;
+        }
+        return true;
     }
     const unsigned char* p = (const unsigned char*)out;
     size_t want = n * 4;
@@ -12095,9 +12106,8 @@ static void* radio_thread(void*) {
             url = next;
             continue;
         }
-        if (ctype.find("ogg") != std::string::npos || ctype.find("flac") != std::string::npos ||
-            ctype.find("opus") != std::string::npos) {
-            note = "Ogg, FLAC and Opus stations are not supported yet";
+        if (ctype.find("ogg") != std::string::npos || ctype.find("opus") != std::string::npos) {
+            note = "Ogg and Opus stations are not supported yet";
             break;
         }
         metaint = std::atol(radio_header("icy-metaint").c_str());
@@ -12126,10 +12136,104 @@ static void* radio_thread(void*) {
             take(buf, (size_t)n);
         }
         // The header says which decoder; a station that does not say (or HLS) is told by its bytes.
-        const bool aac = ctype.find("aac") != std::string::npos ||
-                         (ctype.find("mpeg") == std::string::npos && hls::is_adts(audio.data(), audio.size()));
-        if (!dec.open(aac)) { note = "This player has no AAC decoder"; g_radio_run = 0; }
-        while (g_radio_run) {
+        const bool flac = lossless::is_flac(audio.data(), audio.size()) || ctype.find("flac") != std::string::npos;
+        const bool wav = !flac && (lossless::is_wav(audio.data(), audio.size()) || ctype.find("wav") != std::string::npos);
+        const bool aac = !flac && !wav && (ctype.find("aac") != std::string::npos ||
+                         (ctype.find("mpeg") == std::string::npos && hls::is_adts(audio.data(), audio.size())));
+        const char* kind = flac ? "FLAC" : wav ? "WAV" : aac ? "AAC" : "MP3";
+        // Decoded PCM to the output: opened at the first frame's rate, reopened if the rate changes,
+        // mono and multichannel down to stereo. False = stop (`note` says why).
+        auto emit = [&](const short* pcm, int frames, int hz, int ch) -> bool {
+            if (opened && (unsigned)hz != out.src_rate) {
+                // The stream changed rate (an HLS stream switching, a station restarting).
+                if (out.fd >= 0) { out.src_rate = (unsigned)hz; out.pos = 0; }
+                else { radio_out_close(out); opened = false; }
+            }
+            if (!opened) {
+                if (!radio_out_open(out, (unsigned)hz, g_radio_bt)) {
+                    note = g_radio_bt ? "Bluetooth would not take the stream" : "The headphone output is busy";
+                    return false;
+                }
+                opened = true;
+                char m[160];
+                std::snprintf(m, sizeof m, "radio: playing %s%s %d Hz %d ch, %s at %u Hz", kind,
+                              hls_job ? " (HLS)" : "", hz, ch, g_radio_bt ? "Bluetooth" : "the jack", out.rate);
+                clog_(m);
+            }
+            const short* frame = pcm;
+            if (ch != 2) {
+                // Mono to both sides; more than two channels: the first two (front left, right).
+                for (int i = 0; i < frames; i++) {
+                    st[2 * i] = pcm[i * ch];
+                    st[2 * i + 1] = pcm[i * ch + (ch > 1 ? 1 : 0)];
+                }
+                frame = st;
+            }
+            if (!radio_out_write(out, frame, (unsigned)frames)) { note = "The output closed"; return false; }
+            if (!playing_said) { radio_say("playing", title, ""); playing_said = true; }
+            return true;
+        };
+        // FLAC and WAV pull their bytes: `audio`, then the download, until it ends.
+        bool ended = false;
+        auto more = [&]() -> bool {
+            while (g_radio_run) {
+                ssize_t n = radio_read(fd, buf, sizeof buf);
+                if (n < 0) { ended = true; return false; }
+                if (n > 0) { take(buf, (size_t)n); return true; }
+            }
+            return false;
+        };
+        struct Pull { std::vector<unsigned char>* audio; size_t at; decltype(more)* more; };
+        Pull pull = { &audio, 0, &more };
+        auto pull_read = [](void* c, unsigned char* o, size_t n) -> size_t {
+            Pull* p = (Pull*)c;
+            while (p->at == p->audio->size()) {
+                p->audio->clear();
+                p->at = 0;
+                if (!(*p->more)()) return 0;
+            }
+            size_t k = std::min(n, p->audio->size() - p->at);
+            std::memcpy(o, p->audio->data() + p->at, k);
+            p->at += k;
+            return k;
+        };
+        if (flac) {
+            lossless::Flac f;
+            if (!f.open(pull_read, &pull)) {
+                if (g_radio_run) note = "This FLAC stream could not be read";
+            } else {
+                const int ch = f.ch();
+                const size_t cap = RADIO_PCM_MAX / (ch < 2 ? 2 : ch);
+                size_t got;
+                while (g_radio_run && (got = f.next(pcm, cap)) > 0)
+                    if (!emit(pcm, (int)got, (int)f.hz(), ch)) break;
+            }
+        } else if (wav) {
+            lossless::Wav w;
+            int h;
+            while ((h = lossless::wav_header(audio.data(), audio.size(), &w)) == -1 && audio.size() < (1u << 20) && more()) {}
+            if (h != 1) {
+                if (g_radio_run) note = w.problem ? w.problem : "This WAV stream could not be read";
+            } else {
+                pull.at = w.data_at;
+                const size_t bpf = (size_t)w.ch * (size_t)(w.bits / 8);
+                const size_t cap = RADIO_PCM_MAX / (w.ch < 2 ? 2 : (size_t)w.ch);
+                static unsigned char raw[RADIO_PCM_MAX * 4];
+                while (g_radio_run) {
+                    size_t got = 0, k;
+                    while (got < cap * bpf && (k = pull_read(&pull, raw + got, cap * bpf - got)) > 0) got += k;
+                    const size_t frames = got / bpf;
+                    if (!frames) break;
+                    lossless::to_s16(raw, frames * (size_t)w.ch, w.bits, pcm);
+                    if (!emit(pcm, (int)frames, (int)w.hz, w.ch)) break;
+                }
+            }
+        }
+        if (flac || wav) {
+            // A controller's link is one song: its end is the normal end, not a fault.
+            if (ended && note.empty() && g_radio_station != -2) note = "The station stopped sending";
+        } else if (!dec.open(aac)) { note = "This player has no AAC decoder"; g_radio_run = 0; }
+        while (g_radio_run && !flac && !wav) {
             size_t used = 0;
             while (g_radio_run) {
                 size_t k = 0;
@@ -12147,34 +12251,7 @@ static void* radio_thread(void*) {
                     }
                     continue;
                 }
-                if (opened && (unsigned)hz != out.src_rate) {
-                    // The stream changed rate (an HLS stream switching, a station restarting).
-                    if (out.fd >= 0) { out.src_rate = (unsigned)hz; out.pos = 0; }
-                    else { radio_out_close(out); opened = false; }
-                }
-                if (!opened) {
-                    if (!radio_out_open(out, (unsigned)hz, g_radio_bt)) {
-                        note = g_radio_bt ? "Bluetooth would not take the stream" : "The headphone output is busy";
-                        g_radio_run = 0;
-                        break;
-                    }
-                    opened = true;
-                    char m[160];
-                    std::snprintf(m, sizeof m, "radio: playing %s%s %d Hz %d ch, %s", aac ? "AAC" : "MP3",
-                                  hls_job ? " (HLS)" : "", hz, ch, g_radio_bt ? "Bluetooth" : "the jack");
-                    clog_(m);
-                }
-                const short* frame = pcm;
-                if (ch != 2) {
-                    // Mono to both sides; more than two channels: the first two (front left, right).
-                    for (int i = 0; i < frames; i++) {
-                        st[2 * i] = pcm[i * ch];
-                        st[2 * i + 1] = pcm[i * ch + (ch > 1 ? 1 : 0)];
-                    }
-                    frame = st;
-                }
-                if (!radio_out_write(out, frame, (unsigned)frames)) { note = "The output closed"; g_radio_run = 0; break; }
-                if (!playing_said) { radio_say("playing", title, ""); playing_said = true; }
+                if (!emit(pcm, frames, hz, ch)) { g_radio_run = 0; break; }
             }
             audio.erase(audio.begin(), audio.begin() + (long)used);
             if (!g_radio_run) break;

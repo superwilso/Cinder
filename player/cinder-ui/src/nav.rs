@@ -509,6 +509,9 @@ pub enum Action {
     PlaylistRename(i64),
     /// Delete it. Confirmed in the modal first — an m3u8 file is small but a curated list is not.
     PlaylistDelete(i64),
+    /// Delete the music files of `App::take_delete()` from the player (Settings ▸ Delete music).
+    /// Confirmed in the modal first; the shell rescans the library afterwards.
+    DeleteMusic,
     /// `(playlist id, track object id)`.
     PlaylistAddTrack(i64, i64),
     /// `(playlist id, position)` — remove one member. Two-tap armed in the UI.
@@ -1822,6 +1825,11 @@ pub struct App {
     quick_enabled: bool,
     /// Settings ▸ Folders tab: the FOLDERS link on the Library's tab strip. OFF by default.
     folders_tab: bool,
+    /// Settings ▸ Delete music: DELETE on Track information and the album page. OFF by default.
+    delete_music: bool,
+    /// What the open delete question would remove, as object ids. Set when it is ASKED, so the
+    /// answer deletes exactly what the question was about even if the song changes meanwhile.
+    delete_ids: Vec<i64>,
     /// What a swipe up / down in the middle of Now Playing opens (Settings, #51). Off by default.
     np_swipe_up: crate::settings::SwipeTo,
     np_swipe_down: crate::settings::SwipeTo,
@@ -2308,6 +2316,8 @@ impl Default for App {
             shelf_open: false,
             quick_enabled: false,
             folders_tab: false,
+            delete_music: false,
+            delete_ids: Vec::new(),
             np_swipe_up: crate::settings::SwipeTo::Off,
             np_swipe_down: crate::settings::SwipeTo::Off,
             np_button: crate::now_playing::NpButton::Bluetooth,
@@ -3056,6 +3066,76 @@ impl App {
     }
     pub fn set_hold_buttons(&mut self, on: bool) {
         self.hold_buttons = on;
+    }
+
+    /// Is Settings ▸ Delete music on?
+    pub fn delete_music(&self) -> bool {
+        self.delete_music
+    }
+
+    pub fn set_delete_music(&mut self, on: bool) {
+        self.delete_music = on;
+    }
+
+    /// The files a confirmed delete is for, once (`Action::DeleteMusic`).
+    pub fn take_delete(&mut self) -> Vec<i64> {
+        std::mem::take(&mut self.delete_ids)
+    }
+
+    /// Ask before deleting `ids`. A CUE album is ONE file, so a song of one cannot go on its own:
+    /// the question becomes the album's.
+    fn ask_delete(&mut self, ids: Vec<i64>, album: bool) {
+        let cue = (!album)
+            .then(|| {
+                let id = *ids.first()?;
+                self.lib
+                    .albums_flat()
+                    .into_iter()
+                    .find(|a| !a.cue.is_empty() && a.track_list.iter().any(|t| t.object_id == id))
+                    .map(|a| {
+                        a.track_list
+                            .iter()
+                            .map(|t| t.object_id)
+                            .collect::<Vec<i64>>()
+                    })
+            })
+            .flatten();
+        if ids.is_empty() {
+            return;
+        }
+        self.confirm = Some(if album || cue.is_some() {
+            crate::confirm::Ask::DeleteAlbum
+        } else {
+            crate::confirm::Ask::DeleteTrack
+        });
+        self.delete_ids = cue.unwrap_or(ids);
+    }
+
+    /// The delete question was answered yes. The page goes (what it shows is about to), Up Next
+    /// loses what is still to come of it, and a song playing from it is skipped.
+    fn delete_confirmed(&mut self) -> Vec<Action> {
+        if self.delete_ids.is_empty() {
+            return vec![];
+        }
+        self.pop();
+        let ids = self.delete_ids.clone();
+        let mut out = vec![Action::DeleteMusic];
+        let before = self.context.len();
+        for i in (self.context_idx + 1..self.context.len()).rev() {
+            if ids.contains(&self.context[i].object_id) {
+                self.context.remove(i);
+            }
+        }
+        if let Some(pre) = self.pre_shuffle.as_mut() {
+            pre.retain(|p| !ids.contains(p));
+        }
+        if self.context.len() != before {
+            out.push(Action::QueueChanged);
+        }
+        if self.playing_object_id().is_some_and(|p| ids.contains(&p)) {
+            out.push(Action::Next);
+        }
+        out
     }
 
     pub fn set_folders_tab(&mut self, on: bool) {
@@ -4567,6 +4647,10 @@ impl App {
                 self.set_folders_tab(!self.folders_tab);
                 vec![]
             }
+            crate::settings::ROW_DELETE => {
+                self.delete_music = !self.delete_music;
+                vec![]
+            }
             crate::settings::ROW_SHUFFLE => {
                 // Render-only, like Ignore "The": the shell's save path writes the file. It
                 // changes what the NEXT press of the shuffle button deals, not the list playing.
@@ -4976,6 +5060,9 @@ impl App {
                         }
                     }
                     crate::confirm::Ask::DeleteView => self.delete_edited_view(),
+                    crate::confirm::Ask::DeleteTrack | crate::confirm::Ask::DeleteAlbum => {
+                        self.delete_confirmed()
+                    }
                     crate::confirm::Ask::WifiForget => {
                         self.wifi_status.state = crate::wifi::State::Busy;
                         self.wifi_status.note.clear();
@@ -5267,6 +5354,11 @@ impl App {
                         self.album_track_idx = row;
                         return self.play_album_row(&album, row);
                     }
+                    if self.delete_music && crate::chrome::header_action_hit(x, y) {
+                        let ids = album.track_list.iter().map(|s| s.object_id).collect();
+                        self.ask_delete(ids, true);
+                        return vec![];
+                    }
                     // The "Play album" band: play from track 1 — the shell's album_context
                     // expands it to the whole album in order. (Hit-tested through the band's own
                     // rect; the old literal range started 16px above where the band is drawn.)
@@ -5291,6 +5383,15 @@ impl App {
             }
             // Track information: the pinned action band, plus the link rows.
             Screen::TrackInfo => {
+                if self.delete_music && crate::chrome::header_action_hit(x, y) {
+                    if let Some(id) = self
+                        .playing_object_id()
+                        .filter(|_| !self.track_info.is_empty())
+                    {
+                        self.ask_delete(vec![id], false);
+                    }
+                    return vec![];
+                }
                 if !self.presets.is_empty() && crate::track_info::hit_album_sound(x, y) {
                     return self.album_sound_step(false);
                 }
@@ -11161,6 +11262,7 @@ impl App {
                         self.swipe_row,
                         self.sbar_active(),
                         self.lib.album_rating(al),
+                        self.delete_music,
                     );
                 } else {
                     crate::library::render(
@@ -11318,6 +11420,7 @@ impl App {
                     self.sbar_active(),
                     rating,
                     (!self.presets.is_empty()).then(|| self.album_sound_row().unwrap_or((0, 0))),
+                    self.delete_music,
                 )
             }
             Screen::Lyrics => {
@@ -11748,6 +11851,7 @@ impl App {
                     ignore_the: self.ignore_the,
                     quick: self.quick_enabled,
                     folders_tab: self.folders_tab,
+                    delete_music: self.delete_music,
                     swipe_up: self.np_swipe_up,
                     swipe_down: self.np_swipe_down,
                     np_button: self.np_button,
@@ -19981,6 +20085,60 @@ mod tests {
             a.tap(x, row_y).is_empty(),
             "a tap elsewhere must disarm the row"
         );
+    }
+
+    /// Settings ▸ Delete music: off, the header slot does nothing; on, DELETE asks, and yes hands
+    /// the shell exactly the files the question was about, skips the song if it was playing, and
+    /// takes the rest out of Up Next.
+    #[test]
+    fn deleting_music_is_off_by_default_then_asks_and_hands_over_the_files() {
+        let mut a = unlocked();
+        let album: Vec<SongRow> = (0..4)
+            .map(|i| SongRow {
+                title: format!("T{i}"),
+                object_id: 900 + i,
+                ..Default::default()
+            })
+            .collect();
+        a.set_play_context(album, 1);
+        a.set_track_info(vec![("Title".into(), "T1".into())]);
+        a.push(Screen::TrackInfo);
+        let (hx, hy) = (
+            crate::chrome::HEADER_ACTION_X + 40,
+            crate::chrome::HEADER_BOTTOM - 20,
+        );
+        assert!(!a.delete_music(), "off by default");
+        assert!(a.tap(hx, hy).is_empty());
+        assert!(!a.modal_open());
+
+        a.set_delete_music(true);
+        assert!(a.tap(hx, hy).is_empty());
+        assert!(a.modal_open(), "a delete is always asked first");
+        let (cx, cy) = crate::confirm::confirm_button_centre(crate::confirm::Ask::DeleteTrack);
+        assert_eq!(a.tap(cx, cy), vec![Action::DeleteMusic, Action::Next]);
+        assert_eq!(a.take_delete(), vec![901]);
+        assert!(a.take_delete().is_empty(), "taken once");
+        assert_ne!(a.current(), Screen::TrackInfo, "the page about it closes");
+
+        // An album: every song of it, and the ones still to come leave Up Next.
+        let ids: Vec<i64> = a.lib.albums_flat()[0]
+            .track_list
+            .iter()
+            .map(|t| t.object_id)
+            .collect();
+        let rows: Vec<SongRow> = a.lib.albums_flat()[0].track_list.clone();
+        a.set_play_context(rows, 0);
+        a.album_view = 0;
+        a.push(Screen::Album);
+        assert!(a.tap(hx, hy).is_empty());
+        assert!(a.modal_open());
+        let (cx, cy) = crate::confirm::confirm_button_centre(crate::confirm::Ask::DeleteAlbum);
+        assert_eq!(
+            a.tap(cx, cy),
+            vec![Action::DeleteMusic, Action::QueueChanged, Action::Next]
+        );
+        assert_eq!(a.take_delete(), ids);
+        assert_eq!(a.context.len(), 1, "only the playing row is left");
     }
 
     #[test]

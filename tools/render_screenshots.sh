@@ -40,6 +40,9 @@ MAP=(
     sound-quality:bluetooth_codec_day      device:device
     help:help_top
     style-nocturne:now_playing_nocturne_day style-terminal:now_playing_terminal_day
+    wifi-options:wifi_options              internet-radio:netradio_playing
+    speakers:wifi_speakers_casting         phone-remote:wifi_remote_on
+    delete-music:track_info_delete_day
 )
 
 # A clean render, with the real-cover overrides unset: those read files outside the tree, and the

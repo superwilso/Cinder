@@ -1,13 +1,9 @@
 <!--
-  The GitHub release body, published as-is by .github/workflows/release.yml (body_path). GitHub's
-  generated commit list is appended below it.
+  The part of every GitHub release body that does not change: installing and verifying.
+  .github/workflows/release.yml puts the version's own page above it (.github/release-notes/vX.Y.Z.md,
+  shared by that version's -rcN tags), or a pointer to the CHANGELOG when there is none. GitHub's
+  generated commit list is appended below.
 -->
-## What changed
-
-See [CHANGELOG.md](../blob/main/CHANGELOG.md) for the curated entry for this version,
-including which items were verified on hardware and which are still device-gated. The
-auto-generated commit list follows below.
-
 ## Installing
 
 Download **cinder-installer-windows-x64.exe**, connect the Walkman in USB mass-storage

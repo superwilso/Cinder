@@ -18,6 +18,21 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **FLAC and WAV in the network player.** Internet radio and **Play to this player** now play
+  FLAC (by [dr_flac](cinder-home/third_party/dr_flac), public domain, Ogg FLAC not included) and
+  WAV (integer PCM, 8 to 32 bit), so a phone can send lossless songs, and the player now tells
+  controllers it takes them. 24-bit is played as 16-bit. A rate the headphone jack will not take
+  (a hi-res file) is resampled to 44.1 or 48 kHz, the way Bluetooth always was. Checked off the
+  player: every frame of 14 real library files decoded identically through the streaming path.
+  *Device-unverified.*
+- **Delete music (off by default).** **Settings ▸ Library ▸ Delete music** puts **DELETE** in the
+  header of **Track information** (the playing song) and of each **album page** (the whole album),
+  each behind a confirmation that says it cannot be undone. The files go from the player's storage,
+  with the song's `.lrc`; an album folder left holding only its cover, cue sheet, lyrics or rip log
+  goes too (the folder directly under `/contents` or the SD card never does). A song of a CUE album
+  is one file with the rest, so its DELETE asks about the album. A song still to come leaves Up
+  Next, the playing one is skipped, and the library rescans a moment later. Only files under
+  `/contents` and the SD card can be deleted. *Device-unverified.*
 - **Wi-Fi (new, experimental, off by default).** The player's Wi-Fi radio, which Sony never
   used, as the installer option **Device ▸ Wi-Fi**. **Settings ▸ Wi-Fi** has the switch, a status
   line, **Network** (the networks in range, strongest first, with a password keyboard; WPA2 and
@@ -62,8 +77,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   **Play to this player** (Settings ▸ Wi-Fi ▸ Options, off unless switched on): the player shows
   up on the network as a UPnP/DLNA speaker, "Walkman (Cinder)", so a phone app (BubbleUPnP and
   the like), Windows' "Cast to device" or a music server's app can play on it; the music comes out
-  of the jack or Bluetooth through the internet radio's player, so MP3, AAC and HLS links play
-  (FLAC and WAV not yet), and the app moves on to its next song when one ends. Stop works; pause
+  of the jack or Bluetooth through the internet radio's player, so MP3, AAC, FLAC, WAV and HLS
+  links play, and the app moves on to its next song when one ends. Stop works; pause
   stops and play starts the song again; seeking is not offered; the volume stays the player's
   own. UPnP has no lock: while the switch is on, anyone on the same network can play on the
   player. *Tested with Home Assistant's UPnP client (search, every action, events); not yet on the
@@ -131,6 +146,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   it run locally; the workflow has not run on GitHub yet.*
 
 ### Changed
+
+- **A version can have its own release page.** `.github/release-notes/vX.Y.Z.md`, when there is
+  one, goes at the top of that version's release (its `-rcN` pre-releases too), with its images
+  taken from the tag's own tree; the install and verify text every release shares follows. 0.4.0
+  has one. The README screenshots gained Wi-Fi options, Internet radio, Speakers, Phone remote and
+  Delete music, re-rendered by `tools/render_screenshots.sh` like the rest.
 
 - **No more cut-off sentences at large text sizes.** The USB Storage screen wraps its text
   instead of cutting it with "…" in Big view, and its TURN OFF button moves down to make room.

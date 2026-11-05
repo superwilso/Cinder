@@ -204,10 +204,17 @@ pub fn render(
     rating: u8,
     // Sound ▸ Presets kept for the playing album (0 = none); None while no preset is saved.
     album_sound: Option<(u8, u8)>,
+    // Settings ▸ Delete music: a DELETE action in the header's right slot.
+    delete: bool,
 ) {
     let scroll = scroll_px.clamp(0, max_scroll_px(f, t, rows));
     c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, crate::i18n::text("Track information"), None);
+    let title = crate::i18n::text("Track information");
+    let y0 = if delete && !rows.is_empty() {
+        crate::chrome::header_action(c, t, f, title, crate::i18n::text("DELETE"))
+    } else {
+        crate::chrome::header(c, t, f, title, None)
+    };
     c.set_clip_y(y0, BOTTOM);
 
     if rows.is_empty() {
