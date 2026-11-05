@@ -50,6 +50,14 @@ check "a starter station list where there was none" "$(cat "$R/contents/cinder_r
 fresh; stage; echo "Mine | http://example.org/m" > "$R/contents/cinder_radio.txt"; run 1
 check "the user's own station list is kept" "$(cat "$R/contents/cinder_radio.txt")" "Mine | http://example.org/m"
 
+echo "ticked, with the AirPlay 2 files"
+fresh; stage; for f in shairport-sync-ap2 nqptp; do echo "$f body" > "$R/contents/cinder-wifi-$f"; done; run 1
+check "both AirPlay 2 files are in" "$(find "$(W)" -type f | wc -l | tr -d ' ')" 16
+check "nqptp is 755" "$(stat -c %a "$(W)/nqptp")" 755
+check "shairport-sync-ap2 is 755" "$(stat -c %a "$(W)/shairport-sync-ap2")" 755
+fresh; stage; : > "$R/contents/cinder-wifi-nqptp"; run 1
+check "an empty optional file is skipped, the rest installs" "$([ -e "$(W)/nqptp" ] && echo there || echo absent) $(grep -c 'wifi: installed' "$R/out")" "absent 1"
+
 echo "ticked, one file missing"
 fresh; stage; rm "$R/contents/cinder-wifi-iw"; mkdir -p "$(W)"; echo x > "$(H)"; run 1
 check "nothing is installed" "$([ -e "$(W)" ] || [ -e "$(H)" ] && echo some || echo none)" none

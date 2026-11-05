@@ -28,7 +28,7 @@ PINNED_MAJOR_MINOR="0.11"
 # of vendor scripts we neither wrote nor can fix. They are gitignored, so CI never sees them and
 # passed purely by their absence; locally they buried our findings in vendor noise and turned the
 # gate red for things that are not ours. Excluded explicitly so local and CI check the same set.
-# The submodules (.gitmodules) are their own repos with their own gates.
+# flint/ and cinder-themes/ (local checkouts of their own repos, if present) have their own gates.
 mapfile -t SCRIPTS < <(find . -name '*.sh' \
     -not -path './.git/*' \
     -not -path './artifacts/*' \
