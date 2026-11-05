@@ -69,6 +69,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   player. *Tested with Home Assistant's UPnP client (search, every action, events); not yet on the
   player or with a phone app.*
 
+  **Share the drive** (Settings ▸ Wi-Fi ▸ Options, on until the player restarts): the player's
+  drive as a WebDAV share at the address the switch shows (`http://<player>:8081/<code>`), so a
+  computer maps it as a drive letter (Windows: Map network drive; macOS: Finder ▸ Connect to
+  Server) and copies music to it, or syncs with Flint over Wi-Fi (`flint sync <library> --to
+  Z:\MUSIC`), as over the cable. The code is the lock (ten wrong tries lock the share for a minute);
+  files arrive under a hidden name and are renamed into place only when complete; nothing is
+  served while the drive is on USB storage; the library rescans once the copying has stopped for
+  20 seconds. Windows refuses to copy files over 50 MB *from* a share until its WebClient limit is
+  raised (registry `HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`,
+  `FileSizeLimitInBytes` = `4294967295`, then restart the WebClient service); copying *to* the
+  player is not limited. *Tested from Windows 11's own WebDAV client (folders, a 60 MB copy, rename,
+  delete, free space) and with Flint 0.2.4-rc1 (sync, a second run with nothing to copy, a removal);
+  not yet on the player.*
+
   **Phone remote** (Settings ▸ Wi-Fi ▸ Phone remote, on for one boot at a time): a page on the
   home network, `http://<player>:8080`, locked by a 6-digit code the player shows (new each time;
   five wrong tries lock it for a minute). It shows the song playing, has play/pause, previous,

@@ -114,6 +114,12 @@ pub fn take_button() -> Option<i32> {
 }
 
 /// How many uploads finished since the last call (the shell rescans the library when it is > 0).
+/// Files that arrived another way (the shared drive): counted toward the same rescan.
+pub fn note_uploaded(n: u32) {
+    let mut s = state().lock().unwrap();
+    s.uploaded = s.uploaded.saturating_add(n);
+}
+
 pub fn take_uploaded() -> u32 {
     std::mem::take(&mut state().lock().unwrap().uploaded)
 }

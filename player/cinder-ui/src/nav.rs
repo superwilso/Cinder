@@ -1685,6 +1685,11 @@ pub struct App {
     /// Settings ▸ Wi-Fi ▸ Options ▸ Play to this player (the DLNA renderer). Saved; off by default.
     wifi_play_to: bool,
     play_to_note: String,
+    /// Settings ▸ Wi-Fi ▸ Options ▸ Share the drive: on until the player restarts (never saved),
+    /// its address while on, and the code in that address (saved, so a computer's mapping lasts).
+    wifi_drive: bool,
+    drive_note: String,
+    drive_code: String,
     /// What the shell last said about each (shown as the row's second line).
     wifi_lb_note: String,
     wifi_update_note: String,
@@ -2236,6 +2241,9 @@ impl Default for App {
             wifi_art: false,
             wifi_play_to: false,
             play_to_note: String::new(),
+            wifi_drive: false,
+            drive_note: String::new(),
+            drive_code: String::new(),
             wifi_lb_note: String::new(),
             wifi_update_note: String::new(),
             radio_stations: Vec::new(),
@@ -7318,6 +7326,11 @@ impl App {
                 self.play_to_note.clear();
                 vec![]
             }
+            Hit::Drive => {
+                self.wifi_drive = !self.wifi_drive;
+                self.drive_note.clear();
+                vec![]
+            }
             Hit::Updates => {
                 self.wifi_updates = !self.wifi_updates;
                 if !self.wifi_updates {
@@ -7608,6 +7621,27 @@ impl App {
     /// starts with no lyrics, while connected.
     pub fn wifi_lyrics(&self) -> bool {
         self.wifi_lyrics
+    }
+    /// Settings ▸ Wi-Fi ▸ Options ▸ Share the drive (on until the player restarts).
+    pub fn wifi_drive(&self) -> bool {
+        self.wifi_drive
+    }
+    pub fn drive_note(&self) -> &str {
+        &self.drive_note
+    }
+    pub fn set_drive_note(&mut self, note: &str) {
+        self.drive_note = note.chars().take(60).collect();
+    }
+    /// The code in the shared drive's address ("" until it is first switched on).
+    pub fn drive_code(&self) -> &str {
+        &self.drive_code
+    }
+    pub fn set_drive_code(&mut self, code: &str) {
+        self.drive_code = code
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .take(16)
+            .collect();
     }
     /// Settings ▸ Wi-Fi ▸ Options ▸ Play to this player.
     pub fn wifi_play_to(&self) -> bool {
@@ -11863,10 +11897,12 @@ impl App {
                         self.wifi_lyrics,
                         self.wifi_art,
                         self.wifi_play_to,
+                        self.wifi_drive,
                     ],
                     lb_note: &self.wifi_lb_note,
                     update_note: &self.wifi_update_note,
                     play_to_note: &self.play_to_note,
+                    drive_note: &self.drive_note,
                 },
             ),
             Screen::NetRadio => {
@@ -26980,6 +27016,7 @@ mod r4_tests {
             !a.wifi_play_to(),
             "Play to this player off on a fresh install"
         );
+        assert!(!a.wifi_drive(), "the shared drive off on a fresh install");
         a.set_wifi_status("state=off\n", "");
         assert_eq!(
             a.tap(240, wifi_y(false, Hit::AirPlay)),
@@ -26997,12 +27034,12 @@ mod r4_tests {
             assert!(a.tap(240, opt_y(h)).is_empty(), "off: {h:?} only saves");
         }
         assert!(a.wifi_autostart() && a.wifi_clock() && a.wifi_lb() && a.wifi_updates());
-        assert!(a.wifi_lyrics() && a.wifi_art() && a.wifi_play_to());
+        assert!(a.wifi_lyrics() && a.wifi_art() && a.wifi_play_to() && a.wifi_drive());
         for h in crate::wifi::OPTIONS {
             a.tap(240, opt_y(h));
         }
         assert!(!a.wifi_autostart() && !a.wifi_clock() && !a.wifi_lb() && !a.wifi_updates());
-        assert!(!a.wifi_play_to());
+        assert!(!a.wifi_play_to() && !a.wifi_drive());
 
         a.set_wifi_status("state=connected\nssid=6162\n", "");
         assert_eq!(a.tap(240, opt_y(Hit::Clock)), vec![Action::WifiTimeSync]);

@@ -451,6 +451,6 @@ c36dab556d7186e7 netradio_playing
 adccbaa6999bad73 netradio_find
 e774c6674407efb8 wifi_remote_on
 88de3ff2e98d0746 wifi_speakers_casting
-9279c5507a5b7b7c wifi_options
+9253392558585e68 wifi_options
 c645830f4cff52da wifi_failed
 1aad37d87fe5677d keyboard_more_symbols

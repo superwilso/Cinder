@@ -17,6 +17,7 @@ mod books;
 mod cast;
 mod chromecast;
 mod cue;
+mod drive;
 mod likes;
 mod lyrics;
 mod net;
@@ -1566,6 +1567,7 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("wifi_lyrics={}\n", r.app.wifi_lyrics() as u8));
     body.push_str(&format!("wifi_art={}\n", r.app.wifi_art() as u8));
     body.push_str(&format!("wifi_play_to={}\n", r.app.wifi_play_to() as u8));
+    body.push_str(&format!("wifi_drive_code={}\n", r.app.drive_code()));
     // Settings ▸ Swipe up / Swipe down: what each opens on Now Playing (#51), as words.
     let (up, down) = r.app.np_swipes();
     body.push_str(&format!(
@@ -5218,8 +5220,41 @@ fn cast_start(r: &mut Render, sp: cast::Speaker, start_ms: i64) {
 
 /// The cast's state into the UI, once a tick: the Speakers page, and Now Playing (the song, its
 /// cover, play/pause and the position all come from the speaker while it has the music).
+/// Share the drive while its switch is on and Wi-Fi is connected; stop it otherwise.
+fn drive_tick(r: &mut Render) {
+    let want = r.app.wifi_drive() && r.app.wifi_connected();
+    if want && !drive::running() {
+        if r.app.drive_code().is_empty() {
+            r.app.set_drive_code(&drive::new_code());
+            save_settings(r);
+        }
+        let ip = cast::own_ip_towards("http://239.255.255.250:1900");
+        let code = r.app.drive_code().to_string();
+        let note = match ip.and_then(|ip| {
+            drive::start(std::path::Path::new("/contents"), &code, true).map(|p| (ip, p))
+        }) {
+            Ok((ip, port)) => {
+                eprintln!("cinder-ffi: drive: shared on port {port}");
+                format!("http://{ip}:{port}/{code}")
+            }
+            Err(e) => {
+                eprintln!("cinder-ffi: drive: could not share: {e}");
+                e
+            }
+        };
+        r.app.set_drive_note(&note);
+        r.dirty = true;
+    } else if !want && drive::running() {
+        drive::stop();
+        eprintln!("cinder-ffi: drive: stopped");
+        r.app.set_drive_note("");
+        r.dirty = true;
+    }
+}
+
 fn cast_tick(r: &mut Render) {
     renderer_tick(r);
+    drive_tick(r);
     if let Some(found) = RADIO_FOUND.lock().unwrap().take() {
         match found {
             Ok(v) => r.app.set_radio_found(v, String::new()),
@@ -9439,6 +9474,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "wifi_lyrics" => r.app.set_wifi_lyrics(v == "1"),
                     "wifi_art" => r.app.set_wifi_art(v == "1"),
                     "wifi_play_to" => r.app.set_wifi_play_to(v == "1"),
+                    "wifi_drive_code" => r.app.set_drive_code(v),
                     "np_count" => r.app.set_np_count(v == "1"),
                     "hold_buttons" => r.app.set_hold_buttons(v == "1"),
                     "big_bar" => cinder_ui::scale::set_big_bar(v == "1"),
