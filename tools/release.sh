@@ -347,6 +347,9 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/wifi-curl
     cinder-home/dist/stable/wifi-cacert.pem
     cinder-home/dist/stable/wifi-shairport-sync
+    cinder-home/dist/stable/wifi-openssl
+    cinder-home/dist/stable/wifi-shairport-sync-ap2
+    cinder-home/dist/stable/wifi-nqptp
     cinder-home/dist/stable/wifi-wifi-up.sh
     cinder-home/dist/stable/wifi-wifi-down.sh
     cinder-home/dist/stable/wifi-dhcp.sh

@@ -39,7 +39,7 @@ HELPERS=(cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-vol
 # helpers. In dist/stable from the release after 0.3.14; checked when present.
 [ -f "$DIR/cinder-hagowrap" ] && HELPERS+=(cinder-hagowrap)
 # The `wifi` component's helper and programs (static, like every helper) when this build has them.
-for b in cinder-wifi wifi-wpa_supplicant wifi-wpa_cli wifi-iw wifi-curl wifi-shairport-sync; do [ -f "$DIR/$b" ] && HELPERS+=("$b"); done
+for b in cinder-wifi wifi-wpa_supplicant wifi-wpa_cli wifi-iw wifi-curl wifi-shairport-sync wifi-openssl wifi-shairport-sync-ap2 wifi-nqptp; do [ -f "$DIR/$b" ] && HELPERS+=("$b"); done
 
 # Every shared library the dynamic binaries may need: Sony's service clients from vendor/sony/lib,
 # the firmware's libc++ 3.9 runtime, ALSA, and glibc 2.23 itself. libMali_linux.so (the deleted GPU

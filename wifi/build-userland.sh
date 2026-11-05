@@ -9,6 +9,8 @@
 #                                     CA list, MPL-2.0, as curl.se publishes it)
 #   out/shairport-sync                the AirPlay receiver (MIT; popt MIT, libconfig LGPL-2.1, both
 #                                     static) — AirPlay 1, OpenSSL, tinysvcmdns, audio to stdout
+#   out/openssl                       OpenSSL's own command line (Apache-2.0), for `s_client`: the
+#                                     TLS that Google Cast speakers talk (Settings ▸ Wi-Fi ▸ Speakers)
 #
 # Needs an ARM musl cross compiler (MUSL, default ~/arm-linux-musleabihf-cross, from musl.cc) and,
 # for libnl 3, bison and flex on the build machine. Every download is pinned by sha256.
@@ -111,7 +113,7 @@ echo "== wifiscan"
 $CC -static -Os -Wall -Wextra -o "$W/wifiscan" "$HERE/tools/wifiscan.c"
 
 for b in "$WPA/wpa_supplicant/wpa_supplicant" "$WPA/wpa_supplicant/wpa_cli" "$W/iw-5.19/iw" "$W/wifiscan" \
-         "$W/curl-8.22.0/src/curl" "$W/shairport-sync"; do
+         "$W/curl-8.22.0/src/curl" "$W/shairport-sync" "$W/openssl-3.0.15/apps/openssl"; do
     arm-linux-musleabihf-strip -o "$OUT/$(basename "$b")" "$b"
 done
-( cd "$OUT" && sha256sum wpa_supplicant wpa_cli iw wifiscan curl cacert.pem shairport-sync | tee SHA256SUMS.userland )
+( cd "$OUT" && sha256sum wpa_supplicant wpa_cli iw wifiscan curl cacert.pem shairport-sync openssl | tee SHA256SUMS.userland )

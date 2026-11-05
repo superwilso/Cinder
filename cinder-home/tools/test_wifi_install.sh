@@ -11,7 +11,7 @@ pass=0; fail=0
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; pass=$((pass+1));
   else echo "  FAIL $1 (got '$2', want '$3')"; fail=$((fail+1)); fi; }
 INST="$HERE/deploy/install_cinderhome.sh"
-FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync wifi-up.sh wifi-down.sh dhcp.sh"
+FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync openssl wifi-up.sh wifi-down.sh dhcp.sh"
 
 R=
 fresh() {
@@ -36,7 +36,7 @@ H() { echo "$R/system/vendor/cinder/bin/cinder-wifi"; }
 
 echo "ticked, everything staged"
 fresh; stage; mkdir -p "$(W)"; echo old > "$(W)/stale"; run 1
-check "all thirteen files are in the folder" "$(find "$(W)" -type f | wc -l | tr -d ' ')" 13
+check "all fourteen files are in the folder" "$(find "$(W)" -type f | wc -l | tr -d ' ')" 14
 check "a module is 644" "$(stat -c %a "$(W)/wlan_mt.ko")" 644
 check "a program is 755" "$(stat -c %a "$(W)/wpa_supplicant")" 755
 check "the CA list is 644" "$(stat -c %a "$(W)/cacert.pem")" 644

@@ -55,9 +55,14 @@ Everything lives in `/system/vendor/cinder/wifi`. Nothing loads at boot. Cinder'
 Everything that only needs the network runs as cinder-home itself, not through the helper. The
 kernel's paranoid networking lets group 3003 (`inet`) open sockets and appmgr starts cinder-home in
 it, so cinder-home runs `curl` directly: ListenBrainz (`cinder_listenbrainz.txt` holds the token),
-the GitHub update check, lyrics from LRCLIB (written beside the song as a `.lrc`), internet radio (`cinder_radio.txt`; MP3 decoded by
-[minimp3](../cinder-home/third_party/minimp3), CC0), the phone remote (a server in cinder-ffi on
-port 8080, locked by a code shown on the player), and AirPlay (`shairport-sync -o stdout`, read by
+the GitHub update check, lyrics from LRCLIB (written beside the song as a `.lrc`), album art from MusicBrainz and the Cover Art
+Archive (`cover.jpg` in the album's folder), internet radio (`cinder_radio.txt`; MP3 decoded by
+[minimp3](../cinder-home/third_party/minimp3), CC0; AAC and HE-AAC by the firmware's own
+`libFraunhoferAAC.so`, loaded at run time, so none of it ships; HLS playlists and MPEG-TS
+segments by `cinder-home/src/hls.h`), the phone remote (a server in cinder-ffi on
+port 8080, locked by a code shown on the player), casting to network speakers (`cinder-ffi/src/cast.rs`:
+SSDP, UPnP AVTransport, the songs served from a random port with a random token, only during a cast;
+`chromecast.rs`: Google Cast by mDNS and Cast v2, its TLS through `openssl s_client`), and AirPlay (`shairport-sync -o stdout`, read by
 cinder-home and played like the radio).
 
 Third-party licences: [NOTICE](NOTICE).

@@ -32,11 +32,32 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   - **Check for updates**: once a day, says when a newer Cinder release is out.
   - **Fetch missing lyrics**: a song that starts with no lyrics is looked up on LRCLIB (free, no
     account) and its words, synced when LRCLIB has them, saved beside it as a `.lrc`.
+  - **Fetch missing album art**: a song playing with no cover (none in the file, no image in its
+    folder) has its album looked up on MusicBrainz and the front cover fetched from the Cover Art
+    Archive (both free, no account), saved as `cover.jpg` in the album's folder and shown at once.
+    Only a folder that holds that album alone gets one, and the title must match: a plain album wins
+    over a compilation or fan release of the same name.
 
-  **Internet radio** (Settings ▸ Wi-Fi ▸ Internet radio): MP3 stations from `cinder_radio.txt` on
-  the drive (`Name | URL`, an .m3u, or .pls links; the install writes a starter list of four when
-  there is none), through the headphone jack or Bluetooth, with the song title stations send.
+  **Internet radio** (Settings ▸ Wi-Fi ▸ Internet radio): MP3 and AAC stations (AAC-LC and HE-AAC,
+  decoded by the player's own firmware library), Icecast/SHOUTcast or HLS (`.m3u8`, MPEG-TS or
+  packed-audio segments, so BBC and Radio France streams play), from `cinder_radio.txt` on the
+  drive (`Name | URL`, an .m3u, or .pls links; the install writes a starter list of six when there
+  is none), through the headphone jack or Bluetooth, with the song title stations send. **FIND**
+  searches radio-browser.info (free, community-kept) by name or genre and lists only stations the
+  player can play; tap one and it is added to `cinder_radio.txt` and plays.
   Music, FM, USB-DAC and the receiver take the output back and stop it.
+
+  **Speakers** (Settings ▸ Wi-Fi ▸ Speakers): play Up Next on a speaker on the home network — any
+  UPnP/DLNA media renderer (network speakers such as Sonos, most network AV receivers and smart
+  TVs, Kodi) and any Google Cast device (Chromecast Audio, Google and Nest speakers, speakers and
+  TVs with Chromecast built in; found by mDNS, the TLS through the Wi-Fi option's `openssl`). The
+  page searches the network when it opens; tap a speaker and the music moves there
+  from the same song and second, and the player pauses. The player serves each song's own file
+  (FLAC, MP3, AAC/ALAC, WAV, AIFF, Ogg, Opus; not DSD) and sends the next one when the speaker
+  finishes; play/pause, skip and the volume keys work the speaker, Now Playing shows its song and
+  position, and a song or album chosen in the library plays there too. **Play here** brings the
+  music back to the player where the speaker was. Tested against a simulated UPnP speaker and a
+  simulated Cast device; not yet against real ones.
 
   **Phone remote** (Settings ▸ Wi-Fi ▸ Phone remote, on for one boot at a time): a page on the
   home network, `http://<player>:8080`, locked by a 6-digit code the player shows (new each time;

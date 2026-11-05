@@ -14,6 +14,8 @@
 mod art_cache;
 mod art_load;
 mod books;
+mod cast;
+mod chromecast;
 mod cue;
 mod likes;
 mod lyrics;
@@ -707,6 +709,13 @@ struct Render {
     /// One-shot: how far into the chapter to seek once the sequence a `PlayBook` queued is playing.
     /// The shell takes it with `cinder_take_play_seek_ms`.
     book_seek_ms: i64,
+    /// Settings ▸ Wi-Fi ▸ Speakers (`cast.rs`): the speakers the last search found (the page's rows
+    /// index into it), the object ids of the songs a cast was given (its `Status::index` indexes
+    /// into them), the song last shown for it, and whether a cast was on at the last tick.
+    speakers: Vec<cast::Speaker>,
+    cast_ids: Vec<i64>,
+    cast_shown: Option<usize>,
+    cast_was_on: bool,
     /// The playing file's CUE sheet, when one sits beside it (`cue.rs`).
     cue: Option<cue::Sheet>,
     /// The Winamp style's skin (`wsz.rs`), read the first time that style draws.
@@ -972,6 +981,10 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         books: books::Store::default(),
         books_changed: std::time::Instant::now(),
         book_seek_ms: 0,
+        speakers: Vec::new(),
+        cast_ids: Vec::new(),
+        cast_shown: None,
+        cast_was_on: false,
         cue: None,
         skin: None,
         tape: None,
@@ -1096,6 +1109,94 @@ fn lyrics_fetch(path: &str, artist: &str, title: &str, album: &str, length_s: u3
         });
     if spawned.is_err() {
         LYRICS_BUSY.store(false, Ordering::SeqCst);
+    }
+}
+
+// Album art from the Cover Art Archive (net::fetch_cover), the same way: the cover decoder found
+// none for the song playing (COVER_NONE = its object id; no embedded art and no image in its
+// folder), so cinder_clock_tick asks, once a boot per folder. The cover is saved as cover.jpg in the
+// song's folder, where `art_load::folder_cover` (and every other player) finds it, so only a folder
+// that holds this album alone gets one. ART_DONE names the song to decode again.
+static ART_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ART_DONE: Mutex<Option<i64>> = Mutex::new(None);
+static ART_ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static COVER_NONE: Mutex<Option<i64>> = Mutex::new(None);
+
+/// True when every audio file in `dir` is one of `album` (full paths, as the database has them).
+fn folder_is_only(dir: &str, album: &std::collections::HashSet<String>) -> bool {
+    const AUDIO: [&str; 12] = [
+        "flac", "mp3", "m4a", "aac", "wav", "aif", "aiff", "dsf", "dff", "ogg", "opus", "wma",
+    ];
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    rd.filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| {
+            n.rsplit_once('.')
+                .is_some_and(|(_, e)| AUDIO.contains(&e.to_ascii_lowercase().as_str()))
+        })
+        .all(|n| album.contains(&format!("{dir}/{n}")))
+}
+
+fn art_fetch(db: &cinder_db::Db, t: &cinder_db::Track) {
+    use std::sync::atomic::Ordering;
+    let Some(dir) = std::path::Path::new(&t.filename)
+        .parent()
+        .and_then(|d| d.to_str())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    if t.album.trim().is_empty() || ART_BUSY.load(Ordering::SeqCst) {
+        return;
+    }
+    {
+        let mut asked = ART_ASKED.lock().unwrap();
+        if asked.contains(&dir) {
+            return;
+        }
+        asked.push(dir.clone());
+    }
+    let album: std::collections::HashSet<String> = t
+        .album_id
+        .and_then(|id| db.album_tracks(id).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|x| x.filename)
+        .collect();
+    if album.is_empty() || ART_BUSY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let artist = if t.album_artist.trim().is_empty() {
+        t.artist.clone()
+    } else {
+        t.album_artist.clone()
+    };
+    let (title, oid) = (t.album.clone(), t.object_id);
+    let spawned = std::thread::Builder::new()
+        .name("cinder-art".into())
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let r = if folder_is_only(&dir, &album) {
+                net::fetch_cover(&dir, &artist, &title, cinder_ui::cinder_version!())
+            } else {
+                Err("its folder holds other songs too; not guessing".into())
+            };
+            eprintln!(
+                "cinder-ffi: art: {artist} - {title} -> {}",
+                match &r {
+                    Ok(true) => "saved cover".to_string(),
+                    Ok(false) => "none found".to_string(),
+                    Err(e) => e.clone(),
+                }
+            );
+            if let Ok(true) = r {
+                *ART_DONE.lock().unwrap() = Some(oid);
+            }
+            ART_BUSY.store(false, Ordering::SeqCst);
+        });
+    if spawned.is_err() {
+        ART_BUSY.store(false, Ordering::SeqCst);
     }
 }
 
@@ -1462,6 +1563,7 @@ fn settings_body(r: &Render) -> String {
         r.app.wifi_airplay() as u8
     ));
     body.push_str(&format!("wifi_lyrics={}\n", r.app.wifi_lyrics() as u8));
+    body.push_str(&format!("wifi_art={}\n", r.app.wifi_art() as u8));
     // Settings ▸ Swipe up / Swipe down: what each opens on Now Playing (#51), as words.
     let (up, down) = r.app.np_swipes();
     body.push_str(&format!(
@@ -2602,7 +2704,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 55] = [
+const SCREEN_NAMES: [&str; 57] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2660,6 +2762,8 @@ const SCREEN_NAMES: [&str; 55] = [
     "NetRadio",
     "WifiRemote",
     "WifiOptions",
+    "WifiSpeakers",
+    "RadioFind",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2721,6 +2825,8 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::NetRadio => 52,
         S::WifiRemote => 53,
         S::WifiOptions => 54,
+        S::WifiSpeakers => 55,
+        S::RadioFind => 56,
     }
 }
 
@@ -4988,7 +5094,307 @@ fn play_index(r: &mut Render, object_id: i64) -> Option<libc::c_int> {
     }
 }
 
+// ── Settings ▸ Wi-Fi ▸ Speakers: casting to a speaker on the network (cast.rs) ───────────────────
+// While a cast is on, the transport keys go to the speaker, and a song, album, playlist or shuffle
+// chosen in the library is cast too (the player's own sequence is built as usual and the speaker is
+// given it). An audiobook, SensMe or a Zappin preview is the player's own: it ends the cast first.
+// "Play here" ends it and the player carries on from the speaker's song and position.
+// ponytail: an Up Next edit during a cast does not reach the speaker until the next pick; send the
+// new list with the edit if people queue while casting.
+
+static SPEAKERS_FOUND: Mutex<Option<Result<Vec<cast::Speaker>, String>>> = Mutex::new(None);
+static SPEAKERS_SCANNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn speakers_scan() {
+    use std::sync::atomic::Ordering;
+    if SPEAKERS_SCANNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("cinder-ssdp".into())
+        .stack_size(192 * 1024)
+        .spawn(|| {
+            let r = cast::discover(std::time::Duration::from_millis(3000));
+            match &r {
+                Ok(v) => eprintln!(
+                    "cinder-ffi: speakers: {} found{}",
+                    v.len(),
+                    v.iter()
+                        .map(|s| format!(" · {} ({})", s.name, s.model))
+                        .collect::<String>()
+                ),
+                Err(e) => eprintln!("cinder-ffi: speakers: search failed: {e}"),
+            }
+            *SPEAKERS_FOUND.lock().unwrap() = Some(r);
+            SPEAKERS_SCANNING.store(false, Ordering::SeqCst);
+        });
+    if spawned.is_err() {
+        SPEAKERS_SCANNING.store(false, Ordering::SeqCst);
+        *SPEAKERS_FOUND.lock().unwrap() = Some(Err("could not start the search".into()));
+    }
+}
+
+/// A cast this renderer started is on (`cast.rs` keeps one cast for the process; the flag keeps a
+/// renderer from acting on one it did not start, as host tests running side by side would).
+fn casting(r: &Render) -> bool {
+    r.cast_was_on && cast::active()
+}
+
+/// Up Next as songs for a speaker, and where the song playing is in it. Rows whose file is gone
+/// are left out (and counted, so the start still points at the right song).
+fn cast_songs(r: &Render) -> (Vec<cast::Song>, usize) {
+    let ctx = r.app.context();
+    let ids: Vec<i64> = if ctx.is_empty() {
+        r.last_track.iter().map(|t| t.object_id).collect()
+    } else {
+        ctx.iter().map(|s| s.object_id).collect()
+    };
+    let cur = if ctx.is_empty() {
+        0
+    } else {
+        r.app.context_idx()
+    };
+    let tracks =
+        r.db.as_ref()
+            .and_then(|db| db.tracks_by_object_ids(&ids).ok())
+            .unwrap_or_default();
+    let (mut songs, mut start) = (Vec::new(), 0);
+    for (row, id) in ids.iter().enumerate() {
+        if let Some(t) = tracks.get(id) {
+            if row == cur {
+                start = songs.len();
+            }
+            songs.push(cast::Song {
+                object_id: t.object_id,
+                path: t.filename.clone(),
+                title: t.title.clone(),
+                artist: t.artist.clone(),
+                album: t.album.clone(),
+                dur_ms: t.duration_raw.unwrap_or(0),
+            });
+        }
+    }
+    (songs, start)
+}
+
+/// Cast Up Next to `sp` from the song playing, `start_ms` into it.
+fn cast_start(r: &mut Render, sp: cast::Speaker, start_ms: i64) {
+    let (songs, start) = cast_songs(r);
+    let name = sp.name.clone();
+    r.cast_ids = songs.iter().map(|s| s.object_id).collect();
+    r.cast_shown = None;
+    match cast::start(sp, songs, start, start_ms) {
+        Ok(()) => {
+            r.cast_was_on = true;
+            r.app.set_cast(
+                Some(name.clone()),
+                cinder_ui::ui_format!("CONNECTING · {}", name),
+            );
+        }
+        Err(e) => {
+            eprintln!("cinder-ffi: cast: could not start on {name}: {e}");
+            r.app.set_cast(None, e);
+        }
+    }
+    r.dirty = true;
+}
+
+/// The cast's state into the UI, once a tick: the Speakers page, and Now Playing (the song, its
+/// cover, play/pause and the position all come from the speaker while it has the music).
+fn cast_tick(r: &mut Render) {
+    if let Some(found) = RADIO_FOUND.lock().unwrap().take() {
+        match found {
+            Ok(v) => r.app.set_radio_found(v, String::new()),
+            Err(e) => r.app.set_radio_found(Vec::new(), e),
+        }
+        r.dirty = true;
+    }
+    if let Some(found) = SPEAKERS_FOUND.lock().unwrap().take() {
+        let list = found.unwrap_or_default();
+        r.app.set_speakers(
+            list.iter()
+                .map(|s| (s.name.clone(), s.model.clone()))
+                .collect(),
+        );
+        r.speakers = list;
+        r.dirty = true;
+    }
+    let st = cast::status();
+    if st.on && r.cast_was_on {
+        if r.cast_shown != Some(st.index) {
+            r.cast_shown = Some(st.index);
+            let track = r.cast_ids.get(st.index).and_then(|oid| {
+                r.db.as_ref()
+                    .and_then(|db| db.track_by_object_id(*oid).ok().flatten())
+            });
+            if let Some(t) = track {
+                apply_track(&mut r.np, &t);
+                let oid = t.object_id;
+                request_cover(r, oid);
+            }
+        }
+        r.np.playing = st.playing;
+        set_progress(&mut r.np, st.pos_ms, st.dur_ms);
+        let state = if st.playing { "PLAYING" } else { "PAUSED" };
+        let line = match st.volume {
+            Some(v) => cinder_ui::ui_format!("{} · {} · VOLUME {}", state, st.speaker, v),
+            None => cinder_ui::ui_format!("{} · {}", state, st.speaker),
+        };
+        r.app.set_cast(Some(st.speaker.clone()), line);
+        r.dirty = true;
+    } else if r.cast_was_on {
+        r.cast_was_on = false;
+        r.cast_shown = None;
+        r.np.playing = false;
+        r.app.set_cast(None, st.note.clone());
+        if !st.note.is_empty() {
+            r.app.notify(&st.note);
+        }
+        r.dirty = true;
+    }
+}
+
+// Internet radio ▸ FIND: radio-browser.info, searched off the render thread; a result tapped is
+// added to the end of cinder_radio.txt (unless its stream is there already) and played.
+static RADIO_FOUND: Mutex<Option<Result<Vec<cinder_ui::netradio::Found>, String>>> =
+    Mutex::new(None);
+
+fn radio_find(query: String) {
+    let spawned = std::thread::Builder::new()
+        .name("cinder-radio-find".into())
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let r = net::radio_search(&query, cinder_ui::cinder_version!());
+            match &r {
+                Ok(v) => eprintln!("cinder-ffi: radio find: {query:?} -> {} stations", v.len()),
+                Err(e) => eprintln!("cinder-ffi: radio find: {query:?} -> {e}"),
+            }
+            *RADIO_FOUND.lock().unwrap() = Some(r);
+        });
+    if spawned.is_err() {
+        *RADIO_FOUND.lock().unwrap() = Some(Err("could not start the search".into()));
+    }
+}
+
+/// Add search result `i` to the station file and play it (the shell's RadioPlay takes it).
+fn radio_add(r: &mut Render, i: usize) -> Option<libc::c_int> {
+    let found = r.app.radio_found(i)?.clone();
+    let mut text = std::fs::read_to_string(cinder_ui::netradio::FILE).unwrap_or_default();
+    if !cinder_ui::netradio::parse_stations(&text)
+        .iter()
+        .any(|s| s.url == found.url)
+    {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!("{} | {}\n", found.name, found.url));
+        if let Err(e) = std::fs::write(cinder_ui::netradio::FILE, &text) {
+            eprintln!(
+                "cinder-ffi: radio find: cannot write {}: {e}",
+                cinder_ui::netradio::FILE
+            );
+            r.app
+                .notify(cinder_ui::i18n::text("Could not save the station"));
+            return None;
+        }
+    }
+    r.app.set_radio_stations(&text);
+    let idx = cinder_ui::netradio::parse_stations(&text)
+        .iter()
+        .position(|s| s.url == found.url)?;
+    r.app.play_radio_station(idx);
+    r.dirty = true;
+    Some(71) // CINDER_ACT_RADIO_PLAY, as `Action::RadioPlay` carries it
+}
+
 fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_int> {
+    use cinder_ui::nav::Action;
+    match a {
+        Action::RadioFind => {
+            radio_find(r.app.radio_query().to_string());
+            return None;
+        }
+        Action::RadioAdd(i) => return radio_add(r, *i),
+        Action::SpeakersScan => {
+            speakers_scan();
+            return None;
+        }
+        Action::SpeakerPlay(i) => {
+            let sp = r.speakers.get(*i)?.clone();
+            let st = cast::status();
+            let (pos, pause) = if casting(r) {
+                (st.pos_ms, None)
+            } else {
+                // The player pauses: the speaker has the music now.
+                (r.play_pos_ms, r.np.playing.then_some(1))
+            };
+            cast_start(r, sp, pos);
+            return pause;
+        }
+        Action::SpeakerStop => {
+            let st = cast::status();
+            cast::stop();
+            r.cast_was_on = false;
+            r.cast_shown = None;
+            r.app.set_cast(None, String::new());
+            let oid = *r.cast_ids.get(st.index)?;
+            let row = r.app.context().iter().position(|s| s.object_id == oid)?;
+            let code = carry_action_now(r, &Action::PlayContextAt(row));
+            r.book_seek_ms = st.pos_ms;
+            return code;
+        }
+        _ => {}
+    }
+    if casting(r) {
+        let cmd = match a {
+            Action::PlayPause => Some(cast::Cmd::Toggle),
+            Action::Next => Some(cast::Cmd::Next),
+            Action::Prev => Some(cast::Cmd::Prev),
+            Action::VolUp => Some(cast::Cmd::Vol(2)),
+            Action::VolDown => Some(cast::Cmd::Vol(-2)),
+            _ => None,
+        };
+        if let Some(cmd) = cmd {
+            cast::send(cmd);
+            r.dirty = true;
+            return None;
+        }
+        if matches!(
+            a,
+            Action::PlayBook(..) | Action::PlaySensMe { .. } | Action::ZappinStart(_)
+        ) {
+            cast::stop();
+            r.cast_was_on = false;
+            r.app.set_cast(None, String::new());
+        }
+    }
+    let was_casting = casting(r);
+    let code = carry_action_now(r, a);
+    let picked = matches!(
+        a,
+        Action::PlayIndex(_)
+            | Action::PlayIndexAt(..)
+            | Action::PlayContextAt(_)
+            | Action::PlayListAt(..)
+            | Action::PlayPlaylist(..)
+            | Action::PlayPlaylistAt(..)
+            | Action::Shuffle(..)
+            | Action::ShuffleArtist(..)
+            | Action::ShuffleList
+            | Action::ShufflePlaylist(..)
+    );
+    if was_casting && picked && code.is_some() {
+        let av = cast::status().av;
+        if let Some(sp) = r.speakers.iter().find(|s| s.av == av).cloned() {
+            let at = std::mem::take(&mut r.book_seek_ms);
+            cast_start(r, sp, at);
+            return None;
+        }
+    }
+    code
+}
+
+fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_int> {
     use cinder_ui::nav::Action;
     // These actions mutate the UI queue entirely inside FFI; the shell cannot cancel the preview
     // first. Invalidate its occurrence identity before the mutation, preserving the persistence
@@ -5708,6 +6114,9 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::RadioPlay => 71,
         Action::RadioStop => 72,
         Action::WifiAirPlay => 73,
+        // Handled by `carry_action` before this point.
+        Action::SpeakersScan | Action::SpeakerPlay(_) | Action::SpeakerStop => return None,
+        Action::RadioFind | Action::RadioAdd(_) => return None,
         // The phone remote is cinder-ffi's own: start or stop the server here, tell the page.
         Action::Remote(on) => {
             if *on {
@@ -8567,6 +8976,23 @@ pub extern "C" fn cinder_clock_tick() {
                 lyrics_fetch(&t.filename, &t.artist, &t.title, &t.album, len);
             }
         }
+        // Settings ▸ Wi-Fi ▸ Speakers: a search's result, and a cast's state.
+        cast_tick(r);
+        // Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing album art: the song playing has no cover.
+        if r.app.wifi_art() && r.app.wifi_connected() {
+            let none = *COVER_NONE.lock().unwrap();
+            if let (Some(db), Some(t)) = (r.db.as_ref(), r.last_track.as_ref()) {
+                if none == Some(t.object_id) {
+                    art_fetch(db, t);
+                }
+            }
+        }
+        let done = ART_DONE.lock().unwrap().take();
+        if let Some(oid) = done {
+            if r.last_track.as_ref().is_some_and(|t| t.object_id == oid) {
+                request_cover(r, oid);
+            }
+        }
         // Lyrics just fetched for the song still playing: show them now, not at its next start.
         let done = LYRICS_DONE.lock().unwrap().take();
         if let Some(path) = done {
@@ -8923,6 +9349,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "wifi_updates" => r.app.set_wifi_updates(v == "1"),
                     "wifi_airplay" => r.app.set_wifi_airplay(v == "1"),
                     "wifi_lyrics" => r.app.set_wifi_lyrics(v == "1"),
+                    "wifi_art" => r.app.set_wifi_art(v == "1"),
                     "np_count" => r.app.set_np_count(v == "1"),
                     "hold_buttons" => r.app.set_hold_buttons(v == "1"),
                     "big_bar" => cinder_ui::scale::set_big_bar(v == "1"),
@@ -9901,7 +10328,10 @@ fn request_cover(r: &Render, object_id: i64) {
                     continue;
                 }
                 retries = 0;
-                continue; // no embedded cover; the gradient already on screen is the right answer
+                // No cover at all; the gradient already on screen is the right answer — unless
+                // Fetch missing album art can find one (cinder_clock_tick).
+                *COVER_NONE.lock().unwrap() = Some(want);
+                continue;
             }
             retries = 0;
             let Ok(mut g) = cell().lock() else { break };
@@ -10653,6 +11083,10 @@ pub extern "C" fn cinder_set_play_position(
 ) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -2 };
+    // A cast has the music: Now Playing follows the speaker (cast_tick), not the paused player.
+    if casting(r) {
+        return 0;
+    }
     let was_playing = r.np.playing;
     r.np.playing = playing != 0;
     if total_ms > 0 {
@@ -10709,8 +11143,11 @@ pub extern "C" fn cinder_set_now_playing_uri(
     let u = unsafe { cstr(uri) };
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -2 };
-    r.np.playing = playing != 0;
     r.np.battery = battery.clamp(0, 100) as u8;
+    if casting(r) {
+        return 0; // the speaker's song stays on Now Playing (cast_tick)
+    }
+    r.np.playing = playing != 0;
     r.dirty = true; // now-playing changed -> repaint
     let track =
         r.db.as_ref()
@@ -11308,6 +11745,8 @@ mod tests {
             S::NetRadio,
             S::WifiRemote,
             S::WifiOptions,
+            S::WifiSpeakers,
+            S::RadioFind,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
         const RESERVED: usize = 1;
@@ -13039,6 +13478,10 @@ mod tests {
             books: books::Store::default(),
             books_changed: std::time::Instant::now(),
             book_seek_ms: 0,
+            speakers: Vec::new(),
+            cast_ids: Vec::new(),
+            cast_shown: None,
+            cast_was_on: false,
             cue: None,
             skin: None,
             tape: None,

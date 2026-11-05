@@ -70,14 +70,23 @@ ones. Read its safety rules first. Grouped by what each needs:
   (`/system/etc/firmware/WIFI_RAM_CODE_8590`); Sony's kernel leaves out the driver and `cfg80211`.
   **It works:** built from Sony's own kernel source, an NW-A55 scanned, joined a WPA2 network and
   downloaded at about 8 Mbit/s (2026-11-04). It is now the opt-in install option **Device ▸ Wi-Fi**
-  with **Settings ▸ Wi-Fi**: clock sync, ListenBrainz, an update check, internet radio (MP3) and a
-  phone remote with upload ([`wifi/README.md`](../wifi/README.md)). Open: WPA3 on a real WPA3
-  network, the battery cost, internet radio over Bluetooth, AAC/HLS stations, wireless sync with
-  Flint, adb over Wi-Fi, and streaming services.
+  with **Settings ▸ Wi-Fi**: clock sync, ListenBrainz, an update check, lyrics and album-art
+  fetch, internet radio (MP3, AAC, HLS) and a phone remote with upload
+  ([`wifi/README.md`](../wifi/README.md)). Open: WPA3 on a real WPA3 network, the battery cost,
+  internet radio over Bluetooth, HLS stations with MP4 segments, wireless sync with Flint, adb over
+  Wi-Fi, and streaming services.
 - **AirPlay receiver.** shairport-sync (its own licence, ALAC and an mDNS responder built in) with
   its `stdout` output into the same path internet radio plays through (jack, or Bluetooth at
   44.1 kHz, which is AirPlay's own rate). Needs a static ARM build; AirPlay 2 needs more (PTP
   timing on privileged ports, FFmpeg).
+- **Playing on network speakers.** Built: **Settings ▸ Wi-Fi ▸ Speakers** casts Up Next to any
+  UPnP/DLNA media renderer (Sonos, network AV receivers, smart TVs, Kodi; SSDP, AVTransport,
+  RenderingControl) and any Google Cast device (mDNS, Cast v2 over TLS, the Default Media
+  Receiver), each song's own file served by the player. Tested against simulated devices only;
+  reports from real speakers are wanted. Open: hi-res files beyond what a speaker takes (Sonos
+  stops at 24-bit/48 kHz, 16-bit on S1, and plays no DSD) are skipped rather than converted; the
+  player's live output (radio, Cinder's sound effects) is not cast; AirPlay speakers need AirPlay
+  sending (RAOP), not built.
 - **USB audio out to an external DAC.** Sony's player app has USB-host audio output code
   (`UsbHostDevice`, DSD output mode); nobody has tried it with a host cable and a DAC.
 - **`cinder-rescue` on Linux and macOS.** It builds for both (libusb) but has only run on Windows.

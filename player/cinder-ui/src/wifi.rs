@@ -243,20 +243,23 @@ pub fn settings_value(s: &Status) -> &'static str {
 const FOOT_H: i32 = 44;
 
 /// Settings ▸ Wi-Fi ▸ Options, in order. Each is a saved switch, off unless switched on.
-pub const OPTIONS: [Hit; 5] = [
+pub const OPTIONS: [Hit; 6] = [
     Hit::AutoStart,
     Hit::Clock,
     Hit::ListenBrainz,
     Hit::Updates,
     Hit::Lyrics,
+    Hit::Art,
 ];
 
 struct Layout {
     switch_y: i32,
     strip_y: i32,
-    /// "Network ›", "Internet radio ›" and "Phone remote ›", only while the radio is on.
+    /// "Network ›", "Internet radio ›", "Speakers ›" and "Phone remote ›", only while the radio
+    /// is on.
     net_y: Option<i32>,
     radio_y: Option<i32>,
+    speakers_y: Option<i32>,
     remote_y: Option<i32>,
     airplay_y: i32,
     options_y: i32,
@@ -272,6 +275,7 @@ fn layout(on: bool) -> Layout {
     };
     let net_y = on.then(&mut next);
     let radio_y = on.then(&mut next);
+    let speakers_y = on.then(&mut next);
     let remote_y = on.then(&mut next);
     let airplay_y = next();
     let options_y = next();
@@ -280,6 +284,7 @@ fn layout(on: bool) -> Layout {
         strip_y,
         net_y,
         radio_y,
+        speakers_y,
         remote_y,
         airplay_y,
         options_y,
@@ -293,6 +298,8 @@ pub enum Hit {
     Networks,
     /// "Internet radio ›".
     Radio,
+    /// "Speakers ›": play on a speaker on the network.
+    Speakers,
     /// "Phone remote ›".
     Remote,
     /// The AirPlay receiver's switch.
@@ -305,6 +312,7 @@ pub enum Hit {
     ListenBrainz,
     Updates,
     Lyrics,
+    Art,
     None,
 }
 
@@ -317,6 +325,7 @@ pub fn hit(_x: i32, y: i32, on: bool) -> Hit {
     for (row, h) in [
         (l.net_y, Hit::Networks),
         (l.radio_y, Hit::Radio),
+        (l.speakers_y, Hit::Speakers),
         (l.remote_y, Hit::Remote),
     ] {
         if row.is_some_and(within) {
@@ -348,6 +357,8 @@ pub struct View<'a> {
     pub status: &'a Status,
     /// The Internet radio row's second line: what is playing, or how many stations.
     pub radio_note: &'a str,
+    /// The Speakers row's second line: what it does, or where the music is playing.
+    pub speakers_note: &'a str,
     /// The Phone remote row's second line: off, or the address to open.
     pub remote_note: &'a str,
     /// The AirPlay switch (saved), and what the receiver is doing.
@@ -373,7 +384,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
     kit::strip(c, t, f, l.strip_y, &strip_line(v.status));
     let joined = matches!(v.status.state, State::Connected | State::Connecting);
     let name = String::from_utf8_lossy(&v.status.ssid).into_owned();
-    let open_rows: [(Option<i32>, &str, &str); 3] = [
+    let open_rows: [(Option<i32>, &str, &str); 4] = [
         (
             l.net_y,
             crate::i18n::text("Network"),
@@ -384,6 +395,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
             },
         ),
         (l.radio_y, crate::i18n::text("Internet radio"), v.radio_note),
+        (
+            l.speakers_y,
+            crate::i18n::text("Speakers"),
+            if v.speakers_note.is_empty() {
+                crate::i18n::text("Play on a speaker on this Wi-Fi")
+            } else {
+                v.speakers_note
+            },
+        ),
         (l.remote_y, crate::i18n::text("Phone remote"), v.remote_note),
     ];
     for (y, title, sub) in open_rows {
@@ -426,7 +446,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
 
 pub struct OptionsView<'a> {
     /// The saved switches, in [`OPTIONS`] order.
-    pub options: [bool; 5],
+    pub options: [bool; 6],
     /// What the last ListenBrainz send and update check said ("Sent 12 songs", "0.3.23 is out").
     pub lb_note: &'a str,
     pub update_note: &'a str,
@@ -435,7 +455,7 @@ pub struct OptionsView<'a> {
 pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, crate::i18n::text("Wi-Fi options"), None);
-    let rows: [(&str, &str); 5] = [
+    let rows: [(&str, &str); 6] = [
         (
             crate::i18n::text("Turn on at start"),
             crate::i18n::text("Joins your network when the player starts"),
@@ -463,6 +483,10 @@ pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
         (
             crate::i18n::text("Fetch missing lyrics"),
             crate::i18n::text("From LRCLIB, saved beside the song"),
+        ),
+        (
+            crate::i18n::text("Fetch missing album art"),
+            crate::i18n::text("From MusicBrainz, saved as cover.jpg"),
         ),
     ];
     let mut y = crate::chrome::HEADER_BOTTOM;
@@ -555,6 +579,130 @@ pub fn render_list(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ListView) {
             ("Looking for networks…", "This takes a few seconds")
         } else {
             ("No networks yet", "Tap SCAN")
+        };
+        kit::row(
+            c,
+            t,
+            f,
+            y,
+            kit::ROW_H(),
+            &Row::new(crate::i18n::text(title)).sub(crate::i18n::text(sub)),
+        );
+    }
+}
+
+// ── Settings ▸ Wi-Fi ▸ Speakers: speakers on the network (UPnP/DLNA renderers) ─────────────────────
+
+/// Where the rows start: under the strip and the section label. While a cast is on, the first row
+/// is "Play here".
+fn speakers_layout(speakers: usize, casting: bool) -> (i32, i32, i32, usize) {
+    let strip_y = crate::chrome::HEADER_BOTTOM;
+    let section_y = strip_y + kit::STRIP_H;
+    let list_y = section_y + kit::SECTION_H;
+    let room = ((H as i32 - FOOT_H - list_y).max(0) / kit::ROW_H()) as usize;
+    (
+        strip_y,
+        section_y,
+        list_y,
+        speakers.min(room.saturating_sub(casting as usize)),
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeakerHit {
+    Scan,
+    /// "Play here": the music comes back to the player.
+    Here,
+    /// Speaker `i` of the list as given to `render_speakers`.
+    Speaker(usize),
+    None,
+}
+
+pub fn hit_speakers(x: i32, y: i32, speakers: usize, casting: bool) -> SpeakerHit {
+    let (_, section_y, list_y, rows) = speakers_layout(speakers, casting);
+    if kit::section_action_hit(section_y, x, y) {
+        return SpeakerHit::Scan;
+    }
+    if y < list_y {
+        return SpeakerHit::None;
+    }
+    let mut i = ((y - list_y) / kit::ROW_H()) as usize;
+    if casting {
+        if i == 0 {
+            return SpeakerHit::Here;
+        }
+        i -= 1;
+    }
+    if i < rows {
+        SpeakerHit::Speaker(i)
+    } else {
+        SpeakerHit::None
+    }
+}
+
+pub struct SpeakersView<'a> {
+    /// (name, model) of each speaker found.
+    pub speakers: &'a [(String, String)],
+    pub scanning: bool,
+    pub connected: bool,
+    /// The speaker playing, while a cast is on.
+    pub casting: Option<&'a str>,
+    /// The strip: what is playing where, or why the last cast ended.
+    pub line: &'a str,
+}
+
+pub fn render_speakers(c: &mut Canvas, t: &Theme, f: &FontSet, v: &SpeakersView) {
+    c.fill(t.bg);
+    crate::chrome::header(c, t, f, crate::i18n::text("Speakers"), None);
+    let casting = v.casting.is_some();
+    let (strip_y, section_y, list_y, rows) = speakers_layout(v.speakers.len(), casting);
+    let line = if !v.connected {
+        crate::i18n::text("CONNECT TO WI-FI FIRST")
+    } else if v.line.is_empty() {
+        crate::i18n::text("ON THE PLAYER")
+    } else {
+        v.line
+    };
+    kit::strip(c, t, f, strip_y, line);
+    kit::section_label(
+        c,
+        t,
+        f,
+        section_y,
+        "ON THIS WI-FI",
+        v.connected
+            .then_some(if v.scanning { "SCANNING…" } else { "SCAN" }),
+    );
+    let mut y = list_y;
+    if casting {
+        y = kit::row(
+            c,
+            t,
+            f,
+            y,
+            kit::ROW_H(),
+            &Row::new(crate::i18n::text("Play here"))
+                .sub(crate::i18n::text("Bring the music back to the player"))
+                .trail(Trail::Open("")),
+        );
+    }
+    for (name, model) in v.speakers.iter().take(rows) {
+        let here = v.casting == Some(name.as_str());
+        let row = Row::new(name).sub(model).trail(if here {
+            Trail::Tag(crate::i18n::text("PLAYING"))
+        } else {
+            Trail::Open("")
+        });
+        y = kit::row(c, t, f, y, kit::ROW_H(), &row);
+    }
+    if v.speakers.is_empty() && v.connected {
+        let (title, sub) = if v.scanning {
+            ("Looking for speakers…", "This takes a few seconds")
+        } else {
+            (
+                "No speakers found",
+                "They need to be on this Wi-Fi and play UPnP or DLNA",
+            )
         };
         kit::row(
             c,
@@ -700,11 +848,16 @@ mod tests {
         let off = layout(false);
         assert_eq!(hit(200, off.switch_y + 5, false), Hit::Toggle);
         assert!(off.net_y.is_none() && off.radio_y.is_none() && off.remote_y.is_none());
+        assert!(
+            off.speakers_y.is_none(),
+            "no Speakers row while Wi-Fi is off"
+        );
         assert_eq!(hit(200, off.airplay_y + 5, false), Hit::AirPlay);
         assert_eq!(hit(200, off.options_y + 5, false), Hit::Options);
         let on = layout(true);
         assert_eq!(hit(200, on.net_y.unwrap() + 5, true), Hit::Networks);
         assert_eq!(hit(200, on.radio_y.unwrap() + 5, true), Hit::Radio);
+        assert_eq!(hit(200, on.speakers_y.unwrap() + 5, true), Hit::Speakers);
         assert_eq!(hit(200, on.remote_y.unwrap() + 5, true), Hit::Remote);
         assert_eq!(hit(200, on.airplay_y + 5, true), Hit::AirPlay);
         assert_eq!(hit(200, on.options_y + 5, true), Hit::Options);
@@ -716,7 +869,38 @@ mod tests {
         for (i, want) in OPTIONS.iter().enumerate() {
             assert_eq!(hit_options(top + i as i32 * kit::ROW_H() + 5), *want);
         }
-        assert_eq!(hit_options(top + 5 * kit::ROW_H() + 5), Hit::None);
+        assert_eq!(hit_options(top + 6 * kit::ROW_H() + 5), Hit::None);
+        assert!(
+            top + 6 * kit::ROW_H() <= H as i32,
+            "every option fits at this size"
+        );
+    }
+
+    #[test]
+    fn the_speakers_page_answers_play_here_then_its_speakers() {
+        let (_, section_y, list_y, _) = speakers_layout(3, false);
+        assert_eq!(
+            hit_speakers(200, list_y + 5, 3, false),
+            SpeakerHit::Speaker(0)
+        );
+        assert_eq!(
+            hit_speakers(200, list_y + kit::ROW_H() + 5, 3, false),
+            SpeakerHit::Speaker(1)
+        );
+        assert_eq!(
+            hit_speakers(200, list_y + 3 * kit::ROW_H() + 5, 3, false),
+            SpeakerHit::None
+        );
+        assert_eq!(hit_speakers(200, list_y + 5, 3, true), SpeakerHit::Here);
+        assert_eq!(
+            hit_speakers(200, list_y + kit::ROW_H() + 5, 3, true),
+            SpeakerHit::Speaker(0)
+        );
+        assert_eq!(hit_speakers(200, list_y - 5, 3, true), SpeakerHit::None);
+        assert_eq!(
+            hit_speakers(W as i32 - 30, section_y + 10, 0, false),
+            SpeakerHit::Scan
+        );
     }
 
     #[test]

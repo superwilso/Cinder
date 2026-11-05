@@ -1,0 +1,43 @@
+--- a/mdns_tinysvcmdns.c	2026-11-05 11:33:47.498192147 +0000
++++ b/mdns_tinysvcmdns.c	2026-11-05 11:33:47.510191956 +0000
+@@ -42,6 +42,8 @@
+ static int mdns_tinysvcmdns_register(char *ap1name, __attribute__((unused)) char *ap2name, int port,
+                                      __attribute__((unused)) char **txt_records,
+                                      __attribute__((unused)) char **secondary_txt_records) {
++  // Cinder: AirPlay 2 needs its own _airplay._tcp service beside _raop._tcp, each with the TXT
++  // records shairport-sync made for it, as the Avahi backend registers them.
+   struct ifaddrs *ifalist;
+   struct ifaddrs *ifa;
+ 
+@@ -135,6 +137,10 @@
+ #endif
+ 
+     txt = txtwithoutmetadata;
++#ifdef CONFIG_AIRPLAY_2
++  if (txt_records != NULL)
++    txt = txt_records;
++#endif
+ 
+   if (config.regtype == NULL)
+     die("tinysvcmdns: regtype is null");
+@@ -154,6 +160,20 @@
+ 
+   free(extendedregtype);
+ 
++#ifdef CONFIG_AIRPLAY_2
++  if (ap2name != NULL && secondary_txt_records != NULL && config.regtype2 != NULL) {
++    char *regtype2 = malloc(strlen(config.regtype2) + strlen(".local") + 1);
++    if (regtype2 == NULL)
++      die("tinysvcmdns: could not allocate memory to request a Zeroconf service");
++    strcpy(regtype2, config.regtype2);
++    strcat(regtype2, ".local");
++    struct mdns_service *svc2 = mdnsd_register_svc(svr, ap2name, regtype2, port, NULL,
++                                                   (const char **)secondary_txt_records);
++    mdns_service_destroy(svc2);
++    free(regtype2);
++  }
++#endif
++
+   return 0;
+ }
+ 
