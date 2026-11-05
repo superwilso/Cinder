@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "cinder-installer"
-version = "0.3.22"
+version = "0.4.0"
 dependencies = [
  "rusb",
 ]
