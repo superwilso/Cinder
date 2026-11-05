@@ -15,6 +15,7 @@ files it builds and the player receives come from these projects, each under its
                                   (with tinysvcmdns, BSD-3-Clause; ALAC decoder, David Hammerton)
                                   popt 1.19                                             MIT
                                   libconfig 1.7.3                                       LGPL-2.1
+  openssl                         OpenSSL 3.0.15's command line (for Google Cast TLS)   Apache-2.0
   (all of the above)              OpenSSL 3.0.15                                        Apache-2.0
 
 The LGPL-2.1 libraries are linked statically. Their source is fetched by build-userland.sh at the

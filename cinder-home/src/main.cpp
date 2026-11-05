@@ -11621,9 +11621,10 @@ static bool amb_can_play_jack() {
 
 
 // ── Internet radio (Settings > Wi-Fi > Internet radio) ───────────────────────────────────────────
-// Stations from /contents/cinder_radio.txt (parsed by the UI, netradio.rs). An MP3 stream from
-// curl (the Wi-Fi option's, run as cinder-home itself: it is in the inet group), decoded by
-// minimp3 (third_party/, CC0) and played the way a soundscape plays on its own: straight to the
+// Stations from /contents/cinder_radio.txt (parsed by the UI, netradio.rs). An MP3 or AAC stream
+// (Icecast/SHOUTcast, or HLS) from curl (the Wi-Fi option's, run as cinder-home itself: it is in
+// the inet group), decoded by minimp3 (third_party/, CC0) or the firmware's own AAC decoder, and
+// played the way a soundscape plays on its own: straight to the
 // jack PCM, or over Bluetooth through the transmitter's socket at 44.1 kHz. It is a bridge in the
 // same sense as the soundscape's: music, FM, USB-DAC, the receiver and USB storage each take the
 // output back through ambient_yield_for_music, which stops the radio first.
@@ -11637,6 +11638,7 @@ static bool amb_can_play_jack() {
 #include "../third_party/minimp3/minimp3.h"
 #pragma GCC diagnostic pop
 #include "icy.h"
+#include "hls.h"
 
 static const char* const RADIO_CURL = "/system/vendor/cinder/wifi/curl";
 static const char* const RADIO_CA = "/system/vendor/cinder/wifi/cacert.pem";
@@ -11660,7 +11662,25 @@ static void radio_say(const char* state, const std::string& title, const std::st
 }
 
 // curl, by argv (never a shell: the URL is the user's text), stdout to a pipe. -1 on failure.
-static pid_t radio_spawn(const std::string& url, int* fd_out) {
+// `live`: a station's endless stream (ICY titles asked for, the header kept in RADIO_HDR, aborted
+// when it stalls). Otherwise one whole file (a playlist or an HLS segment): an HTTP error fails it,
+// 20 s at most; `want_url` appends "\n#CINDER-URL:<the address after redirects>\n" to the body.
+static pid_t radio_spawn(const std::string& url, int* fd_out, bool live, bool want_url = false) {
+    // argv is built before fork: the child of a threaded process must not allocate.
+    std::vector<const char*> a = { "curl", "-sS", "-L", "--max-redirs", "5", "--connect-timeout", "15",
+                                   "--cacert", RADIO_CA, "-A", "Cinder" };
+    if (live) {
+        // Abort a stream that delivers under 1 byte a second for 20 s: a dead station must not
+        // leave the page saying PLAYING over silence.
+        for (const char* s : { "--speed-limit", "1", "--speed-time", "20", "-H", "Icy-MetaData: 1", "-D", RADIO_HDR })
+            a.push_back(s);
+    } else {
+        for (const char* s : { "-f", "--max-time", "20" }) a.push_back(s);
+        if (want_url) { a.push_back("-w"); a.push_back("\n#CINDER-URL:%{url_effective}\n"); }
+    }
+    a.push_back("--");
+    a.push_back(url.c_str());
+    a.push_back(nullptr);
     int fd[2];
     if (::pipe(fd) < 0) return -1;
     pid_t p = ::fork();
@@ -11670,11 +11690,7 @@ static pid_t radio_spawn(const std::string& url, int* fd_out) {
         int nul = ::open("/dev/null", O_WRONLY);
         if (nul >= 0) ::dup2(nul, 2);
         for (int i = 3; i < 256; i++) ::close(i);
-        // Abort a stream that delivers under 1 byte a second for 20 s: a dead station must not
-        // leave the page saying PLAYING over silence.
-        ::execl(RADIO_CURL, "curl", "-sS", "-L", "--max-redirs", "5", "--connect-timeout", "15",
-                "--speed-limit", "1", "--speed-time", "20", "--cacert", RADIO_CA, "-A", "Cinder",
-                "-H", "Icy-MetaData: 1", "-D", RADIO_HDR, "--", url.c_str(), (char*)nullptr);
+        ::execv(RADIO_CURL, (char* const*)a.data());
         ::_exit(127);
     }
     ::close(fd[1]);
@@ -11695,6 +11711,40 @@ static ssize_t radio_read(int fd, unsigned char* b, size_t n) {
     if (r <= 0) return r == 0 ? 0 : -1;
     ssize_t k = ::read(fd, b, n);
     return k > 0 ? k : -1;
+}
+
+// One whole file into `body` (at most `cap` bytes), while `*go` holds. `final_url`, when given,
+// gets the address the file came from after redirects (an HLS playlist's links are relative to it).
+static bool radio_fetch(const std::string& url, std::string& body, size_t cap, volatile sig_atomic_t* go,
+                        std::string* final_url = nullptr) {
+    int fd = -1;
+    pid_t p = radio_spawn(url, &fd, false, final_url != nullptr);
+    if (p < 0) return false;
+    body.clear();
+    unsigned char b[16384];
+    bool ok = true;
+    for (;;) {
+        if (!*go) { ok = false; break; }
+        ssize_t n = radio_read(fd, b, sizeof b);
+        if (n < 0) break;
+        body.append((const char*)b, (size_t)n);
+        if (body.size() > cap) { ok = false; break; }
+    }
+    ::close(fd);
+    if (!ok) ::kill(p, SIGTERM);
+    int st = 0;
+    ::waitpid(p, &st, 0);
+    ok = ok && WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    if (ok && final_url) {
+        size_t m = body.rfind("\n#CINDER-URL:");
+        if (m != std::string::npos) {
+            *final_url = body.substr(m + 13);
+            while (!final_url->empty() && (final_url->back() == '\n' || final_url->back() == '\r')) final_url->pop_back();
+            body.resize(m + 1);
+        }
+        if (final_url->empty()) *final_url = url;
+    }
+    return ok;
 }
 
 // The LAST response's header (curl -L appends one block per redirect), lower-cased names.
@@ -11730,6 +11780,182 @@ static std::string radio_playlist_url(const std::string& body) {
     }
     return "";
 }
+
+// ── HLS: a thread fetches the segments and writes their audio into a socket the player reads ──────
+// like any other station's stream (hls.h does the parsing). Live playlists start three segments from
+// the end, as the HLS spec asks, and are fetched again when the segments run out. The socket's
+// buffer is the read-ahead: the writer blocks while it is full, so a slow fetch eats into it, not
+// into the sound. The thread stops when the player closes its end (EPIPE) or clears `go`.
+struct HlsJob {
+    std::string url, note;        // note: why the stream ended, under g_radio_mu
+    int fd = -1;                  // the writing end
+    volatile sig_atomic_t go = 1;
+};
+
+static bool radio_send_all(int fd, const unsigned char* p, size_t n) {
+    while (n) {
+        ssize_t w = ::send(fd, p, n, MSG_NOSIGNAL);
+        if (w < 0) { if (errno == EINTR) continue; return false; }
+        p += w;
+        n -= (size_t)w;
+    }
+    return true;
+}
+
+static void* radio_hls_thread(void* arg) {
+    std::shared_ptr<HlsJob> j = *(std::shared_ptr<HlsJob>*)arg;
+    delete (std::shared_ptr<HlsJob>*)arg;
+    std::string url = j->url, base, body, seg, why;
+    std::vector<unsigned char> es;
+    long next = -1;
+    int pid = -1, misses = 0, hops = 0;
+    while (j->go && g_radio_run) {
+        if (!radio_fetch(url, body, 512 * 1024, &j->go, &base)) {
+            if (++misses >= 3) { why = "The station stopped sending"; break; }
+            usleep(2000000);
+            continue;
+        }
+        hls::Playlist p = hls::parse(body, base);
+        if (!p.problem.empty()) { why = p.problem; break; }
+        if (p.master) {
+            if (++hops > 3) { why = "The playlist names no stream"; break; }
+            url = p.variant;
+            continue;
+        }
+        if (p.segs.empty()) { why = "The playlist names no stream"; break; }
+        const long first = p.seq, last = p.seq + (long)p.segs.size() - 1;
+        // The live edge at the start; and again if the station restarted its numbering or we fell
+        // so far behind that our next segment has left the list.
+        if (next < 0 || next > last + 1 + (long)p.segs.size()) next = std::max(first, last - 2);
+        if (next < first) next = first;
+        bool got = false;
+        for (long s = next; s <= last && j->go; s++) {
+            next = s + 1;
+            if (!radio_fetch(p.segs[(size_t)(s - first)], seg, 8u << 20, &j->go)) { misses++; continue; }
+            misses = 0;
+            es.clear();
+            hls::audio((const unsigned char*)seg.data(), seg.size(), es, &pid);
+            if (!radio_send_all(j->fd, es.data(), es.size())) { j->go = 0; break; }
+            got = true;
+        }
+        if (misses >= 6) { why = "The station stopped sending"; break; }
+        if (p.end && next > last) break;
+        // Nothing new yet: look again in half a segment's time.
+        for (int t = 0; !got && j->go && g_radio_run && t < (int)(p.target * 2); t++) usleep(250000);
+    }
+    pthread_mutex_lock(&g_radio_mu);
+    j->note = why;
+    pthread_mutex_unlock(&g_radio_mu);
+    ::close(j->fd);
+    j->fd = -1;
+    return nullptr;
+}
+
+// Start the HLS thread on `url`; the player's reading end in *fd_out.
+static std::shared_ptr<HlsJob> radio_hls_start(const std::string& url, int* fd_out) {
+    int sv[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) return nullptr;
+    int sz = 512 * 1024;  // as much read-ahead as the kernel allows (net.core.wmem_max caps it)
+    ::setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &sz, sizeof sz);
+    auto j = std::make_shared<HlsJob>();
+    j->url = url;
+    j->fd = sv[1];
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&at, 256 * 1024);
+    pthread_t th;
+    auto* arg = new std::shared_ptr<HlsJob>(j);
+    if (pthread_create(&th, &at, radio_hls_thread, arg) != 0) {
+        delete arg;
+        ::close(sv[0]);
+        ::close(sv[1]);
+        j = nullptr;
+    } else {
+        *fd_out = sv[0];
+    }
+    pthread_attr_destroy(&at);
+    return j;
+}
+
+// ── Decoders: MP3 by minimp3; AAC (LC, HE-AAC, HE-AAC v2) by the firmware's own Fraunhofer FDK ────
+// library, libFraunhoferAAC.so — the same library cinder-aac takes its encoder from — reached by
+// dlopen, so Cinder ships none of it. Checked 2026-11-05 under qemu on the firmware's library
+// against ffmpeg: AAC-LC (FIP, Radio Paradise) and HE-AAC v2 (BBC World Service) decode
+// sample-identical (correlation 1.0000 / 0.9999); output is interleaved 16-bit.
+struct Fdk {
+    void* (*open)(int transport, unsigned layers);
+    int (*fill)(void*, unsigned char** buf, const unsigned* size, unsigned* valid);
+    int (*decode)(void*, short* pcm, int size, unsigned flags);
+    const int* (*info)(void*);  // CStreamInfo begins sampleRate, frameSize, numChannels
+    void (*close)(void*);
+};
+
+static const Fdk* fdk_get() {
+    static Fdk f;
+    static int state = 0;  // 0 untried, 1 loaded, -1 absent
+    if (state == 0) {
+        void* l = ::dlopen("libFraunhoferAAC.so", RTLD_NOW | RTLD_LOCAL);
+        if (l) {
+            f.open = (void* (*)(int, unsigned))::dlsym(l, "aacDecoder_Open");
+            f.fill = (int (*)(void*, unsigned char**, const unsigned*, unsigned*))::dlsym(l, "aacDecoder_Fill");
+            f.decode = (int (*)(void*, short*, int, unsigned))::dlsym(l, "aacDecoder_DecodeFrame");
+            f.info = (const int* (*)(void*))::dlsym(l, "aacDecoder_GetStreamInfo");
+            f.close = (void (*)(void*))::dlsym(l, "aacDecoder_Close");
+        }
+        state = l && f.open && f.fill && f.decode && f.info && f.close ? 1 : -1;
+        clog_(state == 1 ? "radio: AAC decoder = the firmware's libFraunhoferAAC.so" : "radio: no AAC decoder");
+    }
+    return state == 1 ? &f : nullptr;
+}
+
+enum { RADIO_PCM_MAX = 16384 };  // shorts: 8 channels x 2048 (HE-AAC) and MP3's 1152 x 2 both fit
+
+struct RadioDec {
+    bool aac = false;
+    mp3dec_t mp3;
+    void* h = nullptr;
+    int errors = 0;  // damaged AAC frames in a row
+    bool open(bool is_aac) {
+        aac = is_aac;
+        if (!aac) { mp3dec_init(&mp3); return true; }
+        const Fdk* f = fdk_get();
+        h = f ? f->open(2 /*TT_MP4_ADTS*/, 1) : nullptr;
+        return h != nullptr;
+    }
+    ~RadioDec() { if (h) fdk_get()->close(h); }
+    // One step over b[0..n): >0 = that many frames of interleaved PCM (`ch` channels at `hz`),
+    // 0 = bytes taken (*used) but no sound yet, -1 = needs more bytes, -2 = cannot decode this.
+    int step(const unsigned char* b, size_t n, size_t* used, short* pcm, int* hz, int* ch) {
+        *used = 0;
+        if (!aac) {
+            mp3dec_frame_info_t info;
+            int s = mp3dec_decode_frame(&mp3, b, (int)n, pcm, &info);
+            if (info.frame_bytes == 0) return -1;
+            *used = (size_t)info.frame_bytes;
+            *hz = info.hz;
+            *ch = info.channels;
+            return s;
+        }
+        const Fdk* f = fdk_get();
+        int e = f->decode(h, pcm, RADIO_PCM_MAX, 0);
+        if (e == 0) {
+            const int* si = f->info(h);
+            errors = 0;
+            *hz = si[0];
+            *ch = si[2];
+            return si[2] >= 1 && si[1] * si[2] <= RADIO_PCM_MAX ? si[1] : 0;
+        }
+        if (e >= 0x2000 && e < 0x3000) return -2;  // an initialisation error: a kind of AAC it lacks
+        if (e != 0x1002 /*AAC_DEC_NOT_ENOUGH_BITS*/) return ++errors > 500 ? -2 : 0;  // skipped a damaged frame
+        if (n == 0) return -1;
+        unsigned char* p = (unsigned char*)b;
+        unsigned size = (unsigned)n, valid = (unsigned)n;
+        f->fill(h, &p, &size, &valid);
+        *used = n - valid;
+        return *used ? 0 : -1;
+    }
+};
 
 struct RadioOut {
     snd_pcm_t* pcm = nullptr;
@@ -11817,36 +12043,53 @@ static void* radio_thread(void*) {
     pthread_mutex_lock(&g_radio_mu);
     std::string url = g_radio_url;
     pthread_mutex_unlock(&g_radio_mu);
-    std::string note, title;
+    std::string note, title, ctype;
     static unsigned char buf[16384];
     int fd = -1;
     pid_t pid = -1;
     long metaint = 0;
+    std::shared_ptr<HlsJob> hls_job;
     std::vector<unsigned char> in;
-    // Connect; a playlist link is followed to its first stream (twice at most).
+    // Connect; a playlist link is followed to its first stream (twice at most), an HLS playlist
+    // goes to the HLS thread.
     for (int hop = 0; hop < 3 && g_radio_run; hop++) {
         ::unlink(RADIO_HDR);
-        pid = radio_spawn(url, &fd);
+        pid = radio_spawn(url, &fd, true);
         if (pid < 0) { note = "Could not start the download"; break; }
         ssize_t n = 0;
         for (int waited = 0; n == 0 && waited < 25 && g_radio_run; waited++) n = radio_read(fd, buf, sizeof buf);
-        if (n <= 0) { note = n == 0 ? "The station did not answer" : "The station did not answer"; break; }
-        std::string ctype = radio_header("content-type");
+        if (n <= 0) { note = "The station did not answer"; break; }
+        ctype = radio_header("content-type");
         for (char& c : ctype) c = (char)std::tolower((unsigned char)c);
         std::string head((const char*)buf, (size_t)n);
         const bool list = ctype.find("mpegurl") != std::string::npos || ctype.find("scpls") != std::string::npos ||
                           head.compare(0, 7, "#EXTM3U") == 0 || head.compare(0, 10, "[playlist]") == 0;
+        if (list && head.find("#EXT-X-") != std::string::npos) {
+            radio_reap(pid, fd); pid = -1; fd = -1;
+            hls_job = radio_hls_start(url, &fd);
+            if (!hls_job) { note = "Could not start the download"; break; }
+            n = 0;
+            for (int waited = 0; n == 0 && waited < 45 && g_radio_run; waited++) n = radio_read(fd, buf, sizeof buf);
+            if (n <= 0) {
+                pthread_mutex_lock(&g_radio_mu);
+                note = hls_job->note.empty() ? "The station did not answer" : hls_job->note;
+                pthread_mutex_unlock(&g_radio_mu);
+                break;
+            }
+            ctype.clear();  // HLS: the bytes say AAC or MP3
+            in.assign(buf, buf + n);
+            break;
+        }
         if (list) {
-            if (head.find("#EXT-X-") != std::string::npos) { note = "HLS streams are not supported yet"; break; }
             std::string next = radio_playlist_url(head);
             radio_reap(pid, fd); pid = -1; fd = -1;
             if (next.empty()) { note = "The playlist names no stream"; break; }
             url = next;
             continue;
         }
-        if (ctype.find("aac") != std::string::npos || ctype.find("ogg") != std::string::npos ||
-            ctype.find("flac") != std::string::npos || ctype.find("opus") != std::string::npos) {
-            note = "Only MP3 stations for now";
+        if (ctype.find("ogg") != std::string::npos || ctype.find("flac") != std::string::npos ||
+            ctype.find("opus") != std::string::npos) {
+            note = "Ogg, FLAC and Opus stations are not supported yet";
             break;
         }
         metaint = std::atol(radio_header("icy-metaint").c_str());
@@ -11854,11 +12097,9 @@ static void* radio_thread(void*) {
         break;
     }
     if (note.empty() && !in.empty()) {
-        mp3dec_t dec;
-        mp3dec_init(&dec);
-        mp3dec_frame_info_t info;
-        static short pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
-        static short st[MINIMP3_MAX_SAMPLES_PER_FRAME];
+        static short pcm[RADIO_PCM_MAX];
+        static short st[RADIO_PCM_MAX];
+        RadioDec dec;
         RadioOut out;
         bool opened = false, playing_said = false;
         IcySplit icy(metaint);
@@ -11876,44 +12117,76 @@ static void* radio_thread(void*) {
             if (n < 0) break;
             take(buf, (size_t)n);
         }
+        // The header says which decoder; a station that does not say (or HLS) is told by its bytes.
+        const bool aac = ctype.find("aac") != std::string::npos ||
+                         (ctype.find("mpeg") == std::string::npos && hls::is_adts(audio.data(), audio.size()));
+        if (!dec.open(aac)) { note = "This player has no AAC decoder"; g_radio_run = 0; }
         while (g_radio_run) {
             size_t used = 0;
-            while (g_radio_run && audio.size() - used > 0) {
-                int samples = mp3dec_decode_frame(&dec, audio.data() + used, (int)(audio.size() - used), pcm, &info);
-                if (info.frame_bytes == 0) break;          // needs more data
-                used += (size_t)info.frame_bytes;
-                if (samples == 0) { junk += (size_t)info.frame_bytes; if (junk > 65536 && !opened) break; continue; }
+            while (g_radio_run) {
+                size_t k = 0;
+                int hz = 0, ch = 0;
+                const int frames = dec.step(audio.data() + used, audio.size() - used, &k, pcm, &hz, &ch);
+                used += k;
+                if (frames == -1) break;  // needs more data
+                if (frames == -2) { note = "This station's format is not supported"; g_radio_run = 0; break; }
+                if (frames == 0) {
+                    // Bytes with no sound before the first frame: an MP3 decoder skips tags and
+                    // junk; the AAC decoder takes whole buffers in, so it is allowed more.
+                    if (!opened && (junk += k) > (aac ? 524288u : 65536u)) {
+                        note = "This station's format is not supported";
+                        g_radio_run = 0;
+                    }
+                    continue;
+                }
+                if (opened && (unsigned)hz != out.src_rate) {
+                    // The stream changed rate (an HLS stream switching, a station restarting).
+                    if (out.fd >= 0) { out.src_rate = (unsigned)hz; out.pos = 0; }
+                    else { radio_out_close(out); opened = false; }
+                }
                 if (!opened) {
-                    if (!radio_out_open(out, (unsigned)info.hz, g_radio_bt)) {
+                    if (!radio_out_open(out, (unsigned)hz, g_radio_bt)) {
                         note = g_radio_bt ? "Bluetooth would not take the stream" : "The headphone output is busy";
                         g_radio_run = 0;
                         break;
                     }
                     opened = true;
                     char m[160];
-                    std::snprintf(m, sizeof m, "radio: playing %d Hz %d ch, %s", info.hz, info.channels,
-                                  g_radio_bt ? "Bluetooth" : "the jack");
+                    std::snprintf(m, sizeof m, "radio: playing %s%s %d Hz %d ch, %s", aac ? "AAC" : "MP3",
+                                  hls_job ? " (HLS)" : "", hz, ch, g_radio_bt ? "Bluetooth" : "the jack");
                     clog_(m);
                 }
                 const short* frame = pcm;
-                if (info.channels == 1) {
-                    for (int i = 0; i < samples; i++) st[2 * i] = st[2 * i + 1] = pcm[i];
+                if (ch != 2) {
+                    // Mono to both sides; more than two channels: the first two (front left, right).
+                    for (int i = 0; i < frames; i++) {
+                        st[2 * i] = pcm[i * ch];
+                        st[2 * i + 1] = pcm[i * ch + (ch > 1 ? 1 : 0)];
+                    }
                     frame = st;
                 }
-                if (!radio_out_write(out, frame, (unsigned)samples)) { note = "The output closed"; g_radio_run = 0; break; }
+                if (!radio_out_write(out, frame, (unsigned)frames)) { note = "The output closed"; g_radio_run = 0; break; }
                 if (!playing_said) { radio_say("playing", title, ""); playing_said = true; }
             }
-            if (!opened && junk > 65536) { note = "Only MP3 stations for now"; break; }
             audio.erase(audio.begin(), audio.begin() + (long)used);
             if (!g_radio_run) break;
             ssize_t n = radio_read(fd, buf, sizeof buf);
-            if (n < 0) { note = "The station stopped sending"; break; }
+            if (n < 0) {
+                note = "The station stopped sending";
+                if (hls_job) {
+                    pthread_mutex_lock(&g_radio_mu);
+                    if (!hls_job->note.empty()) note = hls_job->note;
+                    pthread_mutex_unlock(&g_radio_mu);
+                }
+                break;
+            }
             take(buf, (size_t)n);
         }
         radio_out_close(out);
     } else if (note.empty() && g_radio_run) {
         note = "The station did not answer";
     }
+    if (hls_job) hls_job->go = 0;
     radio_reap(pid, fd);
     ::unlink(RADIO_HDR);
     {
@@ -12037,7 +12310,15 @@ static void radio_tick() {
 // (airplay_tick does what radio_play does: music pauses, the radio and a soundscape stop), plays it
 // through the radio's output code, and gives the output back after 2 s of silence. Music, FM and
 // the rest take it back through ambient_yield_for_music, like the radio's.
+//
+// AIRPLAY 2. When the Wi-Fi option carries the AirPlay 2 build (shairport-sync-ap2) and nqptp, its
+// timing companion, the receiver's child first has the helper start nqptp (it must bind UDP 319 and
+// 320, so it starts as root and then becomes cinder-home's user), then runs the AirPlay 2 build,
+// which also takes classic AirPlay senders. Without nqptp running it falls back to AirPlay 1 by
+// itself; without the files the AirPlay 1 build runs as before.
 static const char* const AP_BIN = "/system/vendor/cinder/wifi/shairport-sync";
+static const char* const AP2_BIN = "/system/vendor/cinder/wifi/shairport-sync-ap2";
+static const char* const AP2_NQPTP = "/system/vendor/cinder/wifi/nqptp";
 static const char* const AP_NAME = "Walkman (Cinder)";
 static pid_t g_ap_pid = -1;
 static int g_ap_fd = -1;
@@ -12121,12 +12402,14 @@ static void airplay_stop(const char* why) {
     g_ap_fd = -1;
     if (g_ap_bt) { g_ldac_run = 0; g_ldac_alive = 0; }
     if (g_ap_source_held) airplay_bt_source(false);
+    if (::access(AP2_NQPTP, X_OK) == 0) wifi_helper("nqptp-stop", nullptr, nullptr);
     char m[96];
     std::snprintf(m, sizeof m, "airplay: receiver stopped (%s)", why);
     clog_(m);
 }
 
 static bool airplay_start() {
+    const bool ap2 = ::access(AP2_BIN, X_OK) == 0 && ::access(AP2_NQPTP, X_OK) == 0;
     int fd[2];
     if (::pipe(fd) < 0) return false;
     pid_t p = ::fork();
@@ -12135,8 +12418,22 @@ static bool airplay_start() {
         ::dup2(fd[1], 1);
         int nul = ::open("/dev/null", O_WRONLY);
         if (nul >= 0) ::dup2(nul, 2);
-        for (int i = 3; i < 256; i++) ::close(i);
+        for (int i = 3; i < 256; i++) if (i != nul) ::close(i);
         ::chdir("/tmp");
+        if (ap2) {
+            // nqptp first (the receiver looks for it once, at start). The helper's own words go
+            // to /dev/null, not into the audio pipe on stdout.
+            pid_t h = ::fork();
+            if (h == 0) {
+                if (nul >= 0) ::dup2(nul, 1);
+                ::execl(WIFI_HELPER, "cinder-wifi", "nqptp-start", (char*)nullptr);
+                ::_exit(127);
+            }
+            if (h > 0) ::waitpid(h, nullptr, 0);
+            if (nul >= 0) ::close(nul);
+            ::execl(AP2_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", (char*)nullptr);
+        }
+        if (nul >= 0) ::close(nul);
         ::execl(AP_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", (char*)nullptr);
         ::_exit(127);
     }
@@ -12152,7 +12449,7 @@ static bool airplay_start() {
     bool ok = pthread_create(&th, &at, airplay_reader, nullptr) == 0;
     pthread_attr_destroy(&at);
     if (!ok) { airplay_stop("no reader thread"); return false; }
-    clog_("airplay: receiver started");
+    clog_(ap2 ? "airplay: receiver started (AirPlay 2 build, nqptp)" : "airplay: receiver started (AirPlay 1)");
     return true;
 }
 

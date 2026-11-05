@@ -263,14 +263,17 @@ pub fn update_check(version: &str) -> Result<Option<String>, String> {
 // ── Lyrics from LRCLIB (lrclib.net: free, no account, synced lyrics) ─────────────────────────────
 
 /// A JSON string field's value (`null` and absent are None), unescaped. Enough JSON for LRCLIB's
-/// flat answer; not a general parser.
+/// flat answer; nested answers go through [`Json`].
 pub fn json_field(body: &str, key: &str) -> Option<String> {
     let k = format!("\"{key}\"");
     let mut rest = &body[body.find(&k)? + k.len()..];
     rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    let rest = rest.strip_prefix('"')?;
+    read_str(&mut rest.strip_prefix('"')?.chars())
+}
+
+/// The rest of a JSON string, after its opening quote, unescaped (\uXXXX and surrogate pairs too).
+fn read_str<I: Iterator<Item = char>>(it: &mut I) -> Option<String> {
     let mut out = String::new();
-    let mut it = rest.chars();
     while let Some(c) = it.next() {
         match c {
             '"' => return Some(out),
@@ -295,6 +298,122 @@ pub fn json_field(body: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// A JSON value: enough of a reader for MusicBrainz's nested answers, with no dependency.
+#[derive(Debug, PartialEq)]
+pub enum Json {
+    Null,
+    Bool(bool),
+    Num(f64),
+    Str(String),
+    Arr(Vec<Json>),
+    Obj(Vec<(String, Json)>),
+}
+
+impl Json {
+    /// None for anything that is not one whole JSON value (or nests deeper than 64).
+    pub fn parse(text: &str) -> Option<Json> {
+        let mut it = text.chars().peekable();
+        let v = Self::value(&mut it, 0)?;
+        Self::ws(&mut it);
+        it.next().is_none().then_some(v)
+    }
+    fn ws(it: &mut std::iter::Peekable<std::str::Chars>) {
+        while it.peek().is_some_and(|c| c.is_whitespace()) {
+            it.next();
+        }
+    }
+    fn value(it: &mut std::iter::Peekable<std::str::Chars>, depth: u32) -> Option<Json> {
+        if depth > 64 {
+            return None;
+        }
+        Self::ws(it);
+        match *it.peek()? {
+            '"' => {
+                it.next();
+                read_str(it).map(Json::Str)
+            }
+            open @ ('{' | '[') => {
+                it.next();
+                let close = if open == '{' { '}' } else { ']' };
+                let (mut obj, mut arr) = (Vec::new(), Vec::new());
+                Self::ws(it);
+                if it.peek() == Some(&close) {
+                    it.next();
+                } else {
+                    loop {
+                        Self::ws(it);
+                        if open == '{' {
+                            if it.next()? != '"' {
+                                return None;
+                            }
+                            let k = read_str(it)?;
+                            Self::ws(it);
+                            if it.next()? != ':' {
+                                return None;
+                            }
+                            obj.push((k, Self::value(it, depth + 1)?));
+                        } else {
+                            arr.push(Self::value(it, depth + 1)?);
+                        }
+                        Self::ws(it);
+                        match it.next()? {
+                            ',' => continue,
+                            c if c == close => break,
+                            _ => return None,
+                        }
+                    }
+                }
+                Some(if open == '{' {
+                    Json::Obj(obj)
+                } else {
+                    Json::Arr(arr)
+                })
+            }
+            _ => {
+                let mut w = String::new();
+                while let Some(&c) = it.peek() {
+                    if !(c.is_ascii_alphanumeric() || "+-.".contains(c)) {
+                        break;
+                    }
+                    w.push(c);
+                    it.next();
+                }
+                match w.as_str() {
+                    "null" => Some(Json::Null),
+                    "true" => Some(Json::Bool(true)),
+                    "false" => Some(Json::Bool(false)),
+                    _ => w.parse().ok().map(Json::Num),
+                }
+            }
+        }
+    }
+    pub fn get(&self, key: &str) -> Option<&Json> {
+        match self {
+            Json::Obj(o) => o.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+    pub fn str(&self) -> Option<&str> {
+        match self {
+            Json::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+    pub fn num(&self) -> Option<f64> {
+        match self {
+            Json::Num(n) => Some(*n),
+            _ => None,
+        }
+    }
+    /// The items of an array; none for anything else.
+    pub fn items(&self) -> &[Json] {
+        match self {
+            Json::Arr(a) => a,
+            _ => &[],
+        }
+    }
 }
 
 /// `/a/b/Song.flac` -> `/a/b/Song.lrc`, the sidecar lyrics.rs reads first.
@@ -386,9 +505,369 @@ pub fn fetch_lyrics(
     }
 }
 
+// ── Album art from the Cover Art Archive (MusicBrainz finds the album; both free, no account) ──
+
+/// "The Dark Side of the Moon (2011 Remaster)" -> "The Dark Side of the Moon": a trailing (…) or
+/// […] edition note off, as often as there is one.
+pub fn bare_title(s: &str) -> &str {
+    let mut t = s.trim();
+    while t.ends_with(')') || t.ends_with(']') {
+        match t.rfind(['(', '[']) {
+            Some(i) if i > 0 => t = t[..i].trim_end(),
+            _ => break,
+        }
+    }
+    t
+}
+
+/// Two titles are the same album when their letters and digits are, ignoring case, edition notes
+/// and a leading "The".
+fn title_key(s: &str) -> String {
+    let low = bare_title(s).to_lowercase();
+    let low = low.strip_prefix("the ").unwrap_or(&low);
+    low.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// The MusicBrainz search for an album: both names as phrases (Lucene: `\` and `"` escaped).
+pub fn mb_query(artist: &str, album: &str) -> String {
+    let q = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "releasegroup:\"{}\" AND artist:\"{}\"",
+        q(bare_title(album)),
+        q(artist)
+    )
+}
+
+/// From a MusicBrainz release-group search, the album's id: its title must be the album's and its
+/// score 90 or more, and a plain album (no secondary type) wins over a compilation, live record or
+/// a fan release with the same name — MusicBrainz scored "Dark Side of the Moon [RESTORED]", a
+/// compilation, as high as the album itself (2026-11-05).
+pub fn mb_pick(body: &str, album: &str) -> Option<String> {
+    let want = title_key(album);
+    if want.is_empty() {
+        return None;
+    }
+    let v = Json::parse(body)?;
+    let mut best: Option<(bool, &str)> = None;
+    for g in v.get("release-groups")?.items() {
+        let (Some(id), Some(title)) = (
+            g.get("id").and_then(Json::str),
+            g.get("title").and_then(Json::str),
+        ) else {
+            continue;
+        };
+        let uuid = id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+        if !uuid
+            || g.get("score").and_then(Json::num).unwrap_or(0.0) < 90.0
+            || title_key(title) != want
+        {
+            continue;
+        }
+        let plain = g
+            .get("secondary-types")
+            .is_none_or(|t| t.items().is_empty());
+        if best.is_none_or(|(was_plain, _)| plain && !was_plain) {
+            best = Some((plain, id));
+        }
+    }
+    best.map(|(_, id)| id.to_string())
+}
+
+/// "jpg" or "png" from a file's first bytes; None for anything else (an error page).
+pub fn image_ext(head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if head.starts_with(b"\x89PNG") {
+        Some("png")
+    } else {
+        None
+    }
+}
+
+/// Find the album on MusicBrainz and write its front cover (500 px) from the Cover Art Archive as
+/// `cover.jpg` (or .png) in `dir`. Ok(true) = written, Ok(false) = none to be had (remember the miss).
+pub fn fetch_cover(dir: &str, artist: &str, album: &str, version: &str) -> Result<bool, String> {
+    let ua = format!("User-Agent: Cinder/{version} ( https://github.com/superwilso/Cinder )");
+    let query = format!("query={}", mb_query(artist, album));
+    let (code, body) = run_curl(&[
+        "-H",
+        &ua,
+        "--get",
+        "--data-urlencode",
+        &query,
+        "--data-urlencode",
+        "fmt=json",
+        "--data-urlencode",
+        "limit=10",
+        "https://musicbrainz.org/ws/2/release-group/",
+    ])?;
+    if code != 200 {
+        return Err(format!("MusicBrainz answered {code}"));
+    }
+    let Some(id) = mb_pick(&body, album) else {
+        return Ok(false);
+    };
+    let part = format!("{dir}/.cinder-cover.part");
+    let url = format!("https://coverartarchive.org/release-group/{id}/front-500");
+    let got = run_curl(&[
+        "-H",
+        &ua,
+        "-L",
+        "--max-filesize",
+        "4000000",
+        "-o",
+        &part,
+        &url,
+    ]);
+    let out = got.and_then(|(code, _)| match code {
+        404 => Ok(false),
+        200 => {
+            let head: Vec<u8> = std::fs::read(&part)
+                .unwrap_or_default()
+                .into_iter()
+                .take(8)
+                .collect();
+            let ext = image_ext(&head).ok_or("the cover is not an image")?;
+            std::fs::rename(&part, format!("{dir}/cover.{ext}"))
+                .map_err(|_| "cannot write the cover")?;
+            Ok(true)
+        }
+        c => Err(format!("the Cover Art Archive answered {c}")),
+    });
+    let _ = std::fs::remove_file(&part);
+    out
+}
+
+// ── Internet radio ▸ FIND: radio-browser.info (free, no account, community-kept) ─────────────────
+
+const RADIO_BROWSER: &str = "https://all.api.radio-browser.info/json/stations/search";
+
+/// The stations in a radio-browser.info answer that this player can play: MP3, AAC and AAC+
+/// streams, and HLS (which it lists as "UNKNOWN" more often than not, and is AAC on the stations
+/// that use it); Ogg, FLAC and Opus are left out. Most-listened first, as asked; one per stream.
+pub fn parse_radio_browser(body: &str) -> Vec<cinder_ui::netradio::Found> {
+    let Some(v) = Json::parse(body) else {
+        return Vec::new();
+    };
+    let mut out: Vec<cinder_ui::netradio::Found> = Vec::new();
+    for st in v.items() {
+        let text = |k: &str| {
+            st.get(k)
+                .and_then(Json::str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let url = Some(text("url_resolved"))
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| text("url"));
+        let codec = text("codec").to_ascii_uppercase();
+        let hls = st.get("hls").and_then(Json::num) == Some(1.0) || url.contains(".m3u8");
+        let playable = hls || codec == "MP3" || codec == "AAC" || codec == "AAC+";
+        let ok_url = (url.starts_with("http://") || url.starts_with("https://"))
+            && url.len() <= 512
+            && url.chars().all(|c| c.is_ascii_graphic());
+        let name: String = text("name")
+            .chars()
+            .filter(|c| !c.is_control() && *c != '|')
+            .take(60)
+            .collect();
+        if !playable || !ok_url || name.trim().is_empty() || out.iter().any(|f| f.url == url) {
+            continue;
+        }
+        let kind = if hls {
+            "HLS".to_string()
+        } else {
+            codec.clone()
+        };
+        let rate = st
+            .get("bitrate")
+            .and_then(Json::num)
+            .filter(|b| *b > 0.0)
+            .map(|b| format!(" {b}"))
+            .unwrap_or_default();
+        let mut sub = format!("{kind}{rate}");
+        let cc = text("countrycode");
+        if !cc.is_empty() {
+            sub.push_str(&format!(" · {cc}"));
+        }
+        let tags = text("tags");
+        if let Some(tag) = tags.split(',').map(str::trim).find(|t| {
+            !t.is_empty() && !t.eq_ignore_ascii_case(&codec) && !t.eq_ignore_ascii_case("m3u8")
+        }) {
+            sub.push_str(&format!(" · {}", tag.chars().take(24).collect::<String>()));
+        }
+        out.push(cinder_ui::netradio::Found {
+            name: name.trim().to_string(),
+            url,
+            sub,
+        });
+        if out.len() == 30 {
+            break;
+        }
+    }
+    out
+}
+
+/// Search radio-browser.info by station name, and by genre too when the names find few.
+pub fn radio_search(query: &str, version: &str) -> Result<Vec<cinder_ui::netradio::Found>, String> {
+    let ua = format!("User-Agent: Cinder/{version}");
+    let ask = |field: &str| -> Result<Vec<cinder_ui::netradio::Found>, String> {
+        let q = format!("{field}={query}");
+        let (code, body) = run_curl(&[
+            "-H",
+            &ua,
+            "--get",
+            "--data-urlencode",
+            &q,
+            "--data-urlencode",
+            "limit=60",
+            "--data-urlencode",
+            "hidebroken=true",
+            "--data-urlencode",
+            "order=clickcount",
+            "--data-urlencode",
+            "reverse=true",
+            RADIO_BROWSER,
+        ])?;
+        if code != 200 {
+            return Err(format!("radio-browser.info answered {code}"));
+        }
+        Ok(parse_radio_browser(&body))
+    };
+    let mut found = ask("name")?;
+    if found.len() < 10 {
+        for f in ask("tag").unwrap_or_default() {
+            if found.len() < 30 && !found.iter().any(|g| g.url == f.url) {
+                found.push(f);
+            }
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Four stations as radio-browser.info sent them (2026-11-05, searches "jazz" and "fip"; the
+    /// fields read, as they came).
+    const RB: &str = r#"[{"name": "Jazz Radio Blues", "url": "http://jazzblues.ice.infomaniak.ch/jazzblues-high.mp3", "url_resolved": "http://jazzblues.ice.infomaniak.ch/jazzblues-high.mp3", "codec": "MP3", "bitrate": 128, "countrycode": "FR", "tags": "blues,jazz", "hls": 0, "lastcheckok": 1}, {"name": "Adroit Jazz Underground HD Opus", "url": "https://icecast.walmradio.com:8443/jazz_opus", "url_resolved": "https://icecast.walmradio.com:8443/jazz_opus", "codec": "OGG", "bitrate": 192, "countrycode": "US", "tags": "avant-garde,bebop,big band", "hls": 0, "lastcheckok": 1}, {"name": "FIP", "url": "http://icecast.radiofrance.fr/fip-hifi.aac", "url_resolved": "http://icecast.radiofrance.fr/fip-hifi.aac", "codec": "AAC", "bitrate": 192, "countrycode": "FR", "tags": "aac,music,public radio,radio france", "hls": 0, "lastcheckok": 1}, {"name": "FIP (no pub)", "url": "https://stream.radiofrance.fr/fip/fip_hifi.m3u8", "url_resolved": "https://stream.radiofrance.fr/fip/fip_hifi.m3u8", "codec": "UNKNOWN", "bitrate": 0, "countrycode": "FR", "tags": "eclectic,m3u8,public radio,radio france", "hls": 1, "lastcheckok": 1}]"#;
+
+    #[test]
+    fn radio_browser_answers_become_stations_this_player_plays() {
+        let f = parse_radio_browser(RB);
+        let names: Vec<&str> = f.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Jazz Radio Blues", "FIP", "FIP (no pub)"],
+            "the Ogg/Opus one is left out"
+        );
+        assert_eq!(f[0].sub, "MP3 128 · FR · blues");
+        assert_eq!(
+            f[1].sub, "AAC 192 · FR · music",
+            "the codec is not repeated as a tag"
+        );
+        assert_eq!(
+            f[2].sub, "HLS · FR · eclectic",
+            "HLS though it says UNKNOWN"
+        );
+        assert_eq!(f[2].url, "https://stream.radiofrance.fr/fip/fip_hifi.m3u8");
+        let dup = format!("[{0},{0}]", &RB[1..RB.find("}, ").unwrap() + 1]);
+        assert_eq!(parse_radio_browser(&dup).len(), 1, "one per stream");
+        let piped = RB.replace("Jazz Radio Blues", "Jazz | Blues");
+        assert_eq!(
+            parse_radio_browser(&piped)[0].name,
+            "Jazz  Blues",
+            "a | would split the station file's line"
+        );
+        assert!(parse_radio_browser("not json").is_empty());
+    }
+
+    #[test]
+    fn json_reads_nested_answers() {
+        let v =
+            Json::parse(r#" {"a": [1, -2.5e1, true, null, {"b": "x\"yé"}], "c": {}, "d": []} "#)
+                .unwrap();
+        let a = v.get("a").unwrap().items();
+        assert_eq!(a[0].num(), Some(1.0));
+        assert_eq!(a[1].num(), Some(-25.0));
+        assert_eq!(a[2], Json::Bool(true));
+        assert_eq!(a[3], Json::Null);
+        assert_eq!(a[4].get("b").and_then(Json::str), Some("x\"y\u{e9}"));
+        assert_eq!(v.get("c"), Some(&Json::Obj(vec![])));
+        assert!(v.get("d").unwrap().items().is_empty());
+        for bad in ["", "{", "[1,]", r#"{"a" 1}"#, "[1] 2", "nul", r#""open"#] {
+            assert_eq!(Json::parse(bad), None, "{bad:?}");
+        }
+        assert_eq!(Json::parse(&"[".repeat(100)), None, "deep nesting refused");
+    }
+
+    /// The top of MusicBrainz's real answer for Pink Floyd's album (2026-11-05, trimmed to the
+    /// fields read, the nesting kept): a fan compilation scores as high as the album.
+    const MB_DSOTM: &str = r#"{"created":"2026-11-05T10:32:03.239Z","count":8,"offset":0,"release-groups":[
+        {"id":"5dbefdbd-8bdc-4611-91e5-f0c0a2695612","score":100,"title":"Dark Side of the Moon [RESTORED]","primary-type":"Album","secondary-types":["Compilation"],"artist-credit":[{"name":"Pink Floyd","artist":{"id":"83d91898-7763-47d7-b03b-b92132375c47","name":"Pink Floyd","aliases":[{"name":"Pink Floid","locale":null,"primary":null}]}}]},
+        {"id":"f5093c06-23e3-404f-aeaa-40f72885ee3a","score":100,"title":"The Dark Side of the Moon","primary-type":"Album","artist-credit":[{"name":"Pink Floyd","artist":{"id":"83d91898-7763-47d7-b03b-b92132375c47","name":"Pink Floyd"}}]},
+        {"id":"ddb7c3c7-09b1-4bb3-bbcb-7c207cb2af06","score":95,"title":"The Dark Side of the Moon (demos)","primary-type":"Album","secondary-types":["Compilation","Demo"]},
+        {"id":"2e4fb3a5-3e47-3e2a-bdd4-888944793e7c","score":92,"title":"The Dark Side of the Moon Live 1974","primary-type":"Album","secondary-types":["Live"]},
+        {"id":"6cadcf33-98b6-3da1-b274-e3655bfb4361","score":88,"title":"Dark Side of the Moon: Limited Edition Trance Remix","primary-type":"Album","secondary-types":["Remix"]}]}"#;
+
+    #[test]
+    fn the_album_itself_not_a_compilation_of_the_same_name() {
+        let album = "f5093c06-23e3-404f-aeaa-40f72885ee3a";
+        for tag in [
+            "Dark Side of the Moon",
+            "The Dark Side of the Moon",
+            "the dark side of the moon (2011 Remaster)",
+            "The Dark Side Of The Moon [Remastered] (Deluxe)",
+        ] {
+            assert_eq!(mb_pick(MB_DSOTM, tag).as_deref(), Some(album), "{tag}");
+        }
+        assert_eq!(
+            mb_pick(MB_DSOTM, "Wish You Were Here"),
+            None,
+            "no title match, no cover"
+        );
+        assert_eq!(
+            mb_pick(MB_DSOTM, "(Live)"),
+            None,
+            "nothing left to match on"
+        );
+        let only_fan = MB_DSOTM.replace(
+            "f5093c06-23e3-404f-aeaa-40f72885ee3a\",\"score\":100",
+            "f5093c06-23e3-404f-aeaa-40f72885ee3a\",\"score\":80",
+        );
+        assert_eq!(
+            mb_pick(&only_fan, "Dark Side of the Moon").as_deref(),
+            Some("5dbefdbd-8bdc-4611-91e5-f0c0a2695612"),
+            "with the album scored low, the same-titled compilation is the best there is"
+        );
+        let bad_id = MB_DSOTM.replace("f5093c06-23e3-404f-aeaa-40f72885ee3a", "../../x");
+        assert_ne!(
+            mb_pick(&bad_id, "The Dark Side of the Moon").as_deref(),
+            Some("../../x"),
+            "only a UUID reaches the URL"
+        );
+    }
+
+    #[test]
+    fn the_search_and_the_file_it_saves() {
+        assert_eq!(
+            mb_query(
+                "Simon & Garfunkel",
+                "Bridge Over \"Troubled\" Water (Remastered)"
+            ),
+            r#"releasegroup:"Bridge Over \"Troubled\" Water" AND artist:"Simon & Garfunkel""#
+        );
+        assert_eq!(
+            bare_title("[Untitled]"),
+            "[Untitled]",
+            "a title that is all brackets stays"
+        );
+        assert_eq!(image_ext(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("jpg"));
+        assert_eq!(image_ext(b"\x89PNG\r\n\x1a\n"), Some("png"));
+        assert_eq!(image_ext(b"<html>"), None);
+    }
 
     /// The scrobbler's own lines (scrobble::format_line) plus the shapes an uploader leaves.
     const LOG: &str = "#AUDIOSCROBBLER/1.1\n#TZ/UNKNOWN\n#CLIENT/Cinder\n\

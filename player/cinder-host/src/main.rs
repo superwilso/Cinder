@@ -4019,11 +4019,57 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "netradio_playing");
+        let found = |name: &str, url: &str, sub: &str| cinder_ui::netradio::Found {
+            name: name.into(),
+            url: url.into(),
+            sub: sub.into(),
+        };
+        app.set_radio_query("jazz");
+        app.set_radio_found(
+            vec![
+                found(
+                    "101 Smooth Jazz",
+                    "http://example.org/1",
+                    "MP3 192 · US · easy listening",
+                ),
+                found(
+                    "Jazz Radio Blues",
+                    "http://example.org/2",
+                    "MP3 128 · FR · blues",
+                ),
+                found(
+                    "SomaFM Groove Salad",
+                    "https://somafm.com/groovesalad.pls",
+                    "MP3 128 · US · ambient",
+                ),
+                found("FIP Jazz", "http://example.org/4", "AAC 192 · FR · jazz"),
+                found("KJazz 88.1", "http://example.org/5", "HLS · US · bebop"),
+            ],
+            String::new(),
+        );
+        app.go_for_preview(Screen::RadioFind);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "netradio_find");
         app.set_remote(true, "482913", 8080);
         app.go_for_preview(Screen::WifiRemote);
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "wifi_remote_on");
+        app.set_speakers(vec![
+            ("Kitchen".into(), "Denon AVR-X1700H".into()),
+            ("Living Room".into(), "Sonos One".into()),
+            ("Study".into(), "Kodi".into()),
+        ]);
+        app.set_cast(
+            Some("Living Room".into()),
+            "PLAYING · Living Room · VOLUME 24".into(),
+        );
+        app.go_for_preview(Screen::WifiSpeakers);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "wifi_speakers_casting");
+        app.set_cast(None, String::new());
         app.go_for_preview(Screen::WifiOptions);
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);

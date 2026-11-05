@@ -1,0 +1,33 @@
+--- a/nqptp.c	2026-11-05 11:41:38.150307570 +0000
++++ b/nqptp.c	2026-11-05 11:41:38.166307245 +0000
+@@ -36,6 +36,7 @@
+ 
+ #include <errno.h>
+ #include <unistd.h> // close
++#include <grp.h>    // setgroups (Cinder)
+ 
+ #include <fcntl.h>      /* For O_* constants */
+ #include <sys/mman.h>   // for shared memory stuff
+@@ -240,6 +241,22 @@
+   open_sockets_at_port("localhost", NQPTP_CONTROL_PORT,
+                        &sockets_open_stuff); // this for messages from the client
+ 
++  // Cinder: root was needed for ports 319 and 320 only. With them bound, carry on as the user
++  // CINDER_RUN_AS names ("uid:gid"), keeping group 3003 (inet), which the player's kernel asks of
++  // any process that opens a socket. The shared memory made above stays writable through its map.
++  const char *run_as = getenv("CINDER_RUN_AS");
++  if (run_as != NULL && getuid() == 0) {
++    unsigned int uid = 0, gid = 0;
++    gid_t groups[2];
++    if (sscanf(run_as, "%u:%u", &uid, &gid) != 2 || uid == 0)
++      die("CINDER_RUN_AS must be uid:gid, not root");
++    groups[0] = (gid_t)gid;
++    groups[1] = 3003;
++    if (setgroups(2, groups) != 0 || setgid((gid_t)gid) != 0 || setuid((uid_t)uid) != 0 ||
++        setuid(0) == 0)
++      die("could not stop being root");
++  }
++
+   // start the timed tasks
+   uint64_t broadcasting_task(uint64_t call_time, void *private_data);
+ 

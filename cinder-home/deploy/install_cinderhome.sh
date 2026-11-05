@@ -804,15 +804,18 @@ fi
 [ "$LLUSBDAC_IN" = 0 ] && "$BB" rm -f "$LLUSBDAC_KO" 2>/dev/null
 "$BB" rm -f /contents/llusbdac.ko 2>/dev/null
 
-# 1g8) Wi-Fi: the `wifi` component (wifi/, GPL-2.0). Thirteen files into $VENDOR/wifi — four kernel
-#      modules, wpa_supplicant, wpa_cli, iw, curl and its CA list, shairport-sync, and three scripts — then the setuid helper cinder-wifi
+# 1g8) Wi-Fi: the `wifi` component (wifi/, GPL-2.0). Fourteen files into $VENDOR/wifi — four kernel
+#      modules, wpa_supplicant, wpa_cli, iw, curl and its CA list, shairport-sync, openssl, and three
+#      scripts — and, when the payload has them, the AirPlay 2 receiver and nqptp (WIFI_OPTIONAL: a
+#      build without them still installs, and AirPlay 1 runs); then the setuid helper cinder-wifi
 #      LAST, because cinder-home shows Settings ▸ Wi-Fi only when the helper and wlan_mt.ko are
 #      both there. Nothing loads at boot: the radio stays off until the user switches it on, and
 #      the modules load then. The folder is filled under a temporary name and swapped in whole.
 #      Unticked, the folder, the helper and the saved network (it holds the password) all go.
 # >>> wifi
 WIFI_DIR=$VENDOR/wifi
-WIFI_FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync wifi-up.sh wifi-down.sh dhcp.sh"
+WIFI_FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync openssl wifi-up.sh wifi-down.sh dhcp.sh"
+WIFI_OPTIONAL="shairport-sync-ap2 nqptp"
 WIFI_IN=0
 if [ "$WANT_WIFI" = 1 ]; then
     wifi_staged=1
@@ -829,6 +832,14 @@ if [ "$WANT_WIFI" = 1 ]; then
         for f in $WIFI_FILES; do
             btaac_put "/contents/cinder-wifi-$f" "$WIFI_DIR.new/$f" || { wifi_ok=0; break; }
             case "$f" in *.ko|*.pem) ;; *) "$BB" chmod 755 "$WIFI_DIR.new/$f" ;; esac
+        done
+        for f in $WIFI_OPTIONAL; do
+            [ "$wifi_ok" = 1 ] && [ -s "/contents/cinder-wifi-$f" ] || continue
+            if btaac_put "/contents/cinder-wifi-$f" "$WIFI_DIR.new/$f"; then
+                "$BB" chmod 755 "$WIFI_DIR.new/$f"
+            else
+                "$BB" rm -f "$WIFI_DIR.new/$f" 2>/dev/null   # half a binary is worse than none
+            fi
         done
         if [ "$wifi_ok" = 1 ]; then
             "$BB" rm -rf "$WIFI_DIR" 2>/dev/null

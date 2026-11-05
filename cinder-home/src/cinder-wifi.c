@@ -14,6 +14,9 @@
  *                         writes the saved network; does not connect (run `on` after)
  *   cinder-wifi forget    delete the saved network                                     -> 0
  *   cinder-wifi timesync  set the system clock and the RTC from the internet (NTP)     -> 0 / 1
+ *   cinder-wifi nqptp-start   AirPlay 2's timing (nqptp) on UDP 319/320, which needs root to
+ *                         bind; it then runs as the caller (CINDER_RUN_AS)               -> 0 / 1
+ *   cinder-wifi nqptp-stop    stop it (also done by `off`)                               -> 0
  *
  * Exit codes: 0 done, 1 the operation failed (last line of output says why), 2 bad input,
  * 3 not running as root (the setuid bit is missing), 4 Wi-Fi is not installed.
@@ -35,6 +38,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -47,6 +51,8 @@
 #define CONF DATA "/wpa.conf"
 #define RUN "/tmp/cinder-wifi"
 #define OFFSET DATA "/utc_offset"
+#define NQPTP DIR_ "/nqptp"
+#define NQPTP_PID RUN "/nqptp.pid"
 
 static char* const ENV[] = { "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/bin", "HOME=/", NULL };
 
@@ -290,9 +296,73 @@ static int do_timesync(void)
     return 0;
 }
 
+/* The pid in NQPTP_PID if it is a live nqptp (a reused pid is someone else's), else 0. */
+static pid_t nqptp_pid(void)
+{
+    FILE* f = fopen(NQPTP_PID, "r");
+    long p = 0;
+    if (!f) return 0;
+    if (fscanf(f, "%ld", &p) != 1) p = 0;
+    fclose(f);
+    if (p <= 1) return 0;
+    char link[64], exe[256];
+    snprintf(link, sizeof link, "/proc/%ld/exe", p);
+    ssize_t n = readlink(link, exe, sizeof exe - 1);
+    if (n <= 0) return 0;
+    exe[n] = 0;
+    return strcmp(exe, NQPTP) == 0 ? (pid_t)p : 0;
+}
+
+static int do_nqptp_start(uid_t uid, gid_t gid)
+{
+    if (access(NQPTP, X_OK) != 0) { puts("nqptp is not installed"); return 1; }
+    if (nqptp_pid()) { puts("running"); return 0; }
+    mkdir(RUN, 0755);
+    pid_t p = fork();
+    if (p < 0) { puts("could not start nqptp"); return 1; }
+    if (p == 0) {
+        setsid();
+        int nul = open("/dev/null", O_RDWR);
+        if (nul >= 0) { dup2(nul, 0); dup2(nul, 1); dup2(nul, 2); }
+        for (int i = 3; i < 256; i++) close(i);
+        char as[48];
+        snprintf(as, sizeof as, "CINDER_RUN_AS=%u:%u", (unsigned)uid, (unsigned)gid);
+        /* Run by root itself (a test over adb): stay root, there is nobody to become. */
+        char* const env[] = { ENV[0], ENV[1], uid ? as : NULL, NULL };
+        char* const a[] = { NQPTP, NULL };
+        execve(a[0], a, env);
+        _exit(127);
+    }
+    FILE* f = fopen(NQPTP_PID, "w");
+    if (f) { fprintf(f, "%ld\n", (long)p); fclose(f); }
+    /* Ready when its shared memory is there (shairport-sync looks for it at start). */
+    for (int i = 0; i < 30 && access("/dev/shm/nqptp", F_OK) != 0; i++) {
+        if (waitpid(p, NULL, WNOHANG) == p) { unlink(NQPTP_PID); puts("nqptp stopped at start"); return 1; }
+        usleep(50000);
+    }
+    puts(access("/dev/shm/nqptp", F_OK) == 0 ? "started" : "started, no shared memory yet");
+    return 0;
+}
+
+static int do_nqptp_stop(void)
+{
+    pid_t p = nqptp_pid();
+    if (p) {
+        kill(p, SIGTERM);
+        for (int i = 0; i < 20 && kill(p, 0) == 0; i++) usleep(50000);
+        if (kill(p, 0) == 0) kill(p, SIGKILL);
+    }
+    unlink(NQPTP_PID);
+    puts("stopped");
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
-    if (argc != 2) { fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync\n", stderr); return 2; }
+    /* Who asked (cinder-home, uid 100), before becoming root: nqptp goes back to being them. */
+    const uid_t caller_uid = getuid();
+    const gid_t caller_gid = getgid();
+    if (argc != 2) { fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync|nqptp-start|nqptp-stop\n", stderr); return 2; }
     if (setuid(0) != 0 || setgid(0) != 0) { puts("not root: the setuid bit is missing"); return 3; }
     /* cinder-home's umask is 077; files the scripts make for everyone (/tmp/resolv.conf) must not
      * inherit it. Private files (the saved network) are created with explicit modes regardless. */
@@ -305,15 +375,18 @@ int main(int argc, char** argv)
         return run(a) == 0 ? 0 : 1;
     }
     if (strcmp(v, "off") == 0) {
+        do_nqptp_stop();
         char* const a[] = { "/system/bin/sh", DIR_ "/wifi-down.sh", DIR_, RUN, NULL };
         run(a);
         return 0;
     }
+    if (strcmp(v, "nqptp-start") == 0) return do_nqptp_start(caller_uid, caller_gid);
+    if (strcmp(v, "nqptp-stop") == 0) return do_nqptp_stop();
     if (strcmp(v, "status") == 0) return do_status();
     if (strcmp(v, "scan") == 0) return do_scan();
     if (strcmp(v, "join") == 0) return do_join();
     if (strcmp(v, "forget") == 0) { unlink(CONF); puts("forgotten"); return 0; }
     if (strcmp(v, "timesync") == 0) return do_timesync();
-    fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync\n", stderr);
+    fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync|nqptp-start|nqptp-stop\n", stderr);
     return 2;
 }

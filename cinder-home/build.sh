@@ -395,8 +395,11 @@ cp -f "$HERE/cinder-wifi" "$DIST/cinder-wifi"
 # skipped, and the installer leaves the `wifi` option out (installer/build.rs: not required).
 WIFI_DIR="$REPO/wifi"
 WIFI_KO="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko"
-WIFI_BIN="wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync"
+WIFI_BIN="wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync openssl"
 WIFI_SH="wifi-up.sh wifi-down.sh dhcp.sh"
+# The AirPlay 2 receiver and nqptp (wifi/build-airplay2.sh, which needs autoconf, automake and
+# libtool): staged when built, never required — without them the option installs and runs AirPlay 1.
+WIFI_OPT="shairport-sync-ap2 nqptp"
 echo "[6n] stage wifi…"
 for f in $WIFI_KO; do
     [ -s "$WIFI_DIR/out/$f" ] || { bash "$WIFI_DIR/build.sh" >/dev/null 2>&1 || true; break; }
@@ -409,6 +412,12 @@ for f in $WIFI_KO $WIFI_BIN; do [ -s "$WIFI_DIR/out/$f" ] || wifi_ok=0; done
 if [ "$wifi_ok" = 1 ]; then
     for f in $WIFI_KO $WIFI_BIN; do cp -f "$WIFI_DIR/out/$f" "$DIST/wifi-$f"; done
     for f in $WIFI_SH cinder_radio.txt; do cp -f "$WIFI_DIR/device/$f" "$DIST/wifi-$f"; done
+    for f in $WIFI_OPT; do
+        [ -s "$WIFI_DIR/out/$f" ] || { bash "$WIFI_DIR/build-airplay2.sh" >/dev/null 2>&1 || true; break; }
+    done
+    for f in $WIFI_OPT; do
+        if [ -s "$WIFI_DIR/out/$f" ]; then cp -f "$WIFI_DIR/out/$f" "$DIST/wifi-$f"; else rm -f "$DIST/wifi-$f"; fi
+    done
     echo "staged wifi -> $DIST/wifi-*"
 else
     rm -f "$DIST"/wifi-*

@@ -133,6 +133,10 @@ pub enum Screen {
     WifiNetworks,
     /// Settings ▸ Wi-Fi ▸ Internet radio (`netradio.rs`).
     NetRadio,
+    /// Settings ▸ Wi-Fi ▸ Speakers: speakers on the network (UPnP/DLNA); tap one to play there.
+    WifiSpeakers,
+    /// Internet radio ▸ FIND: the stations a search found; tap one to add it and play it.
+    RadioFind,
     /// Settings ▸ Wi-Fi ▸ Phone remote: the switch, the address and the code.
     WifiRemote,
     /// Settings ▸ Wi-Fi ▸ Options: Turn on at start, Set the clock, ListenBrainz, Check for updates.
@@ -208,6 +212,8 @@ pub enum KbPurpose {
     PresetName(Option<usize>),
     /// Settings ▸ Wi-Fi: the password for `wifi_join_target`.
     WifiPassword,
+    /// Internet radio ▸ FIND: a station name or genre to search radio-browser.info for.
+    RadioFind,
 }
 
 /// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
@@ -631,6 +637,18 @@ pub enum Action {
     /// Settings ▸ Wi-Fi ▸ AirPlay switched: the shell reads `cinder_wifi_airplay()` and starts or
     /// stops the receiver to match.
     WifiAirPlay,
+    /// Settings ▸ Wi-Fi ▸ Speakers opened or SCAN tapped: cinder-ffi searches the network and hands
+    /// the list back with `set_speakers`.
+    SpeakersScan,
+    /// Speaker `i` of the list tapped: cinder-ffi plays Up Next there from the song playing.
+    SpeakerPlay(usize),
+    /// "Play here": the cast ends and the song carries on on the player.
+    SpeakerStop,
+    /// Internet radio ▸ FIND ▸ Done: cinder-ffi searches for `radio_query()` and hands the
+    /// stations back with `set_radio_found`.
+    RadioFind,
+    /// Search result `i` tapped: cinder-ffi adds it to cinder_radio.txt and plays it.
+    RadioAdd(usize),
     SoundBypass(bool), // A/B: true = bypass whole chain (B), false = re-enable (A)
     SleepTimer(u32),   // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
     ShuffleToggle,     // Now Playing shuffle on/off (FFI rebuilds the active context)
@@ -1663,6 +1681,7 @@ pub struct App {
     airplay_note: String,
     /// Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing lyrics. Saved; off by default.
     wifi_lyrics: bool,
+    wifi_art: bool,
     /// What the shell last said about each (shown as the row's second line).
     wifi_lb_note: String,
     wifi_update_note: String,
@@ -1676,6 +1695,18 @@ pub struct App {
     remote_port: u16,
     /// The link went while the remote was on: cinder-ffi stops the server at the next frame.
     remote_dropped: bool,
+    /// Settings ▸ Wi-Fi ▸ Speakers: (name, model) of each speaker found, a search running, the
+    /// speaker a cast is playing on, and the page's strip.
+    speakers: Vec<(String, String)>,
+    speakers_scanning: bool,
+    /// Internet radio ▸ FIND: the words searched for, what came back, a search running, and why
+    /// nothing came back.
+    radio_query: String,
+    radio_found: Vec<crate::netradio::Found>,
+    radio_finding: bool,
+    radio_find_note: String,
+    cast_speaker: Option<String>,
+    cast_line: String,
     /// A/B compare on the Sound screen: false = A (effects active), true = B (whole chain bypassed,
     /// "direct"). The Option button flips it for an instant listen test; the shell calls the DSP
     /// bypass. Independent of the per-effect toggles — flipping back to A restores them.
@@ -2199,6 +2230,7 @@ impl Default for App {
             wifi_airplay: false,
             airplay_note: String::new(),
             wifi_lyrics: false,
+            wifi_art: false,
             wifi_lb_note: String::new(),
             wifi_update_note: String::new(),
             radio_stations: Vec::new(),
@@ -2208,6 +2240,14 @@ impl Default for App {
             remote_code: String::new(),
             remote_port: 0,
             remote_dropped: false,
+            speakers: Vec::new(),
+            speakers_scanning: false,
+            radio_query: String::new(),
+            radio_found: Vec::new(),
+            radio_finding: false,
+            radio_find_note: String::new(),
+            cast_speaker: None,
+            cast_line: String::new(),
             snd_ab_bypass: false,
             sound_sel: 0,
             storage: String::new(),
@@ -5566,6 +5606,11 @@ impl App {
             Screen::Wifi => self.tap_wifi(x, y),
             Screen::WifiNetworks => self.tap_wifi_list(x, y),
             Screen::NetRadio => self.tap_radio(x, y),
+            Screen::WifiSpeakers => self.tap_speakers(x, y),
+            Screen::RadioFind => match crate::netradio::hit_found(x, y, self.radio_found.len()) {
+                Some(i) if !self.radio_finding => vec![Action::RadioAdd(i)],
+                _ => vec![],
+            },
             Screen::WifiRemote => self.tap_remote(x, y),
             Screen::WifiOptions => self.tap_wifi_options(x, y),
             Screen::ClockSet => {
@@ -6764,6 +6809,8 @@ impl App {
             // A name to accept or edit: "Preset N" for a new one, the current name for a rename.
             KbPurpose::PresetName(None) => crate::presets::name(&[], self.presets.len()),
             KbPurpose::PresetName(Some(i)) => crate::presets::name(&self.preset_names, i),
+            // A new search starts from the last one: the usual change is a word.
+            KbPurpose::RadioFind => self.radio_query.clone(),
             // Renaming starts from the current name: the common edit is a word, not a retype.
             KbPurpose::Rename(id) => self
                 .lib
@@ -7142,6 +7189,18 @@ impl App {
                 vec![]
             }
             KbPurpose::PresetName(at) => self.preset_named(at),
+            KbPurpose::RadioFind => {
+                let q = self.kb_text.trim().to_string();
+                if q.is_empty() {
+                    return vec![];
+                }
+                self.radio_query = q;
+                self.radio_found.clear();
+                self.radio_find_note.clear();
+                self.radio_finding = true;
+                self.push(Screen::RadioFind);
+                vec![Action::RadioFind]
+            }
             KbPurpose::WifiPassword => match self.wifi_join_target.take() {
                 Some(ssid) => {
                     self.wifi_join = Some((ssid, std::mem::take(&mut self.kb_text)));
@@ -7187,6 +7246,15 @@ impl App {
             Hit::Radio => {
                 self.push(Screen::NetRadio);
                 vec![Action::RadioOpen]
+            }
+            Hit::Speakers => {
+                self.push(Screen::WifiSpeakers);
+                // Opening the page is a request to look (speakers come and go).
+                if self.speakers_scanning {
+                    return vec![];
+                }
+                self.speakers_scanning = true;
+                vec![Action::SpeakersScan]
             }
             Hit::Remote => {
                 self.push(Screen::WifiRemote);
@@ -7234,6 +7302,10 @@ impl App {
             }
             Hit::Lyrics => {
                 self.wifi_lyrics = !self.wifi_lyrics;
+                vec![]
+            }
+            Hit::Art => {
+                self.wifi_art = !self.wifi_art;
                 vec![]
             }
             Hit::Updates => {
@@ -7288,6 +7360,82 @@ impl App {
         std::mem::take(&mut self.remote_dropped)
     }
 
+    /// A tap on Settings ▸ Wi-Fi ▸ Speakers.
+    fn tap_speakers(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::wifi::SpeakerHit;
+        if !matches!(self.wifi_status.state, crate::wifi::State::Connected) {
+            return vec![];
+        }
+        match crate::wifi::hit_speakers(x, y, self.speakers.len(), self.cast_speaker.is_some()) {
+            SpeakerHit::Scan if !self.speakers_scanning => {
+                self.speakers_scanning = true;
+                vec![Action::SpeakersScan]
+            }
+            SpeakerHit::Here => {
+                self.cast_speaker = None;
+                self.cast_line.clear();
+                vec![Action::SpeakerStop]
+            }
+            SpeakerHit::Speaker(i) => {
+                let name = self.speakers[i].0.clone();
+                if self.cast_speaker.as_deref() == Some(name.as_str()) {
+                    return vec![];
+                }
+                self.cast_line = crate::ui_format!("CONNECTING · {}", name);
+                self.cast_speaker = Some(name);
+                vec![Action::SpeakerPlay(i)]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// What Internet radio ▸ FIND is looking for.
+    pub fn radio_query(&self) -> &str {
+        &self.radio_query
+    }
+    /// Set it without the keyboard (previews).
+    pub fn set_radio_query(&mut self, q: &str) {
+        self.radio_query = q.to_string();
+    }
+    /// The stations a FIND search found (and why there are none, if there are none).
+    pub fn set_radio_found(&mut self, found: Vec<crate::netradio::Found>, note: String) {
+        self.radio_found = found;
+        self.radio_find_note = note;
+        self.radio_finding = false;
+    }
+    /// Search result `i` (cinder-ffi adds it and plays it).
+    pub fn radio_found(&self, i: usize) -> Option<&crate::netradio::Found> {
+        self.radio_found.get(i)
+    }
+    /// Play station `i` of the list (just added from FIND): back to the station list, showing it
+    /// connecting; the shell's `take_radio` then hands it over.
+    pub fn play_radio_station(&mut self, i: usize) {
+        if self.current() == Screen::RadioFind {
+            self.pop();
+        }
+        self.radio_pick = Some(i);
+        self.radio_status = crate::netradio::Status {
+            state: crate::netradio::State::Connecting,
+            station: Some(i),
+            ..Default::default()
+        };
+    }
+
+    /// The speakers a search found, (name, model) each, in the order to show them.
+    pub fn set_speakers(&mut self, list: Vec<(String, String)>) {
+        self.speakers = list;
+        self.speakers_scanning = false;
+    }
+    /// The cast's state from cinder-ffi: the speaker playing (None = the player), and the strip.
+    pub fn set_cast(&mut self, speaker: Option<String>, line: String) {
+        self.cast_speaker = speaker;
+        self.cast_line = line;
+    }
+    /// A cast is on: play/pause, skip and volume go to the speaker.
+    pub fn casting(&self) -> bool {
+        self.cast_speaker.is_some()
+    }
+
     /// The Wi-Fi page's Internet radio row, second line.
     fn radio_row_note(&self) -> String {
         use crate::netradio::State;
@@ -7301,9 +7449,16 @@ impl App {
         }
     }
 
-    /// A tap on Settings ▸ Wi-Fi ▸ Internet radio: a station plays, the playing one stops.
+    /// A tap on Settings ▸ Wi-Fi ▸ Internet radio: a station plays, the playing one stops, FIND
+    /// searches for more (while connected).
     fn tap_radio(&mut self, x: i32, y: i32) -> Vec<Action> {
         use crate::netradio::State;
+        if crate::netradio::hit_find(x, y) {
+            if matches!(self.wifi_status.state, crate::wifi::State::Connected) {
+                self.open_keyboard(KbPurpose::RadioFind);
+            }
+            return vec![];
+        }
         let Some(i) = crate::netradio::hit(x, y, self.radio_stations.len()) else {
             return vec![];
         };
@@ -7443,6 +7598,12 @@ impl App {
     /// starts with no lyrics, while connected.
     pub fn wifi_lyrics(&self) -> bool {
         self.wifi_lyrics
+    }
+    pub fn wifi_art(&self) -> bool {
+        self.wifi_art
+    }
+    pub fn set_wifi_art(&mut self, on: bool) {
+        self.wifi_art = on;
     }
     pub fn set_wifi_lyrics(&mut self, on: bool) {
         self.wifi_lyrics = on;
@@ -11655,6 +11816,11 @@ impl App {
                 &crate::wifi::View {
                     status: &self.wifi_status,
                     radio_note: &self.radio_row_note(),
+                    speakers_note: &self
+                        .cast_speaker
+                        .as_ref()
+                        .map(|s| crate::ui_format!("Playing on {}", s))
+                        .unwrap_or_default(),
                     remote_note: &self.remote_row_note(),
                     airplay: self.wifi_airplay,
                     airplay_note: &self.airplay_note,
@@ -11671,6 +11837,7 @@ impl App {
                         self.wifi_lb,
                         self.wifi_updates,
                         self.wifi_lyrics,
+                        self.wifi_art,
                     ],
                     lb_note: &self.wifi_lb_note,
                     update_note: &self.wifi_update_note,
@@ -11679,6 +11846,30 @@ impl App {
             Screen::NetRadio => {
                 crate::netradio::render(c, &theme, fonts, &self.radio_stations, &self.radio_status)
             }
+            Screen::RadioFind => crate::netradio::render_found(
+                c,
+                &theme,
+                fonts,
+                &crate::netradio::FoundView {
+                    query: &self.radio_query,
+                    found: &self.radio_found,
+                    searching: self.radio_finding,
+                    note: &self.radio_find_note,
+                    have: &self.radio_stations,
+                },
+            ),
+            Screen::WifiSpeakers => crate::wifi::render_speakers(
+                c,
+                &theme,
+                fonts,
+                &crate::wifi::SpeakersView {
+                    speakers: &self.speakers,
+                    scanning: self.speakers_scanning,
+                    connected: matches!(self.wifi_status.state, crate::wifi::State::Connected),
+                    casting: self.cast_speaker.as_deref(),
+                    line: &self.cast_line,
+                },
+            ),
             Screen::WifiRemote => crate::wifi::render_remote(
                 c,
                 &theme,
@@ -11799,6 +11990,10 @@ impl App {
                     KbPurpose::WifiPassword => (
                         crate::i18n::text("Wi-Fi password").to_string(),
                         crate::i18n::text("Password"),
+                    ),
+                    KbPurpose::RadioFind => (
+                        crate::i18n::text("Find a station").to_string(),
+                        crate::i18n::text("Name or genre"),
                     ),
                     KbPurpose::PresetName(Some(_)) => (
                         crate::i18n::text("Rename preset").to_string(),
@@ -18594,6 +18789,8 @@ mod tests {
             Screen::Wifi,
             Screen::WifiNetworks,
             Screen::NetRadio,
+            Screen::WifiSpeakers,
+            Screen::RadioFind,
             Screen::WifiRemote,
             Screen::WifiOptions,
             Screen::GenreFilter,
@@ -18947,6 +19144,8 @@ mod tests {
             Wifi,
             WifiNetworks,
             NetRadio,
+            WifiSpeakers,
+            RadioFind,
             WifiRemote,
             WifiOptions,
             GenreFilter,
@@ -26584,6 +26783,106 @@ mod r4_tests {
     }
 
     /// Phone remote: only while connected; on and off reach cinder-ffi; the link going takes it down.
+    /// Speakers: opening the page searches; a speaker tapped plays there; "Play here" brings it
+    /// back; nothing acts while Wi-Fi is not connected.
+    #[test]
+    fn speakers_scan_cast_and_play_here() {
+        use crate::wifi::{Hit, SpeakerHit};
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::Wifi);
+        a.set_wifi_status("state=connected\nssid=6162\n", "");
+        assert_eq!(
+            a.tap(240, wifi_y(true, Hit::Speakers)),
+            vec![Action::SpeakersScan]
+        );
+        assert_eq!(a.current(), Screen::WifiSpeakers);
+        a.set_speakers(vec![
+            ("Kitchen".into(), "Sonos One".into()),
+            ("Lounge".into(), "Kodi".into()),
+        ]);
+        let y = |a: &App, h| {
+            (0..crate::canvas::H as i32)
+                .find(|&y| crate::wifi::hit_speakers(240, y, 2, a.casting()) == h)
+                .unwrap()
+        };
+        let at = y(&a, SpeakerHit::Speaker(1));
+        assert_eq!(a.tap(240, at), vec![Action::SpeakerPlay(1)]);
+        assert!(a.casting());
+        let again = y(&a, SpeakerHit::Speaker(1));
+        assert!(
+            a.tap(240, again).is_empty(),
+            "the speaker playing, tapped again: nothing"
+        );
+        let here = y(&a, SpeakerHit::Here);
+        assert_eq!(a.tap(240, here), vec![Action::SpeakerStop]);
+        assert!(!a.casting());
+        a.set_wifi_status("state=off\n", "");
+        let first = y(&a, SpeakerHit::Speaker(0));
+        assert!(
+            a.tap(240, first).is_empty(),
+            "Wi-Fi off: the list does nothing"
+        );
+    }
+
+    /// Internet radio ▸ FIND: the keyboard, then the search; a result tapped is added and played.
+    #[test]
+    fn radio_find_searches_and_adds() {
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::NetRadio);
+        let (fx, fy) = (0..crate::canvas::H as i32)
+            .find_map(|y| crate::netradio::hit_find(440, y).then_some((440, y)))
+            .unwrap();
+        a.set_wifi_status("state=off\n", "");
+        assert!(a.tap(fx, fy).is_empty());
+        assert_eq!(
+            a.current(),
+            Screen::NetRadio,
+            "not connected: FIND does nothing"
+        );
+        a.set_wifi_status("state=connected\nssid=6162\n", "");
+        assert!(a.tap(fx, fy).is_empty());
+        assert_eq!(a.current(), Screen::Keyboard);
+        a.kb_text = "  jazz ".into();
+        let done = (0..crate::canvas::H as i32)
+            .flat_map(|y| (0..crate::canvas::W as i32).step_by(8).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                crate::keyboard::hit(a.kb_page, x, y) == Some(crate::keyboard::Key::Done)
+            })
+            .unwrap();
+        assert_eq!(a.tap(done.0, done.1), vec![Action::RadioFind]);
+        assert_eq!((a.current(), a.radio_query()), (Screen::RadioFind, "jazz"));
+        let y0 = (0..crate::canvas::H as i32)
+            .find(|&y| crate::netradio::hit_found(240, y, 2) == Some(0))
+            .unwrap();
+        assert!(
+            a.tap(240, y0).is_empty(),
+            "still searching: results are not there yet"
+        );
+        a.set_radio_found(
+            vec![
+                crate::netradio::Found {
+                    name: "Jazz FM".into(),
+                    url: "http://j/1".into(),
+                    sub: "MP3 128".into(),
+                },
+                crate::netradio::Found {
+                    name: "KJazz".into(),
+                    url: "http://k/2".into(),
+                    sub: "AAC 64".into(),
+                },
+            ],
+            String::new(),
+        );
+        let y1 = (0..crate::canvas::H as i32)
+            .find(|&y| crate::netradio::hit_found(240, y, 2) == Some(1))
+            .unwrap();
+        assert_eq!(a.tap(240, y1), vec![Action::RadioAdd(1)]);
+        a.set_radio_stations("KJazz | http://k/2\n");
+        a.play_radio_station(0);
+        assert_eq!(a.current(), Screen::NetRadio);
+        assert_eq!(a.take_radio(), Some((0, "http://k/2".to_string())));
+    }
+
     #[test]
     fn phone_remote_switch() {
         let mut a = App::unlocked();
@@ -26646,6 +26945,10 @@ mod r4_tests {
         let mut a = App::unlocked();
         a.push_for_test(Screen::Wifi);
         assert!(!a.wifi_autostart() && !a.wifi_clock() && !a.wifi_lb() && !a.wifi_updates());
+        assert!(
+            !a.wifi_lyrics() && !a.wifi_art(),
+            "the fetches are off on a fresh install"
+        );
         assert!(!a.wifi_airplay(), "AirPlay off on a fresh install");
         a.set_wifi_status("state=off\n", "");
         assert_eq!(
@@ -26664,7 +26967,7 @@ mod r4_tests {
             assert!(a.tap(240, opt_y(h)).is_empty(), "off: {h:?} only saves");
         }
         assert!(a.wifi_autostart() && a.wifi_clock() && a.wifi_lb() && a.wifi_updates());
-        assert!(a.wifi_lyrics());
+        assert!(a.wifi_lyrics() && a.wifi_art());
         for h in crate::wifi::OPTIONS {
             a.tap(240, opt_y(h));
         }
