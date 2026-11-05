@@ -1,6 +1,0 @@
-[submodule "flint"]
-	path = flint
-	url = https://github.com/superwilso/flint.git
-[submodule "cinder-themes"]
-	path = cinder-themes
-	url = https://github.com/superwilso/cinder-themes.git
