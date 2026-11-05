@@ -338,8 +338,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: player
+      # A stalled Ubuntu mirror once held this step for good (11-05): each try is cut off after 4
+      # minutes and tried again, three times, and the step gives up after 15.
       - name: Install the ARM C compiler
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-arm-linux-gnueabihf
+        timeout-minutes: 15
+        run: |
+          get() { sudo timeout 240 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 "$@"; }
+          for try in 1 2 3; do
+            get update -qq && get install -y -qq gcc-arm-linux-gnueabihf && exit 0
+            echo "apt failed (try $try), again in 20 s"; sleep 20
+          done
+          exit 1
       - name: Clippy for the player's target
         working-directory: player
         run: cargo clippy --target arm-unknown-linux-gnueabihf -p cinder-ffi --all-targets -- -D warnings
