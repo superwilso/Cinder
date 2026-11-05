@@ -88,6 +88,10 @@ ones. Read its safety rules first. Grouped by what each needs:
   stops at 24-bit/48 kHz, 16-bit on S1, and plays no DSD) are skipped rather than converted; the
   player's live output (radio, Cinder's sound effects) is not cast; AirPlay speakers need AirPlay
   sending (RAOP), not built.
+- **The player as a network speaker.** Built: **Play to this player** (Settings ▸ Wi-Fi ▸
+  Options) is a UPnP/DLNA media renderer that plays what a controller sends through the internet
+  radio's decoders. Open: FLAC and WAV links (the radio decodes MP3 and AAC only), pause that
+  holds the place, seeking, and the controller's volume slider.
 - **USB audio out to an external DAC.** Sony's player app has USB-host audio output code
   (`UsbHostDevice`, DSD output mode); nobody has tried it with a host cable and a DAC.
 - **`cinder-rescue` on Linux and macOS.** It builds for both (libusb) but has only run on Windows.

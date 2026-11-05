@@ -63,8 +63,10 @@ Archive (`cover.jpg` in the album's folder), internet radio (`cinder_radio.txt`;
 and fragmented-MP4 segments by `cinder-home/src/hls.h`), the phone remote (a server in cinder-ffi on
 port 8080, locked by a code shown on the player), casting to network speakers (`cinder-ffi/src/cast.rs`:
 SSDP, UPnP AVTransport, the songs served from a random port with a random token, only during a cast;
-`chromecast.rs`: Google Cast by mDNS and Cast v2, its TLS through `openssl s_client`), and AirPlay (`shairport-sync -o stdout`, read by
-cinder-home and played like the radio).
+`chromecast.rs`: Google Cast by mDNS and Cast v2, its TLS through `openssl s_client`), the player
+as a network speaker (`cinder-ffi/src/renderer.rs`: a UPnP/DLNA media renderer whose links the
+radio plays), and AirPlay (`shairport-sync -o stdout`, read by cinder-home and played like the
+radio).
 
 Third-party licences: [NOTICE](NOTICE).
 

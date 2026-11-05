@@ -12180,7 +12180,8 @@ static void* radio_thread(void*) {
             if (!g_radio_run) break;
             ssize_t n = radio_read(fd, buf, sizeof buf);
             if (n < 0) {
-                note = "The station stopped sending";
+                // A controller's link is one song: its end is the normal end, not a fault.
+                note = g_radio_station == -2 ? "" : "The station stopped sending";
                 if (hls_job) {
                     pthread_mutex_lock(&g_radio_mu);
                     if (!hls_job->note.empty()) note = hls_job->note;
@@ -12233,10 +12234,17 @@ static void radio_yield(const char* why) {
     clog_(g_radio_alive ? "radio: yield TIMED OUT" : "radio: the output is free");
 }
 
+// Play `url` as station `idx` (-2: a link a DLNA controller sent, Settings > Wi-Fi > Options >
+// Play to this player).
+static void radio_start(int idx, const char* url);
 static void radio_play() {
     char url[600];
     int idx = cinder_take_radio(url, (int)sizeof url);
     if (idx < 0) return;
+    radio_start(idx, url);
+}
+
+static void radio_start(int idx, const char* url) {
     radio_yield(nullptr);
     g_radio_station = idx;
     if (::access(RADIO_CURL, X_OK) != 0) { radio_say("off", "", "Needs the Wi-Fi option"); return; }
@@ -12306,6 +12314,15 @@ static void radio_tick() {
     pthread_mutex_unlock(&g_radio_mu);
     if (dirty) cinder_set_radio_status(st.c_str());
     if (g_radio_source_held && !g_radio_alive) radio_bt_source(false);
+    // A DLNA controller's Play or Stop.
+    char url[1024];
+    const int ask = cinder_renderer_take(url, (int)sizeof url);
+    if (ask == 1) {
+        clog_("radio: a network controller asked to play");
+        radio_start(-2, url);
+    } else if (ask == 2 && g_radio_station == -2 && g_radio_alive) {
+        radio_yield(nullptr);
+    }
 }
 
 

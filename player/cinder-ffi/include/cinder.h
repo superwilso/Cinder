@@ -491,6 +491,9 @@ void cinder_set_radio_stations(const char *text);
 void cinder_set_radio_status(const char *text);
 /* After CINDER_ACT_RADIO_PLAY: the URL into buf; returns the station index, -1 if none. */
 int cinder_take_radio(char *buf, int cap);
+/* Play to this player (the DLNA renderer), polled once a second: 1 = play the URL now in buf as
+ * station -2 (report it with cinder_set_radio_status as usual), 2 = stop it, 0 = nothing. */
+int cinder_renderer_take(char *buf, int cap);
 /* Phone remote (Settings > Wi-Fi > Phone remote; the server is cinder-ffi's own). Every frame:
  * a button the page pressed (cinder_button_t; 0 = none — the page never sends UP) to feed through
  * cinder_input; and how many

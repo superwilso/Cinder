@@ -59,6 +59,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   music back to the player where the speaker was. Tested against a simulated UPnP speaker and a
   simulated Cast device; not yet against real ones.
 
+  **Play to this player** (Settings ▸ Wi-Fi ▸ Options, off unless switched on): the player shows
+  up on the network as a UPnP/DLNA speaker, "Walkman (Cinder)", so a phone app (BubbleUPnP and
+  the like), Windows' "Cast to device" or a music server's app can play on it; the music comes out
+  of the jack or Bluetooth through the internet radio's player, so MP3, AAC and HLS links play
+  (FLAC and WAV not yet), and the app moves on to its next song when one ends. Stop works; pause
+  stops and play starts the song again; seeking is not offered; the volume stays the player's
+  own. UPnP has no lock: while the switch is on, anyone on the same network can play on the
+  player. *Tested with Home Assistant's UPnP client (search, every action, events); not yet on the
+  player or with a phone app.*
+
   **Phone remote** (Settings ▸ Wi-Fi ▸ Phone remote, on for one boot at a time): a page on the
   home network, `http://<player>:8080`, locked by a 6-digit code the player shows (new each time;
   five wrong tries lock it for a minute). It shows the song playing, has play/pause, previous,
