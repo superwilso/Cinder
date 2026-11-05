@@ -2814,6 +2814,8 @@ pub fn album_view(
     sbar_active: bool,
     // The album's rating (`Library::album_rating`), drawn in the header's right slot (handoff 5h).
     rating: Option<u8>,
+    // Settings ▸ Delete music: DELETE in the header's right slot, the rating moved left of it.
+    delete: bool,
 ) {
     let scroll_px = scroll_px.clamp(0, album_max_scroll_px(album));
     c.fill(t.bg);
@@ -2831,8 +2833,23 @@ pub fn album_view(
     // control — it is the mean of the track ratings, which are set on Track information — so it
     // is drawn in `dim`, not the accent. An unrated album shows nothing rather than five hollow
     // stars claiming a verdict nobody gave.
+    let mut rating_x = RATING_SLOT_X;
+    if delete {
+        // The same words and style as `chrome::header_action`, so `header_action_hit` is its target.
+        let st = sty(
+            Family::Mono,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.acc,
+            0.14,
+        );
+        let label = crate::i18n::text("DELETE");
+        let w = text::measure(f, label, &st);
+        text::draw(c, f, 458.0 - w, 65.0, label, &st);
+        rating_x = crate::chrome::HEADER_ACTION_X - 16 - 5 * 17;
+    }
     if let Some(r) = rating {
-        crate::kit::stars(c, t, RATING_SLOT_X, 62, 14, 17, r, false);
+        crate::kit::stars(c, t, rating_x, 62, 14, 17, r, false);
     }
     // art block + title/artist/meta
     match cover {

@@ -29,6 +29,8 @@ const GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
 /// The formats the radio's decoders play, as a sink's protocolInfo list.
 const SINK: &str = "http-get:*:audio/mpeg:*,http-get:*:audio/mp3:*,http-get:*:audio/x-mpeg:*,\
 http-get:*:audio/aac:*,http-get:*:audio/aacp:*,http-get:*:audio/x-aac:*,http-get:*:audio/vnd.dlna.adts:*,\
+http-get:*:audio/flac:*,http-get:*:audio/x-flac:*,http-get:*:audio/wav:*,http-get:*:audio/x-wav:*,\
+http-get:*:audio/wave:*,\
 http-get:*:application/vnd.apple.mpegurl:*,http-get:*:audio/x-mpegurl:*,http-get:*:audio/mpegurl:*";
 
 /// What the shell is asked to do ([`take`]).
@@ -1198,7 +1200,12 @@ mod tests {
             soap_req(port, "rc", "GetVolume", "<Channel>Master</Channel>")
                 .contains("<CurrentVolume>100</CurrentVolume>")
         );
-        assert!(soap_req(port, "cm", "GetProtocolInfo", "").contains("audio/mpeg"));
+        let sink = soap_req(port, "cm", "GetProtocolInfo", "");
+        assert!(
+            sink.contains("audio/mpeg")
+                && sink.contains("audio/flac")
+                && sink.contains("audio/wav")
+        );
         assert!(soap_req(
             port,
             "avt",

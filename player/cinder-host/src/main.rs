@@ -1164,6 +1164,25 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         None,
                         false,
                         Some(4),
+                        false,
+                    );
+                }
+            }),
+            // The same page with Settings ▸ Delete music on: DELETE, and the rating left of it.
+            ("album_delete", &|c: &mut Canvas| {
+                if let Some(al) = lib.albums_flat().first() {
+                    library::album_view(
+                        c,
+                        &theme,
+                        &fonts,
+                        al,
+                        Some(1),
+                        0,
+                        None,
+                        None,
+                        false,
+                        Some(4),
+                        true,
                     );
                 }
             }),
@@ -1392,6 +1411,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         ignore_the: false,
                         quick: false,
                         folders_tab: false,
+                        delete_music: false,
                         swipe_up: settings::SwipeTo::Off,
                         swipe_down: settings::SwipeTo::Off,
                         np_button: cinder_ui::now_playing::NpButton::Bluetooth,
@@ -1587,7 +1607,23 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ("Size".into(), "48.2 MB".into()),
                     ("File".into(), "/contents/Music/Benjamin Francis Leftwich/Last Smoke Before the Snowstorm/03 Atlas Hands.flac".into()),
                 ];
-                cinder_ui::track_info::render(c, &theme, &fonts, &rows, 0, false, 4, None)
+                cinder_ui::track_info::render(c, &theme, &fonts, &rows, 0, false, 4, None, false)
+            }),
+            ("track_info_delete", &|c: &mut Canvas| {
+                let rows: Vec<(String, String)> = vec![
+                    ("Rating".into(), "-".into()),
+                    ("Title".into(), "Atlas Hands".into()),
+                    ("Artist".into(), "Benjamin Francis Leftwich".into()),
+                    ("Album".into(), "Last Smoke Before the Snowstorm".into()),
+                    ("Genre".into(), "Alternative".into()),
+                    ("Year".into(), "2011".into()),
+                    ("Track".into(), "3".into()),
+                    ("Duration".into(), "4:32".into()),
+                    ("Format".into(), "FLAC · Hi-Res".into()),
+                    ("Size".into(), "48.2 MB".into()),
+                    ("File".into(), "/contents/Music/Benjamin Francis Leftwich/Last Smoke Before the Snowstorm/03 Atlas Hands.flac".into()),
+                ];
+                cinder_ui::track_info::render(c, &theme, &fonts, &rows, 0, false, 4, None, true)
             }),
             ("lyrics", &|c: &mut Canvas| {
                 use cinder_ui::lyrics::{Line, Lyrics};
@@ -2240,6 +2276,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ignore_the: false,
                     quick: false,
                     folders_tab: false,
+                    delete_music: false,
                     swipe_up: settings::SwipeTo::Off,
                     swipe_down: settings::SwipeTo::Off,
                     np_button: cinder_ui::now_playing::NpButton::Bluetooth,
@@ -2285,6 +2322,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ignore_the: false,
                     quick: false,
                     folders_tab: false,
+                    delete_music: false,
                     swipe_up: settings::SwipeTo::Off,
                     swipe_down: settings::SwipeTo::Off,
                     np_button: cinder_ui::now_playing::NpButton::Bluetooth,
@@ -3660,6 +3698,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             false,
             0,
             Some((2, 0)),
+            false,
         );
         save(&c, "track_info_album_sound");
     }
@@ -3710,6 +3749,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             None,
             false,
             None,
+            false,
         );
         save(&c, "album_cue");
     }

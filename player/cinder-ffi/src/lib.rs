@@ -17,6 +17,7 @@ mod books;
 mod cast;
 mod chromecast;
 mod cue;
+mod delete;
 mod drive;
 mod likes;
 mod lyrics;
@@ -1555,6 +1556,7 @@ fn settings_body(r: &Render) -> String {
     // The pull-down panel (Settings ▸ Pull-down panel), OFF unless switched on.
     body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
     body.push_str(&format!("folders_tab={}\n", r.app.folders_tab() as u8));
+    body.push_str(&format!("delete_music={}\n", r.app.delete_music() as u8));
     // Settings ▸ Wi-Fi ▸ Turn on at start / Set the clock, OFF unless switched on.
     body.push_str(&format!(
         "wifi_autostart={}\nwifi_clock={}\nwifi_lb={}\nwifi_updates={}\nwifi_airplay={}\n",
@@ -5912,6 +5914,29 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
             refresh_playlists(r);
             return None;
         }
+        Action::DeleteMusic => {
+            let index = uri_index(r);
+            let paths: Vec<String> = r
+                .app
+                .take_delete()
+                .iter()
+                .filter_map(|id| index.get(id).cloned())
+                .collect();
+            let (ok, failed) = delete::delete(&paths, &delete::ROOTS);
+            eprintln!("cinder-ffi: delete music — {ok} deleted, {failed} kept");
+            if ok > 0 {
+                // The library lists them until it rescans; the upload path does that once writes
+                // have stopped for a moment, so several deletes in a row cost one scan.
+                remote::note_uploaded(ok);
+            }
+            r.app.notify(cinder_ui::i18n::text(match (ok, failed) {
+                (_, 0) => "Deleted. The library updates in a moment.",
+                (0, _) => "Could not delete it",
+                _ => "Some files could not be deleted",
+            }));
+            r.dirty = true;
+            return None;
+        }
         Action::PlaylistDelete(id) => {
             if let Err(e) = r.plists.delete(*id) {
                 eprintln!("cinder-ffi: playlist delete: {e}");
@@ -9465,6 +9490,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
                     "folders_tab" => r.app.set_folders_tab(v == "1"),
+                    "delete_music" => r.app.set_delete_music(v == "1"),
                     "np_back" => r.app.set_np_back(v == "1"),
                     "wifi_autostart" => r.app.set_wifi_autostart(v == "1"),
                     "wifi_clock" => r.app.set_wifi_clock(v == "1"),

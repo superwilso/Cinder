@@ -58,7 +58,9 @@ kernel's paranoid networking lets group 3003 (`inet`) open sockets and appmgr st
 it, so cinder-home runs `curl` directly: ListenBrainz (`cinder_listenbrainz.txt` holds the token),
 the GitHub update check, lyrics from LRCLIB (written beside the song as a `.lrc`), album art from MusicBrainz and the Cover Art
 Archive (`cover.jpg` in the album's folder), internet radio (`cinder_radio.txt`; MP3 decoded by
-[minimp3](../cinder-home/third_party/minimp3), CC0; AAC and HE-AAC by the firmware's own
+[minimp3](../cinder-home/third_party/minimp3), CC0; FLAC by
+[dr_flac](../cinder-home/third_party/dr_flac), public domain, and WAV by `cinder-home/src/lossless.h`;
+AAC and HE-AAC by the firmware's own
 `libFraunhoferAAC.so`, loaded at run time, so none of it ships; HLS playlists and MPEG-TS
 and fragmented-MP4 segments by `cinder-home/src/hls.h`), the phone remote (a server in cinder-ffi on
 port 8080, locked by a code shown on the player), casting to network speakers (`cinder-ffi/src/cast.rs`:

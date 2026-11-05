@@ -289,7 +289,19 @@ fn bench_library_tabs() {
     bare.thumbs.clear();
     if let Some(album) = bare.albums_flat().first().map(|a| (*a).clone()) {
         time_it("album_view (gradient cover)", n, || {
-            library::album_view(&mut c, &t, &f, &album, Some(0), 0, None, None, false, None)
+            library::album_view(
+                &mut c,
+                &t,
+                &f,
+                &album,
+                Some(0),
+                0,
+                None,
+                None,
+                false,
+                None,
+                false,
+            )
         });
     }
 }
