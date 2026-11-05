@@ -16,8 +16,17 @@ files it builds and the player receives come from these projects, each under its
                                   popt 1.19                                             MIT
                                   libconfig 1.7.3                                       LGPL-2.1
   openssl                         OpenSSL 3.0.15's command line (for Google Cast TLS)   Apache-2.0
+  shairport-sync-ap2              Shairport Sync 5.5.2 built for AirPlay 2               MIT
+                                  (with tinysvcmdns, BSD-3-Clause; libuuid calls from
+                                  airplay/uuid, GPL-2.0 with the rest of wifi/)
+                                  libsodium 1.0.20                                      ISC
+                                  libgcrypt 1.10.3, libgpg-error 1.51                   LGPL-2.1
+                                  libplist 2.6.0                                        LGPL-2.1
+                                  FFmpeg 7.1 (AAC and ALAC decoders, libswresample)     LGPL-2.1
+  nqptp                           NQPTP 1.2.4, Mike Brady                               GPL-2.0
   (all of the above)              OpenSSL 3.0.15                                        Apache-2.0
 
 The LGPL-2.1 libraries are linked statically. Their source is fetched by build-userland.sh at the
 versions above (each pinned by SHA-256), and the same script relinks every program against a
-modified copy: change the library's source under work/userland and run it again.
+modified copy: change the library's source under work/userland and run it again. The AirPlay 2
+libraries are fetched and linked the same way by build-airplay2.sh, under work/airplay2.

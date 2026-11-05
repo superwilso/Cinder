@@ -21,6 +21,7 @@ Cinder's own files for that reason.
 | `wifiscan` | [`tools/wifiscan.c`](tools/wifiscan.c) | a scan with no libraries, for bring-up |
 | `curl`, `cacert.pem` | curl 8.22.0 + OpenSSL 3.0, static; Mozilla's CA list as curl.se publishes it | HTTPS: ListenBrainz, the update check, internet radio |
 | `shairport-sync` | Shairport Sync 5.5.2 (MIT), popt, libconfig, static; [`airplay/config.h`](airplay/config.h) in place of autotools | the AirPlay 1 receiver, audio to stdout |
+| `shairport-sync-ap2`, `nqptp` | [`build-airplay2.sh`](build-airplay2.sh): Shairport Sync 5.5.2 `--with-airplay-2` with libsodium, libgcrypt, libplist and a cut-down FFmpeg 7.1, static; NQPTP 1.2.4 (GPL-2.0), patched to stop being root once its ports are bound ([`airplay/`](airplay/)) | the AirPlay 2 receiver and its PTP clock; optional, AirPlay 1 runs without them |
 
 `./build.sh` makes the modules. It needs Sony's GPL kernel tree for the NW-A50 (`KWORK`, the one
 [cinder-llusbdac](https://github.com/superwilso/cinder-llusbdac) builds against) and checks every
@@ -59,7 +60,7 @@ the GitHub update check, lyrics from LRCLIB (written beside the song as a `.lrc`
 Archive (`cover.jpg` in the album's folder), internet radio (`cinder_radio.txt`; MP3 decoded by
 [minimp3](../cinder-home/third_party/minimp3), CC0; AAC and HE-AAC by the firmware's own
 `libFraunhoferAAC.so`, loaded at run time, so none of it ships; HLS playlists and MPEG-TS
-segments by `cinder-home/src/hls.h`), the phone remote (a server in cinder-ffi on
+and fragmented-MP4 segments by `cinder-home/src/hls.h`), the phone remote (a server in cinder-ffi on
 port 8080, locked by a code shown on the player), casting to network speakers (`cinder-ffi/src/cast.rs`:
 SSDP, UPnP AVTransport, the songs served from a random port with a random token, only during a cast;
 `chromecast.rs`: Google Cast by mDNS and Cast v2, its TLS through `openssl s_client`), and AirPlay (`shairport-sync -o stdout`, read by

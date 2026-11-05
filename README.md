@@ -1,7 +1,7 @@
 # Cinder
 
 [![ci](https://github.com/superwilso/Cinder/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/superwilso/Cinder/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/superwilso/Cinder?sort=semver&include_prereleases)](https://github.com/superwilso/Cinder/releases)
+[![release](https://img.shields.io/github/v/release/superwilso/Cinder?include_prereleases&sort=date&filter=v*)](https://github.com/superwilso/Cinder/releases)
 [![downloads](https://img.shields.io/github/downloads/superwilso/Cinder/total)](https://github.com/superwilso/Cinder/releases)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 

@@ -39,8 +39,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
     over a compilation or fan release of the same name.
 
   **Internet radio** (Settings ▸ Wi-Fi ▸ Internet radio): MP3 and AAC stations (AAC-LC and HE-AAC,
-  decoded by the player's own firmware library), Icecast/SHOUTcast or HLS (`.m3u8`, MPEG-TS or
-  packed-audio segments, so BBC and Radio France streams play), from `cinder_radio.txt` on the
+  decoded by the player's own firmware library), Icecast/SHOUTcast or HLS (`.m3u8`, MPEG-TS,
+  packed-audio or fragmented-MP4 segments, so BBC and Radio France streams play), from `cinder_radio.txt` on the
   drive (`Name | URL`, an .m3u, or .pls links; the install writes a starter list of six when there
   is none), through the headphone jack or Bluetooth, with the song title stations send. **FIND**
   searches radio-browser.info (free, community-kept) by name or genre and lists only stations the
@@ -66,8 +66,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   rescans itself.
 
   **AirPlay** (Settings ▸ Wi-Fi ▸ AirPlay): the player shows up as "Walkman (Cinder)" to iPhones and
-  Macs and plays what they send, through the jack or Bluetooth. AirPlay 1 (Shairport Sync, MIT);
-  AirPlay 2 is not supported.
+  Macs and plays what they send, through the jack or Bluetooth. Shairport Sync (MIT), built for
+  AirPlay 2 with its PTP clock nqptp (GPL-2.0), which the Wi-Fi helper starts as root for ports
+  319 and 320 and which then stops being root; a payload without the AirPlay 2 files, or a player
+  where nqptp will not start, gets AirPlay 1. *AirPlay 2 is built but not yet tried from an
+  iPhone.*
 
   The driver is built from Sony's own GPL kernel source (`wifi/`, GPL-2.0, its own LICENSE), with
   static `wpa_supplicant` 2.10, `iw` and `curl` 8.22 with Mozilla's CA list; each player gets its

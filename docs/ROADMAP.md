@@ -73,12 +73,13 @@ ones. Read its safety rules first. Grouped by what each needs:
   with **Settings ▸ Wi-Fi**: clock sync, ListenBrainz, an update check, lyrics and album-art
   fetch, internet radio (MP3, AAC, HLS) and a phone remote with upload
   ([`wifi/README.md`](../wifi/README.md)). Open: WPA3 on a real WPA3 network, the battery cost,
-  internet radio over Bluetooth, HLS stations with MP4 segments, wireless sync with Flint, adb over
+  internet radio over Bluetooth, HLS playlists in byte ranges, wireless sync with Flint, adb over
   Wi-Fi, and streaming services.
 - **AirPlay receiver.** shairport-sync (its own licence, ALAC and an mDNS responder built in) with
   its `stdout` output into the same path internet radio plays through (jack, or Bluetooth at
-  44.1 kHz, which is AirPlay's own rate). Needs a static ARM build; AirPlay 2 needs more (PTP
-  timing on privileged ports, FFmpeg).
+  44.1 kHz, which is AirPlay's own rate). AirPlay 1 built and answering on the player. AirPlay 2
+  built (`wifi/build-airplay2.sh`: shairport-sync with nqptp started as root by the Wi-Fi helper
+  for ports 319/320, then dropping to the app's user); not yet tried from an iPhone.
 - **Playing on network speakers.** Built: **Settings ▸ Wi-Fi ▸ Speakers** casts Up Next to any
   UPnP/DLNA media renderer (Sonos, network AV receivers, smart TVs, Kodi; SSDP, AVTransport,
   RenderingControl) and any Google Cast device (mDNS, Cast v2 over TLS, the Default Media

@@ -11805,8 +11805,9 @@ static bool radio_send_all(int fd, const unsigned char* p, size_t n) {
 static void* radio_hls_thread(void* arg) {
     std::shared_ptr<HlsJob> j = *(std::shared_ptr<HlsJob>*)arg;
     delete (std::shared_ptr<HlsJob>*)arg;
-    std::string url = j->url, base, body, seg, why;
+    std::string url = j->url, base, body, seg, why, map;
     std::vector<unsigned char> es;
+    hls::Mp4 mp4;
     long next = -1;
     int pid = -1, misses = 0, hops = 0;
     while (j->go && g_radio_run) {
@@ -11823,6 +11824,12 @@ static void* radio_hls_thread(void* arg) {
             continue;
         }
         if (p.segs.empty()) { why = "The playlist names no stream"; break; }
+        if (p.map != map) {  // fMP4: the init segment says what the codec is
+            if (!radio_fetch(p.map, seg, 1u << 20, &j->go)) { why = "The station stopped sending"; break; }
+            map = p.map;
+            mp4 = hls::mp4_init((const unsigned char*)seg.data(), seg.size());
+            if (!mp4.problem.empty()) { why = mp4.problem; break; }
+        }
         const long first = p.seq, last = p.seq + (long)p.segs.size() - 1;
         // The live edge at the start; and again if the station restarted its numbering or we fell
         // so far behind that our next segment has left the list.
@@ -11834,7 +11841,8 @@ static void* radio_hls_thread(void* arg) {
             if (!radio_fetch(p.segs[(size_t)(s - first)], seg, 8u << 20, &j->go)) { misses++; continue; }
             misses = 0;
             es.clear();
-            hls::audio((const unsigned char*)seg.data(), seg.size(), es, &pid);
+            if (map.empty()) hls::audio((const unsigned char*)seg.data(), seg.size(), es, &pid);
+            else hls::mp4_audio(mp4, (const unsigned char*)seg.data(), seg.size(), es);
             if (!radio_send_all(j->fd, es.data(), es.size())) { j->go = 0; break; }
             got = true;
         }
