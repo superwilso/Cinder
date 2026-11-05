@@ -3152,6 +3152,16 @@ pub extern "C" fn cinder_render_tick() {
     if cinder_ui::widgets::marquee_scrolled() {
         r.dirty = true;
     }
+    // An open album's cover found in its songs (album_cover_fallback): into the grid's thumbnails,
+    // and the page reloads its cover.
+    if let Some((id, t48)) = ALBUM_COVER_READY.lock().unwrap().take() {
+        r.app.library_mut().thumbs.insert(id, t48);
+        r.grid_miss.remove(&id);
+        if r.album_cover_id == Some(id) {
+            r.album_cover_id = None;
+        }
+        r.dirty = true;
+    }
     if !r.dirty {
         return; // nothing changed — skip the render + framebuffer blit entirely
     }
@@ -3168,11 +3178,14 @@ pub extern "C" fn cinder_render_tick() {
     let open_album = r.app.open_album_id();
     if open_album != r.album_cover_id {
         r.album_cover_id = open_album;
-        r.app.set_album_cover(
-            open_album
-                .and_then(|id| r.art_cache_keys.get(&id).copied())
-                .and_then(art_cache::load_cover),
-        );
+        let key = open_album.and_then(|id| r.art_cache_keys.get(&id).copied());
+        let cover = key.and_then(art_cache::load_cover);
+        if let (None, Some(id), Some(key), Some(path)) =
+            (&cover, open_album, key, r.db_path.clone())
+        {
+            album_cover_fallback(id, key, path);
+        }
+        r.app.set_album_cover(cover);
     }
     #[cfg(feature = "dev")]
     let t_covers = std::time::Instant::now();
@@ -4240,7 +4253,9 @@ fn shuffle_a_playlist(
         (!v.is_empty()).then_some(v)
     })?;
     let pre = v.iter().map(|t| t.object_id).collect();
-    rng.shuffle(&mut v);
+    // The playlist is dealt as Settings ▸ Shuffle says, like the playlist page's own band (#53).
+    let by = cinder_ui::shuffle::ShuffleBy::from_token(r.app.shuffle_by());
+    v = deal_tracks(v, by, &mut rng);
     Some((v, pre))
 }
 
@@ -5769,7 +5784,11 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                     // toggle promises "play the rest of this in order from here", and it has to
                     // mean that however the shuffle started — via the toggle, or via this band.
                     let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
-                    Rng::new().shuffle(&mut seq);
+                    // Dealt the way Settings ▸ Shuffle says (songs, albums or artists), as the
+                    // transport's shuffle and a saved view's band are. This band shuffled songs
+                    // whatever the setting said (#53, plaquette, 2026-11-05).
+                    let by = cinder_ui::shuffle::ShuffleBy::from_token(r.app.shuffle_by());
+                    seq = deal_tracks(seq, by, &mut Rng::new());
                     // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
                     // the shuffle band on Albums / All Songs started a shuffled sequence but left
                     // the transport's shuffle indicator OFF, so the control said one thing and the
@@ -10158,7 +10177,8 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
                 // Decode OUTSIDE the lock. This is the expensive part and the UI must keep painting
                 // through it.
                 let others = missing_48.saturating_sub(usize::from(!had_48));
-                let Some(t48) = art_cache::build_one(&db, key, object_id, others) else {
+                let Some(t48) = art_cache::build_for_album(&db, key, album_id, object_id, others)
+                else {
                     failed.push((album_id, object_id, key));
                     continue;
                 };
@@ -10260,6 +10280,49 @@ fn lower_thread_priority() {
         let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
         libc::setpriority(libc::PRIO_PROCESS as _, tid, 10);
     }
+}
+
+// An album opened with no cover in the cache (the builder has not reached it, or the source it was
+// given would not decode): its songs are tried once a boot, off the render thread (#53).
+static ALBUM_COVER_ASKED: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+static ALBUM_COVER_READY: Mutex<Option<(i64, cinder_ui::art::Image)>> = Mutex::new(None);
+
+fn album_cover_fallback(album_id: i64, key: u64, db_path: String) {
+    {
+        let mut asked = ALBUM_COVER_ASKED.lock().unwrap();
+        if asked.contains(&album_id) {
+            return;
+        }
+        asked.push(album_id);
+    }
+    let _ = std::thread::Builder::new()
+        .name("cinder-album-art".into())
+        .stack_size(512 * 1024)
+        .spawn(move || {
+            lower_thread_priority();
+            let Ok(db) = cinder_db::Db::open(&db_path) else {
+                return;
+            };
+            let Some(first) = db
+                .album_tracks(album_id)
+                .ok()
+                .and_then(|t| t.first().map(|t| t.object_id))
+            else {
+                return;
+            };
+            let got = art_cache::build_for_album(&db, key, album_id, first, 0);
+            eprintln!(
+                "cinder-ffi: art: album {album_id} opened without a cover — {}",
+                if got.is_some() {
+                    "found one in its songs"
+                } else {
+                    "none in its songs either"
+                }
+            );
+            if let Some(t48) = got {
+                *ALBUM_COVER_READY.lock().unwrap() = Some((album_id, t48));
+            }
+        });
 }
 
 static COVER_REQ: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
@@ -12713,6 +12776,61 @@ mod tests {
             let (seq, _) = shuffle_a_playlist(&r, &only_box).expect("never nothing");
             assert_eq!(uris_of(seq), vec!["/music/box.flac".to_string()]);
         }
+    }
+
+    /// #53: a playlist's Shuffle band, and "random playlist · shuffled", follow Settings ▸ Shuffle.
+    /// With "albums", album 10's two songs stay together and in order; with "songs" they need not.
+    #[test]
+    fn a_playlist_shuffle_follows_the_shuffle_setting() {
+        let mut r = zappin_render();
+        r.db = Some(fixture_db());
+        let entry = |u: &str| playlists::Entry {
+            uri: u.into(),
+            ..Default::default()
+        };
+        r.plists = playlists::Store {
+            lists: vec![playlists::Playlist {
+                id: -1,
+                name: "Mixed".into(),
+                entries: vec![
+                    entry("/music/box.flac"),
+                    entry("/music/harvest.flac"),
+                    entry("/music/atlas.flac"),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        refresh_playlists(&mut r);
+        let together = |seq: &[String]| {
+            let a = seq.iter().position(|u| u == "/music/atlas.flac").unwrap();
+            let b = seq.iter().position(|u| u == "/music/box.flac").unwrap();
+            b == a + 1
+        };
+        r.app.set_shuffle_by("albums");
+        for _ in 0..25 {
+            assert_eq!(
+                carry_action_now(&mut r, &cinder_ui::nav::Action::ShufflePlaylist(-1)),
+                Some(8)
+            );
+            assert_eq!(r.pending_play.len(), 3);
+            assert!(
+                together(&r.pending_play),
+                "album 10 split or reordered: {:?}",
+                r.pending_play
+            );
+            let (seq, _) = shuffle_a_playlist(&r, &keep_all).unwrap();
+            assert!(together(&uris_of(seq)), "the random-playlist band too");
+        }
+        r.app.set_shuffle_by("songs");
+        let split = (0..200).any(|_| {
+            carry_action_now(&mut r, &cinder_ui::nav::Action::ShufflePlaylist(-1));
+            !together(&r.pending_play)
+        });
+        assert!(
+            split,
+            "by songs, album 10's songs are dealt apart sometimes"
+        );
     }
 
     /// File URIs of a resolved sequence — what the shell actually hands PlayerService.

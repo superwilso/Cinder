@@ -329,6 +329,33 @@ pub fn build_one(db: &cinder_db::Db, key: u64, object_id: i64, missing_48: usize
     Some(t48)
 }
 
+/// `build_one` for an album, from `object_id` (the track the database names as its cover source)
+/// and, failing that, from the album's other tracks in turn. `build_one`'s "they all embed the same
+/// picture" is usually true and not always: a track re-tagged after the scan (its recorded art
+/// offset is stale), a picture that will not decode, one track with art among tracks without. That
+/// album drew a gradient on its page and in the grid while the song playing showed its cover on
+/// Now Playing (#53, 2026-11-05). Not while the music is unmounted — if the first track's file is
+/// not there, none of the others are, and the builder's later rounds try again.
+pub fn build_for_album(
+    db: &cinder_db::Db,
+    key: u64,
+    album_id: i64,
+    object_id: i64,
+    missing_48: usize,
+) -> Option<Image> {
+    if let Some(t48) = build_one(db, key, object_id, missing_48) {
+        return Some(t48);
+    }
+    let first = db.track_by_object_id(object_id).ok().flatten()?;
+    std::fs::metadata(&first.filename).ok()?;
+    db.album_tracks(album_id)
+        .ok()?
+        .iter()
+        .filter(|t| t.object_id != object_id)
+        .take(24)
+        .find_map(|t| build_one(db, key, t.object_id, missing_48))
+}
+
 /// Cache a decoded PICTURE at both sizes and hand back the 48. The same two writes `build_one`
 /// makes, for a cover that came from an image file rather than out of a track — a playlist's own
 /// artwork (`playlist_cover_images`).
@@ -432,6 +459,66 @@ mod tests {
             h: edge,
             rgb: vec![fill; edge * edge * 3],
         }
+    }
+
+    /// #53: the album's named cover source will not decode (here: not an image at all); the next
+    /// track's embedded picture is used instead, and lands in the cache under the album's key.
+    #[test]
+    fn an_album_takes_its_cover_from_another_track_when_the_first_fails() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tmp("album_fallback");
+        std::env::set_var("CINDER_ART_CACHE", &d);
+        assert!(ensure_dir());
+        let bad = format!("{d}/one.mp3");
+        let good = format!("{d}/two.flac");
+        std::fs::write(&bad, b"ID3 not a picture at all, the offset is stale").unwrap();
+        let mut png = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut png, 4, 4);
+            e.set_color(png::ColorType::Rgb);
+            e.set_depth(png::BitDepth::Eight);
+            e.write_header()
+                .unwrap()
+                .write_image_data(&[0x30u8; 4 * 4 * 3])
+                .unwrap();
+        }
+        let mut file = b"fLaC....".to_vec();
+        let off = file.len();
+        file.extend_from_slice(&png);
+        std::fs::write(&good, &file).unwrap();
+        let sql = format!(
+            "CREATE TABLE albums (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT);
+             CREATE TABLE artists (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT, imagefile TEXT, face_x INTEGER, face_y INTEGER, face_w INTEGER, face_h INTEGER);
+             CREATE TABLE schema (prop_type INTEGER, akey INTEGER, data_type INTEGER, prop_name TEXT, PRIMARY KEY(prop_type,akey));
+             CREATE TABLE object_ext_int (object_id INTEGER, akey INTEGER, value INTEGER DEFAULT 0, PRIMARY KEY(object_id,akey));
+             CREATE TABLE images (id INTEGER PRIMARY KEY, dataform INTEGER, dataoffset INTEGER, datasize INTEGER, value TEXT, digest TEXT, bmpfile TEXT, bmpwidth INTEGER, bmpheight INTEGER);
+             CREATE TABLE releaseyears (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT);
+             CREATE TABLE object_body (object_id INTEGER PRIMARY KEY AUTOINCREMENT, object_type INTEGER NOT NULL, parent_id INTEGER, reference_id INTEGER,
+                 child_index INTEGER, media_type INTEGER DEFAULT 0, format INTEGER DEFAULT 0, initial INTEGER, sort_str TEXT, search_str TEXT, title TEXT DEFAULT '',
+                 addedtime INTEGER DEFAULT 0, filename TEXT, filesize INTEGER, series_no INTEGER, disc_no INTEGER, is_high_resolution INTEGER,
+                 album_id INTEGER, artist_id INTEGER, albumartist_id INTEGER, releaseyear_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
+             INSERT INTO albums VALUES (10,0,'keine macht','keine macht','Keine Macht für Niemand');
+             INSERT INTO images (id,dataform,dataoffset,datasize,value) VALUES (1,0,4,20,'{bad}');
+             INSERT INTO images (id,dataform,dataoffset,datasize,value) VALUES (2,0,{off},{len},'{good}');
+             INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,album_id,othumb_id) VALUES (1,1,1,'Wir müssen hier raus!','{bad}',1,1,10,1);
+             INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,album_id,othumb_id) VALUES (2,1,1,'Feierabend','{good}',2,1,10,2);",
+            len = png.len()
+        );
+        let db = cinder_db::Db::open_in_memory_with(|c| c.execute_batch(&sql)).unwrap();
+        assert!(
+            build_one(&db, 77, 1, 0).is_none(),
+            "the named source alone: nothing"
+        );
+        let t48 = build_for_album(&db, 77, 10, 1, 0).expect("the second track's cover");
+        assert_eq!((t48.w, t48.h), (T48, T48));
+        assert!(is_cached(77), "both sizes kept under the album's key");
+        std::fs::remove_file(&good).unwrap();
+        std::fs::remove_file(&bad).unwrap();
+        assert!(
+            build_for_album(&db, 78, 10, 1, 0).is_none(),
+            "music not there: no hunting"
+        );
+        std::fs::remove_dir_all(&d).ok();
     }
 
     /// #46: the cache filled /data and the launcher could no longer write its counter.
