@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-05
+
 ### Added
 
 - **FLAC and WAV in the network player.** Internet radio and **Play to this player** now play
@@ -3716,7 +3718,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.22-rc1...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/superwilso/Cinder/compare/v0.3.22...v0.4.0
 [0.3.22]: https://github.com/superwilso/Cinder/compare/v0.3.21...v0.3.22-rc1
 [0.3.21]: https://github.com/superwilso/Cinder/compare/v0.3.20...v0.3.21-rc1
 [0.3.20]: https://github.com/superwilso/Cinder/compare/v0.3.19...v0.3.20-rc3
