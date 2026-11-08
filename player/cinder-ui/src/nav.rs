@@ -621,12 +621,15 @@ pub enum Action {
     WifiTimeSync,
     /// Settings ▸ Wi-Fi ▸ the joined network ▸ Forget: `cinder-wifi forget`, then `off`.
     WifiForget,
-    /// Settings ▸ Wi-Fi ▸ Send plays to ListenBrainz switched on while connected: send now
+    /// Settings ▸ Wi-Fi ▸ Send plays switched on while connected: send now
     /// (otherwise the shell sends after each connect and every 15 minutes while on).
     WifiListenBrainz,
     /// Settings ▸ Wi-Fi ▸ Check for updates switched on while connected: check now (otherwise once
     /// a day while connected).
     WifiUpdateCheck,
+    /// Settings ▸ Wi-Fi ▸ Install Cinder v…, confirmed: the shell's Wi-Fi worker downloads and
+    /// stages the release (`cinder_update_stage`), then restarts into Sony's updater.
+    WifiUpdateInstall,
     /// Settings ▸ Wi-Fi ▸ Internet radio opened: the shell reads cinder_radio.txt again and hands
     /// it over with `set_radio_stations` (a file edited over USB shows up without a restart).
     RadioOpen,
@@ -1699,7 +1702,7 @@ pub struct App {
     /// Settings ▸ Wi-Fi ▸ Turn on at start / Set the clock. Saved; both off unless switched on.
     wifi_autostart: bool,
     wifi_clock: bool,
-    /// Settings ▸ Wi-Fi ▸ Send plays to ListenBrainz / Check for updates. Saved; off by default.
+    /// Settings ▸ Wi-Fi ▸ Send plays / Check for updates. Saved; off by default.
     wifi_lb: bool,
     wifi_updates: bool,
     /// Settings ▸ Wi-Fi ▸ AirPlay. Saved; off by default. And what the receiver is doing.
@@ -1719,6 +1722,12 @@ pub struct App {
     /// What the shell last said about each (shown as the row's second line).
     wifi_lb_note: String,
     wifi_update_note: String,
+    /// The newer release the last check found ("v0.4.1"); empty = none, no install strip.
+    update_offer: String,
+    /// What the install is doing, or why it stopped (the strip shows it in place of the offer).
+    update_install_note: String,
+    /// Install confirmed and not yet failed: the row ignores taps.
+    update_running: bool,
     /// Internet radio: the stations from the drive, what the shell says, and the pick it takes.
     radio_stations: Vec<crate::netradio::Station>,
     radio_status: crate::netradio::Status,
@@ -2279,6 +2288,9 @@ impl Default for App {
             drive_code: String::new(),
             wifi_lb_note: String::new(),
             wifi_update_note: String::new(),
+            update_offer: String::new(),
+            update_install_note: String::new(),
+            update_running: false,
             radio_stations: Vec::new(),
             radio_status: crate::netradio::Status::default(),
             radio_pick: None,
@@ -5135,6 +5147,12 @@ impl App {
                     crate::confirm::Ask::DeleteTrack | crate::confirm::Ask::DeleteAlbum => {
                         self.delete_confirmed()
                     }
+                    crate::confirm::Ask::WifiUpdate => {
+                        self.update_running = true;
+                        self.update_install_note =
+                            crate::i18n::text("Starting the download…").to_string();
+                        vec![Action::WifiUpdateInstall]
+                    }
                     crate::confirm::Ask::WifiForget => {
                         self.wifi_status.state = crate::wifi::State::Busy;
                         self.wifi_status.note.clear();
@@ -7404,7 +7422,13 @@ impl App {
     fn tap_wifi(&mut self, x: i32, y: i32) -> Vec<Action> {
         use crate::wifi::{Hit, State};
         let on = !matches!(self.wifi_status.state, State::Off);
-        match crate::wifi::hit(x, y, on) {
+        match crate::wifi::hit(x, y, on, self.update_offered()) {
+            Hit::Update => {
+                if !self.update_running {
+                    self.confirm = Some(crate::confirm::Ask::WifiUpdate);
+                }
+                vec![]
+            }
             Hit::Toggle => {
                 if matches!(self.wifi_status.state, State::Busy) {
                     return vec![];
@@ -7783,7 +7807,7 @@ impl App {
         self.wifi_clock = on;
     }
 
-    /// Settings ▸ Wi-Fi ▸ Send plays to ListenBrainz: the shell sends after each connect and
+    /// Settings ▸ Wi-Fi ▸ Send plays: the shell sends after each connect and
     /// every 15 minutes while connected.
     pub fn wifi_lb(&self) -> bool {
         self.wifi_lb
@@ -7871,6 +7895,26 @@ impl App {
     /// What the last update check said ("Cinder v0.3.23 is out — update with the installer").
     pub fn set_wifi_update_note(&mut self, note: &str) {
         self.wifi_update_note = note.chars().take(60).collect();
+    }
+    /// The release the update check found newer ("v0.4.1"), or "" for none.
+    pub fn set_update_offer(&mut self, tag: &str) {
+        self.update_offer = tag.chars().take(24).collect();
+    }
+    pub fn update_offer(&self) -> &str {
+        &self.update_offer
+    }
+    /// The install's progress ("Downloading Cinder v0.4.1…"); `stopped` = it failed and the row
+    /// can be tapped again.
+    pub fn set_update_install_note(&mut self, note: &str, stopped: bool) {
+        self.update_install_note = note.chars().take(60).collect();
+        if stopped {
+            self.update_running = false;
+        }
+    }
+    /// The install strip is on the Wi-Fi page: a newer release is known and the link is up.
+    fn update_offered(&self) -> bool {
+        !self.update_offer.is_empty()
+            && matches!(self.wifi_status.state, crate::wifi::State::Connected)
     }
 
     /// The join the last `WifiJoin` asked for: SSID bytes and password. Taken once.
@@ -12062,6 +12106,12 @@ impl App {
                     remote_note: &self.remote_row_note(),
                     airplay: self.wifi_airplay,
                     airplay_note: &self.airplay_note,
+                    update: if self.update_offered() {
+                        &self.update_offer
+                    } else {
+                        ""
+                    },
+                    update_note: &self.update_install_note,
                 },
             ),
             Screen::WifiOptions => crate::wifi::render_options(
@@ -27049,7 +27099,7 @@ mod r4_tests {
     /// hit test the finger goes through.
     fn wifi_y(on: bool, want: crate::wifi::Hit) -> i32 {
         (0..crate::canvas::H as i32)
-            .find(|&y| crate::wifi::hit(240, y, on) == want)
+            .find(|&y| crate::wifi::hit(240, y, on, want == crate::wifi::Hit::Update) == want)
             .expect("that row is on the page")
     }
     fn wifi_list_y(networks: usize, want: crate::wifi::ListHit) -> i32 {
@@ -27357,5 +27407,40 @@ mod r4_tests {
             .unwrap();
         assert_eq!(a.tap(300, yes), vec![Action::WifiForget]);
         assert_eq!(a.take_wifi_join(), None, "forgetting is not a join");
+    }
+
+    /// Settings ▸ Wi-Fi ▸ Install Cinder v…: only with a newer release AND the link up, asks
+    /// first, and one tap starts one install.
+    #[test]
+    fn wifi_install_update_asks_then_runs_once() {
+        use crate::wifi::Hit;
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::Wifi);
+        a.set_wifi_status("state=connected\nssid=6162\n", "");
+        assert!(!a.update_offered(), "no offer, no row");
+        a.set_update_offer("v0.4.1");
+        assert!(a.update_offered());
+        let row = wifi_y(true, Hit::Update);
+        assert!(a.tap(240, row).is_empty());
+        assert_eq!(a.confirm, Some(crate::confirm::Ask::WifiUpdate));
+        let yes = (0..crate::canvas::H as i32)
+            .find(|&y| {
+                crate::confirm::hit(crate::confirm::Ask::WifiUpdate, 300, y)
+                    == crate::confirm::Hit::Confirm
+            })
+            .unwrap();
+        assert_eq!(a.tap(300, yes), vec![Action::WifiUpdateInstall]);
+        assert!(a.tap(240, row).is_empty());
+        assert_eq!(a.confirm, None, "running: a second tap does nothing");
+        a.set_update_install_note("The download did not match its checksum", true);
+        a.tap(240, row);
+        assert_eq!(
+            a.confirm,
+            Some(crate::confirm::Ask::WifiUpdate),
+            "failed: can try again"
+        );
+        a.confirm = None;
+        a.set_wifi_status("state=on\n", "");
+        assert!(!a.update_offered(), "no link, no row");
     }
 }

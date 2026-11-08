@@ -34,6 +34,25 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   that came onto the player in that time, by the library's own date. Saved as `added=` in
   `cinder_views.conf`; a file from before has no key and means any.
 
+- **Install an update from the player.** When the update check (Settings ▸ Wi-Fi ▸ Options ▸
+  Check for updates) finds a newer release, the strip on the Wi-Fi page says **Cinder v… is ready
+  · tap to install**. Tap it and confirm, and the player downloads the release (35 MB), checks it
+  against the release's checksums, puts the files on the drive just as the PC installer does, and
+  restarts into Sony's updater. Every choice made in the installer stays: the player keeps its own
+  `cinder_components.conf`, and Walkman One players get their own .UPG. It needs 30% battery or a
+  cable, and the player does not sleep or switch itself off while it downloads. If anything fails,
+  the strip says what and the player stays as it was. A file named `cinder_update_reinstall` at
+  the top of the drive offers the newest release even when it is the one installed (a repair).
+  *Not yet run on a player.*
+
+- **Last.fm over Wi-Fi, set up by Flint.** Settings ▸ Wi-Fi ▸ Options ▸ **Send plays** (it was
+  *Send plays to ListenBrainz*) now sends to Last.fm too, when Flint has put the session on the
+  player (`flint scrobble --player-sends`, or its checkbox in Flint's window): after each connect
+  and every 15 minutes, like ListenBrainz. The newest play sent is kept in `.scrobbler.log.lastfm`,
+  and Flint leaves those plays out when it sends from the PC, so none goes twice. No password ever
+  reaches the player; revoking the session on last.fm, or deleting `cinder_lastfm.txt`, stops it.
+  *Not yet run on a player.*
+
 ### Fixed
 
 - **Pausing from a phone app no longer starts the song again** (Play to this player). Pause

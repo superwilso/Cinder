@@ -3309,6 +3309,7 @@ void apply_brightness() {
 // Defined below, with the rest of the power handling. Needed here because "boot to stock" is a
 // RESTART — see the comment in boot_to_stock() for why it stopped being an _exit.
 void power_action(bool restart);
+void update_flash();
 
 void boot_to_sony_receiver();   // with the BT receiver, below
 
@@ -3443,6 +3444,24 @@ void power_action(bool restart) {
             clog_("power: the helper has failed three times — it is not coming back this session "
                   "(reinstall to restore the setuid bit); further failures will not be logged");
     }
+}
+
+// Settings ▸ Wi-Fi ▸ Install Cinder v…, once the worker has staged the release on /contents: the
+// same helper sets Sony's update flag and restarts, and Sony's updater runs the staged .UPG exactly
+// as after a PC install. Returns only on failure; the row says so and the files stay staged, so
+// the PC installer or a second try picks up from there.
+void update_flash() {
+    clog_("update: staged -> exec cinder-power update");
+    cinder_resume_flush();
+    std::fflush(nullptr);
+    ::sync();
+    int rc = std::system("/system/vendor/cinder/bin/cinder-power update");
+    rc = rc == -1 ? -1 : ((rc >> 8) & 0xff);
+    char m[160];
+    std::snprintf(m, sizeof m, "update: cinder-power update FAILED rc=%d — staying up", rc);
+    clog_(m);
+    std::snprintf(m, sizeof m, "Could not start the update (code %d)", rc);
+    cinder_update_failed(m);
 }
 
 // CPU settings only root can write, through the same setuid helper (src/cinder-power.c: `sched`,
@@ -3687,6 +3706,10 @@ static std::string g_wifi_status, g_wifi_note, g_wifi_scan;
 struct WifiJob { int act; std::string join; bool clock; bool lb; bool update; bool awake; };
 static bool g_wifi_notes_ready = false, g_wifi_lb_set = false, g_wifi_up_set = false, g_wifi_newer = false;
 static std::string g_wifi_lb_note, g_wifi_up_note;
+// Install Cinder v…: the worker is downloading (no suspend, no auto power-off under it), and the
+// release is staged, so the render thread restarts into Sony's updater (update_flash).
+static volatile bool g_wifi_updating = false;
+static bool g_wifi_flash = false;   // under g_wifi_mu
 static bool g_wifi_connected = false;     // last status said connected (render thread only)
 static long long g_wifi_last_update = -1; // monotonic ms of the last update check that ran
 static int g_wifi_pending = 0;            // a user request that came while a worker was out
@@ -3734,7 +3757,8 @@ static void* wifi_thread(void* arg) {
             break;
         case CINDER_ACT_WIFI_TIMESYNC: rc = wifi_helper("timesync", nullptr, &out); break;
         case CINDER_ACT_WIFI_LISTENBRAINZ:
-        case CINDER_ACT_WIFI_UPDATE_CHECK: break;   // after the status below: they need the link
+        case CINDER_ACT_WIFI_UPDATE_CHECK:
+        case CINDER_ACT_WIFI_UPDATE_INSTALL: break;   // after the status below: they need the link
         case CINDER_ACT_WIFI_FORGET:
             rc = wifi_helper("forget", nullptr, &out);
             wifi_helper("off", nullptr, nullptr);
@@ -3795,6 +3819,20 @@ static void* wifi_thread(void* arg) {
         std::snprintf(lm, sizeof lm, "wifi: update check -> %d %s", up_rc, nb);
         clog_(lm);
     }
+    // Minutes: the release is ~35 MB. Not gated on `online`: with no link curl fails at once and
+    // the Wi-Fi page's strip says why.
+    bool flash = false;
+    if (job->act == CINDER_ACT_WIFI_UPDATE_INSTALL) {
+        g_wifi_updating = true;
+        clog_("wifi: update install -> downloading");
+        char nb[96];
+        int src = cinder_update_stage(nb, (int)sizeof nb);
+        char lm[200];
+        std::snprintf(lm, sizeof lm, "wifi: update install -> %d %s", src, nb);
+        clog_(lm);
+        flash = src == 0;
+        if (!flash) g_wifi_updating = false;
+    }
     char m[200];
     std::snprintf(m, sizeof m, "wifi: act %d -> rc=%d%s%s", job->act, rc, note.empty() ? "" : " ", note.c_str());
     clog_(m);
@@ -3806,6 +3844,7 @@ static void* wifi_thread(void* arg) {
     // A send with nothing new keeps the last note ("Sent 3 songs") rather than blanking it.
     if (do_lb && !lb_note.empty()) { g_wifi_lb_note = lb_note; g_wifi_lb_set = true; g_wifi_notes_ready = true; }
     if (do_up) { g_wifi_up_note = up_note; g_wifi_up_set = true; g_wifi_newer = up_rc == 1; g_wifi_notes_ready = true; }
+    if (flash) g_wifi_flash = true;
     g_wifi_ready = true;
     g_wifi_running = false;
     pthread_mutex_unlock(&g_wifi_mu);
@@ -3839,10 +3878,7 @@ static void wifi_start(int act, const std::string& join = std::string()) {
     // The update check: when its switch asks, else once a day on a job that may find the link up.
     // g_wifi_last_update moves only when a check actually ran (wifi_tick), so a poll before the
     // link is up does not use the day's check.
-    struct timespec ts_now;
-    ::clock_gettime(CLOCK_MONOTONIC, &ts_now);
-    long long now_ms = (long long)ts_now.tv_sec * 1000 + ts_now.tv_nsec / 1000000;
-    bool due = g_wifi_last_update < 0 || now_ms - g_wifi_last_update > 24LL * 3600 * 1000;
+    bool due = g_wifi_last_update < 0 || now_ms() - g_wifi_last_update > 24LL * 3600 * 1000;
     bool want_up = cinder_wifi_updates() != 0
                 && (act == CINDER_ACT_WIFI_UPDATE_CHECK
                     || (due && (act == CINDER_ACT_WIFI_ON || act == CINDER_ACT_WIFI_JOIN || g_wifi_connected)));
@@ -3906,6 +3942,8 @@ static void wifi_tick(long long now) {
         std::fill(join.begin(), join.end(), '\0');
     }
     pthread_mutex_lock(&g_wifi_mu);
+    const bool flash = g_wifi_flash;
+    g_wifi_flash = false;
     if (g_wifi_ready) { st = g_wifi_status; note = g_wifi_note; have = true; g_wifi_ready = false; }
     if (g_wifi_scan_ready) { scan = g_wifi_scan; have_scan = true; g_wifi_scan_ready = false; }
     pthread_mutex_unlock(&g_wifi_mu);
@@ -3915,6 +3953,7 @@ static void wifi_tick(long long now) {
         g_wifi_connected = st.find("state=connected") != std::string::npos;
     }
     if (have_scan) cinder_set_wifi_scan(scan.c_str());
+    if (flash) { update_flash(); g_wifi_updating = false; }   // returns only when it failed
     std::string lbn, upn;
     bool lb_set = false, up_set = false, newer = false;
     pthread_mutex_lock(&g_wifi_mu);
@@ -3924,11 +3963,7 @@ static void wifi_tick(long long now) {
         g_wifi_notes_ready = g_wifi_lb_set = g_wifi_up_set = g_wifi_newer = false;
     }
     pthread_mutex_unlock(&g_wifi_mu);
-    if (up_set) {
-        struct timespec t;
-        ::clock_gettime(CLOCK_MONOTONIC, &t);
-        g_wifi_last_update = (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
-    }
+    if (up_set) g_wifi_last_update = now_ms();
     if (lb_set || up_set) cinder_set_wifi_notes(lb_set ? lbn.c_str() : nullptr, up_set ? upn.c_str() : nullptr);
     if (newer) cinder_toast(upn.c_str());
     // While on: the status every 15 s, and (only with its switch on) a ListenBrainz send every
@@ -10787,11 +10822,6 @@ static const char* const FMREC_DIR = "/contents/MUSIC/FM Recordings";
 static bool g_fmrec_on = false;
 static long long g_fmrec_t0 = 0;
 
-static long long fmrec_ms() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
 
 static bool fmrec_installed() {
     struct stat st;
@@ -10831,7 +10861,7 @@ static void fm_record_fn() {
     ::chmod(tmp, 0644);
     if (::rename(tmp, FMREC_CTL) != 0) { ::unlink(tmp); cinder_toast("Couldn't start recording"); return; }
     g_fmrec_on = true;
-    g_fmrec_t0 = fmrec_ms();
+    g_fmrec_t0 = now_ms();
     cinder_fm_report_rec(0);
     char m[260];
     std::snprintf(m, sizeof m, "fm-rec: recording to %s", path);
@@ -10846,7 +10876,7 @@ static void fm_rec_tick() {
     static bool told = false;
     if (!told) { told = true; cinder_fm_set_rec_available(fmrec_installed() ? 1 : 0); }
     if (!g_fmrec_on) return;
-    const int secs = (int)((fmrec_ms() - g_fmrec_t0) / 1000);
+    const int secs = (int)((now_ms() - g_fmrec_t0) / 1000);
     cinder_fm_report_rec(secs);
     if (secs < 3) return;
     char st[128] = {0};
@@ -13143,6 +13173,7 @@ void carry_out(int act) {
         case CINDER_ACT_WIFI_FORGET:
         case CINDER_ACT_WIFI_LISTENBRAINZ:
         case CINDER_ACT_WIFI_UPDATE_CHECK:
+        case CINDER_ACT_WIFI_UPDATE_INSTALL:
             wifi_act(act);
             break;
         case CINDER_ACT_RADIO_OPEN:
@@ -13456,11 +13487,6 @@ void carry_out(int act) {
 static const long SCRUB_APPLY_MS = 60;
 static long long g_scrub_last_apply_ms = 0;
 
-static long long mono_ms() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
-}
 
 // ── Transport presses are QUEUED, not carried out where they are decoded ─────────────────────
 //
@@ -13678,7 +13704,7 @@ static void scrub_carry() {
     int act = cinder_scrub_action();
     if (act == CINDER_ACT_NONE) return;
     if (g_scrub_active && g_touch_down) {
-        const long long now = mono_ms();
+        const long long now = now_ms();
         if (now - g_scrub_last_apply_ms < SCRUB_APPLY_MS) return;   // release will re-emit it
         g_scrub_last_apply_ms = now;
     }
@@ -16078,7 +16104,7 @@ void* render_driver(void*) {
                 // brings it back, ~10 s to rejoin. Two, not Bluetooth's ten: a glance at the
                 // clock does not cost a rejoin, and rejoining costs no one their headphones. Never while it is in use with the screen off: internet radio or AirPlay
                 // playing, a speaker fed from the player, a server switched on (Share the drive,
-                // Play to this player, the phone remote) or AirPlay waiting to be found.
+                // Play to this player, the phone remote), AirPlay waiting to be found, or an update downloading.
                 {
                     static int wifi_idle_secs = 0;
                     if (g_wifi_slept_at && (g_screen_on || g_last_input_ms > g_wifi_slept_at)) {
@@ -16087,6 +16113,7 @@ void* render_driver(void*) {
                         wifi_start(CINDER_ACT_WIFI_ON);
                     }
                     const bool wifi_idle = !g_screen_on && g_wifi_on && !src.net && !g_wifi_slept_at
+                                           && !g_wifi_updating
                                            && cinder_wifi_serving() == 0 && cinder_wifi_airplay() == 0;
                     if (!wifi_idle) {
                         wifi_idle_secs = 0;
@@ -16281,7 +16308,7 @@ void* render_driver(void*) {
                 // being enabled.
                 // Stage 2's own, stricter test — Sony's interlocks (see soc_suspend_tick).
                 const bool ram_idle = idle && !g_nc_on && cinder_get_bt_route() == 0 && !g_bt_user_pending
-                    && !g_rx_active && !g_msc_active
+                    && !g_rx_active && !g_msc_active && !g_wifi_updating
                     && socsusp::read_node_long("/sys/class/power_supply/usb/online") == 0
                     && socsusp::read_node_long("/sys/class/power_supply/dc/online") <= 0;
                 soc_suspend_tick(soc_idle, ram_idle);   // `idle` unless the opt-in flag is set; see above
@@ -16381,7 +16408,7 @@ void* render_driver(void*) {
                 // idle threshold is met it stays met, so nothing else here would ever stop it.
                 static long long next_try_ms = 0;
                 static int  attempts = 0;
-                if (off_min > 0 && !audible && !g_msc_active && !cinder_modal_open() &&
+                if (off_min > 0 && !audible && !g_msc_active && !g_wifi_updating && !cinder_modal_open() &&
                     !battery_charging() && now_ms() >= next_try_ms &&
                     now_ms() - g_last_input_ms >= (long)off_min * 60000L) {
                     // Only the first few attempts are worth announcing, for the same reason

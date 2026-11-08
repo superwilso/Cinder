@@ -20,6 +20,14 @@ pub const LB_TOKEN: &str = "/contents/cinder_listenbrainz.txt";
 /// so a log cleared by an uploader on the computer does not resend what came before it.
 pub const LB_STATE: &str = "/contents/.scrobbler.log.listenbrainz";
 const LB_URL: &str = "https://api.listenbrainz.org/1/submit-listens";
+/// The Last.fm session Flint puts on the drive (`flint scrobble --player-sends`), in Flint's own
+/// `lastfm.conf` format, and the newest log time sent, which Flint reads so it never sends a play
+/// twice (flint-core `lastfm_sync::PLAYER_MARK`).
+pub const LF_CREDS: &str = "/contents/cinder_lastfm.txt";
+pub const LF_STATE: &str = "/contents/.scrobbler.log.lastfm";
+const LF_URL: &str = "https://ws.audioscrobbler.com/2.0/";
+/// `track.scrobble` takes at most 50 plays.
+const LF_BATCH: usize = 50;
 const LATEST_URL: &str = "https://api.github.com/repos/superwilso/Cinder/releases/latest";
 /// ListenBrainz takes up to 1000 listens a request; 100 keeps each request small on a weak link.
 const BATCH: usize = 100;
@@ -72,13 +80,15 @@ pub fn listens(log: &str, after: u64, max: usize) -> Vec<Listen> {
     out
 }
 
-fn json_str(s: &str) -> String {
+/// A JSON string literal. `<` too, so the phone remote's page can carry one inside a `<script>`.
+pub(crate) fn json_str(s: &str) -> String {
     let mut o = String::with_capacity(s.len() + 2);
     o.push('"');
     for c in s.chars() {
         match c {
             '"' => o.push_str("\\\""),
             '\\' => o.push_str("\\\\"),
+            '<' => o.push_str("\\u003c"),
             c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
             c => o.push(c),
         }
@@ -203,12 +213,7 @@ pub fn lb_submit(log_path: &str, offset_s: i64, version: &str) -> Result<usize, 
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
-    let tmp = "/tmp/cinder-lb";
-    {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        let _ = std::fs::DirBuilder::new().mode(0o700).create(tmp);
-        let _ = std::fs::set_permissions(tmp, std::fs::Permissions::from_mode(0o700));
-    }
+    let tmp = private_tmp();
     let (hdr, body) = (format!("{tmp}/h"), format!("{tmp}/b"));
     let mut sent = 0;
     for _ in 0..20 {
@@ -246,6 +251,162 @@ pub fn lb_submit(log_path: &str, offset_s: i64, version: &str) -> Result<usize, 
         sent += batch.len();
     }
     let _ = std::fs::remove_file(&body);
+    Ok(sent)
+}
+
+/// Where a secret goes for curl to read: a directory only cinder-home can open, never argv.
+fn private_tmp() -> &'static str {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let tmp = "/tmp/cinder-lb";
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(tmp);
+    let _ = std::fs::set_permissions(tmp, std::fs::Permissions::from_mode(0o700));
+    tmp
+}
+
+// ── Last.fm, with the session Flint hands the player ─────────────────────────────────────────────
+
+/// `api_key`, `api_secret` and `session_key` from Flint's file; None until all three are there.
+pub fn lf_creds(body: &str) -> Option<(String, String, String)> {
+    let get = |key: &str| {
+        body.lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .find_map(|l| {
+                let (k, v) = l.split_once('=')?;
+                (k.trim() == key).then(|| v.trim().to_string())
+            })
+            .filter(|v| !v.is_empty())
+    };
+    Some((get("api_key")?, get("api_secret")?, get("session_key")?))
+}
+
+/// One `track.scrobble` call's parameters, unsigned. Times go out as UTC, as for ListenBrainz.
+pub fn lf_params(ls: &[Listen], offset_s: i64, key: &str, sk: &str) -> Vec<(String, String)> {
+    let mut p = vec![
+        ("method".to_string(), "track.scrobble".to_string()),
+        ("api_key".to_string(), key.to_string()),
+        ("sk".to_string(), sk.to_string()),
+    ];
+    for (i, l) in ls.iter().enumerate() {
+        p.push((format!("artist[{i}]"), l.artist.clone()));
+        p.push((format!("track[{i}]"), l.title.clone()));
+        let at = (l.log_ts as i64 - offset_s).max(0);
+        p.push((format!("timestamp[{i}]"), at.to_string()));
+        if !l.album.is_empty() {
+            p.push((format!("album[{i}]"), l.album.clone()));
+        }
+        if l.track_no > 0 {
+            p.push((format!("trackNumber[{i}]"), l.track_no.to_string()));
+        }
+        if l.length_s > 0 {
+            p.push((format!("duration[{i}]"), l.length_s.to_string()));
+        }
+    }
+    p
+}
+
+/// What Last.fm signs: every `name value`, sorted by name, then the secret (MD5'd by the caller).
+pub fn lf_sign_base(params: &[(String, String)], secret: &str) -> String {
+    let mut sorted: Vec<&(String, String)> = params.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut base: String = sorted.iter().map(|(k, v)| format!("{k}{v}")).collect();
+    base.push_str(secret);
+    base
+}
+
+/// MD5 by `cmd` (busybox md5sum on the player), fed on stdin so the secret is in no argv.
+fn md5_hex(cmd: &[&str], data: &str) -> Result<String, String> {
+    use std::io::Write;
+    let mut child = Command::new(cmd[0])
+        .args(&cmd[1..])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("md5sum: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("md5sum: no stdin")?
+        .write_all(data.as_bytes())
+        .map_err(|e| format!("md5sum: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("md5sum: {e}"))?;
+    let hex = String::from_utf8_lossy(&out.stdout);
+    let hex = hex.split_whitespace().next().unwrap_or("");
+    (hex.len() == 32)
+        .then(|| hex.to_string())
+        .ok_or_else(|| "md5sum failed".into())
+}
+
+/// application/x-www-form-urlencoded, byte by byte.
+fn form(params: &[(String, String)]) -> String {
+    let enc = |s: &str| {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect::<String>()
+    };
+    params
+        .iter()
+        .map(|(k, v)| format!("{}={}", enc(k), enc(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// Last.fm's `"error": N`, if the answer is one.
+fn lf_error(body: &str) -> Option<u32> {
+    let rest = &body[body.find("\"error\"")? + 7..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    rest[..rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len())]
+        .parse()
+        .ok()
+}
+
+/// Send every play not yet sent to Last.fm, as [`lb_submit`] does for ListenBrainz.
+pub fn lf_submit(log_path: &str, offset_s: i64) -> Result<usize, String> {
+    let (key, secret, sk) = std::fs::read_to_string(LF_CREDS)
+        .ok()
+        .and_then(|b| lf_creds(&b))
+        .ok_or("Last.fm: no session in cinder_lastfm.txt")?;
+    let log = std::fs::read_to_string(log_path).unwrap_or_default();
+    let mut after: u64 = std::fs::read_to_string(LF_STATE)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let body = format!("{}/lf", private_tmp());
+    let mut sent = 0;
+    for _ in 0..20 {
+        let batch = listens(&log, after, LF_BATCH);
+        let Some(last) = batch.last().map(|l| l.log_ts) else {
+            break;
+        };
+        let mut p = lf_params(&batch, offset_s, &key, &sk);
+        let sig = md5_hex(&[BUSYBOX, "md5sum"], &lf_sign_base(&p, &secret))?;
+        p.push(("api_sig".into(), sig));
+        p.push(("format".into(), "json".into()));
+        std::fs::write(&body, form(&p)).map_err(|e| e.to_string())?;
+        let r = run_curl(&["--data-binary", &format!("@{body}"), LF_URL]);
+        let _ = std::fs::remove_file(&body);
+        let (code, answer) = r?;
+        match (code, lf_error(&answer)) {
+            (200, None) => {}
+            // Signed in no longer (revoked, or a new key): Flint has to hand it over again.
+            (_, Some(4 | 9 | 10 | 14 | 26)) => return Err("Last.fm refused the sign-in".into()),
+            (_, Some(11 | 16 | 29)) | (500.., _) => return Err("Last.fm is busy; later".into()),
+            // A batch Last.fm will never take must not block every play after it.
+            (_, Some(_)) => {}
+            (code, None) => return Err(format!("Last.fm answered {code}")),
+        }
+        after = last;
+        let _ = std::fs::write(LF_STATE, format!("{after}\n"));
+        sent += batch.len();
+    }
     Ok(sent)
 }
 
@@ -1099,6 +1260,52 @@ mod tests {
         );
     }
 
+    /// The Last.fm call, against what Flint sends (flint-core lastfm.rs): signed over the sorted
+    /// raw values plus the secret, MD5'd; the body form-encoded.
+    #[test]
+    fn a_last_fm_scrobble_is_signed_like_flints() {
+        let conf = "# Flint's Last.fm credentials.\napi_key=KEY\napi_secret=SECRET\nsession_key=SK\nusername=you\n";
+        let (k, secret, sk) = lf_creds(conf).unwrap();
+        assert_eq!(
+            (k.as_str(), secret.as_str(), sk.as_str()),
+            ("KEY", "SECRET", "SK")
+        );
+        assert_eq!(
+            lf_creds("api_key=KEY\napi_secret=S\nsession_key=\n"),
+            None,
+            "not signed in"
+        );
+        let l = Listen {
+            log_ts: 1_700_003_600,
+            artist: "Sigur Rós".into(),
+            album: String::new(),
+            title: "Hoppípolla & co".into(),
+            track_no: 3,
+            length_s: 268,
+        };
+        let p = lf_params(std::slice::from_ref(&l), 3600, &k, &sk);
+        assert_eq!(
+            lf_sign_base(&p, &secret),
+            "api_keyKEYartist[0]Sigur Rósduration[0]268methodtrack.scrobbleskSKtimestamp[0]1700000000trackNumber[0]3track[0]Hoppípolla & coSECRET",
+            "byte order, as Flint sorts: 'N' before '['"
+        );
+        assert_eq!(
+            form(&p[3..5]),
+            "artist%5B0%5D=Sigur%20R%C3%B3s&track%5B0%5D=Hopp%C3%ADpolla%20%26%20co"
+        );
+        if let Ok(h) = md5_hex(&["md5sum"], "abc") {
+            assert_eq!(h, "900150983cd24fb0d6963f7d28e17f72");
+        }
+        assert_eq!(
+            lf_error(r#"{"error":9,"message":"Invalid session key"}"#),
+            Some(9)
+        );
+        assert_eq!(
+            lf_error(r#"{"scrobbles":{"@attr":{"accepted":1,"ignored":0}}}"#),
+            None
+        );
+    }
+
     /// Every file installer/build.rs stages from dist/ goes to the drive under the same name here,
     /// so the player's update and the PC's install put down the same files.
     #[test]
@@ -1111,7 +1318,8 @@ mod tests {
             .map(str::trim)
             .filter(|l| !l.starts_with("//"))
             .collect::<Vec<_>>()
-            .join(" ");
+            .join(" ")
+            .replace("( \"", "(\""); // rustfmt splits long tuples over lines
         let mut seen = 0;
         for entry in text.split("(\"").skip(1) {
             // "dist/{ch}/FILE", "DEST", "OWNER", bool)
@@ -1128,12 +1336,17 @@ mod tests {
         assert_eq!(stage_name("cinder_home_install.upg", true), None);
         assert_eq!(stage_name("cinder_home_install.nw-wm1a.upg", false), None);
         assert_eq!(stage_name("cinder_home_uninstall.upg", false), None);
-        assert_eq!(stage_name("cinder_components.conf", false), None, "the player keeps its own");
+        assert_eq!(
+            stage_name("cinder_components.conf", false),
+            None,
+            "the player keeps its own"
+        );
         assert_eq!(
             sum_for("abc  x\n99e3b092a3f5d76405b483ba10ae651f7c0a8f06b3aa3f6264c2cf673894b5b9  cinder-payload.tar.gz\n", "cinder-payload.tar.gz").as_deref(),
             Some("99e3b092a3f5d76405b483ba10ae651f7c0a8f06b3aa3f6264c2cf673894b5b9")
         );
-        let conf = "CINDER_CHANNEL=stable\n# CINDER_LLUSBDAC=0\nCINDER_LLUSBDAC=1\nCINDER_CHANNEL=dev\n";
+        let conf =
+            "CINDER_CHANNEL=stable\n# CINDER_LLUSBDAC=0\nCINDER_LLUSBDAC=1\nCINDER_CHANNEL=dev\n";
         assert_eq!(component(conf, "CINDER_CHANNEL").as_deref(), Some("dev"));
         assert_eq!(component(conf, "CINDER_LLUSBDAC").as_deref(), Some("1"));
         assert_eq!(component(conf, "CINDER_WIFI"), None);

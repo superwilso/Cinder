@@ -768,9 +768,7 @@ fn move_or_copy(
     }
 }
 
-fn escape(s: &str) -> String {
-    crate::cast::escape(s)
-}
+use crate::cast::escape;
 
 /// The 207 for a PROPFIND: `rel` itself and, at depth 1, what a folder holds (part files left out).
 fn propfind(

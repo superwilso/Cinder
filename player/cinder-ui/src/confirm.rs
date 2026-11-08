@@ -59,6 +59,8 @@ pub enum Ask {
     DeleteTrack,
     /// The album page's DELETE: every file the album lists goes.
     DeleteAlbum,
+    /// Settings ▸ Wi-Fi ▸ Install Cinder v…: download it, then restart into Sony's updater.
+    WifiUpdate,
 }
 
 /// Every question the modal can ask. Exists so the overflow audit can render all of them without
@@ -76,6 +78,7 @@ pub const ALL: &[Ask] = &[
     Ask::WifiForget,
     Ask::DeleteTrack,
     Ask::DeleteAlbum,
+    Ask::WifiUpdate,
 ];
 
 impl Ask {
@@ -128,6 +131,11 @@ impl Ask {
                 crate::i18n::text("Delete this album?"),
                 crate::i18n::text("Every song file in it is deleted from the player. This cannot be undone."),
                 crate::i18n::text("Delete"),
+            ),
+            Ask::WifiUpdate => (
+                crate::i18n::text("Install the update?"),
+                crate::i18n::text("Cinder downloads the update, then the player restarts and installs it. Your settings and choices stay. Keep it charged."),
+                crate::i18n::text("Install"),
             ),
             Ask::SonyReceiver => (
                 crate::i18n::text("Use Sony's receiver?"),

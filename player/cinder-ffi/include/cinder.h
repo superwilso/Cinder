@@ -261,6 +261,9 @@ typedef enum {
     /* Settings > Wi-Fi > AirPlay switched: read cinder_wifi_airplay() and start or stop the
      * receiver to match (it runs only while Wi-Fi is connected). */
     CINDER_ACT_WIFI_AIRPLAY = 73,
+    /* Settings > Wi-Fi > Install Cinder v..., confirmed: on the Wi-Fi worker, cinder_update_stage();
+     * on 0, `cinder-power update` (Sony's update flag, then restart into its updater). */
+    CINDER_ACT_WIFI_UPDATE_INSTALL = 74,
     /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
      * resume function (Configuration 5008/5039), then boot to stock exactly as
      * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */
@@ -486,6 +489,11 @@ void cinder_set_wifi_notes(const char *lb, const char *update);
  * cinder_update_check: 1 newer Cinder out, 0 newest, -1 could not tell; note says which. */
 int cinder_lb_submit(const char *log, long long offset_s, char *note, int cap);
 int cinder_update_check(char *note, int cap);
+/* Download the release the last check found and stage it on /contents. BLOCKING for minutes (the
+ * Wi-Fi worker only); progress goes to the install strip. 0 = staged, -1 = stopped (note says why). */
+int cinder_update_stage(char *note, int cap);
+/* `cinder-power update` returned (it does not when it works): the Wi-Fi page's strip says why. */
+void cinder_update_failed(const char *note);
 /* Internet radio (Settings > Wi-Fi > Internet radio). */
 void cinder_set_radio_stations(const char *text);
 void cinder_set_radio_status(const char *text);

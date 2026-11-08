@@ -308,6 +308,8 @@ pub enum Hit {
     AirPlay,
     /// "Options ›".
     Options,
+    /// The status strip while it offers an update: download it and restart into Sony's updater.
+    Update,
     // Settings ▸ Wi-Fi ▸ Options:
     AutoStart,
     Clock,
@@ -322,11 +324,15 @@ pub enum Hit {
     None,
 }
 
-pub fn hit(_x: i32, y: i32, on: bool) -> Hit {
+/// `update`: the strip is offering an update ([`View::update`] is not empty).
+pub fn hit(_x: i32, y: i32, on: bool, update: bool) -> Hit {
     let l = layout(on);
     let within = |top: i32| y >= top && y < top + kit::ROW_H();
     if within(l.switch_y) {
         return Hit::Toggle;
+    }
+    if update && y >= l.strip_y && y < l.strip_y + kit::STRIP_H {
+        return Hit::Update;
     }
     for (row, h) in [
         (l.net_y, Hit::Networks),
@@ -370,6 +376,12 @@ pub struct View<'a> {
     /// The AirPlay switch (saved), and what the receiver is doing.
     pub airplay: bool,
     pub airplay_note: &'a str,
+    /// A newer release to install ("v0.4.1"): the strip offers it, in the accent. Empty = the
+    /// strip shows the status. In the strip, not a row of its own: a ninth row runs off the
+    /// screen in Big view.
+    pub update: &'a str,
+    /// How the install is going, or why it stopped; empty = the offer.
+    pub update_note: &'a str,
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
@@ -387,7 +399,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
             .sub(crate::i18n::text("Uses battery while on"))
             .trail(Trail::Switch(on || matches!(v.status.state, State::Busy))),
     );
-    kit::strip(c, t, f, l.strip_y, &strip_line(v.status));
+    if v.update.is_empty() {
+        kit::strip(c, t, f, l.strip_y, &strip_line(v.status));
+    } else if v.update_note.is_empty() {
+        let offer = crate::ui_format!("CINDER {} IS READY · TAP TO INSTALL", v.update);
+        kit::strip_ink(c, t, f, l.strip_y, &offer, t.acc);
+    } else {
+        kit::strip_ink(c, t, f, l.strip_y, v.update_note, t.acc);
+    }
     let joined = matches!(v.status.state, State::Connected | State::Connecting);
     let name = String::from_utf8_lossy(&v.status.ssid).into_owned();
     let open_rows: [(Option<i32>, &str, &str); 4] = [
@@ -475,9 +494,9 @@ pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
             crate::i18n::text("From the internet; keeps your time zone"),
         ),
         (
-            crate::i18n::text("Send plays to ListenBrainz"),
+            crate::i18n::text("Send plays"),
             if v.lb_note.is_empty() {
-                crate::i18n::text("Token in cinder_listenbrainz.txt")
+                crate::i18n::text("ListenBrainz token, or Last.fm from Flint")
             } else {
                 v.lb_note
             },
@@ -870,21 +889,26 @@ mod tests {
     #[test]
     fn the_rows_answer_where_they_are_drawn() {
         let off = layout(false);
-        assert_eq!(hit(200, off.switch_y + 5, false), Hit::Toggle);
+        assert_eq!(hit(200, off.switch_y + 5, false, false), Hit::Toggle);
         assert!(off.net_y.is_none() && off.radio_y.is_none() && off.remote_y.is_none());
         assert!(
             off.speakers_y.is_none(),
             "no Speakers row while Wi-Fi is off"
         );
-        assert_eq!(hit(200, off.airplay_y + 5, false), Hit::AirPlay);
-        assert_eq!(hit(200, off.options_y + 5, false), Hit::Options);
+        assert_eq!(hit(200, off.airplay_y + 5, false, false), Hit::AirPlay);
+        assert_eq!(hit(200, off.options_y + 5, false, false), Hit::Options);
         let on = layout(true);
-        assert_eq!(hit(200, on.net_y.unwrap() + 5, true), Hit::Networks);
-        assert_eq!(hit(200, on.radio_y.unwrap() + 5, true), Hit::Radio);
-        assert_eq!(hit(200, on.speakers_y.unwrap() + 5, true), Hit::Speakers);
-        assert_eq!(hit(200, on.remote_y.unwrap() + 5, true), Hit::Remote);
-        assert_eq!(hit(200, on.airplay_y + 5, true), Hit::AirPlay);
-        assert_eq!(hit(200, on.options_y + 5, true), Hit::Options);
+        assert_eq!(hit(200, on.net_y.unwrap() + 5, true, false), Hit::Networks);
+        assert_eq!(hit(200, on.radio_y.unwrap() + 5, true, false), Hit::Radio);
+        assert_eq!(
+            hit(200, on.speakers_y.unwrap() + 5, true, false),
+            Hit::Speakers
+        );
+        assert_eq!(hit(200, on.remote_y.unwrap() + 5, true, false), Hit::Remote);
+        assert_eq!(hit(200, on.airplay_y + 5, true, false), Hit::AirPlay);
+        assert_eq!(hit(200, on.options_y + 5, true, false), Hit::Options);
+        assert_eq!(hit(200, on.strip_y + 5, true, true), Hit::Update);
+        assert_eq!(hit(200, on.strip_y + 5, true, false), Hit::None);
         assert!(
             on.options_y + kit::ROW_H() <= H as i32,
             "every row fits at this size"

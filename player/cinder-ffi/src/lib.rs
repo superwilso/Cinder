@@ -831,6 +831,11 @@ fn cell() -> &'static Mutex<Option<Render>> {
     R.get_or_init(|| Mutex::new(None))
 }
 
+/// A value from the live renderer, or the type's default (0, false) before it exists.
+fn read<T: Default>(f: impl FnOnce(&Render) -> T) -> T {
+    cell().lock().unwrap().as_ref().map_or_else(T::default, f)
+}
+
 /// Read a C string into an owned String (empty on null/invalid).
 unsafe fn cstr(p: *const c_char) -> String {
     if p.is_null() {
@@ -6197,6 +6202,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
         Action::RadioPlay => 71,
         Action::RadioStop => 72,
         Action::WifiAirPlay => 73,
+        Action::WifiUpdateInstall => 74,
         // Handled by `carry_action` before this point.
         Action::SpeakersScan | Action::SpeakerPlay(_) | Action::SpeakerStop => return None,
         Action::RadioFind | Action::RadioAdd(_) => return None,
@@ -6567,22 +6573,14 @@ pub extern "C" fn cinder_touch_down() {
 /// cinder_pending_play_start. The list stays until the next PlayIndex replaces it.
 #[no_mangle]
 pub extern "C" fn cinder_pending_play_count() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.pending_play.len() as libc::c_int)
+    read(|r| r.pending_play.len() as libc::c_int)
 }
 
 /// Snapshot metadata for the active ZAPPIN pass. Call order: START action -> generation/count ->
 /// candidate data -> start URI and seek -> confirm only after the shell observes the matching URI.
 #[no_mangle]
 pub extern "C" fn cinder_zappin_active() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|r| r.zappin_active) as libc::c_int
+    read(|r| r.zappin_active) as libc::c_int
 }
 
 #[no_mangle]
@@ -6596,20 +6594,12 @@ pub extern "C" fn cinder_zappin_preview_ms() -> u32 {
 
 #[no_mangle]
 pub extern "C" fn cinder_zappin_generation() -> u64 {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.zappin_generation)
+    read(|r| r.zappin_generation)
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_zappin_candidate_count() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.zappin_candidates.len() as libc::c_int)
+    read(|r| r.zappin_candidates.len() as libc::c_int)
 }
 
 /// Read candidate `i`: URI buffer plus object id, preview start/length, optional full duration
@@ -6832,11 +6822,7 @@ pub extern "C" fn cinder_zappin_abandon() -> libc::c_int {
 /// shell arms its bounded confirmation poll only when there is a hold left to release.
 #[no_mangle]
 pub extern "C" fn cinder_zappin_hold_active() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|r| r.zappin_resume_hold) as libc::c_int
+    read(|r| r.zappin_resume_hold) as libc::c_int
 }
 
 /// The shell received the cancellation action emitted by an FFI-internal queue mutation. Preserve
@@ -6949,21 +6935,13 @@ pub extern "C" fn cinder_uri_undecodable(uri: *const c_char) -> libc::c_int {
     let Ok(u) = unsafe { std::ffi::CStr::from_ptr(uri) }.to_str() else {
         return 0;
     };
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.undecodable.contains(u) as libc::c_int)
+    read(|r| r.undecodable.contains(u) as libc::c_int)
 }
 
 /// The start index within the pending-play list (the track the user actually tapped).
 #[no_mangle]
 pub extern "C" fn cinder_pending_play_start() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.pending_play_start as libc::c_int)
+    read(|r| r.pending_play_start as libc::c_int)
 }
 
 /// The Hold/lock SWITCH changed state (held != 0 = locked). The navigator disables the touchscreen
@@ -6997,11 +6975,7 @@ pub extern "C" fn cinder_power_held() -> libc::c_int {
 /// "Power off?" prompt out from under the finger that is about to answer it.
 #[no_mangle]
 pub extern "C" fn cinder_modal_open() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.modal_open() as libc::c_int)
+    read(|r| r.app.modal_open() as libc::c_int)
 }
 
 /// Force the next `cinder_render_tick` to repaint + blit even if nothing changed. The shell calls
@@ -7339,20 +7313,12 @@ pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
 /// which switches the radio off after ten minutes of a dark screen with nothing playing over it.
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_idle_off() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.bt_idle_off() as libc::c_int)
+    read(|r| r.app.bt_idle_off() as libc::c_int)
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_debug_log() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.bt_debug_log() as libc::c_int)
+    read(|r| r.app.bt_debug_log() as libc::c_int)
 }
 
 /// The shell stopped the HCI capture at its size limit and saved it: the switch goes off and the
@@ -7594,22 +7560,14 @@ pub extern "C" fn cinder_get_brightness() -> libc::c_int {
 /// action and at boot.
 #[no_mangle]
 pub extern "C" fn cinder_get_screen_off_s() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.screen_off_s() as libc::c_int)
+    read(|r| r.app.screen_off_s() as libc::c_int)
 }
 
 /// Auto power-off, in MINUTES (0 = off). The shell polls this from its 1 Hz housekeeping and owns
 /// the idle timer; the UI only remembers the choice.
 #[no_mangle]
 pub extern "C" fn cinder_get_auto_off_min() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.auto_off_min() as libc::c_int)
+    read(|r| r.app.auto_off_min() as libc::c_int)
 }
 
 /// L/R balance position, 0..=100 with 50 = centre. The shell turns it into the codec's two
@@ -7708,11 +7666,7 @@ pub extern "C" fn cinder_set_volume(level: libc::c_int) {
 /// scrolls exactly as before.
 #[no_mangle]
 pub extern "C" fn cinder_quick_pull_begin(x: libc::c_int, y: libc::c_int) -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.quick_pull_begin(x, y) as libc::c_int)
+    read(|r| r.app.quick_pull_begin(x, y) as libc::c_int)
 }
 
 /// The pull travelled far enough: open the panel. 1 if it opened.
@@ -7758,11 +7712,7 @@ pub extern "C" fn cinder_shelf_swipe() -> libc::c_int {
 /// back a jack number while something else was plugged in.
 #[no_mangle]
 pub extern "C" fn cinder_get_volume_limit() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.volume_limit() as libc::c_int)
+    read(|r| r.app.volume_limit() as libc::c_int)
 }
 
 /// Read the current UI volume as the raw 0..120 step level. The shell writes it 1:1 to the device
@@ -7908,11 +7858,7 @@ pub extern "C" fn cinder_wifi_serving() -> libc::c_int {
 /// Settings ▸ Wi-Fi ▸ AirPlay (1/0): the receiver runs while this is on and Wi-Fi is connected.
 #[no_mangle]
 pub extern "C" fn cinder_wifi_airplay() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|r| r.app.wifi_airplay()) as libc::c_int
+    read(|r| r.app.wifi_airplay()) as libc::c_int
 }
 
 /// What the AirPlay receiver is doing, for the switch's second line ("" = the default text).
@@ -8052,19 +7998,11 @@ pub unsafe extern "C" fn cinder_take_radio(buf: *mut c_char, cap: libc::c_int) -
 /// Settings ▸ Wi-Fi ▸ Send plays to ListenBrainz (1/0) and Check for updates (1/0).
 #[no_mangle]
 pub extern "C" fn cinder_wifi_lb() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|r| r.app.wifi_lb()) as libc::c_int
+    read(|r| r.app.wifi_lb()) as libc::c_int
 }
 #[no_mangle]
 pub extern "C" fn cinder_wifi_updates() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|r| r.app.wifi_updates()) as libc::c_int
+    read(|r| r.app.wifi_updates()) as libc::c_int
 }
 
 /// What the last ListenBrainz send and update check said, for their rows. Null leaves one as is.
@@ -8100,7 +8038,8 @@ unsafe fn put_note(text: &str, out: *mut c_char, cap: libc::c_int) {
     *out.add(n) = 0;
 }
 
-/// Send the `.scrobbler.log`'s new listens to ListenBrainz (net.rs). BLOCKING (the network): call
+/// Send the `.scrobbler.log`'s new listens to ListenBrainz and/or Last.fm, whichever has its file
+/// on the drive (net.rs). BLOCKING (the network): call
 /// from the Wi-Fi worker, never the render thread; it takes no lock. `offset_s` is the clock minus
 /// UTC (`utc_offset=` from `cinder-wifi status`, 0 if never synced). Returns how many were sent, or
 /// -1 with the reason in `note`.
@@ -8114,7 +8053,23 @@ pub unsafe extern "C" fn cinder_lb_submit(
     note: *mut c_char,
     cap: libc::c_int,
 ) -> libc::c_int {
-    match net::lb_submit(&cstr(log), offset_s, cinder_ui::cinder_version!()) {
+    let log = cstr(log);
+    let have = |p: &str| std::path::Path::new(p).exists();
+    // Each service whose file is on the drive; the first error is the one the row shows.
+    let mut runs = Vec::new();
+    if have(net::LB_TOKEN) {
+        runs.push(net::lb_submit(&log, offset_s, cinder_ui::cinder_version!()));
+    }
+    if have(net::LF_CREDS) {
+        runs.push(net::lf_submit(&log, offset_s));
+    }
+    let result = if runs.is_empty() {
+        Err(cinder_ui::i18n::text("No ListenBrainz token or Last.fm session").to_string())
+    } else {
+        runs.into_iter()
+            .try_fold(0, |most, r| r.map(|n| most.max(n)))
+    };
+    match result {
         Ok(0) => {
             put_note("", note, cap);
             0
@@ -8142,13 +8097,23 @@ pub unsafe extern "C" fn cinder_lb_submit(
 /// `note` is valid for `cap` bytes or null.
 #[no_mangle]
 pub unsafe extern "C" fn cinder_update_check(note: *mut c_char, cap: libc::c_int) -> libc::c_int {
-    match net::update_check(cinder_ui::cinder_version!()) {
+    // /contents/cinder_update_reinstall: offer the newest release even when this is it (a repair,
+    // or a test of the install itself).
+    let version = if std::path::Path::new("/contents/cinder_update_reinstall").exists() {
+        "0.0.0"
+    } else {
+        cinder_ui::cinder_version!()
+    };
+    match net::update_check(version) {
         Ok(Some(tag)) => {
             put_note(
-                &cinder_ui::ui_format!("Cinder {} is out: update with the installer", tag),
+                &cinder_ui::ui_format!("Cinder {} is out: install it from the Wi-Fi page", tag),
                 note,
                 cap,
             );
+            if let Some(r) = cell().lock().unwrap().as_mut() {
+                r.app.set_update_offer(&tag);
+            }
             1
         }
         Ok(None) => {
@@ -8166,24 +8131,81 @@ pub unsafe extern "C" fn cinder_update_check(note: *mut c_char, cap: libc::c_int
     }
 }
 
-/// Settings ▸ Wi-Fi ▸ Turn on at start (1/0). Read once, after the settings are loaded.
+/// Settings ▸ Wi-Fi ▸ Install Cinder v…: download the release the last check found and put its
+/// files on the drive (net.rs `update_stage`). BLOCKING for minutes: the Wi-Fi worker only. 0 =
+/// staged, so set Sony's update flag and restart (`cinder-power update`); -1 = stopped, `note` and
+/// the strip say why. Progress goes straight to the strip.
+///
+/// # Safety
+/// `note` is valid for `cap` bytes or null.
 #[no_mangle]
-pub extern "C" fn cinder_wifi_autostart() -> libc::c_int {
-    cell()
+pub unsafe extern "C" fn cinder_update_stage(note: *mut c_char, cap: libc::c_int) -> libc::c_int {
+    let say = |text: &str, stopped: bool| {
+        if let Some(r) = cell().lock().unwrap().as_mut() {
+            r.app.set_update_install_note(text, stopped);
+            r.dirty = true;
+        }
+    };
+    let (tag, battery) = cell()
         .lock()
         .unwrap()
         .as_ref()
-        .is_some_and(|r| r.app.wifi_autostart()) as libc::c_int
+        .map(|r| (r.app.update_offer().to_string(), r.np.battery))
+        .unwrap_or_default();
+    // Sony's updater runs with no Cinder to watch the battery; a cell that dies under it is the
+    // one way this can leave the player without a working system.
+    let cable = ["usb", "dc", "ac"].iter().any(|n| {
+        std::fs::read_to_string(format!("/sys/class/power_supply/{n}/online"))
+            .is_ok_and(|s| s.trim() == "1")
+    });
+    let done = if tag.is_empty() {
+        Err(cinder_ui::i18n::text("No update to install").to_string())
+    } else if battery < 30 && !cable {
+        Err(cinder_ui::i18n::text("Charge to 30% or plug in first").to_string())
+    } else {
+        net::update_stage(&tag, is_walkman_one(std::path::Path::new("/")), &mut |t| {
+            say(t, false)
+        })
+    };
+    match done {
+        Ok(()) => {
+            let t = cinder_ui::i18n::text("Restarting to update…");
+            say(t, false);
+            put_note(t, note, cap);
+            0
+        }
+        Err(e) => {
+            say(&e, true);
+            put_note(&e, note, cap);
+            -1
+        }
+    }
+}
+
+/// The staged update could not be started (`cinder-power update` came back): the install strip says
+/// why and can be tapped again.
+///
+/// # Safety
+/// `note` is a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_update_failed(note: *const c_char) {
+    let t = cstr(note);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_update_install_note(&t, true);
+        r.dirty = true;
+    }
+}
+
+/// Settings ▸ Wi-Fi ▸ Turn on at start (1/0). Read once, after the settings are loaded.
+#[no_mangle]
+pub extern "C" fn cinder_wifi_autostart() -> libc::c_int {
+    read(|r| r.app.wifi_autostart()) as libc::c_int
 }
 
 /// Settings ▸ Wi-Fi ▸ Set the clock (1/0): run `cinder-wifi timesync` after a successful `on`.
 #[no_mangle]
 pub extern "C" fn cinder_wifi_clock() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|r| r.app.wifi_clock()) as libc::c_int
+    read(|r| r.app.wifi_clock()) as libc::c_int
 }
 
 #[no_mangle]
@@ -8201,11 +8223,7 @@ pub extern "C" fn cinder_set_clock_epoch(epoch: i64) {
 /// `time_t` is 32-bit here and the signed wrap at 2038-01-19 turns a future date into 1901.
 #[no_mangle]
 pub extern "C" fn cinder_get_clock_epoch() -> i64 {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.clock_epoch_pending())
+    read(|r| r.app.clock_epoch_pending())
 }
 
 /// Start a fresh paired-device list. Call this, then `cinder_bt_paired_add` once per device **in the
@@ -8313,11 +8331,7 @@ pub extern "C" fn cinder_bt_prompt_clear() {
 /// SetSearchMode, and writes it when the radio's own search window ends.
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_scanning() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.bt_scanning() as libc::c_int)
+    read(|r| r.app.bt_scanning() as libc::c_int)
 }
 
 #[no_mangle]
@@ -8480,22 +8494,14 @@ pub extern "C" fn cinder_get_tone_bands(out: *mut libc::c_schar) -> libc::c_int 
 /// BT Receiver: 1 while the switch is on and its page is still in the stack (`App::rx_on`).
 #[no_mangle]
 pub extern "C" fn cinder_get_rx_on() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.rx_on() as libc::c_int)
+    read(|r| r.app.rx_on() as libc::c_int)
 }
 
 /// Receiver-only codec preference: 0 Auto, 1 LDAC, 2 AAC, 3 SBC. Independent of BT transmit.
 /// The shell reads this on `CINDER_ACT_RX_CODEC_CHANGED` and when it opens receiver mode.
 #[no_mangle]
 pub extern "C" fn cinder_get_rx_codec_pref() -> libc::c_int {
-    cell()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |r| r.app.rx_codec_pref() as libc::c_int)
+    read(|r| r.app.rx_codec_pref() as libc::c_int)
 }
 
 /// BT Receiver status, from the shell's once-a-second read of BtPlayerService.

@@ -452,6 +452,8 @@ c6bf06fd52c636a1 usb_storage
 20bfb8b3a769e2f7 usb_storage_140
 c5fadf061989cb1a wifi_off
 3c104aa7f12353a3 wifi_connected
+1270c98399585c81 wifi_update
+bdb0747114fb73dd wifi_update_busy
 90370e43a7388ae7 quick_wifi
 1b6d94eefe3a9abb quick_wifi_icons
 6cb4365611259a10 menu_wifi
@@ -460,6 +462,6 @@ c36dab556d7186e7 netradio_playing
 adccbaa6999bad73 netradio_find
 47674b4c580bca2f wifi_remote_on
 88de3ff2e98d0746 wifi_speakers_casting
-37212362898975f0 wifi_options
+e9522e26abc6be0f wifi_options
 c645830f4cff52da wifi_failed
 1aad37d87fe5677d keyboard_more_symbols

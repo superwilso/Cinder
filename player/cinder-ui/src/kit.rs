@@ -87,6 +87,11 @@ pub fn section_action_hit(label_y: i32, x: i32, y: i32) -> bool {
 
 /// The strip: one line of state on the panel tone, hairlines above and below. Returns the y below.
 pub fn strip(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, line: &str) -> i32 {
+    strip_ink(c, t, f, y, line, t.dim)
+}
+
+/// [`strip`] in another ink: the accent when the strip can be tapped.
+pub fn strip_ink(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, line: &str, ink: Rgb888) -> i32 {
     fill_rect(c, 0, y, W as i32, STRIP_H, t.panel);
     hline(c, y, t.line);
     hline(c, y + STRIP_H - 1, t.line);
@@ -94,7 +99,7 @@ pub fn strip(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, line: &str) -> i32 
         Family::Mono,
         Weight::Regular,
         crate::scale::CAPTION,
-        t.dim,
+        ink,
         0.06,
     );
     let s = fit(f, line, &st, (RIGHT - LEFT) as f32);
