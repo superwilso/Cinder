@@ -55,8 +55,12 @@ tests whether the app **runs** them, when, and how often.
   everything cinder-home knows about its hardware it reads from an absolute path — the battery
   percentage, whether a charger is attached, whether the headphones are plugged in — so `fopen` and
   `open` are overridden to serve those from a private tree, and anything not placed there falls
-  through to the real filesystem, where absent still means absent. `access` and `stat` are
-  deliberately **not** faked: they are presence checks a scenario wants answered honestly. Files can
+  through to the real filesystem, where absent still means absent. `stat` goes through the same tree
+  (the library-change check stats `/db/MTPDB.dat`); `access` deliberately does **not**: it is a
+  presence check a scenario wants answered honestly. One cost of that: the shell finds the backlight
+  node with `access(W_OK)`, so without help it never finds one and `set_backlight` (the day and
+  Night levels, the wake restore) does nothing. A scenario that needs it names the node's real place
+  in `cinder_backlight.conf` (`backlight_node_reachable()` in scenarios.cpp). Files can
   also be scheduled to CHANGE part way through a run (`cinder_harness_fs_write_at`), which is what
   makes edges — the headphones coming out, a PC appearing — into scenarios. Every open is traced,
   because "opened once per second for the life of the process" is a defect this project has already
@@ -72,6 +76,21 @@ tests whether the app **runs** them, when, and how often.
   created by the frame loop one statement before the frame loop's first sleep, and it sleeps for
   nine seconds and exits. Lose that race and the clock jumped nine seconds in one step and then
   belonged to a dead thread. It passed locally and hung in CI.
+
+  **The trace ends at the budget.** The app does not stop when the budget runs out: its frame loop
+  runs on through finalize and while the checks are read, and how far virtual time gets before the
+  harness's own thread reaches finalize depends on how busy the machine is (3.2 s on a loaded one,
+  enough for `zappin-aba-stale-uri` to count a fourth preview). So app calls after the budget are not
+  recorded; the lifecycle (`easel:…`, such as `OnFinalize`) still is.
+
+## The real UI
+
+`CINDER_HARNESS_REAL_FFI=1 run.sh` links the real cinder-ffi in place of the stubs and runs the
+`real-*` scenarios, which check the shell and the real UI together through what the shell does in
+response (service calls, `system()` commands, the backlight). Add `CINDER_HARNESS_MAP=<a
+tools/map_player.sh directory>` to boot on a real player's files; the scenarios that need its
+library skip without one. CI runs the real UI without a map: `real-player` and `real-night-dark`.
+With the stubs (plain `run.sh`) the real-UI-only scenarios skip.
 
 ## Calls that cost time
 
