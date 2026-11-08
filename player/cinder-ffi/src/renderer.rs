@@ -17,7 +17,7 @@
 // ponytail: volume not applied, pause restarts the song; byte-range resume when someone asks.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -865,10 +865,7 @@ fn send_event(url: &str, sid: &str, seq: u32, body: &str) {
         .split_once('/')
         .map(|(h, p)| (h, format!("/{p}")))
         .unwrap_or((rest, "/".into()));
-    let Ok(addr) = host
-        .parse::<SocketAddr>()
-        .or_else(|_| format!("{host}:80").parse())
-    else {
+    let Ok(addr) = crate::cast::resolve(host) else {
         return;
     };
     let Ok(mut c) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) else {

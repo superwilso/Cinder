@@ -123,6 +123,9 @@ fi
 # 4. The pure-logic self-tests: the rules that decide whether the device pauses, reconnects,
 #    reboots or notices new music. Milliseconds with a stock cc, so there is no excuse to skip.
 run "C++ self-tests" . bash cinder-home/tools/selftests.sh
+
+# 5. Shared code written out again (CONTRIBUTING.md, "Reuse before you write"). Under a second.
+run "Reuse check" . python3 tools/reuse_check.py
 }
 
 if [ "$FULL" = "1" ]; then

@@ -147,6 +147,13 @@ jobs:
       - name: C/C++ syntax check
         run: tools/host_syntax_check.sh
 
+      # Code the tree already shares, written out again: the FFI lock-and-match, the probe's
+      # framework start, a second copy of a helper. Each rule names what to use instead. The table
+      # it enforces is CONTRIBUTING.md, "Reuse before you write"; --self-test proves every rule
+      # still fires on its own example, so a rule cannot rot into one that never matches.
+      - name: Shared code is reused, not copied
+        run: python3 tools/reuse_check.py --self-test && python3 tools/reuse_check.py
+
       # The pure-logic rules that decide whether the device pauses, reconnects, reboots, notices new
       # music or believes its own battery gauge. Every *_selftest.cpp, globbed — the same script
       # build.sh and .githooks/pre-push run.

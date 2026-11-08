@@ -282,8 +282,7 @@ typedef enum {
 /* ZAPPIN is opt-in and never restored on boot. START action -> read generation/count/candidates;
  * after starting the chosen URI, confirm the callback's generation/index/object_id before timing.
  * Candidate data uses milliseconds; duration -1 means unknown, source 1=SABI, 2=fixed fallback,
- * 3=unknown duration. Call cancel before any ordinary transport, source, queue or repeat action. */
-int cinder_zappin_active(void);
+ * 3=unknown duration. Abandon before any ordinary transport, source, queue or repeat action. */
 unsigned int cinder_zappin_preview_ms(void);
 unsigned long long cinder_zappin_generation(void);
 int cinder_zappin_candidate_count(void);
@@ -298,8 +297,6 @@ int cinder_zappin_advance(int forward);
 /* End a completed finite pass after the shell has stopped its final preview. */
 void cinder_zappin_end(void);
 int cinder_zappin_prepare_normal_queue(void);
-int cinder_zappin_prepare_resume_queue(void);
-int cinder_zappin_cancel(void);
 int cinder_zappin_abandon(void);
 int cinder_zappin_hold_active(void);
 int cinder_zappin_abandon_internal_mutation(void);
@@ -862,9 +859,7 @@ void cinder_set_usb_dac(int on);
    for CINDER_ACT_SOUND_CHANGED. No new action ordinal: a profile picked by a TAP arrives as
    CINDER_ACT_SOUND_CHANGED. */
 int  cinder_take_profile_apply(void);
-/* Which profile is live (0 = A, 1 = B) and which output it was chosen for (0/1/2 as above).
-   For the shell's log line only. */
-int  cinder_get_profile(void);
+/* Which output the live profile was chosen for (0/1/2 as above). For the shell's log line only. */
 int  cinder_get_profile_output(void);
 /* Publish the host's live USB stream format for the USB-DAC panel: rate in Hz, bit depth, channels
    (from Sony's stream_info_t, the three words GetStatus fills in). rate 0 = not streaming, which

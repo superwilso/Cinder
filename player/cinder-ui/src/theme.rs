@@ -351,15 +351,6 @@ impl Theme {
         CINDER.theme(true, a)
     }
 
-    /// The theme for a (mode, accent) pair — what the navigator actually calls.
-    pub fn for_mode(night: bool, a: Accent) -> Self {
-        if night {
-            Self::night_with(a)
-        } else {
-            Self::day_with(a)
-        }
-    }
-
     /// How far the night palette is scaled toward black for each brightness level, 1..=5.
     ///
     /// THIS IS THE ONLY WAY DOWN LEFT. The panel's backlight bottoms out at raw 1 of 255 and that

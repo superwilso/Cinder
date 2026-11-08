@@ -11,6 +11,7 @@ use crate::library::{self, Tab};
 use crate::menu::MenuItem;
 use crate::model::{AlbumRow, Library, SongRow};
 use crate::now_playing::NowPlaying;
+use crate::opt::Opt;
 use crate::palette::Palette;
 use crate::sound::Sound;
 use crate::theme::{Accent, Tokens, CINDER};
@@ -1699,20 +1700,8 @@ pub struct App {
     /// A join for the shell to carry out (SSID bytes, password; empty for an open network). Taken
     /// once by `take_wifi_join`, so the password does not stay in memory longer than it must.
     wifi_join: Option<(Vec<u8>, String)>,
-    /// Settings ▸ Wi-Fi ▸ Turn on at start / Set the clock. Saved; both off unless switched on.
-    wifi_autostart: bool,
-    wifi_clock: bool,
-    /// Settings ▸ Wi-Fi ▸ Send plays / Check for updates. Saved; off by default.
-    wifi_lb: bool,
-    wifi_updates: bool,
-    /// Settings ▸ Wi-Fi ▸ AirPlay. Saved; off by default. And what the receiver is doing.
-    wifi_airplay: bool,
+    /// What the AirPlay receiver is doing, and the DLNA renderer (Wi-Fi ▸ Options ▸ Play to).
     airplay_note: String,
-    /// Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing lyrics. Saved; off by default.
-    wifi_lyrics: bool,
-    wifi_art: bool,
-    /// Settings ▸ Wi-Fi ▸ Options ▸ Play to this player (the DLNA renderer). Saved; off by default.
-    wifi_play_to: bool,
     play_to_note: String,
     /// Settings ▸ Wi-Fi ▸ Options ▸ Share the drive: on until the player restarts (never saved),
     /// its address while on, and the code in that address (saved, so a computer's mapping lasts).
@@ -1853,14 +1842,10 @@ pub struct App {
     lib: Library,
     /// Shelf bottom-sheet overlay: whether it's showing, and the three pin slots (jump-back places).
     shelf_open: bool,
-    /// The pull-down panel (`quick.rs`) is switched on in Settings. OFF by default: see `quick.rs`.
-    quick_enabled: bool,
-    /// Settings ▸ Folders tab: the FOLDERS link on the Library's tab strip. OFF by default.
-    folders_tab: bool,
-    /// Settings ▸ Delete music: DELETE on Track information and the album page. OFF by default.
-    delete_music: bool,
-    /// Settings ▸ Menu icons (off by default; discussion #53).
-    menu_icons: bool,
+    /// The opt-in switches (`opt.rs`): pull-down panel, Folders tab, Delete music, Menu icons, Now
+    /// Playing's back arrow and track number, Hold locks the buttons, and the Wi-Fi options. All
+    /// OFF by default.
+    opts: crate::opt::Opts,
     /// What the open delete question would remove, as object ids. Set when it is ASKED, so the
     /// answer deletes exactly what the question was about even if the song changes meanwhile.
     delete_ids: Vec<i64>,
@@ -1869,11 +1854,6 @@ pub struct App {
     np_swipe_down: crate::settings::SwipeTo,
     /// Now Playing's third toolbar button (Settings ▸ Now Playing button, #51). Bluetooth by default.
     np_button: crate::now_playing::NpButton,
-    /// Settings ▸ Back arrow / Track number on Now Playing, and Hold locks the buttons (#51). All
-    /// OFF by default.
-    np_back: bool,
-    np_count: bool,
-    hold_buttons: bool,
     /// Where Now Playing was opened from, for Back on it (the left-edge swipe, the back arrow).
     /// Opening Now Playing resets the stack (`go`), so without this Back there had nowhere to go
     /// and did nothing (owner, 2026-11-03: "hard to activate on the now playing screen").
@@ -2273,15 +2253,7 @@ impl Default for App {
             wifi_scanning: false,
             wifi_join_target: None,
             wifi_join: None,
-            wifi_autostart: false,
-            wifi_clock: false,
-            wifi_lb: false,
-            wifi_updates: false,
-            wifi_airplay: false,
             airplay_note: String::new(),
-            wifi_lyrics: false,
-            wifi_art: false,
-            wifi_play_to: false,
             play_to_note: String::new(),
             wifi_drive: false,
             drive_note: String::new(),
@@ -2351,17 +2323,11 @@ impl Default for App {
             onboarding_seen: false,
             lib: Library::sample(),
             shelf_open: false,
-            quick_enabled: false,
-            folders_tab: false,
-            delete_music: false,
-            menu_icons: false,
+            opts: crate::opt::Opts::default(),
             delete_ids: Vec::new(),
             np_swipe_up: crate::settings::SwipeTo::Off,
             np_swipe_down: crate::settings::SwipeTo::Off,
             np_button: crate::now_playing::NpButton::Bluetooth,
-            np_back: false,
-            np_count: false,
-            hold_buttons: false,
             np_from: Vec::new(),
             quick_open: false,
             pins: std::array::from_fn(|_| None),
@@ -2687,6 +2653,10 @@ impl App {
         };
         // The kept library is still sorted under the old preference; put it back in default order.
         self.set_ignore_the(false);
+        // And the switches' knock-on state (the library's FOLDERS link) goes back off with them.
+        for o in Opt::ALL {
+            self.set_opt(o, false);
+        }
         self.lib.views = self.lib_views;
         self.notify(crate::i18n::text("Settings reset"));
         vec![Action::SettingsReset]
@@ -2939,14 +2909,74 @@ impl App {
         self.shelf_open || self.quick_open
     }
 
-    /// Is the pull-down panel switched on (Settings ▸ Pull-down panel)?
-    pub fn quick_enabled(&self) -> bool {
-        self.quick_enabled
+    /// The Bluetooth screens' view; `fine_volume` is the codec page's Fine volume value.
+    fn bt_view<'a>(&'a self, fine_volume: &'a str) -> Bt<'a> {
+        Bt {
+            fine_volume,
+            on: self.bt_on,
+            // The REAL connected device, pushed by the shell from
+            // GetConnectInformation(vector<uint8_t>& addr, string& name). Before that call
+            // was safe to make this was pinned to None, and before THAT it reported a
+            // hardcoded "WH-1000XM5" whenever the UI-only radio toggle was on — i.e. it
+            // invented a paired device that was never there. bluetooth::render still draws
+            // an honest "No device connected" when it is None.
+            connected: self.bt_connected.as_deref(),
+            // …and until the shell has reported ONCE we don't even claim that much. On
+            // this firmware there is no sysfs/hcitool link node (both absent — measured),
+            // so pst is the only source; before its first poll "no device" would be a
+            // guess dressed as a fact.
+            link_known: self.bt_link_known,
+            codec_sel: self.bt_codec,
+            aac: self.bt_aac,
+            xq: self.bt_sbc_xq,
+            ldac_quality: self.bt_ldac_quality,
+            link_codec: self.bt_link_codec_raw(),
+            enhanced: self.bt_enhanced,
+            enhanced_supported: self.bt_enhanced_supported,
+            connecting: self.bt_connecting.is_some(),
+            busy_phase: self.bt_busy_phase,
+            paired: &self.bt_paired,
+            debug_log: self.bt_debug_log,
+        }
     }
 
-    /// Is the Library's FOLDERS link switched on (Settings ▸ Folders tab)?
-    pub fn folders_tab(&self) -> bool {
-        self.folders_tab
+    /// The Sound and Advanced screens' VPT and DC Phase values.
+    fn vpt_label(&self) -> &'static str {
+        if self.snd_vpt {
+            VPT_MODES[self.snd_vpt_mode.min(VPT_MODES.len() - 1)]
+        } else {
+            "Off"
+        }
+    }
+    fn dc_label(&self) -> &'static str {
+        if self.snd_dc {
+            DC_PHASE_TYPES[self.snd_dc_type.min(DC_PHASE_TYPES.len() - 1)]
+        } else {
+            "Off"
+        }
+    }
+
+    /// Is opt-in switch `o` on (`opt.rs`)?
+    pub fn opt(&self, o: Opt) -> bool {
+        self.opts.on(o)
+    }
+
+    /// Set switch `o`, and whatever has to follow it at once.
+    pub fn set_opt(&mut self, o: Opt, on: bool) {
+        self.opts.set(o, on);
+        match o {
+            Opt::Quick if !on => self.quick_open = false,
+            Opt::FoldersTab => self.lib.folders_tab = on,
+            Opt::NpBack => crate::now_playing::set_back(on),
+            _ => {}
+        }
+    }
+
+    /// Flip switch `o`. Returns its new state.
+    pub fn toggle_opt(&mut self, o: Opt) -> bool {
+        let on = !self.opt(o);
+        self.set_opt(o, on);
+        on
     }
 
     /// What a swipe up and a swipe down on Now Playing open, for the settings file.
@@ -3065,11 +3095,11 @@ impl App {
                 vec![Action::UiScaleChanged]
             }
             Choice::Quick => {
-                self.set_quick_enabled(!self.quick_enabled);
+                self.toggle_opt(Opt::Quick);
                 vec![]
             }
             Choice::Folders => {
-                self.set_folders_tab(!self.folders_tab);
+                self.toggle_opt(Opt::FoldersTab);
                 vec![]
             }
         }
@@ -3082,46 +3112,6 @@ impl App {
 
     pub fn set_np_button(&mut self, b: crate::now_playing::NpButton) {
         self.np_button = b;
-    }
-
-    /// Settings ▸ Back arrow, Track number and Hold locks the buttons, for the settings file and the
-    /// shell (which applies the Hold lock to the side keys itself).
-    pub fn np_back(&self) -> bool {
-        self.np_back
-    }
-    pub fn set_np_back(&mut self, on: bool) {
-        self.np_back = on;
-        crate::now_playing::set_back(on);
-    }
-    pub fn np_count(&self) -> bool {
-        self.np_count
-    }
-    pub fn set_np_count(&mut self, on: bool) {
-        self.np_count = on;
-    }
-    pub fn hold_buttons(&self) -> bool {
-        self.hold_buttons
-    }
-    pub fn set_hold_buttons(&mut self, on: bool) {
-        self.hold_buttons = on;
-    }
-
-    /// Is Settings ▸ Delete music on?
-    pub fn delete_music(&self) -> bool {
-        self.delete_music
-    }
-
-    /// Settings ▸ Menu icons.
-    pub fn menu_icons(&self) -> bool {
-        self.menu_icons
-    }
-
-    pub fn set_menu_icons(&mut self, on: bool) {
-        self.menu_icons = on;
-    }
-
-    pub fn set_delete_music(&mut self, on: bool) {
-        self.delete_music = on;
     }
 
     /// The files a confirmed delete is for, once (`Action::DeleteMusic`).
@@ -3185,18 +3175,6 @@ impl App {
         out
     }
 
-    pub fn set_folders_tab(&mut self, on: bool) {
-        self.folders_tab = on;
-        self.lib.folders_tab = on;
-    }
-
-    pub fn set_quick_enabled(&mut self, on: bool) {
-        self.quick_enabled = on;
-        if !on {
-            self.quick_open = false;
-        }
-    }
-
     pub fn quick_is_open(&self) -> bool {
         self.quick_open
     }
@@ -3208,7 +3186,7 @@ impl App {
     /// up. With the panel off the answer is always no, so the contact scrolls exactly as it did
     /// before the panel existed.
     pub fn quick_pull_begin(&self, _x: i32, y: i32) -> bool {
-        self.quick_enabled
+        self.opt(Opt::Quick)
             && (0..crate::chrome::STATUS_H).contains(&y)
             && self.quick_allowed()
             && !self.landscape()
@@ -3222,7 +3200,7 @@ impl App {
 
     /// The pull travelled far enough: open the panel. False if something modal came up meanwhile.
     pub fn quick_pull_open(&mut self) -> bool {
-        if !self.quick_enabled || !self.quick_allowed() {
+        if !self.opt(Opt::Quick) || !self.quick_allowed() {
             return false;
         }
         self.quick_open = true;
@@ -4633,6 +4611,11 @@ impl App {
         if self.settings_sel != crate::settings::ROW_BOOT_STOCK {
             self.boot_stock_armed = false;
         }
+        // An opt-in switch row (`opt.rs`). Render-only: the shell's save path writes the file.
+        if let Some(o) = Opt::of_row(self.settings_sel) {
+            self.toggle_opt(o);
+            return vec![];
+        }
         match self.settings_sel {
             crate::settings::ROW_LANGUAGE => {
                 self.language_scroll_px = 0;
@@ -4691,15 +4674,6 @@ impl App {
                 crate::scale::set_big_icons(!crate::scale::big_icons_set());
                 vec![Action::UiScaleChanged]
             }
-            crate::settings::ROW_QUICK => {
-                self.set_quick_enabled(!self.quick_enabled);
-                vec![]
-            }
-            // Render-only, like the Folders tab: the shell's save path writes the file.
-            crate::settings::ROW_MENU_ICONS => {
-                self.menu_icons = !self.menu_icons;
-                vec![]
-            }
             crate::settings::ROW_SWIPE_UP => {
                 // Render-only, like the Folders tab: the shell's save path writes the file.
                 self.np_swipe_up = self.np_swipe_up.next();
@@ -4711,28 +4685,6 @@ impl App {
             }
             crate::settings::ROW_NP_BUTTON => {
                 self.np_button = self.np_button.next();
-                vec![]
-            }
-            // Render-only, like the Folders tab: the shell's save path writes the file.
-            crate::settings::ROW_NP_BACK => {
-                self.set_np_back(!self.np_back);
-                vec![]
-            }
-            crate::settings::ROW_NP_COUNT => {
-                self.np_count = !self.np_count;
-                vec![]
-            }
-            crate::settings::ROW_HOLD_BUTTONS => {
-                self.hold_buttons = !self.hold_buttons;
-                vec![]
-            }
-            crate::settings::ROW_FOLDERS_TAB => {
-                // Render-only, like the pull-down panel: the shell's save path writes the file.
-                self.set_folders_tab(!self.folders_tab);
-                vec![]
-            }
-            crate::settings::ROW_DELETE => {
-                self.delete_music = !self.delete_music;
                 vec![]
             }
             crate::settings::ROW_SHUFFLE => {
@@ -5444,7 +5396,7 @@ impl App {
                         self.album_track_idx = row;
                         return self.play_album_row(&album, row);
                     }
-                    if self.delete_music && crate::chrome::header_action_hit(x, y) {
+                    if self.opt(Opt::DeleteMusic) && crate::chrome::header_action_hit(x, y) {
                         let ids = album.track_list.iter().map(|s| s.object_id).collect();
                         self.ask_delete(ids, true);
                         return vec![];
@@ -5473,7 +5425,7 @@ impl App {
             }
             // Track information: the pinned action band, plus the link rows.
             Screen::TrackInfo => {
-                if self.delete_music && crate::chrome::header_action_hit(x, y) {
+                if self.opt(Opt::DeleteMusic) && crate::chrome::header_action_hit(x, y) {
                     if let Some(id) = self
                         .playing_object_id()
                         .filter(|_| !self.track_info.is_empty())
@@ -5698,7 +5650,7 @@ impl App {
             }
             Screen::Help => {
                 // The last row replays the first-run intro. Every other row is a fact.
-                if crate::help::item_at(x, y, self.help_scroll_px, self.quick_enabled).is_some() {
+                if crate::help::item_at(x, y, self.help_scroll_px, self.opt(Opt::Quick)).is_some() {
                     self.onboarding_page = 0;
                     self.push(Screen::Onboarding);
                 }
@@ -7471,8 +7423,8 @@ impl App {
                 vec![]
             }
             Hit::AirPlay => {
-                self.wifi_airplay = !self.wifi_airplay;
-                if !self.wifi_airplay {
+                self.toggle_opt(Opt::WifiAirplay);
+                if !self.opt(Opt::WifiAirplay) {
                     self.airplay_note.clear();
                 }
                 vec![Action::WifiAirPlay]
@@ -7491,19 +7443,19 @@ impl App {
         let connected = matches!(self.wifi_status.state, State::Connected);
         match crate::wifi::hit_options(y) {
             Hit::AutoStart => {
-                self.wifi_autostart = !self.wifi_autostart;
+                self.toggle_opt(Opt::WifiAutostart);
                 vec![]
             }
             Hit::Clock => {
-                self.wifi_clock = !self.wifi_clock;
-                if self.wifi_clock && connected {
+                self.toggle_opt(Opt::WifiClock);
+                if self.opt(Opt::WifiClock) && connected {
                     return vec![Action::WifiTimeSync];
                 }
                 vec![]
             }
             Hit::ListenBrainz => {
-                self.wifi_lb = !self.wifi_lb;
-                if !self.wifi_lb {
+                self.toggle_opt(Opt::WifiLb);
+                if !self.opt(Opt::WifiLb) {
                     self.wifi_lb_note.clear();
                 } else if connected {
                     return vec![Action::WifiListenBrainz];
@@ -7511,15 +7463,15 @@ impl App {
                 vec![]
             }
             Hit::Lyrics => {
-                self.wifi_lyrics = !self.wifi_lyrics;
+                self.toggle_opt(Opt::WifiLyrics);
                 vec![]
             }
             Hit::Art => {
-                self.wifi_art = !self.wifi_art;
+                self.toggle_opt(Opt::WifiArt);
                 vec![]
             }
             Hit::PlayTo => {
-                self.wifi_play_to = !self.wifi_play_to;
+                self.toggle_opt(Opt::WifiPlayTo);
                 self.play_to_note.clear();
                 vec![]
             }
@@ -7529,8 +7481,8 @@ impl App {
                 vec![]
             }
             Hit::Updates => {
-                self.wifi_updates = !self.wifi_updates;
-                if !self.wifi_updates {
+                self.toggle_opt(Opt::WifiUpdates);
+                if !self.opt(Opt::WifiUpdates) {
                     self.wifi_update_note.clear();
                 } else if connected {
                     return vec![Action::WifiUpdateCheck];
@@ -7792,34 +7744,6 @@ impl App {
         self.wifi_scanning = false;
     }
 
-    /// Settings ▸ Wi-Fi ▸ Turn on at start: the shell reads it once, at boot.
-    pub fn wifi_autostart(&self) -> bool {
-        self.wifi_autostart
-    }
-    pub fn set_wifi_autostart(&mut self, on: bool) {
-        self.wifi_autostart = on;
-    }
-    /// Settings ▸ Wi-Fi ▸ Set the clock: the shell runs `timesync` after each successful `on`.
-    pub fn wifi_clock(&self) -> bool {
-        self.wifi_clock
-    }
-    pub fn set_wifi_clock(&mut self, on: bool) {
-        self.wifi_clock = on;
-    }
-
-    /// Settings ▸ Wi-Fi ▸ Send plays: the shell sends after each connect and
-    /// every 15 minutes while connected.
-    pub fn wifi_lb(&self) -> bool {
-        self.wifi_lb
-    }
-    pub fn set_wifi_lb(&mut self, on: bool) {
-        self.wifi_lb = on;
-    }
-    /// Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing lyrics: cinder-ffi asks LRCLIB for a song that
-    /// starts with no lyrics, while connected.
-    pub fn wifi_lyrics(&self) -> bool {
-        self.wifi_lyrics
-    }
     /// Settings ▸ Wi-Fi ▸ Options ▸ Share the drive (on until the player restarts).
     pub fn wifi_drive(&self) -> bool {
         self.wifi_drive
@@ -7841,13 +7765,6 @@ impl App {
             .take(16)
             .collect();
     }
-    /// Settings ▸ Wi-Fi ▸ Options ▸ Play to this player.
-    pub fn wifi_play_to(&self) -> bool {
-        self.wifi_play_to
-    }
-    pub fn set_wifi_play_to(&mut self, on: bool) {
-        self.wifi_play_to = on;
-    }
     pub fn play_to_note(&self) -> &str {
         &self.play_to_note
     }
@@ -7855,39 +7772,16 @@ impl App {
     pub fn set_play_to_note(&mut self, note: &str) {
         self.play_to_note = note.chars().take(60).collect();
     }
-    pub fn wifi_art(&self) -> bool {
-        self.wifi_art
-    }
-    pub fn set_wifi_art(&mut self, on: bool) {
-        self.wifi_art = on;
-    }
-    pub fn set_wifi_lyrics(&mut self, on: bool) {
-        self.wifi_lyrics = on;
-    }
     /// Wi-Fi is connected (the last status said so).
     pub fn wifi_connected(&self) -> bool {
         matches!(self.wifi_status.state, crate::wifi::State::Connected)
     }
 
-    /// Settings ▸ Wi-Fi ▸ AirPlay: the receiver runs while this is on and Wi-Fi is connected.
-    pub fn wifi_airplay(&self) -> bool {
-        self.wifi_airplay
-    }
-    pub fn set_wifi_airplay(&mut self, on: bool) {
-        self.wifi_airplay = on;
-    }
     /// What the AirPlay receiver is doing ("Shows up as Walkman (Cinder)", "Playing from AirPlay").
     pub fn set_airplay_note(&mut self, note: &str) {
         self.airplay_note = note.chars().take(60).collect();
     }
 
-    /// Settings ▸ Wi-Fi ▸ Check for updates: the shell checks once a day while connected.
-    pub fn wifi_updates(&self) -> bool {
-        self.wifi_updates
-    }
-    pub fn set_wifi_updates(&mut self, on: bool) {
-        self.wifi_updates = on;
-    }
     /// What the last ListenBrainz send said ("Sent 12 songs", "ListenBrainz refused the token").
     pub fn set_wifi_lb_note(&mut self, note: &str) {
         self.wifi_lb_note = note.chars().take(60).collect();
@@ -8319,7 +8213,7 @@ impl App {
                 }
             }
             Screen::Help => {
-                let max = crate::help::max_scroll(self.quick_enabled);
+                let max = crate::help::max_scroll(self.opt(Opt::Quick));
                 self.help_scroll_px = (self.help_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Language => {
@@ -10309,7 +10203,7 @@ impl App {
         // order here, so a reload can never quietly drop the Ignore "The" setting.
         lib.ignore_the = self.ignore_the;
         lib.views = self.lib_views;
-        lib.folders_tab = self.folders_tab;
+        lib.folders_tab = self.opt(Opt::FoldersTab);
         lib.prepare_order();
         self.lib = lib;
         self.az_memo = None; // a new library is a new set of letters
@@ -11106,7 +11000,7 @@ impl App {
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
         crate::now_playing::set_button(self.np_button);
-        crate::now_playing::set_back(self.np_back);
+        crate::now_playing::set_back(self.opt(Opt::NpBack));
         // Now Playing grows its own controls with Big view, and onboarding is drawn to fit, so
         // Bigger icons stays out of both (`scale::IconsExempt`).
         let _own_sizes = crate::scale::IconsExempt::new(matches!(
@@ -11155,7 +11049,7 @@ impl App {
                     badge: np.badge,
                     battery: np.battery,
                     progress: np.progress,
-                    keys_locked: self.hold_buttons,
+                    keys_locked: self.opt(Opt::HoldButtons),
                 };
                 crate::lock::render(c, &theme, fonts, &lk);
             }
@@ -11248,10 +11142,10 @@ impl App {
                         self.stop_after,
                     );
                     // Settings ▸ Back arrow and Track number (#51), in the top band.
-                    if self.np_back {
+                    if self.opt(Opt::NpBack) {
                         crate::now_playing::back_chip(c, &theme);
                     }
-                    if self.np_count {
+                    if self.opt(Opt::NpCount) {
                         crate::now_playing::count_chip(
                             c,
                             &theme,
@@ -11322,7 +11216,7 @@ impl App {
                         },
                         home: home_row == Some(*screen),
                         active: i == self.menu_idx,
-                        icon: self.menu_icons.then(|| menu_icon(*screen)),
+                        icon: self.opt(Opt::MenuIcons).then(|| menu_icon(*screen)),
                     })
                     .collect();
                 crate::menu::render(
@@ -11381,7 +11275,7 @@ impl App {
                         self.swipe_row,
                         self.sbar_active(),
                         self.lib.album_rating(al),
-                        self.delete_music,
+                        self.opt(Opt::DeleteMusic),
                     );
                 } else {
                     crate::library::render(
@@ -11475,12 +11369,12 @@ impl App {
                     big: crate::scale::large(),
                     bar: crate::scale::big_bar_set(),
                     icons: crate::scale::big_icons_set(),
-                    quick: self.quick_enabled,
-                    folders: self.folders_tab,
+                    quick: self.opt(Opt::Quick),
+                    folders: self.opt(Opt::FoldersTab),
                 },
             ),
             Screen::Help => {
-                crate::help::render(c, &theme, fonts, self.help_scroll_px, self.quick_enabled)
+                crate::help::render(c, &theme, fonts, self.help_scroll_px, self.opt(Opt::Quick))
             }
             Screen::UsbStorage => crate::usb_storage::render(c, &theme, fonts),
             Screen::GenreFilter => crate::library::genre_render(
@@ -11539,7 +11433,7 @@ impl App {
                     self.sbar_active(),
                     rating,
                     (!self.presets.is_empty()).then(|| self.album_sound_row().unwrap_or((0, 0))),
-                    self.delete_music,
+                    self.opt(Opt::DeleteMusic),
                 )
             }
             Screen::Lyrics => {
@@ -11657,17 +11551,9 @@ impl App {
                     vpt_gone: self.w1_chain,
                     dsee: self.snd_dsee,
                     vinyl: self.snd_vinyl,
-                    vpt: if self.snd_vpt {
-                        VPT_MODES[self.snd_vpt_mode.min(VPT_MODES.len() - 1)]
-                    } else {
-                        "Off"
-                    },
+                    vpt: self.vpt_label(),
                     vpt_on: self.snd_vpt,
-                    dcphase: if self.snd_dc {
-                        DC_PHASE_TYPES[self.snd_dc_type.min(DC_PHASE_TYPES.len() - 1)]
-                    } else {
-                        "Off"
-                    },
+                    dcphase: self.dc_label(),
                     dcphase_on: self.snd_dc,
                     normalizer: self.snd_norm,
                     clearaudio: self.snd_clear,
@@ -11803,17 +11689,9 @@ impl App {
                         .adv_vinyl_type
                         .min(crate::advanced::VINYL_TYPES.len() - 1)],
                     vinyl_on: self.snd_vinyl,
-                    vpt: if self.snd_vpt {
-                        VPT_MODES[self.snd_vpt_mode.min(VPT_MODES.len() - 1)]
-                    } else {
-                        "Off"
-                    },
+                    vpt: self.vpt_label(),
                     vpt_on: self.snd_vpt,
-                    dcphase: if self.snd_dc {
-                        DC_PHASE_TYPES[self.snd_dc_type.min(DC_PHASE_TYPES.len() - 1)]
-                    } else {
-                        "Off"
-                    },
+                    dcphase: self.dc_label(),
                     dcphase_on: self.snd_dc,
                     tone_control: self.adv_tone,
                     hp_linear: self.adv_hp_linear,
@@ -11871,33 +11749,8 @@ impl App {
                 crate::vizset::render(c, &theme, fonts, &vs, self.viz_sel)
             }
             Screen::Bluetooth => {
-                let bt = Bt {
-                    fine_volume: crate::i18n::text("OFF"), // not drawn on this screen; the row lives on the codec page
-                    on: self.bt_on,
-                    // The REAL connected device, pushed by the shell from
-                    // GetConnectInformation(vector<uint8_t>& addr, string& name). Before that call
-                    // was safe to make this was pinned to None, and before THAT it reported a
-                    // hardcoded "WH-1000XM5" whenever the UI-only radio toggle was on — i.e. it
-                    // invented a paired device that was never there. bluetooth::render still draws
-                    // an honest "No device connected" when it is None.
-                    connected: self.bt_connected.as_deref(),
-                    // …and until the shell has reported ONCE we don't even claim that much. On
-                    // this firmware there is no sysfs/hcitool link node (both absent — measured),
-                    // so pst is the only source; before its first poll "no device" would be a
-                    // guess dressed as a fact.
-                    link_known: self.bt_link_known,
-                    codec_sel: self.bt_codec,
-                    aac: self.bt_aac,
-                    xq: self.bt_sbc_xq,
-                    ldac_quality: self.bt_ldac_quality,
-                    link_codec: self.bt_link_codec_raw(),
-                    enhanced: self.bt_enhanced,
-                    enhanced_supported: self.bt_enhanced_supported,
-                    connecting: self.bt_connecting.is_some(),
-                    busy_phase: self.bt_busy_phase,
-                    paired: &self.bt_paired,
-                    debug_log: self.bt_debug_log,
-                };
+                // Not drawn on this screen; the row lives on the codec page.
+                let bt = self.bt_view(crate::i18n::text("OFF"));
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
             Screen::BtCodec => {
@@ -11907,23 +11760,7 @@ impl App {
                     2 => "±2 dB",
                     _ => "±3 dB",
                 };
-                let bt = Bt {
-                    fine_volume: fine_lbl,
-                    on: self.bt_on,
-                    connected: self.bt_connected.as_deref(),
-                    link_known: self.bt_link_known,
-                    codec_sel: self.bt_codec,
-                    aac: self.bt_aac,
-                    xq: self.bt_sbc_xq,
-                    ldac_quality: self.bt_ldac_quality,
-                    link_codec: self.bt_link_codec_raw(),
-                    enhanced: self.bt_enhanced,
-                    enhanced_supported: self.bt_enhanced_supported,
-                    connecting: self.bt_connecting.is_some(),
-                    busy_phase: self.bt_busy_phase,
-                    paired: &self.bt_paired,
-                    debug_log: self.bt_debug_log,
-                };
+                let bt = self.bt_view(fine_lbl);
                 crate::bluetooth::render_codec(c, &theme, fonts, &bt, self.bt_codec_scroll())
             }
             Screen::Pairing => {
@@ -11968,16 +11805,10 @@ impl App {
                     big_bar: crate::scale::big_bar_set(),
                     big_icons: crate::scale::big_icons_set(),
                     ignore_the: self.ignore_the,
-                    quick: self.quick_enabled,
-                    folders_tab: self.folders_tab,
-                    delete_music: self.delete_music,
-                    menu_icons: self.menu_icons,
+                    opts: self.opts,
                     swipe_up: self.np_swipe_up,
                     swipe_down: self.np_swipe_down,
                     np_button: self.np_button,
-                    np_back: self.np_back,
-                    np_count: self.np_count,
-                    hold_buttons: self.hold_buttons,
                     shuffle_by: self.shuffle_by.label(),
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
@@ -12104,7 +11935,7 @@ impl App {
                         .map(|s| crate::ui_format!("Playing on {}", s))
                         .unwrap_or_default(),
                     remote_note: &self.remote_row_note(),
-                    airplay: self.wifi_airplay,
+                    airplay: self.opt(Opt::WifiAirplay),
                     airplay_note: &self.airplay_note,
                     update: if self.update_offered() {
                         &self.update_offer
@@ -12120,13 +11951,13 @@ impl App {
                 fonts,
                 &crate::wifi::OptionsView {
                     options: [
-                        self.wifi_autostart,
-                        self.wifi_clock,
-                        self.wifi_lb,
-                        self.wifi_updates,
-                        self.wifi_lyrics,
-                        self.wifi_art,
-                        self.wifi_play_to,
+                        self.opt(Opt::WifiAutostart),
+                        self.opt(Opt::WifiClock),
+                        self.opt(Opt::WifiLb),
+                        self.opt(Opt::WifiUpdates),
+                        self.opt(Opt::WifiLyrics),
+                        self.opt(Opt::WifiArt),
+                        self.opt(Opt::WifiPlayTo),
                         self.wifi_drive,
                     ],
                     lb_note: &self.wifi_lb_note,
@@ -12509,7 +12340,7 @@ impl App {
                     // Busy shows as on, as on the Wi-Fi page: the switch moved when it was tapped.
                     wifi_on: !matches!(self.wifi_status.state, crate::wifi::State::Off),
                     wifi_sub: &wifi_sub,
-                    icons: self.menu_icons,
+                    icons: self.opt(Opt::MenuIcons),
                 },
             );
         }
@@ -18724,7 +18555,7 @@ mod tests {
     #[test]
     fn the_pull_down_panel_is_off_by_default_and_claims_nothing() {
         let mut a = App::unlocked();
-        assert!(!a.quick_enabled(), "off unless switched on");
+        assert!(!a.opt(Opt::Quick), "off unless switched on");
         for y in [0, 10, 30, crate::chrome::STATUS_H - 1] {
             assert!(
                 !a.quick_pull_begin(240, y),
@@ -18753,7 +18584,7 @@ mod tests {
         a.go(Screen::Settings);
         a.settings_sel = crate::settings::ROW_QUICK;
         a.settings_activate();
-        assert!(a.quick_enabled(), "the Settings row switches it on");
+        assert!(a.opt(Opt::Quick), "the Settings row switches it on");
         assert!(a.quick_pull_begin(240, 20));
         assert!(
             !a.quick_pull_begin(240, crate::chrome::STATUS_H),
@@ -18783,7 +18614,7 @@ mod tests {
     #[test]
     fn the_pull_down_bluetooth_name_opens_the_page() {
         let mut a = App::unlocked();
-        a.set_quick_enabled(true);
+        a.set_opt(Opt::Quick, true);
         assert!(a.quick_pull_begin(240, 20));
         assert!(a.quick_pull_open());
         assert_eq!(a.tap(120, crate::quick::ROW_BT + 30), vec![]);
@@ -18880,7 +18711,7 @@ mod tests {
     fn the_pull_down_panel_controls_are_existing_actions() {
         use crate::quick;
         let mut a = App::unlocked();
-        a.set_quick_enabled(true);
+        a.set_opt(Opt::Quick, true);
         assert!(a.quick_pull_open());
         let chip = |i: usize, n: usize| {
             let (x, w) = crate::kit::chip_span(i, n);
@@ -18915,7 +18746,7 @@ mod tests {
     #[test]
     fn the_pull_down_panel_is_modal_like_the_shelf() {
         let mut a = App::unlocked();
-        a.set_quick_enabled(true);
+        a.set_opt(Opt::Quick, true);
         a.quick_pull_open();
         assert_eq!(a.press(Button::Next), vec![Action::Next]);
         assert!(a.quick_is_open());
@@ -18931,7 +18762,7 @@ mod tests {
         a.locked = true;
         assert!(!a.quick_pull_begin(240, 20), "not on the lock screen");
         a.locked = false;
-        a.set_quick_enabled(false);
+        a.set_opt(Opt::Quick, false);
         assert!(
             !a.quick_pull_begin(240, 20),
             "switching it off takes the gesture away again"
@@ -20238,7 +20069,7 @@ mod tests {
     #[test]
     fn menu_icons_are_off_by_default_and_their_row_switches_them() {
         let mut a = unlocked();
-        assert!(!a.menu_icons(), "off by default");
+        assert!(!a.opt(Opt::MenuIcons), "off by default");
         assert_eq!(
             crate::settings::page_of(crate::settings::ROW_MENU_ICONS),
             crate::settings::GROUPS
@@ -20251,9 +20082,9 @@ mod tests {
             a.settings_activate().is_empty(),
             "render-only: no shell work"
         );
-        assert!(a.menu_icons());
+        assert!(a.opt(Opt::MenuIcons));
         assert!(a.settings_activate().is_empty());
-        assert!(!a.menu_icons());
+        assert!(!a.opt(Opt::MenuIcons));
     }
 
     #[test]
@@ -20273,11 +20104,11 @@ mod tests {
             crate::chrome::HEADER_ACTION_X + 40,
             crate::chrome::HEADER_BOTTOM - 20,
         );
-        assert!(!a.delete_music(), "off by default");
+        assert!(!a.opt(Opt::DeleteMusic), "off by default");
         assert!(a.tap(hx, hy).is_empty());
         assert!(!a.modal_open());
 
-        a.set_delete_music(true);
+        a.set_opt(Opt::DeleteMusic, true);
         assert!(a.tap(hx, hy).is_empty());
         assert!(a.modal_open(), "a delete is always asked first");
         let (cx, cy) = crate::confirm::confirm_button_centre(crate::confirm::Ask::DeleteTrack);
@@ -21684,9 +21515,9 @@ mod tests {
         assert_eq!(a.tap(400, row_y(Choice::Bar)), vec![Action::UiScaleChanged]);
         assert!(crate::scale::big_bar());
         a.tap(400, row_y(Choice::Quick));
-        assert!(a.quick_enabled());
+        assert!(a.opt(Opt::Quick));
         a.tap(400, row_y(Choice::Folders));
-        assert!(a.folders_tab());
+        assert!(a.opt(Opt::FoldersTab));
         // Off the rows the page turns as every other page does.
         a.tap(400, 760);
         assert_eq!(a.onboarding_page, CHOICES_PAGE + 1);
@@ -24680,6 +24511,21 @@ mod tests {
         assert_eq!(a.track_info_scroll_px, 0);
     }
 
+    #[test]
+    fn reset_switches_every_opt_in_off_with_what_it_drives() {
+        let mut a = unlocked();
+        for o in Opt::ALL {
+            a.set_opt(o, true);
+        }
+        assert!(a.lib.folders_tab);
+        a.reset_settings();
+        assert!(Opt::ALL.into_iter().all(|o| !a.opt(o)));
+        assert!(
+            !a.lib.folders_tab,
+            "the library kept across Reset loses its FOLDERS link too"
+        );
+    }
+
     /// A reset must put the PREFERENCES back and leave everything else alone. The two halves are
     /// asserted together because the bug in either direction is silent: a reset that keeps a
     /// preference looks like the button did nothing, and a reset that clears the library or stops
@@ -25780,15 +25626,15 @@ mod tests {
         );
         let mut a = fresh();
         assert!(
-            !a.np_back() && !a.np_count() && !a.hold_buttons(),
+            !a.opt(Opt::NpBack) && !a.opt(Opt::NpCount) && !a.opt(Opt::HoldButtons),
             "all off by default"
         );
-        a.set_np_back(false);
+        a.set_opt(Opt::NpBack, false);
         assert!(!crate::now_playing::hit_back(x, y), "no arrow, no target");
 
         let mut want = fresh();
         want.press(Button::Back);
-        a.set_np_back(true);
+        a.set_opt(Opt::NpBack, true);
         a.tap(x, y);
         assert_ne!(
             a.current(),
@@ -25806,7 +25652,7 @@ mod tests {
             ly,
             true
         ));
-        a.set_np_back(false);
+        a.set_opt(Opt::NpBack, false);
         assert!(crate::now_playing::hit_lyrics(lx, ly, true));
 
         // With nothing to go back to (Now Playing at boot), Back opens the Library.
@@ -25866,7 +25712,7 @@ mod tests {
     fn the_folders_link_is_off_until_switched_on_and_opens_the_folder_browser() {
         let _scale = lock_scale();
         let mut a = unlocked();
-        assert!(!a.folders_tab(), "off by default");
+        assert!(!a.opt(Opt::FoldersTab), "off by default");
         a.go(Screen::Library);
         let fonts = FontSet::load();
         a.render(&mut Canvas::new(), &fonts, &bare_np());
@@ -25876,7 +25722,7 @@ mod tests {
             "off: the four tabs, nothing else"
         );
 
-        a.set_folders_tab(true);
+        a.set_opt(Opt::FoldersTab, true);
         a.render(&mut Canvas::new(), &fonts, &bare_np());
         let (slot, x, w) = *a.lib_tab_zones.borrow().last().unwrap();
         assert_eq!(slot, None, "FOLDERS is the last slot");
@@ -27338,14 +27184,19 @@ mod r4_tests {
         use crate::wifi::{Hit, ListHit};
         let mut a = App::unlocked();
         a.push_for_test(Screen::Wifi);
-        assert!(!a.wifi_autostart() && !a.wifi_clock() && !a.wifi_lb() && !a.wifi_updates());
         assert!(
-            !a.wifi_lyrics() && !a.wifi_art(),
+            !a.opt(Opt::WifiAutostart)
+                && !a.opt(Opt::WifiClock)
+                && !a.opt(Opt::WifiLb)
+                && !a.opt(Opt::WifiUpdates)
+        );
+        assert!(
+            !a.opt(Opt::WifiLyrics) && !a.opt(Opt::WifiArt),
             "the fetches are off on a fresh install"
         );
-        assert!(!a.wifi_airplay(), "AirPlay off on a fresh install");
+        assert!(!a.opt(Opt::WifiAirplay), "AirPlay off on a fresh install");
         assert!(
-            !a.wifi_play_to(),
+            !a.opt(Opt::WifiPlayTo),
             "Play to this player off on a fresh install"
         );
         assert!(!a.wifi_drive(), "the shared drive off on a fresh install");
@@ -27354,7 +27205,7 @@ mod r4_tests {
             a.tap(240, wifi_y(false, Hit::AirPlay)),
             vec![Action::WifiAirPlay]
         );
-        assert!(a.wifi_airplay());
+        assert!(a.opt(Opt::WifiAirplay));
         a.tap(240, wifi_y(false, Hit::Options));
         assert_eq!(a.current(), Screen::WifiOptions);
         let opt_y = |h| {
@@ -27365,13 +27216,28 @@ mod r4_tests {
         for h in crate::wifi::OPTIONS {
             assert!(a.tap(240, opt_y(h)).is_empty(), "off: {h:?} only saves");
         }
-        assert!(a.wifi_autostart() && a.wifi_clock() && a.wifi_lb() && a.wifi_updates());
-        assert!(a.wifi_lyrics() && a.wifi_art() && a.wifi_play_to() && a.wifi_drive());
+        assert!(
+            a.opt(Opt::WifiAutostart)
+                && a.opt(Opt::WifiClock)
+                && a.opt(Opt::WifiLb)
+                && a.opt(Opt::WifiUpdates)
+        );
+        assert!(
+            a.opt(Opt::WifiLyrics)
+                && a.opt(Opt::WifiArt)
+                && a.opt(Opt::WifiPlayTo)
+                && a.wifi_drive()
+        );
         for h in crate::wifi::OPTIONS {
             a.tap(240, opt_y(h));
         }
-        assert!(!a.wifi_autostart() && !a.wifi_clock() && !a.wifi_lb() && !a.wifi_updates());
-        assert!(!a.wifi_play_to() && !a.wifi_drive());
+        assert!(
+            !a.opt(Opt::WifiAutostart)
+                && !a.opt(Opt::WifiClock)
+                && !a.opt(Opt::WifiLb)
+                && !a.opt(Opt::WifiUpdates)
+        );
+        assert!(!a.opt(Opt::WifiPlayTo) && !a.wifi_drive());
 
         a.set_wifi_status("state=connected\nssid=6162\n", "");
         assert_eq!(a.tap(240, opt_y(Hit::Clock)), vec![Action::WifiTimeSync]);

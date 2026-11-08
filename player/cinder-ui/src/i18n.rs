@@ -32,8 +32,7 @@ impl Language {
 
     /// The one after this in [`Language::ALL`], wrapping.
     pub fn next(self) -> Self {
-        let i = Self::ALL.iter().position(|l| *l == self).unwrap_or(0);
-        Self::ALL[(i + 1) % Self::ALL.len()]
+        crate::next_in(&Self::ALL, self)
     }
 }
 

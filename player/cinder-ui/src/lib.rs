@@ -42,6 +42,7 @@ pub mod netradio;
 pub mod now_playing;
 pub mod np_styles;
 pub mod onboarding;
+pub mod opt;
 pub mod overlay;
 pub mod pairing;
 pub mod palette;
@@ -88,3 +89,21 @@ pub use canvas::{Canvas, H, W};
 pub use model::Library;
 pub use text::{Family, FontSet, TextStyle, Weight};
 pub use theme::{Accent, Theme};
+
+/// The choice after `x` in `all`, wrapping: a Settings row that steps through its values.
+pub(crate) fn next_in<T: Copy + PartialEq>(all: &[T], x: T) -> T {
+    let i = all.iter().position(|v| *v == x).unwrap_or(0);
+    all[(i + 1) % all.len()]
+}
+
+/// The choice in `all` whose settings-file word is `s`; the default for a word it does not know.
+pub(crate) fn from_token<T: Copy + Default>(
+    all: &[T],
+    token: impl Fn(T) -> &'static str,
+    s: &str,
+) -> T {
+    all.iter()
+        .copied()
+        .find(|v| token(*v) == s.trim())
+        .unwrap_or_default()
+}

@@ -15,6 +15,7 @@
 >
 > **The live documents, in order of what you probably want:**
 > - **The redesign (2026-09-27 handoff):** [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) — every screen and every promised feature with a state and a phase; spec in [`docs/SPEC_redesign_2026-09.md`](docs/SPEC_redesign_2026-09.md); new screens draw with `player/cinder-ui/src/kit.rs`.
+> - **Before writing any helper:** the table in [`CONTRIBUTING.md`](CONTRIBUTING.md) § Reuse before you write — the shared helpers (FFI `read`/`write`/`repaint`, opt-ins in `opt.rs`, `next_in`/`from_token`, HTTP, encoding, …). Reuse one; if you make a new shared one, add its row.
 > - **What is planned, and where help is wanted:** [`docs/ROADMAP.md`](docs/ROADMAP.md).
 > - **What shipped, release by release:** [`CHANGELOG.md`](CHANGELOG.md).
 > - **Feature state (works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.

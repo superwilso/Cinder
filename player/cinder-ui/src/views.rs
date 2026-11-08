@@ -172,13 +172,6 @@ impl ViewSort {
     }
 }
 
-fn from_token<T: Copy + Default>(all: &[T], token: impl Fn(T) -> &'static str, s: &str) -> T {
-    all.iter()
-        .copied()
-        .find(|v| token(*v) == s.trim())
-        .unwrap_or_default()
-}
-
 /// One saved view.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SavedView {
@@ -410,10 +403,10 @@ pub fn parse(body: &str) -> Vec<SavedView> {
         };
         match k.trim() {
             "rating" => v.min_rating = val.trim().parse::<u8>().unwrap_or(0).min(5),
-            "played" => v.played = from_token(&Played::ALL, Played::token, val),
-            "added" => v.added = from_token(&Added::ALL, Added::token, val),
-            "format" => v.format = from_token(&FormatRule::ALL, FormatRule::token, val),
-            "sort" => v.sort = from_token(&ViewSort::ALL, ViewSort::token, val),
+            "played" => v.played = crate::from_token(&Played::ALL, Played::token, val),
+            "added" => v.added = crate::from_token(&Added::ALL, Added::token, val),
+            "format" => v.format = crate::from_token(&FormatRule::ALL, FormatRule::token, val),
+            "sort" => v.sort = crate::from_token(&ViewSort::ALL, ViewSort::token, val),
             "shuffle" => v.shuffle = shuffle_from_token(val),
             _ => {}
         }

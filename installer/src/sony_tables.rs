@@ -19,6 +19,7 @@
 //! starts one block early. Every result is checked against the SHA-256 the player's installer
 //! checks, so a changed file on Sony's side fails loudly rather than installing anything else.
 
+use crate::llusbdac::hex;
 use std::fs;
 use std::path::Path;
 
@@ -140,10 +141,6 @@ pub fn extract(span: &[u8]) -> Result<Vec<(&'static str, Vec<u8>)>, String> {
         tables.push((name, bytes));
     }
     Ok(tables)
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 // ── AES-128, decryption only (FIPS-197) ────────────────────────────────────────────────────

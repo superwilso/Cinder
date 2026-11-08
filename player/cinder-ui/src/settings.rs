@@ -279,11 +279,7 @@ impl SwipeTo {
     }
 
     pub fn from_token(s: &str) -> SwipeTo {
-        let s = s.trim();
-        Self::ALL
-            .into_iter()
-            .find(|t| t.token() == s)
-            .unwrap_or_default()
+        crate::from_token(&Self::ALL, Self::token, s)
     }
 
     /// The Settings row's value.
@@ -301,8 +297,7 @@ impl SwipeTo {
     }
 
     pub fn next(self) -> SwipeTo {
-        let i = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
-        Self::ALL[(i + 1) % Self::ALL.len()]
+        crate::next_in(&Self::ALL, self)
     }
 }
 
@@ -376,24 +371,13 @@ pub struct SettingsView<'a> {
     pub big_icons: bool,
     /// Ignore "The" at the start of artist names when sorting (`ROW_IGNORE_THE`).
     pub ignore_the: bool,
-    /// The pull-down panel is switched on (`ROW_QUICK`).
-    pub quick: bool,
-    /// The Library's FOLDERS link is switched on (`ROW_FOLDERS_TAB`).
-    pub folders_tab: bool,
-    /// Delete music is switched on (`ROW_DELETE`).
-    pub delete_music: bool,
-    /// Icons beside the Menu's rows (`ROW_MENU_ICONS`).
-    pub menu_icons: bool,
+    /// The opt-in switches; each one with a row here is drawn as that row's switch.
+    pub opts: crate::opt::Opts,
     /// What a swipe up / down on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
     pub swipe_up: SwipeTo,
     pub swipe_down: SwipeTo,
     /// Now Playing's third toolbar button (`ROW_NP_BUTTON`).
     pub np_button: crate::now_playing::NpButton,
-    /// Now Playing's back arrow and track counter, and Hold locking the buttons (`ROW_NP_BACK`,
-    /// `ROW_NP_COUNT`, `ROW_HOLD_BUTTONS`).
-    pub np_back: bool,
-    pub np_count: bool,
-    pub hold_buttons: bool,
     /// What shuffle deals (`ROW_SHUFFLE`): "SONGS", "ALBUMS" or "ARTISTS".
     pub shuffle_by: &'a str,
     /// The page on screen: `None` for home, else a [`GROUPS`] index.
@@ -453,21 +437,17 @@ pub fn row_top_px(r: usize) -> i32 {
 
 /// The trailing value of row `r`.
 fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
+    if let Some(o) = crate::opt::Opt::of_row(r) {
+        return Trail::Switch(v.opts.on(o));
+    }
     match r {
         ROW_LANGUAGE => Trail::Open(crate::i18n::current().name()),
         ROW_DISPLAY => Trail::Open(""),
         ROW_BRIGHTNESS => Trail::Value(v.brightness),
         ROW_SCREEN_OFF => Trail::Value(v.screen_off),
-        ROW_QUICK => Trail::Switch(v.quick),
-        ROW_FOLDERS_TAB => Trail::Switch(v.folders_tab),
-        ROW_DELETE => Trail::Switch(v.delete_music),
-        ROW_MENU_ICONS => Trail::Switch(v.menu_icons),
         ROW_SWIPE_UP => Trail::Value(v.swipe_up.label()),
         ROW_SWIPE_DOWN => Trail::Value(v.swipe_down.label()),
         ROW_NP_BUTTON => Trail::Value(v.np_button.label()),
-        ROW_NP_BACK => Trail::Switch(v.np_back),
-        ROW_NP_COUNT => Trail::Switch(v.np_count),
-        ROW_HOLD_BUTTONS => Trail::Switch(v.hold_buttons),
         ROW_BIG => Trail::Switch(v.big_view),
         ROW_BIG_BAR => Trail::Switch(v.big_bar),
         ROW_BIG_ICONS => Trail::Switch(v.big_icons),
@@ -638,15 +618,10 @@ mod tests {
             big_view: false,
             big_bar: false,
             big_icons: false,
-            folders_tab: false,
-            delete_music: false,
-            menu_icons: false,
+            opts: Default::default(),
             swipe_up: SwipeTo::Off,
             swipe_down: SwipeTo::Off,
             np_button: crate::now_playing::NpButton::Bluetooth,
-            np_back: false,
-            np_count: false,
-            hold_buttons: false,
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",
@@ -660,7 +635,6 @@ mod tests {
             boot_stock: "SONY",
             clock: "17 Aug · 09:01",
             ignore_the: false,
-            quick: false,
             shuffle_by: "SONGS",
             page: None,
             languages: &crate::i18n::Language::ALL,

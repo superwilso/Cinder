@@ -303,51 +303,6 @@ pub fn text_cell(ch: char) -> (i32, i32) {
     }
 }
 
-/// `s` in the skin's font at `scale`× from (x, y), clipped to `max_w` px. Returns the width drawn.
-pub fn draw_text(
-    c: &mut Canvas,
-    dim_pct: u32,
-    font: &Image,
-    s: &str,
-    (x, y): (i32, i32),
-    scale: i32,
-    max_w: i32,
-) -> i32 {
-    let mut cx = x;
-    for ch in s.chars() {
-        if cx + 5 * scale > x + max_w {
-            break;
-        }
-        let (col, row) = text_cell(ch);
-        blit(
-            c,
-            dim_pct,
-            font,
-            (col * 5, row * 6, 5, 6),
-            (cx, y, 5 * scale, 6 * scale),
-        );
-        cx += 5 * scale;
-    }
-    cx - x
-}
-
-/// One digit of numbers.bmp (9×13) at (x, y), `w`×`h` on the panel.
-pub fn draw_digit(
-    c: &mut Canvas,
-    dim_pct: u32,
-    nums: &Image,
-    d: u32,
-    (x, y, w, h): (i32, i32, i32, i32),
-) {
-    blit(
-        c,
-        dim_pct,
-        nums,
-        (d.min(9) as i32 * 9, 0, 9, 13),
-        (x, y, w, h),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

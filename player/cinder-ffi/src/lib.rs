@@ -37,6 +37,7 @@ mod vizsig;
 mod wsz;
 
 use cinder_ui::now_playing::NowPlaying;
+use cinder_ui::opt::Opt;
 use cinder_ui::{Canvas, FontSet, H, W};
 use std::ffi::c_char;
 use std::ffi::CStr;
@@ -831,9 +832,45 @@ fn cell() -> &'static Mutex<Option<Render>> {
     R.get_or_init(|| Mutex::new(None))
 }
 
+/// `ids` as tracks in their order, resolved in ONE query, skipping any the library no longer has;
+/// and how many of those sit before index `n`, so a tap on row `n` starts on that row's song even
+/// when a file ahead of it has gone.
+fn tracks_in_order(r: &Render, ids: &[i64], n: usize) -> (Vec<cinder_db::Track>, usize) {
+    let by_id =
+        r.db.as_ref()
+            .map(|db| db.tracks_by_object_ids(ids).unwrap_or_default())
+            .unwrap_or_default();
+    let mut start = 0;
+    let seq = ids
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| {
+            let t = by_id.get(id)?;
+            start += usize::from(i < n);
+            Some(t.clone())
+        })
+        .collect();
+    (seq, start)
+}
+
 /// A value from the live renderer, or the type's default (0, false) before it exists.
 fn read<T: Default>(f: impl FnOnce(&Render) -> T) -> T {
     cell().lock().unwrap().as_ref().map_or_else(T::default, f)
+}
+
+/// Change the renderer, if there is one.
+fn write(f: impl FnOnce(&mut Render)) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        f(r);
+    }
+}
+
+/// [`write`], then draw the next frame.
+fn repaint(f: impl FnOnce(&mut Render)) {
+    write(|r| {
+        f(r);
+        r.dirty = true;
+    });
 }
 
 /// Read a C string into an owned String (empty on null/invalid).
@@ -1558,23 +1595,10 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("bt_idle_off={}\n", r.app.bt_idle_off() as u8));
     body.push_str(&format!("volume_limit={}\n", r.app.volume_limit() as u8));
     body.push_str(&format!("ignore_the={}\n", r.app.ignore_the() as u8));
-    // The pull-down panel (Settings ▸ Pull-down panel), OFF unless switched on.
-    body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
-    body.push_str(&format!("folders_tab={}\n", r.app.folders_tab() as u8));
-    body.push_str(&format!("delete_music={}\n", r.app.delete_music() as u8));
-    body.push_str(&format!("menu_icons={}\n", r.app.menu_icons() as u8));
-    // Settings ▸ Wi-Fi ▸ Turn on at start / Set the clock, OFF unless switched on.
-    body.push_str(&format!(
-        "wifi_autostart={}\nwifi_clock={}\nwifi_lb={}\nwifi_updates={}\nwifi_airplay={}\n",
-        r.app.wifi_autostart() as u8,
-        r.app.wifi_clock() as u8,
-        r.app.wifi_lb() as u8,
-        r.app.wifi_updates() as u8,
-        r.app.wifi_airplay() as u8
-    ));
-    body.push_str(&format!("wifi_lyrics={}\n", r.app.wifi_lyrics() as u8));
-    body.push_str(&format!("wifi_art={}\n", r.app.wifi_art() as u8));
-    body.push_str(&format!("wifi_play_to={}\n", r.app.wifi_play_to() as u8));
+    // The opt-in switches (pull-down panel, Folders tab, the Wi-Fi options, …), OFF unless on.
+    for o in Opt::ALL {
+        body.push_str(&format!("{}={}\n", o.key(), r.app.opt(o) as u8));
+    }
     body.push_str(&format!("wifi_drive_code={}\n", r.app.drive_code()));
     // Settings ▸ Swipe up / Swipe down: what each opens on Now Playing (#51), as words.
     let (up, down) = r.app.np_swipes();
@@ -1584,13 +1608,6 @@ fn settings_body(r: &Render) -> String {
         down.token()
     ));
     body.push_str(&format!("np_button={}\n", r.app.np_button().token()));
-    // Settings ▸ Back arrow, Track number, Hold locks the buttons (#51), OFF unless switched on.
-    body.push_str(&format!(
-        "np_back={}\nnp_count={}\nhold_buttons={}\n",
-        r.app.np_back() as u8,
-        r.app.np_count() as u8,
-        r.app.hold_buttons() as u8
-    ));
     // Night's schedule. Night itself is not saved (every boot starts in day, see "night" in the
     // loader); with the schedule on, the first clock tick puts it where the hour says.
     let (on, from, until) = r.app.night_schedule();
@@ -5533,20 +5550,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
             // for the same reason `PlayContextAt` does: a file that has gone must not slide the
             // start onto the wrong song.
             let ids = r.app.take_play_list();
-            let by_id =
-                r.db.as_ref()
-                    .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
-                    .unwrap_or_default();
-            let mut seq: Vec<cinder_db::Track> = Vec::with_capacity(ids.len());
-            let mut start = 0usize;
-            for (i, id) in ids.iter().enumerate() {
-                if let Some(t) = by_id.get(id) {
-                    if i < *n {
-                        start += 1;
-                    }
-                    seq.push(t.clone());
-                }
-            }
+            let (seq, start) = tracks_in_order(r, &ids, *n);
             if seq.is_empty() {
                 eprintln!("cinder-ffi: PlayListAt({n}): nothing in the list resolved — ignored");
                 return None;
@@ -5586,20 +5590,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
             // standing here. `tracks_by_object_ids` resolves the lot in one scan; the loop below
             // still walks `ids` in order and still counts survivors as it goes, so the start-index
             // reasoning in the paragraph above is untouched.
-            let by_id =
-                r.db.as_ref()
-                    .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
-                    .unwrap_or_default();
-            let mut seq: Vec<cinder_db::Track> = Vec::with_capacity(ids.len());
-            let mut start = 0usize;
-            for (i, id) in ids.iter().enumerate() {
-                if let Some(t) = by_id.get(id) {
-                    if i < *n {
-                        start += 1;
-                    }
-                    seq.push(t.clone());
-                }
-            }
+            let (seq, start) = tracks_in_order(r, &ids, *n);
             if seq.is_empty() {
                 eprintln!("cinder-ffi: PlayContextAt({n}): context did not resolve — ignored");
                 return None;
@@ -5996,12 +5987,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
             // `PlayListAt`'s shuffled twin: the ids on screen (a smart playlist), dealt at random,
             // with the order they had kept so the shuffle toggle can put it back.
             let ids = r.app.take_play_list();
-            let by_id =
-                r.db.as_ref()
-                    .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
-                    .unwrap_or_default();
-            let seq: Vec<cinder_db::Track> =
-                ids.iter().filter_map(|id| by_id.get(id).cloned()).collect();
+            let (seq, _) = tracks_in_order(r, &ids, 0);
             if seq.is_empty() {
                 eprintln!("cinder-ffi: ShuffleList: nothing in the list resolved — ignored");
                 return None;
@@ -6432,10 +6418,7 @@ pub extern "C" fn cinder_swipe_track(dx_px: libc::c_int, y: libc::c_int) -> libc
 /// contact — it is a no-op if no row was moving.
 #[no_mangle]
 pub extern "C" fn cinder_swipe_release() {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.swipe_release();
-        r.dirty = true;
-    }
+    repaint(|r| r.app.swipe_release());
 }
 
 /// Does a vertical drag starting at `(x, y)` pick up an Up Next queue row for reordering?
@@ -6487,10 +6470,7 @@ pub extern "C" fn cinder_hold(x: libc::c_int, y: libc::c_int) -> libc::c_int {
 /// Stream a reorder drag: `dy_px` is TOTAL travel from the gesture's start point.
 #[no_mangle]
 pub extern "C" fn cinder_reorder_track(dy_px: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.reorder_track(dy_px);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.reorder_track(dy_px));
 }
 
 /// Drop the dragged row where it now sits. No-op if no drag was in progress. The reorder is
@@ -6522,19 +6502,13 @@ pub extern "C" fn cinder_sbar_begin(x: libc::c_int, y: libc::c_int) -> libc::c_i
 /// Stream a scrollbar drag: `dy_px` is TOTAL travel from the gesture's start point.
 #[no_mangle]
 pub extern "C" fn cinder_sbar_track(dy_px: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.sbar_track(dy_px);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.sbar_track(dy_px));
 }
 
 /// The finger came off the scrollbar. No-op if no drag was in progress.
 #[no_mangle]
 pub extern "C" fn cinder_sbar_release() {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.sbar_release();
-        r.dirty = true;
-    }
+    repaint(|r| r.app.sbar_release());
 }
 
 /// LIVE drag-scroll: move the current list by `dy_px` pixels (positive = show later rows).
@@ -6544,28 +6518,20 @@ pub extern "C" fn cinder_sbar_release() {
 pub extern "C" fn cinder_touch_drag(dy_px: libc::c_int) {
     #[cfg(feature = "dev")]
     scroll_timing::moved();
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.scroll_px(dy_px);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.scroll_px(dy_px));
 }
 
 /// Momentum fling at drag release: `velocity_px_s` in px/s (same sign as cinder_touch_drag).
 /// The UI integrates + decays it each frame until it stops (frames stay dirty meanwhile).
 #[no_mangle]
 pub extern "C" fn cinder_touch_fling(velocity_px_s: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.fling(velocity_px_s as f32);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.fling(velocity_px_s as f32));
 }
 
 /// A new finger contact: kill any in-flight fling so the list stops under the finger.
 #[no_mangle]
 pub extern "C" fn cinder_touch_down() {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.stop_fling();
-    }
+    write(|r| r.app.stop_fling());
 }
 
 /// Pending play request (set when a CINDER_ACT_PLAY_INDEX action was returned): how many track
@@ -6578,11 +6544,6 @@ pub extern "C" fn cinder_pending_play_count() -> libc::c_int {
 
 /// Snapshot metadata for the active ZAPPIN pass. Call order: START action -> generation/count ->
 /// candidate data -> start URI and seek -> confirm only after the shell observes the matching URI.
-#[no_mangle]
-pub extern "C" fn cinder_zappin_active() -> libc::c_int {
-    read(|r| r.zappin_active) as libc::c_int
-}
-
 #[no_mangle]
 pub extern "C" fn cinder_zappin_preview_ms() -> u32 {
     cell()
@@ -6793,13 +6754,6 @@ pub extern "C" fn cinder_zappin_prepare_normal_queue() -> libc::c_int {
     prepared as libc::c_int
 }
 
-/// Restore the queue and position that were active before the preview session. Intended for End
-/// followed by ordinary Play: this hands the old checkpoint back without persisting a sample.
-#[no_mangle]
-pub extern "C" fn cinder_zappin_prepare_resume_queue() -> libc::c_int {
-    cinder_zappin_prepare_normal_queue()
-}
-
 /// Abandon preview bookkeeping without touching a pending sequence that another FFI action has
 /// just constructed (PlayIndex, queue edits, SensMe, books, etc.). Releases the persistence hold
 /// at once (see `zappin_release_hold`): the pre-preview track and bookmark are put back, so a
@@ -6869,22 +6823,6 @@ pub extern "C" fn cinder_zappin_take_handoff_confirmed() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
     std::mem::take(&mut r.zappin_handoff_confirmed) as libc::c_int
-}
-
-/// Cancel before an ordinary transport/source/queue action. Returns 1 if a preview was active.
-#[no_mangle]
-pub extern "C" fn cinder_zappin_cancel() -> libc::c_int {
-    let mut guard = cell().lock().unwrap();
-    let Some(r) = guard.as_mut() else { return 0 };
-    let should_restore = r.zappin_resume_hold;
-    if should_restore {
-        let _ = zappin_prepare_origin_queue(r);
-    }
-    zappin_stop(r, false);
-    if should_restore {
-        zappin_arm_handoff(r, true);
-    }
-    should_restore as libc::c_int
 }
 
 /// Copy pending-play URI `i` (0-based) into `buf` (NUL-terminated). Returns the FULL byte length
@@ -6984,9 +6922,7 @@ pub extern "C" fn cinder_modal_open() -> libc::c_int {
 /// because the dirty-flag renderer skips identical frames).
 #[no_mangle]
 pub extern "C" fn cinder_force_dirty() {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.dirty = true;
-    }
+    write(|r| r.dirty = true);
 }
 
 /// Raise the USB mass-storage modal from the shell. Called when the shell auto-detects a PC host
@@ -7085,10 +7021,7 @@ pub extern "C" fn cinder_rescan_refused() {
 /// the renderer isn't up.
 #[no_mangle]
 pub extern "C" fn cinder_get_battery_care() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) if r.app.battery_care() => 1,
-        _ => 0,
-    }
+    read(|r| r.app.battery_care()) as libc::c_int
 }
 
 /// Is night theme currently active? (1 = night, 0 = day.) The shell reads this after a
@@ -7170,19 +7103,13 @@ pub extern "C" fn cinder_take_queue_flush() -> libc::c_int {
 /// primitive for this, so the shell implements it: watch for the queue boundary and re-issue.
 #[no_mangle]
 pub extern "C" fn cinder_get_repeat_all() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) if r.np.repeat == 2 => 1,
-        _ => 0,
-    }
+    read(|r| r.np.repeat == 2) as libc::c_int
 }
 
 /// Repeat-one on/off (1/0) — the OneTrackMode half. Repeat-ALL is cinder_get_repeat_all.
 #[no_mangle]
 pub extern "C" fn cinder_get_repeat_one() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) if r.np.repeat == 1 => 1,
-        _ => 0,
-    }
+    read(|r| r.np.repeat == 1) as libc::c_int
 }
 
 /// The Bluetooth fine-volume trim, in HALF-dB units and never positive.
@@ -7194,10 +7121,7 @@ pub extern "C" fn cinder_get_repeat_one() -> libc::c_int {
 /// jack, or the user's EQ has no headroom left to attenuate into.
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_trim_half_db() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.bt_trim_half_db() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.bt_trim_half_db() as libc::c_int)
 }
 
 /// The analyzer emit rate the user picked, in Hz (Settings ▸ Visualiser ▸ Frame rate). The shell
@@ -7240,10 +7164,7 @@ pub extern "C" fn cinder_viz_wants_analyzer() -> libc::c_int {
 
 #[no_mangle]
 pub extern "C" fn cinder_get_night() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) if r.app.night => 1,
-        _ => 0,
-    }
+    read(|r| r.app.night) as libc::c_int
 }
 
 /// Read the device-wide BT transmit codec preference (index: 0 LDAC, 1 aptX HD, 2 aptX, 3 SBC) and
@@ -7252,17 +7173,11 @@ pub extern "C" fn cinder_get_night() -> libc::c_int {
 /// same values feed the USB-DAC→LDAC bridge so the codec choice is consistent everywhere.
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_codec() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.bt_codec() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.bt_codec() as libc::c_int)
 }
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_ldac_quality() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.bt_ldac_quality() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.bt_ldac_quality() as libc::c_int)
 }
 
 /// "Use Enhanced Mode" (1/0) — Sony's name for AVRCP absolute volume. The shell reads this after
@@ -7302,10 +7217,7 @@ const VOL_BT_MAX: u8 = cinder_ui::overlay::BT_VOL_MAX;
 /// start/stop the LDAC bridge (and switch the USB gadget to UAC) without disconnecting Bluetooth.
 #[no_mangle]
 pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) if r.app.usb_dac_on() => 1,
-        _ => 0,
-    }
+    read(|r| r.app.usb_dac_on()) as libc::c_int
 }
 
 /// Is THIS DEVICE ▸ Debug log switched on? (1/0). Read after CINDER_ACT_BT_DEBUG_LOG.
@@ -7325,39 +7237,28 @@ pub extern "C" fn cinder_get_bt_debug_log() -> libc::c_int {
 /// user is told.
 #[no_mangle]
 pub extern "C" fn cinder_bt_debug_log_stopped() {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.bt_debug_log_stopped();
-        r.dirty = true;
-    }
+    repaint(|r| r.app.bt_debug_log_stopped());
 }
 
 /// Is the Bluetooth switch on? (1/0). The shell reads this after a CINDER_ACT_BT_TOGGLE action to
 /// decide whether to power the radio up (and reconnect the last device) or down.
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_on() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) if r.app.bt_on() => 1,
-        _ => 0,
-    }
+    read(|r| r.app.bt_on()) as libc::c_int
 }
 
 /// Force the Bluetooth switch to match the radio's real state (from GetBtStatus). Sets state only;
 /// raises no action. Called at startup so the switch cannot claim the radio is on when it is not.
 #[no_mangle]
 pub extern "C" fn cinder_set_bt_on(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_bt_on(on != 0);
-    }
+    write(|r| r.app.set_bt_on(on != 0));
 }
 
 /// Library search is an opt-in component. The shell calls this at startup when the installer left
 /// `/data/cinder/search_on`; without it the Library header draws no search button.
 #[no_mangle]
 pub extern "C" fn cinder_set_search_enabled(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_search_enabled(on != 0);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.set_search_enabled(on != 0));
 }
 
 /// SensMe channels are an opt-in component. The shell calls this at startup when the installer
@@ -7368,20 +7269,14 @@ pub extern "C" fn cinder_set_search_enabled(on: libc::c_int) {
 /// analysed should be one install option away, not one rescan away.
 #[no_mangle]
 pub extern "C" fn cinder_set_sensme_enabled(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_sensme_enabled(on != 0);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.set_sensme_enabled(on != 0));
 }
 
 /// The installer's opt-in Preview option left `/data/cinder/preview_on`; without it the Menu has no
 /// Preview row, and nothing else starts a preview pass.
 #[no_mangle]
 pub extern "C" fn cinder_set_preview_enabled(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_preview_enabled(on != 0);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.set_preview_enabled(on != 0));
 }
 
 /// Force the USB-DAC toggle to match the gadget's real mode. The shell calls this at startup with
@@ -7414,22 +7309,10 @@ pub extern "C" fn cinder_take_profile_apply() -> libc::c_int {
     }
 }
 
-/// Which sound profile is live: 0 = A, 1 = B. For the shell's log line.
-#[no_mangle]
-pub extern "C" fn cinder_get_profile() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.setup_idx() as libc::c_int,
-        None => 0,
-    }
-}
-
 /// Which output the live profile was chosen for: 0 = the jack, 1 = Bluetooth, 2 = USB-DAC.
 #[no_mangle]
 pub extern "C" fn cinder_get_profile_output() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.live_output().idx() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.live_output().idx() as libc::c_int)
 }
 
 /// Publish the host's live USB stream format for the USB-DAC panel: rate in Hz, bit depth, channel
@@ -7444,18 +7327,14 @@ pub extern "C" fn cinder_set_usb_dac_format(
     bits: libc::c_uint,
     chans: libc::c_uint,
 ) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_usb_dac_format(rate, bits, chans);
-    }
+    write(|r| r.app.set_usb_dac_format(rate, bits, chans));
 }
 
 /// llusbdac (the `llusbdac` component): `avail` = the module is installed, `loaded` = it is in the
 /// kernel (only while low-latency DAC mode is on).
 #[no_mangle]
 pub extern "C" fn cinder_set_usb_dac_low_latency(avail: libc::c_int, loaded: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_usb_dac_low_latency(avail != 0, loaded != 0);
-    }
+    write(|r| r.app.set_usb_dac_low_latency(avail != 0, loaded != 0));
 }
 
 /// llusbdac's `/proc/llusbdac` line, read by the shell while the module is loaded; null or empty
@@ -7473,10 +7352,7 @@ pub extern "C" fn cinder_set_usb_dac_ll_stats(line: *const c_char) {
 /// 1 if engaging USB-DAC should load llusbdac.
 #[no_mangle]
 pub extern "C" fn cinder_get_usb_dac_low_latency() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.usb_dac_low_latency() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.usb_dac_low_latency() as libc::c_int)
 }
 
 /// Publish the codec A2DP actually negotiated, as the raw `BtSoundCodec` word from
@@ -7488,9 +7364,7 @@ pub extern "C" fn cinder_get_usb_dac_low_latency() -> libc::c_int {
 /// real headphone. Sets state only.
 #[no_mangle]
 pub extern "C" fn cinder_set_bt_negotiated_codec(raw: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_bt_negotiated_codec(raw as u32);
-    }
+    write(|r| r.app.set_bt_negotiated_codec(raw as u32));
 }
 
 /// What this boot's Bluetooth stack offers beyond Sony's four codecs, from the `bt-aac`
@@ -7499,17 +7373,12 @@ pub extern "C" fn cinder_set_bt_negotiated_codec(raw: libc::c_int) {
 /// (not Power, not headphone buttons). 1 = on.
 #[no_mangle]
 pub extern "C" fn cinder_get_hold_buttons() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.hold_buttons() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.opt(Opt::HoldButtons) as libc::c_int)
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_set_bt_codecs(aac: libc::c_int, xq: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_bt_codecs(aac != 0, xq != 0);
-    }
+    write(|r| r.app.set_bt_codecs(aac != 0, xq != 0));
 }
 
 /// Leave the transient backlight-off state (brightness 0) and return to the last visible level.
@@ -7655,9 +7524,7 @@ pub extern "C" fn cinder_get_balance() -> libc::c_int {
 #[no_mangle]
 pub extern "C" fn cinder_set_volume(level: libc::c_int) {
     let level = level.clamp(0, cinder_ui::overlay::VOL_MAX as libc::c_int);
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_volume(level as u8);
-    }
+    write(|r| r.app.set_volume(level as u8));
 }
 
 /// Does a vertical drag that STARTED at `(x, y)` belong to the pull-down panel? Asked once per
@@ -7719,10 +7586,7 @@ pub extern "C" fn cinder_get_volume_limit() -> libc::c_int {
 /// mixer ('master volume', also 0..120) after a VOLUP/VOLDOWN action.
 #[no_mangle]
 pub extern "C" fn cinder_get_volume() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.volume_level() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.volume_level() as libc::c_int)
 }
 
 /// Push the name of the connected Bluetooth device into the UI (NULL or "" = nothing connected).
@@ -7738,9 +7602,9 @@ pub extern "C" fn cinder_set_bt_connected(name: *const libc::c_char) {
             .ok()
             .map(|s| s.to_string())
     };
-    if let Some(r) = cell().lock().unwrap().as_mut() {
+    write(|r| {
         r.app.set_bt_connected(owned.as_deref());
-    }
+    });
 }
 
 /// Push the wall clock into the UI (UTC epoch seconds). Call it from the ~1 Hz housekeeping — the
@@ -7750,9 +7614,7 @@ pub extern "C" fn cinder_set_bt_connected(name: *const libc::c_char) {
 /// helper). Without it the Settings ▸ Wi-Fi row is not shown.
 #[no_mangle]
 pub extern "C" fn cinder_set_wifi_installed(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_wifi_installed(on != 0);
-    }
+    write(|r| r.app.set_wifi_installed(on != 0));
 }
 
 /// `cinder-wifi status` output (key=value lines), and the failing command's last line (or "").
@@ -7762,9 +7624,7 @@ pub extern "C" fn cinder_set_wifi_installed(on: libc::c_int) {
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_wifi_status(text: *const c_char, note: *const c_char) {
     let (text, note) = (cstr(text), cstr(note));
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_wifi_status(&text, &note);
-    }
+    write(|r| r.app.set_wifi_status(&text, &note));
 }
 
 /// `cinder-wifi scan` output.
@@ -7774,9 +7634,7 @@ pub unsafe extern "C" fn cinder_set_wifi_status(text: *const c_char, note: *cons
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_wifi_scan(text: *const c_char) {
     let text = cstr(text);
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_wifi_scan(&text);
-    }
+    write(|r| r.app.set_wifi_scan(&text));
 }
 
 /// What `cinder-wifi join` reads on stdin: the SSID line, then the password line.
@@ -7858,7 +7716,7 @@ pub extern "C" fn cinder_wifi_serving() -> libc::c_int {
 /// Settings ▸ Wi-Fi ▸ AirPlay (1/0): the receiver runs while this is on and Wi-Fi is connected.
 #[no_mangle]
 pub extern "C" fn cinder_wifi_airplay() -> libc::c_int {
-    read(|r| r.app.wifi_airplay()) as libc::c_int
+    read(|r| r.app.opt(Opt::WifiAirplay)) as libc::c_int
 }
 
 /// What the AirPlay receiver is doing, for the switch's second line ("" = the default text).
@@ -7868,9 +7726,7 @@ pub extern "C" fn cinder_wifi_airplay() -> libc::c_int {
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_airplay_note(text: *const c_char) {
     let text = cstr(text);
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_airplay_note(&text);
-    }
+    write(|r| r.app.set_airplay_note(&text));
 }
 
 /// Internet radio: cinder_radio.txt's text, after CINDER_ACT_RADIO_OPEN (and once at start).
@@ -7880,9 +7736,7 @@ pub unsafe extern "C" fn cinder_set_airplay_note(text: *const c_char) {
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_radio_stations(text: *const c_char) {
     let text = cstr(text);
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_radio_stations(&text);
-    }
+    write(|r| r.app.set_radio_stations(&text));
 }
 
 /// Internet radio: the player's status (`state=`, `station=`, `title=`, `note=` lines).
@@ -7893,9 +7747,7 @@ pub unsafe extern "C" fn cinder_set_radio_stations(text: *const c_char) {
 pub unsafe extern "C" fn cinder_set_radio_status(text: *const c_char) {
     let text = cstr(text);
     renderer::radio_status(&text);
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_radio_status(&text);
-    }
+    write(|r| r.app.set_radio_status(&text));
 }
 
 /// Play to this player (the DLNA renderer), polled by the shell once a second: 1 = play the URL
@@ -7930,7 +7782,7 @@ static RENDER_RETRY: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 /// Start the renderer while its switch is on and Wi-Fi is connected; stop it otherwise.
 fn renderer_tick(r: &mut Render) {
-    let want = r.app.wifi_play_to() && r.app.wifi_connected();
+    let want = r.app.opt(Opt::WifiPlayTo) && r.app.wifi_connected();
     if want && !renderer::running() {
         let mut retry = RENDER_RETRY.lock().unwrap();
         if retry.is_some_and(|t| std::time::Instant::now() < t) {
@@ -7966,7 +7818,7 @@ fn renderer_tick(r: &mut Render) {
     } else {
         String::new()
     };
-    if r.app.wifi_play_to() && note != r.app.play_to_note() {
+    if r.app.opt(Opt::WifiPlayTo) && note != r.app.play_to_note() {
         r.app.set_play_to_note(&note);
         r.dirty = true;
     }
@@ -7998,11 +7850,11 @@ pub unsafe extern "C" fn cinder_take_radio(buf: *mut c_char, cap: libc::c_int) -
 /// Settings ▸ Wi-Fi ▸ Send plays to ListenBrainz (1/0) and Check for updates (1/0).
 #[no_mangle]
 pub extern "C" fn cinder_wifi_lb() -> libc::c_int {
-    read(|r| r.app.wifi_lb()) as libc::c_int
+    read(|r| r.app.opt(Opt::WifiLb)) as libc::c_int
 }
 #[no_mangle]
 pub extern "C" fn cinder_wifi_updates() -> libc::c_int {
-    read(|r| r.app.wifi_updates()) as libc::c_int
+    read(|r| r.app.opt(Opt::WifiUpdates)) as libc::c_int
 }
 
 /// What the last ListenBrainz send and update check said, for their rows. Null leaves one as is.
@@ -8111,9 +7963,7 @@ pub unsafe extern "C" fn cinder_update_check(note: *mut c_char, cap: libc::c_int
                 note,
                 cap,
             );
-            if let Some(r) = cell().lock().unwrap().as_mut() {
-                r.app.set_update_offer(&tag);
-            }
+            write(|r| r.app.set_update_offer(&tag));
             1
         }
         Ok(None) => {
@@ -8141,10 +7991,7 @@ pub unsafe extern "C" fn cinder_update_check(note: *mut c_char, cap: libc::c_int
 #[no_mangle]
 pub unsafe extern "C" fn cinder_update_stage(note: *mut c_char, cap: libc::c_int) -> libc::c_int {
     let say = |text: &str, stopped: bool| {
-        if let Some(r) = cell().lock().unwrap().as_mut() {
-            r.app.set_update_install_note(text, stopped);
-            r.dirty = true;
-        }
+        repaint(|r| r.app.set_update_install_note(text, stopped));
     };
     let (tag, battery) = cell()
         .lock()
@@ -8190,29 +8037,24 @@ pub unsafe extern "C" fn cinder_update_stage(note: *mut c_char, cap: libc::c_int
 #[no_mangle]
 pub unsafe extern "C" fn cinder_update_failed(note: *const c_char) {
     let t = cstr(note);
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_update_install_note(&t, true);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.set_update_install_note(&t, true));
 }
 
 /// Settings ▸ Wi-Fi ▸ Turn on at start (1/0). Read once, after the settings are loaded.
 #[no_mangle]
 pub extern "C" fn cinder_wifi_autostart() -> libc::c_int {
-    read(|r| r.app.wifi_autostart()) as libc::c_int
+    read(|r| r.app.opt(Opt::WifiAutostart)) as libc::c_int
 }
 
 /// Settings ▸ Wi-Fi ▸ Set the clock (1/0): run `cinder-wifi timesync` after a successful `on`.
 #[no_mangle]
 pub extern "C" fn cinder_wifi_clock() -> libc::c_int {
-    read(|r| r.app.wifi_clock()) as libc::c_int
+    read(|r| r.app.opt(Opt::WifiClock)) as libc::c_int
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_set_clock_epoch(epoch: i64) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_clock_epoch(epoch);
-    }
+    write(|r| r.app.set_clock_epoch(epoch));
 }
 
 /// The UTC epoch the clock editor wants written. Read after a CINDER_ACT_CLOCK_SET action and pass
@@ -8231,9 +8073,7 @@ pub extern "C" fn cinder_get_clock_epoch() -> i64 {
 /// orderings are the same object seen from two sides.
 #[no_mangle]
 pub extern "C" fn cinder_bt_paired_clear() {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.bt_paired_clear();
-    }
+    write(|r| r.app.bt_paired_clear());
 }
 
 /// Append one paired device. `kind` may be NULL/"" (the row then just says "TAP TO CONNECT").
@@ -8260,9 +8100,7 @@ pub extern "C" fn cinder_bt_paired_add(
         name = "(unnamed)".to_string();
     }
     let kind = cstr(kind);
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.bt_paired_add(&name, &kind, connected != 0);
-    }
+    write(|r| r.app.bt_paired_add(&name, &kind, connected != 0));
 }
 
 /// Discovered-device list (the FOUND section). Cleared when a scan starts, then one _add per device
@@ -8270,9 +8108,7 @@ pub extern "C" fn cinder_bt_paired_add(
 /// a row index and nothing else. `kind` may be NULL.
 #[no_mangle]
 pub extern "C" fn cinder_bt_found_clear() {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.bt_found_clear();
-    }
+    write(|r| r.app.bt_found_clear());
 }
 
 #[no_mangle]
@@ -8294,9 +8130,7 @@ pub extern "C" fn cinder_bt_found_add(name: *const libc::c_char, kind: *const li
         name = "(unnamed)".to_string();
     }
     let kind = cstr(kind);
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.bt_found_add(&name, &kind);
-    }
+    write(|r| r.app.bt_found_add(&name, &kind));
 }
 
 /// Raise a pairing prompt on the Devices screen. `kind`: 1 = numeric comparison (yes/no),
@@ -8315,16 +8149,12 @@ pub extern "C" fn cinder_bt_prompt_set(
             .to_string_lossy()
             .into_owned()
     };
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_bt_prompt(kind as u8, &name, code);
-    }
+    write(|r| r.app.set_bt_prompt(kind as u8, &name, code));
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_bt_prompt_clear() {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_bt_prompt(0, "", 0);
-    }
+    write(|r| r.app.set_bt_prompt(0, "", 0));
 }
 
 /// Scan state. The shell reads this after a CINDER_ACT_BT_SCAN_TOGGLE to know which way to drive
@@ -8336,9 +8166,7 @@ pub extern "C" fn cinder_get_bt_scanning() -> libc::c_int {
 
 #[no_mangle]
 pub extern "C" fn cinder_set_bt_scanning(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.set_bt_scanning(on != 0);
-    }
+    write(|r| r.app.set_bt_scanning(on != 0));
 }
 
 /// Drain the row index that came with the last CINDER_ACT_BT_CONNECT_DEVICE / _BT_FORGET_DEVICE.
@@ -8356,10 +8184,7 @@ pub extern "C" fn cinder_pending_bt_device() -> libc::c_int {
 /// on purpose: that one is the 3.5 mm codec level and must not move while audio is on headphones.
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_volume() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.bt_volume_level() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.bt_volume_level() as libc::c_int)
 }
 
 /// Seed the UI's Bluetooth volume (0..30 AVRCP steps) without popping the HUD.
@@ -8392,10 +8217,7 @@ pub extern "C" fn cinder_set_bt_route(on: libc::c_int) {
 /// 1 if the rocker is currently driving the Bluetooth route.
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_route() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.bt_route() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.bt_route() as libc::c_int)
 }
 
 /// Read the UI's Sound-effect toggles as a bitmask (bit0 DSEE · bit1 Vinyl · bit2 VPT ·
@@ -8403,20 +8225,14 @@ pub extern "C" fn cinder_get_bt_route() -> libc::c_int {
 /// CINDER_ACT_SOUND_CHANGED action and applies each bit via the effect shim. 0 if renderer not up.
 #[no_mangle]
 pub extern "C" fn cinder_get_sound_flags() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.sound_flags() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.sound_flags() as libc::c_int)
 }
 
 /// Read the Sound screen's A/B compare state (1 = B / chain bypassed, 0 = A / active). The shell
 /// calls this after a CINDER_ACT_SOUND_BYPASS action and applies it via cinder_effects_set_bypass.
 #[no_mangle]
 pub extern "C" fn cinder_get_sound_bypass() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) if r.app.sound_bypass() => 1,
-        _ => 0,
-    }
+    read(|r| r.app.sound_bypass()) as libc::c_int
 }
 
 /// Which VPT room is selected, 0..=3 — the value to hand Sony's `SetVptMode`. Read alongside
@@ -8425,10 +8241,7 @@ pub extern "C" fn cinder_get_sound_bypass() -> libc::c_int {
 /// `sound_flags` is a u8 of booleans. Clamped in the navigator, so this is always in range.
 #[no_mangle]
 pub extern "C" fn cinder_get_vpt_mode() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.vpt_mode() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.vpt_mode() as libc::c_int)
 }
 
 /// Which DC Phase filter type is selected, 0..=5 — the value for
@@ -8436,10 +8249,7 @@ pub extern "C" fn cinder_get_vpt_mode() -> libc::c_int {
 /// DC Phase's on/off, this carries which filter. Clamped in the navigator.
 #[no_mangle]
 pub extern "C" fn cinder_get_dc_type() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.dc_type() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.dc_type() as libc::c_int)
 }
 
 /// Sound ▸ Advanced, packed: bit0 Source Direct, bit1 Clear Phase, bit2 DSEE AI,
@@ -8447,19 +8257,13 @@ pub extern "C" fn cinder_get_dc_type() -> libc::c_int {
 /// cinder_get_sound_flags.
 #[no_mangle]
 pub extern "C" fn cinder_get_adv_flags() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.adv_flags() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.adv_flags() as libc::c_int)
 }
 
 /// DSEE HX Custom mode, 0..=4 — for cinder_effects_set_dsee_hx_mode().
 #[no_mangle]
 pub extern "C" fn cinder_get_dsee_mode() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.dsee_mode() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.dsee_mode() as libc::c_int)
 }
 
 /// Vinylizer character, 0..=3 — for cinder_effects_set_vinylizer_type(). Worth sending even with
@@ -8584,10 +8388,7 @@ pub extern "C" fn cinder_set_vol_curve_available(ok: libc::c_int) {
 /// ── FM radio ────────────────────────────────────────────────────────────────────────────────
 #[no_mangle]
 pub extern "C" fn cinder_fm_khz() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.fm_khz(),
-        None => 0,
-    }
+    read(|r| r.app.fm_khz())
 }
 
 #[no_mangle]
@@ -8600,36 +8401,24 @@ pub extern "C" fn cinder_fm_seek_dir() -> libc::c_int {
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_playing() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.fm_power as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.fm_power as libc::c_int)
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_bt_out() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.fm_bt as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.fm_bt as libc::c_int)
 }
 
 /// Did the user just ask to start (1) or stop (0) a recording? Valid right after CINDER_ACT_FM_RECORD.
 #[no_mangle]
 pub extern "C" fn cinder_fm_record() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.fm_rec as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.fm_rec as libc::c_int)
 }
 
 /// The recorder is installed: the FM screen shows REC.
 #[no_mangle]
 pub extern "C" fn cinder_fm_set_rec_available(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.fm_set_rec_available(on != 0);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.fm_set_rec_available(on != 0));
 }
 
 /// Seconds recorded so far, or -1 when not recording. Redraws only when the value changes.
@@ -8645,34 +8434,22 @@ pub extern "C" fn cinder_fm_report_rec(secs: libc::c_int) {
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_report_bt_out(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.fm_set_bt_out(on != 0);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.fm_set_bt_out(on != 0));
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_report_khz(khz: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.fm_report_khz(khz);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.fm_report_khz(khz));
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_report_playing(on: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.fm_set_playing(on != 0);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.fm_set_playing(on != 0));
 }
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_report_antenna(present: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.fm_set_antenna(present != 0);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.fm_set_antenna(present != 0));
 }
 
 /// The live signal meter, straight off the Si4708's `STATUS_RSSI` register.
@@ -8701,10 +8478,7 @@ pub extern "C" fn cinder_fm_report_signal(rssi: libc::c_int, stereo: libc::c_int
 
 #[no_mangle]
 pub extern "C" fn cinder_fm_report_scan_progress(pct: libc::c_int) {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.fm_set_scan_progress(pct.clamp(0, 100) as u8);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.fm_set_scan_progress(pct.clamp(0, 100) as u8));
 }
 
 /// # Safety
@@ -8716,20 +8490,14 @@ pub unsafe extern "C" fn cinder_fm_report_stations(khz: *const libc::c_int, n: l
     } else {
         std::slice::from_raw_parts(khz, n as usize).to_vec()
     };
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.fm_set_stations(&list);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.fm_set_stations(&list));
 }
 
 /// Clear Bass gain for the six-band's band 0, 0 (off) to 10. Always 0 until the shell has
 /// reported the six-band EQ present with `cinder_set_clear_bass_available`.
 #[no_mangle]
 pub extern "C" fn cinder_get_clear_bass() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.clear_bass() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.clear_bass() as libc::c_int)
 }
 
 /// The shell's report that a ClearAudio+ write did not take: this firmware has none.
@@ -8828,10 +8596,7 @@ pub extern "C" fn cinder_set_clear_bass_available(on: libc::c_int) {
 
 #[no_mangle]
 pub extern "C" fn cinder_get_vinyl_type() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.vinyl_type() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.vinyl_type() as libc::c_int)
 }
 
 /// Enable the built-in scrobbler, appending an Audioscrobbler/1.1 `.scrobbler.log` at `path`
@@ -9059,10 +8824,7 @@ pub unsafe extern "C" fn cinder_set_device_system(uptime_s: libc::c_int, kernel:
 /// whole job is to play music for a long time on one charge.
 #[no_mangle]
 pub extern "C" fn cinder_device_wants_detail() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) if r.app.current() == cinder_ui::nav::Screen::Device => 1,
-        _ => 0,
-    }
+    read(|r| r.app.current() == cinder_ui::nav::Screen::Device) as libc::c_int
 }
 
 /// Raise the ordinary bottom toast — the same one queue and Shelf feedback use.
@@ -9081,10 +8843,7 @@ pub extern "C" fn cinder_toast(msg: *const c_char) {
     if s.is_empty() {
         return;
     }
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.notify_raw(s);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.notify_raw(s));
 }
 
 /// Raise an ordinary UI toast whose argument is an English localization key. Unlike
@@ -9100,10 +8859,7 @@ pub extern "C" fn cinder_toast_key(key: *const c_char) {
     if s.is_empty() {
         return;
     }
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.notify(s);
-        r.dirty = true;
-    }
+    repaint(|r| r.app.notify(s));
 }
 
 /// Night on a schedule (Settings ▸ Display ▸ Night schedule): call ~1x/sec. Returns
@@ -9142,7 +8898,11 @@ pub extern "C" fn cinder_night_tick() -> libc::c_int {
 pub extern "C" fn cinder_clock_tick() {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         // Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing lyrics: the song playing has none — ask.
-        if r.app.wifi_lyrics() && r.app.wifi_connected() && !r.app.has_lyrics() && r.cue.is_none() {
+        if r.app.opt(Opt::WifiLyrics)
+            && r.app.wifi_connected()
+            && !r.app.has_lyrics()
+            && r.cue.is_none()
+        {
             if let Some(t) = r.last_track.as_ref() {
                 let len = (t.duration_raw.unwrap_or(0).max(0) / 1000) as u32;
                 lyrics_fetch(&t.filename, &t.artist, &t.title, &t.album, len);
@@ -9151,7 +8911,7 @@ pub extern "C" fn cinder_clock_tick() {
         // Settings ▸ Wi-Fi ▸ Speakers: a search's result, and a cast's state.
         cast_tick(r);
         // Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing album art: the song playing has no cover.
-        if r.app.wifi_art() && r.app.wifi_connected() {
+        if r.app.opt(Opt::WifiArt) && r.app.wifi_connected() {
             let none = *COVER_NONE.lock().unwrap();
             if let (Some(db), Some(t)) = (r.db.as_ref(), r.last_track.as_ref()) {
                 if none == Some(t.object_id) {
@@ -9347,19 +9107,13 @@ pub extern "C" fn cinder_clock_tick() {
 /// song's extrapolated position reaches its end, pauses and calls `cinder_stop_after_done`.
 #[no_mangle]
 pub extern "C" fn cinder_get_stop_after() -> libc::c_int {
-    match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.stop_after() as libc::c_int,
-        None => 0,
-    }
+    read(|r| r.app.stop_after() as libc::c_int)
 }
 
 /// The shell paused at the end of the song: disarm, and put the sleep row back to Off.
 #[no_mangle]
 pub extern "C" fn cinder_stop_after_done() {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.stop_after_done();
-        r.dirty = true;
-    }
+    repaint(|r| r.app.stop_after_done());
 }
 
 /// Has the sleep timer just expired? Returns 1 once (then clears), so the shell can pause playback.
@@ -9512,22 +9266,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // Settings ▸ Ignore "The" in artists. Read before the library arrives, and
                     // `set_library` applies it to whatever library comes next.
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
-                    "quick_settings" => r.app.set_quick_enabled(v == "1"),
-                    "folders_tab" => r.app.set_folders_tab(v == "1"),
-                    "delete_music" => r.app.set_delete_music(v == "1"),
-                    "menu_icons" => r.app.set_menu_icons(v == "1"),
-                    "np_back" => r.app.set_np_back(v == "1"),
-                    "wifi_autostart" => r.app.set_wifi_autostart(v == "1"),
-                    "wifi_clock" => r.app.set_wifi_clock(v == "1"),
-                    "wifi_lb" => r.app.set_wifi_lb(v == "1"),
-                    "wifi_updates" => r.app.set_wifi_updates(v == "1"),
-                    "wifi_airplay" => r.app.set_wifi_airplay(v == "1"),
-                    "wifi_lyrics" => r.app.set_wifi_lyrics(v == "1"),
-                    "wifi_art" => r.app.set_wifi_art(v == "1"),
-                    "wifi_play_to" => r.app.set_wifi_play_to(v == "1"),
                     "wifi_drive_code" => r.app.set_drive_code(v),
-                    "np_count" => r.app.set_np_count(v == "1"),
-                    "hold_buttons" => r.app.set_hold_buttons(v == "1"),
                     "big_bar" => cinder_ui::scale::set_big_bar(v == "1"),
                     "big_icons" => cinder_ui::scale::set_big_icons(v == "1"),
                     "night_sched" | "night_from" | "night_until" => {
@@ -9899,7 +9638,12 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.shelf_pin_decode(i, v);
                         }
                     }
-                    _ => {}
+                    // The opt-in switches, by their keys in `cinder_ui::opt`.
+                    _ => {
+                        if let Some(o) = Opt::from_key(k) {
+                            r.app.set_opt(o, v == "1");
+                        }
+                    }
                 }
             }
             pl.install(&mut r.app);
@@ -10656,18 +10400,14 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     // Build the browsable library now so the Library screen shows real music.
     // The stats file, read before the build so the build can key it by object id. Anything this
     // side has not written yet goes out first, so the read cannot be older than the memory.
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        flush_stats(r, true);
-    }
+    write(|r| flush_stats(r, true));
     let track_stats = stats::Store::open(stats::PATH);
     let t_phase = std::time::Instant::now();
     let audiobooks = books::enabled();
     let mut lib = build_library_with(&db, Some(&track_stats), audiobooks);
     // Where the listener is in each audiobook. Anything this side has not written yet goes out
     // first, for the reason the stats file does.
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        flush_books(r, true);
-    }
+    write(|r| flush_books(r, true));
     let book_places = books::Store::open(books::PATH);
     book_places.apply(&mut lib.books);
     let ms_build = t_phase.elapsed().as_millis();
@@ -14064,7 +13804,7 @@ mod tests {
         *cell().lock().unwrap() = Some(r);
 
         cinder_zappin_end();
-        assert_eq!(cinder_zappin_prepare_resume_queue(), 1);
+        assert_eq!(cinder_zappin_prepare_normal_queue(), 1);
         {
             let guard = cell().lock().unwrap();
             let r = guard.as_ref().unwrap();

@@ -340,16 +340,7 @@ fn md5_hex(cmd: &[&str], data: &str) -> Result<String, String> {
 
 /// application/x-www-form-urlencoded, byte by byte.
 fn form(params: &[(String, String)]) -> String {
-    let enc = |s: &str| {
-        s.bytes()
-            .map(|b| match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    (b as char).to_string()
-                }
-                _ => format!("%{b:02X}"),
-            })
-            .collect::<String>()
-    };
+    let enc = |s: &str| crate::drive::pct_encode(s).replace('/', "%2F");
     params
         .iter()
         .map(|(k, v)| format!("{}={}", enc(k), enc(v)))
