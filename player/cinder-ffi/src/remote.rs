@@ -234,20 +234,7 @@ pub fn upload_name(raw: &str) -> Option<String> {
     AUDIO_EXT.contains(&ext.as_str()).then(|| n.to_string())
 }
 
-fn json_str(s: &str) -> String {
-    let mut o = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => o.push_str("\\\""),
-            '\\' => o.push_str("\\\\"),
-            '<' => o.push_str("\\u003c"),
-            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
-            c => o.push(c),
-        }
-    }
-    o.push('"');
-    o
-}
+use crate::net::json_str;
 
 fn button(name: &str) -> Option<i32> {
     Some(match name {

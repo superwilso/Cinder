@@ -4111,6 +4111,17 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "wifi_connected");
+        // A newer release found: the status strip offers it, then says how the install is going.
+        app.set_update_offer("v0.4.1");
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "wifi_update");
+        app.set_update_install_note("Downloading Cinder v0.4.1…", false);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "wifi_update_busy");
+        app.set_update_install_note("", true);
+        app.set_update_offer("");
         // The pull-down with the Wi-Fi option: Wi-Fi under Bluetooth (#53), from the Library.
         app.set_quick_enabled(true);
         app.go_for_preview(Screen::Library);
