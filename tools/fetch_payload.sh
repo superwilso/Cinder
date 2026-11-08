@@ -31,9 +31,21 @@ if [ -n "$TAG" ]; then
         || { echo "::error::no payload for $TAG (the draft release payload-$TAG) — was it cut with tools/release.sh?"; exit 1; }
 else
     FROM="$(awk '$1=="tag"{print $2}' "$M")"
-    curl -fsSL --retry 3 -o "$WORK/cinder-payload.tar.gz" \
-        "https://github.com/$REPO/releases/download/$FROM/cinder-payload.tar.gz" \
-        || { echo "::error::could not download cinder-payload.tar.gz from release $FROM"; exit 1; }
+    # A release commit reaches main BEFORE its tag, so on that one commit the release it names is
+    # not published yet and the download is a 404 (v0.4.1-rc1's CI went red that way). ci.yml sets
+    # CINDER_PAYLOAD_WAIT_MIN, and the check waits for release.yml to publish instead of failing.
+    # Unset (a clone, release.yml) it fails at once, as before.
+    waited=0
+    until curl -fsSL --retry 3 -o "$WORK/cinder-payload.tar.gz" \
+        "https://github.com/$REPO/releases/download/$FROM/cinder-payload.tar.gz"; do
+        if [ "$waited" -ge "${CINDER_PAYLOAD_WAIT_MIN:-0}" ]; then
+            echo "::error::could not download cinder-payload.tar.gz from release $FROM${CINDER_PAYLOAD_WAIT_MIN:+ (waited $waited min) — re-run this job once $FROM is published}"
+            exit 1
+        fi
+        echo "release $FROM is not published yet — waiting for it (minute $waited of $CINDER_PAYLOAD_WAIT_MIN)"
+        sleep "${CINDER_PAYLOAD_WAIT_STEP_S:-60}"
+        waited=$((waited + 1))
+    done
 fi
 rm -rf cinder-home/dist/stable cinder-home/dist/dev
 tar -xzf "$WORK/cinder-payload.tar.gz" -C cinder-home/dist

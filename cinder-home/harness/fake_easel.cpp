@@ -83,6 +83,7 @@ void ApplicationBase::run(int, char**, const char* name,
     // the end of the whole scenario, so it must count for nothing: including its target in that
     // "earliest" would jump straight to the end of the run.
     cinder_harness_clock_passive();
+    cinder_harness_record_until(g_budget_ms);
     // Wait for exactly the remaining budget, not a second at a time: the clock moves in whatever
     // steps the app's own sleeps make, and re-arming a one-second wait each time let a run overshoot
     // its budget by tens of virtual seconds — which makes "the last minute of a three-minute run"

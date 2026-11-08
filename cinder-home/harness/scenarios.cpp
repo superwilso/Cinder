@@ -19,6 +19,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <time.h>
 #include <spawn.h>
 #include <sys/wait.h>
 extern char** environ;
@@ -402,13 +403,17 @@ static void s_real_player(void) {
 // queue went out as a Pause and only the second one played. Here the real UI restores the map's
 // queue (resume.conf, queue.conf) and the real shell carries the press out, so the whole path —
 // the tap, the UI's pending play, the shell's queue hand-off — is the one the player runs.
-static void s_real_resume_play(void) {
-    if (!seed_from_map()) return;
-    // The map was taken over adb, on the cable: as it stands the shell sees a computer and goes to
-    // USB storage, which is right, and takes the screen. This press is made off the cable.
+// The map was taken over adb, on the cable: as it stands the shell sees a computer and goes to USB
+// storage, which is right, and takes the screen. The real-* scenarios start off the cable.
+static void off_cable(void) {
     cinder_harness_fs_write("/sys/class/power_supply/usb/online", "0\n");
     cinder_harness_fs_write("/sys/class/power_supply/usb/present", "0\n");
     cinder_harness_fs_write("/sys/class/android_usb/android0/state", "DISCONNECTED\n");
+}
+
+static void s_real_resume_play(void) {
+    if (!seed_from_map()) return;
+    off_cable();
     cinder_harness_input_enable();
     cinder_harness_tap_at(20000, 240, 692);   // ▶ on Now Playing, where a restored boot starts
     cinder_harness_set_budget_ms(26000);
@@ -420,6 +425,142 @@ static void s_real_resume_play(void) {
                 cinder_harness_audio_queue_count(), cinder_harness_audio_queue_start());
     check(cinder_harness_audio_queue_count() > 0, "the queue is the restored one, not empty");
     check(cinder_harness_count("cinder_audio_pause") == 0, "the first press is not a Pause");
+}
+
+// These are about the shell and the real UI together; with the recording stubs there is no UI to
+// flip a theme or pick a row, so they skip.
+static bool real_ui_only(void) {
+#ifdef CINDER_HARNESS_REAL_FFI
+    return true;
+#else
+    std::printf("  skip (needs the real UI: CINDER_HARNESS_REAL_FFI=1)\n");
+    return false;
+#endif
+}
+
+// Settings lines added after whatever the settings file already says: the loader reads top to
+// bottom, so a later line wins over the map's.
+static void settings_append(const char* lines) {
+    static char buf[1 << 16];
+    const char* path = "/contents/cinder_settings.conf";
+    int n = cinder_harness_fs_read(path, buf, (int)sizeof buf - 1);
+    std::string s(buf, n > 0 ? (size_t)n : 0);
+    if (!s.empty() && s.back() != '\n') s += '\n';
+    cinder_harness_fs_write(path, (s + lines).c_str());
+}
+
+// ── Night on a schedule, with the panel dark (owner, 2026-11-02) ─────────────────────────────
+// The schedule flips the theme from the clock tick, and the shell carries that out like the
+// switch: the backlight follows. With the panel dark it must not: a backlight apply there lights a
+// screen the idle timer turned off, at night. Here the real UI does the clock maths from its own
+// settings and the real shell carries the action out, so the whole path is the player's. No map
+// needed: the settings are written here, so CI's real-UI job runs it too.
+//
+// The harness's wall clock starts at 01:46:40 UTC. The schedule runs 01:48 to 01:55: Night comes on
+// 80 s in, with the panel dark since 30 s; a touch at 200 s wakes it, and the level it wakes to
+// says which theme the UI held (DisplayService 1 = Night, 2 = day, 0 = off).
+// The shell finds the backlight node with access(W_OK), and the harness keeps `access` real (see
+// fakefs.cpp), so in every run the node is "missing" and set_backlight returns before doing anything:
+// the theme levels and the wake restore are unreachable. cinder_backlight.conf's `path=` names the
+// node directly, so point it at the node's real place in this run's tree.
+static void backlight_node_reachable(void) {
+    const char* node = "/sys/class/leds/lcd-backlight/brightness";
+    cinder_harness_fs_write(node, "180\n");
+    cinder_harness_fs_write("/sys/class/leds/lcd-backlight/max_brightness", "255\n");
+    char real[1024];
+    if (!cinder_harness_fs_resolve(node, "w", real, (int)sizeof real)) {
+        check(false, "found the backlight node in this run's tree");
+        return;
+    }
+    cinder_harness_fs_write("/contents/cinder_backlight.conf", (std::string("path=") + real + "\n").c_str());
+}
+
+static void s_real_night_dark(void) {
+    if (!real_ui_only()) return;
+    if (!seed_from_map(true)) return;
+    off_cable();
+    backlight_node_reachable();
+    setenv("TZ", "UTC", 1);
+    tzset();
+    settings_append("night=0\nscreen_off=30\nbrightness=4\nnight_sched=1\nnight_from=108\nnight_until=115\n");
+    cinder_harness_input_enable();
+    cinder_harness_tap_at(200000, 240, 400);
+    cinder_harness_set_budget_ms(220000);
+    cinder_harness_run();
+
+    const char* bl = "display:SetLCDBacklightBrightness";
+    check(cinder_harness_count_between(bl, 25000, 79000) >= 1, "the panel went dark when idle");
+    check_eq(cinder_harness_count_between(bl, 79000, 199000), 0,
+             "Night coming on with the panel dark leaves the backlight alone");
+    const int before_wake = cinder_harness_count_between(bl, 0, 200000);
+    check(cinder_harness_count(bl) > before_wake, "the touch woke the panel");
+    check_eq(cinder_harness_arg(bl, before_wake), 1,
+             "it woke at the Night level: the schedule turned Night on while the panel was dark");
+}
+
+// ── a USB storage session, then ▶ (device, 2026-09-28) ───────────────────────────────────────
+// Handing the volume to a PC closes the player (ClosePlayer), which costs PlayerService its
+// sequence. The next ▶ must still find the queue to hand back, or it does nothing until a song is
+// tapped. The stub scenario msc-cycle counts the shell's re-arm call; this one runs the re-arm in
+// the real UI on the map's real queue and presses ▶ the way a person would.
+static void s_real_msc_then_play(void) {
+    if (!real_ui_only()) return;
+    if (!seed_from_map()) return;
+    off_cable();
+    cinder_harness_fs_write_at(30000, "/sys/class/power_supply/usb/online", "1\n");
+    cinder_harness_fs_write_at(30000, "/sys/class/power_supply/usb/present", "1\n");
+    cinder_harness_fs_write_at(30000, "/sys/class/android_usb/android0/state", "CONFIGURED\n");
+    cinder_harness_fs_write_at(90000, "/sys/class/power_supply/usb/online", "0\n");
+    cinder_harness_fs_write_at(90000, "/sys/class/power_supply/usb/present", "0\n");
+    cinder_harness_fs_write_at(90000, "/sys/class/android_usb/android0/state", "DISCONNECTED\n");
+    cinder_harness_input_enable();
+    // The panel went dark 30 s in, so the first touch only wakes it (a wake never presses).
+    cinder_harness_tap_at(118000, 240, 400);
+    cinder_harness_tap_at(120000, 240, 692);   // ▶ on Now Playing, after the session
+    cinder_harness_set_budget_ms(130000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("system:/system/vendor/cinder/bin/cinder-msc on"), 1,
+             "the volume went to the PC once");
+    check(cinder_harness_count_between("system:/system/vendor/cinder/bin/cinder-msc off", 90000, 100000) >= 1,
+          "and came back when the cable was pulled");
+    check_eq(cinder_harness_count_between("cinder_audio_play_tracks", 100000, 130000), 1,
+             "▶ after the session hands the queue back to the player service");
+    check(cinder_harness_audio_queue_count() > 0, "the queue is the restored one, not empty");
+}
+
+// ── Bluetooth from its own screen: tap the headphones to hang up, tap again to connect ───────
+// The real UI owns the screen and the paired list the shell pushed into it; the real shell owns the
+// radio. A row tap is the UI deciding "hang up" or "connect" from what the shell last told it, so
+// both halves have to agree about which device is which and whether it is connected. The radio was
+// on when the player was last used, so the boot reconnects the headphones by itself (19 s here) —
+// the first tap therefore finds them connected. Coordinates are the real layout at any text size:
+// the toolbar's Bluetooth button, and the first paired row (rows start at y 212).
+static void s_real_bt_tap_row(void) {
+    if (!real_ui_only()) return;
+    // The map, not an invented device: without a library the shell's bring-up never completes,
+    // and Bluetooth is part of it.
+    if (!seed_from_map()) return;
+    off_cable();
+    settings_append("bt_on=1\n");
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    cinder_harness_input_enable();
+    cinder_harness_tap_at(22000, 300, 773);   // Now Playing's Bluetooth button
+    cinder_harness_tap_at(23000, 240, 240);   // the connected headphones: hang up
+    cinder_harness_tap_at(27000, 240, 240);   // the same row, now idle: connect
+    cinder_harness_set_budget_ms(29000);
+    cinder_harness_run();
+
+    check(cinder_harness_count_between("BtXmit::RequestLastDeviceConnection", 0, 22000) >= 1,
+          "the boot reconnected the last headphones by itself");
+    check_eq(cinder_harness_count_between("BtXmit::RequestDisconnection", 0, 23000), 0,
+             "nothing hung up before the tap");
+    check_eq(cinder_harness_count_between("BtXmit::RequestDisconnection", 23000, 27000), 1,
+             "a tap on the connected row hangs up, once");
+    check(cinder_harness_count_between("BtXmit::RequestConnection", 27000, 29000) >= 1,
+          "a tap on the same row, idle now, connects it again");
+    check(cinder_harness_bt_radio_on(), "the radio stays on: hanging up is not the power switch");
 }
 
 // ── hagodaemon is not up: every Sony service client fails to build, for the whole run ────────
@@ -2944,6 +3085,9 @@ static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
     {"real-player",       s_real_player,             "boots on a real player's map (CINDER_HARNESS_MAP), lists what it lacks"},
     {"real-resume-play",  s_real_resume_play,        "the first ▶ after a restored boot plays the saved queue (real UI)"},
+    {"real-night-dark",   s_real_night_dark,         "Night coming on with the panel dark keeps it dark (real UI)"},
+    {"real-msc-play",     s_real_msc_then_play,      "▶ after a USB storage session plays the queue (real UI)"},
+    {"real-bt-tap",       s_real_bt_tap_row,         "tap the connected headphones to hang up, again to connect (real UI)"},
     {"library-touched",   s_library_touched_not_changed, "a scan that changes no row does not rebuild the library"},
     {"suspend-default",   s_suspend_by_default,      "stage 1 early suspend runs by default, under a wakelock"},
     {"ram-suspend",       s_ram_suspend_opt_in,      "stage 2 by default: idle, off the cable -> wakelock released"},

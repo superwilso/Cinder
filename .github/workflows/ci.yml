@@ -87,6 +87,9 @@ jobs:
         if: matrix.dir == 'installer'
         shell: bash
         run: bash tools/fetch_payload.sh
+        # On a release commit the release is published a few minutes after this starts.
+        env:
+          CINDER_PAYLOAD_WAIT_MIN: 30
       - name: Check generated localization catalog
         if: matrix.dir == 'player'
         working-directory: .
@@ -369,6 +372,9 @@ jobs:
       # fetch refuses any file that is missing or is not the byte content that was verified.
       - name: The released payload is the one release.sh verified
         run: bash tools/fetch_payload.sh
+        # On a release commit the release is published a few minutes after this starts.
+        env:
+          CINDER_PAYLOAD_WAIT_MIN: 30
 
       # Architecture, glibc floor, allowed libraries, static helpers. A script, so it runs locally
       # exactly as here. It is NOT a link check: the link needs Sony's libraries, so that gate is

@@ -274,25 +274,49 @@ extern "C" {
 // The hot path. `slot` is a per-call-site cache of the interned id: the generated stubs are called
 // millions of times in a long scenario, and looking the name up in a map — under the lock, with a
 // string compare — was most of the cost of running one.
+// THE TRACE ENDS AT THE BUDGET. The app does not stop when the budget runs out: its frame loop
+// keeps going through finalize (which only stops the pump ticker) and while the checks are read.
+// How much virtual time passes before the harness's own thread gets round to finalize depends on
+// how busy the machine is — 3.2 s on a loaded one, enough for zappin-aba-stale-uri to see a fourth
+// preview request (got 4, want 3: 7 runs in 36 with twelve at once, never one at a time). So once
+// the clock passes the budget, app calls are no longer recorded and every check reads the same
+// window on any machine. The lifecycle (`easel:…`, e.g. OnFinalize) is still recorded: it is the
+// harness's own shutdown, and "shut down cleanly" is asserted on it.
+static long long g_record_until = 0;   // 0 = no end (before cinder_harness_run sets the budget)
+
+static bool recorded(int id) {   // caller holds the lock
+    return g_record_until == 0 || g_now_ms <= g_record_until
+        || (*g_names)[(size_t)id].compare(0, 6, "easel:") == 0;
+}
+
+// Every trace entry goes through here, the fakes' too, so the budget cut above is one rule.
+static void trace_push(int id, long long arg) {   // caller holds the lock
+    if (recorded(id)) g_trace->push_back(Call{id, arg, g_now_ms});
+}
+
 void cinder_harness_record_cached(int* slot, const char* name, long long arg) {
     Lock l; ensure();
     mark_running();
     if (*slot < 0) *slot = intern(name);
-    g_trace->push_back(Call{*slot, arg, g_now_ms});
+    trace_push(*slot, arg);
 }
 
 void cinder_harness_record(const char* name, long long arg) {
     Lock l; ensure();
     mark_running();   // this thread is executing app code — the clock must not jump past it
-    g_trace->push_back(Call{intern(name), arg, g_now_ms});
+    const int id = intern(name);
+    trace_push(id, arg);
 }
+
+void cinder_harness_record_until(long long ms) { Lock l; g_record_until = ms; }
 
 // For callers that ALREADY HOLD g_lock — currently only the scheduled-filesystem-change hook,
 // which the clock invokes from inside try_advance. Taking the lock again there deadlocks: it is a
 // plain mutex, not a recursive one.
 void cinder_harness_record_locked(const char* name, long long arg) {
     ensure();
-    g_trace->push_back(Call{intern(name), arg, g_now_ms});
+    const int id = intern(name);
+    trace_push(id, arg);
 }
 
 // Zero unless a scenario armed at least one delay, so the stubs' guard is a plain load and the
@@ -603,8 +627,8 @@ int fprintf(FILE* stream, const char* fmt, ...) {
         while (!text.empty() && (text[text.size() - 1] == '\n' || text[text.size() - 1] == ' '))
             text.erase(text.size() - 1);
         if (text.size() > 96) text.resize(96);
-        g_trace->push_back(Call{intern("log"), 1, g_now_ms});
-        g_trace->push_back(Call{intern(text.c_str()), 0, g_now_ms});
+        trace_push(intern("log"), 1);
+        trace_push(intern(text.c_str()), 0);
     }
     if (n > 0) fwrite(buf, 1, (size_t)(n < (int)sizeof buf ? n : (int)sizeof buf - 1), stream);
     return n;
@@ -627,7 +651,7 @@ int system(const char* cmd) {
 
 FILE* popen(const char* cmd, const char* /*mode*/) {
     Lock l; ensure();
-    g_trace->push_back(Call{intern((std::string("popen:") + (cmd ? cmd : "?")).c_str()), 0, g_now_ms});
+    trace_push(intern((std::string("popen:") + (cmd ? cmd : "?")).c_str()), 0);
     return nullptr;   // "the command is not available" — the app's own degraded path
 }
 
@@ -715,14 +739,12 @@ void cinder_harness_rx_fault_ldac(int enabled) { g_fake_rx_ldac_fault = enabled 
 static void fake_bl_set(void*, const unsigned* level) {
     Lock l; ensure();
     g_fake_bl_level = level ? *level : 0;
-    g_trace->push_back(Call{intern("display:SetLCDBacklightBrightness"),
-                            (long long)g_fake_bl_level, g_now_ms});
+    trace_push(intern("display:SetLCDBacklightBrightness"), (long long)g_fake_bl_level);
 }
 static void fake_bl_get(void*, unsigned* out) {
     Lock l; ensure();
     if (out) *out = g_fake_bl_level;
-    g_trace->push_back(Call{intern("display:GetLCDBacklightBrightness"),
-                            (long long)g_fake_bl_level, g_now_ms});
+    trace_push(intern("display:GetLCDBacklightBrightness"), (long long)g_fake_bl_level);
 }
 
 // EVERY slot gets a body, not just the two this fake models.
@@ -744,8 +766,7 @@ static void fake_display_noop(void*, const void*) {}
 // only observable there is of "the touch panel was put to sleep".
 static void fake_touch_valid(void*, const bool* valid) {
     Lock l; ensure();
-    g_trace->push_back(Call{intern("display:SetTouchPanelValidate"),
-                            (long long)(valid && *valid ? 1 : 0), g_now_ms});
+    trace_push(intern("display:SetTouchPanelValidate"), (long long)(valid && *valid ? 1 : 0));
 }
 
 static void* fake_display_create(void) {
@@ -979,7 +1000,7 @@ extern "C" int cinder_get_ambient(int* milli_alone, int* milli_music) {
 void* dlopen(const char* path, int) {
     Lock l; ensure();
     const std::string p = path ? path : "?";
-    g_trace->push_back(Call{intern((std::string("dlopen:") + p).c_str()), 0, g_now_ms});
+    trace_push(intern((std::string("dlopen:") + p).c_str()), 0);
     // Only this one is faked; every other Sony .so still returns null so the optional-service
     // paths keep being exercised in their degraded form, which is what they are here to prove.
     if (p == "libDisplayService.so") return (void*)&g_display_handle_cookie;
@@ -990,7 +1011,7 @@ void* dlopen(const char* path, int) {
 void* dlsym(void* h, const char* sym) {
     Lock l; ensure();
     const std::string s = sym ? sym : "?";
-    g_trace->push_back(Call{intern((std::string("dlsym:") + s).c_str()), 0, g_now_ms});
+    trace_push(intern((std::string("dlsym:") + s).c_str()), 0);
     if (h == (void*)&g_display_handle_cookie &&
         s == "_ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv") {
         return (void*)&fake_display_create;
