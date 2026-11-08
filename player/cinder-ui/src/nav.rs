@@ -736,7 +736,7 @@ pub enum Action {
 /// elsewhere: until Library grows its Folders page, taking them off the Menu would leave them with
 /// no way in. Equalizer left on 2026-10-04 (owner's call): Sound's Equalizer row (handoff 2a) is
 /// the way in, and it names what is in the path, which the Menu row could not.
-const MENU: [(Screen, &str, &str); 11] = [
+const MENU: [(Screen, &str, &str); 12] = [
     (Screen::Library, "Library", ""), // live: album/track counts
     // Folder browse — the file tree as it is on the volume. Not a fifth Library tab: the strip is
     // four flat peers and this is a stack you descend, where Back has to mean "up one level".
@@ -755,6 +755,9 @@ const MENU: [(Screen, &str, &str); 11] = [
     (Screen::Sound, "Sound", ""), // live: which effects are on
     (Screen::Soundscape, "Soundscapes", ""), // live: the sound, or Off
     (Screen::Bluetooth, "Bluetooth", ""), // live: configured transmit codec
+    // Only drawn when the Wi-Fi install option is there (`App::menu_visible`). Asked for in
+    // discussion #53: three levels into Settings was too far for a switch used every day.
+    (Screen::Wifi, "Wi-Fi", ""),     // live: off, or the network it is on
     (Screen::UsbDac, "USB-DAC", ""), // live: On/Off
     // Special Menu action intercepted by `activate_menu`; the target is only a placeholder so
     // this stays inside the existing Menu route and does not add a new exhaustive Screen case.
@@ -768,6 +771,25 @@ const MENU: [(Screen, &str, &str); 11] = [
         "Buttons, swipes, the way back",
     ),
 ];
+
+/// Each Menu destination's icon (Settings ▸ Menu icons, discussion #53).
+fn menu_icon(s: Screen) -> crate::kit::Icon {
+    use crate::icons;
+    match s {
+        Screen::Library => icons::library,
+        Screen::Folders => icons::folder,
+        Screen::SensMe => icons::note,
+        Screen::Fm => icons::radio,
+        Screen::Sound => icons::sound,
+        Screen::Soundscape => icons::waves,
+        Screen::Bluetooth => icons::bt,
+        Screen::Wifi => icons::wifi,
+        Screen::UsbDac => icons::usb,
+        Screen::Zappin => icons::play,
+        Screen::Settings => icons::settings,
+        _ => icons::help,
+    }
+}
 
 /// `App::home_screen` values, in `menu::HOMES` order.
 pub const HOME_LIBRARY: u8 = 0;
@@ -819,6 +841,7 @@ pub(crate) struct MenuSubtitles {
     pub bluetooth: String,
     pub usb_dac: String,
     pub soundscape: String,
+    pub wifi: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1827,6 +1850,8 @@ pub struct App {
     folders_tab: bool,
     /// Settings ▸ Delete music: DELETE on Track information and the album page. OFF by default.
     delete_music: bool,
+    /// Settings ▸ Menu icons (off by default; discussion #53).
+    menu_icons: bool,
     /// What the open delete question would remove, as object ids. Set when it is ASKED, so the
     /// answer deletes exactly what the question was about even if the song changes meanwhile.
     delete_ids: Vec<i64>,
@@ -2317,6 +2342,7 @@ impl Default for App {
             quick_enabled: false,
             folders_tab: false,
             delete_music: false,
+            menu_icons: false,
             delete_ids: Vec::new(),
             np_swipe_up: crate::settings::SwipeTo::Off,
             np_swipe_down: crate::settings::SwipeTo::Off,
@@ -3073,6 +3099,15 @@ impl App {
         self.delete_music
     }
 
+    /// Settings ▸ Menu icons.
+    pub fn menu_icons(&self) -> bool {
+        self.menu_icons
+    }
+
+    pub fn set_menu_icons(&mut self, on: bool) {
+        self.menu_icons = on;
+    }
+
     pub fn set_delete_music(&mut self, on: bool) {
         self.delete_music = on;
     }
@@ -3208,6 +3243,26 @@ impl App {
             QuickHit::BluetoothPage => {
                 self.quick_open = false;
                 self.push(Screen::Bluetooth);
+                vec![]
+            }
+            // As Settings ▸ Wi-Fi's own switch: busy until the shell's status says what happened.
+            QuickHit::Wifi => {
+                use crate::wifi::State;
+                if matches!(self.wifi_status.state, State::Busy) {
+                    return vec![];
+                }
+                let on = !matches!(self.wifi_status.state, State::Off);
+                self.wifi_status.state = State::Busy;
+                self.wifi_status.note.clear();
+                crate::wifi::note_state(State::Busy);
+                if on {
+                    self.wifi_networks.clear();
+                }
+                vec![Action::WifiPower(!on)]
+            }
+            QuickHit::WifiPage => {
+                self.quick_open = false;
+                self.push(Screen::Wifi);
                 vec![]
             }
             QuickHit::Night => {
@@ -4126,12 +4181,13 @@ impl App {
         MENU.iter()
             .filter(|m| m.0 != Screen::SensMe || self.sensme_enabled)
             .filter(|m| m.0 != Screen::Zappin || self.preview_enabled)
+            .filter(|m| m.0 != Screen::Wifi || crate::wifi::installed())
             .collect()
     }
 
     /// How many Menu rows are drawn (see [`App::menu_visible`]).
     fn menu_len(&self) -> usize {
-        MENU.len() - usize::from(!self.sensme_enabled) - usize::from(!self.preview_enabled)
+        self.menu_visible().len()
     }
 
     /// The shell says whether the opt-in `sensme` component is installed.
@@ -4418,6 +4474,17 @@ impl App {
             }),
             // The sound, and which of the two levels is in force is not worth the width: the page
             // says it. "Off" when switched off, even though a sound stays chosen.
+            // The network's name once on one; otherwise the switch's state, as the page says it.
+            wifi: match self.wifi_status.state {
+                crate::wifi::State::Connected => {
+                    String::from_utf8_lossy(&self.wifi_status.ssid).into_owned()
+                }
+                crate::wifi::State::Off => String::from(crate::i18n::text("Off")),
+                crate::wifi::State::Busy => String::from(crate::i18n::text("Working…")),
+                crate::wifi::State::On | crate::wifi::State::Connecting => {
+                    String::from(crate::i18n::text("On · not connected"))
+                }
+            },
             soundscape: if self.ambient_on {
                 crate::i18n::text(crate::soundscape::label(self.ambient_sound)).to_string()
             } else {
@@ -4614,6 +4681,11 @@ impl App {
             }
             crate::settings::ROW_QUICK => {
                 self.set_quick_enabled(!self.quick_enabled);
+                vec![]
+            }
+            // Render-only, like the Folders tab: the shell's save path writes the file.
+            crate::settings::ROW_MENU_ICONS => {
+                self.menu_icons = !self.menu_icons;
                 vec![]
             }
             crate::settings::ROW_SWIPE_UP => {
@@ -7657,6 +7729,7 @@ impl App {
     /// The shell found (or did not find) the Wi-Fi install option. Without it the row is hidden.
     pub fn set_wifi_installed(&mut self, on: bool) {
         crate::wifi::set_installed(on);
+        self.menu_idx = self.menu_idx.min(self.menu_len().saturating_sub(1));
     }
 
     /// `cinder-wifi status` output, after any Wi-Fi command or on the shell's own poll. `note`: the
@@ -11199,11 +11272,13 @@ impl App {
                             Screen::Bluetooth => &subs.bluetooth,
                             Screen::UsbDac => &subs.usb_dac,
                             Screen::Soundscape => &subs.soundscape,
+                            Screen::Wifi => &subs.wifi,
                             Screen::Zappin => &preview_sub,
                             _ => crate::i18n::text(value),
                         },
                         home: home_row == Some(*screen),
                         active: i == self.menu_idx,
+                        icon: self.menu_icons.then(|| menu_icon(*screen)),
                     })
                     .collect();
                 crate::menu::render(
@@ -11852,6 +11927,7 @@ impl App {
                     quick: self.quick_enabled,
                     folders_tab: self.folders_tab,
                     delete_music: self.delete_music,
+                    menu_icons: self.menu_icons,
                     swipe_up: self.np_swipe_up,
                     swipe_down: self.np_swipe_down,
                     np_button: self.np_button,
@@ -12313,6 +12389,18 @@ impl App {
         c.clear_clip();
         c.clear_clip_x();
         if self.current() != Screen::Onboarding && !self.landscape() {
+            // The pull-down hangs from the bar's bottom edge; Big view's page titles reach up into
+            // the bar, and their feet showed between it and the panel. Clear the band first.
+            if self.quick_open {
+                crate::widgets::fill_rect(
+                    c,
+                    0,
+                    0,
+                    crate::canvas::W as i32,
+                    crate::chrome::STATUS_H,
+                    theme.bg,
+                );
+            }
             crate::chrome::status_bar(c, &theme, fonts, np.clock, np.badge, np.battery);
         }
 
@@ -12357,6 +12445,7 @@ impl App {
         // and battery stay in view over it, and dims the rest of the screen.
         if self.quick_open {
             let dev = self.bt_connected.as_deref();
+            let wifi_sub = self.menu_subtitles().wifi;
             crate::quick::render(
                 c,
                 &theme,
@@ -12367,6 +12456,10 @@ impl App {
                     bt_device: dev,
                     night: self.night,
                     sleep_idx: self.sleep_idx,
+                    // Busy shows as on, as on the Wi-Fi page: the switch moved when it was tapped.
+                    wifi_on: !matches!(self.wifi_status.state, crate::wifi::State::Off),
+                    wifi_sub: &wifi_sub,
+                    icons: self.menu_icons,
                 },
             );
         }
@@ -14972,6 +15065,7 @@ mod tests {
             Screen::Sound,
             Screen::Soundscape, // live: the sound, or Off
             Screen::Bluetooth,
+            Screen::Wifi, // live: off, or the network
             Screen::UsbDac,
         ]
         .iter()
@@ -19456,11 +19550,12 @@ mod tests {
     fn the_sensme_menu_row_appears_only_when_the_component_is_installed() {
         let mut a = unlocked();
         a.set_preview_enabled(true); // the other opt-in row, so the counts below are SensMe's alone
+                                     // (Wi-Fi's row is the third, and tests run without the Wi-Fi option: hence the extra 1.)
         assert!(!a.menu_visible().iter().any(|m| m.0 == Screen::SensMe));
-        assert_eq!(a.menu_len(), MENU.len() - 1);
+        assert_eq!(a.menu_len(), MENU.len() - 2);
         a.set_sensme_enabled(true);
         assert!(a.menu_visible().iter().any(|m| m.0 == Screen::SensMe));
-        assert_eq!(a.menu_len(), MENU.len());
+        assert_eq!(a.menu_len(), MENU.len() - 1);
         // …and it opens the screen, from the Menu, the way every other row does.
         a.press(Button::Up);
         let idx = a
@@ -20090,6 +20185,27 @@ mod tests {
     /// Settings ▸ Delete music: off, the header slot does nothing; on, DELETE asks, and yes hands
     /// the shell exactly the files the question was about, skips the song if it was playing, and
     /// takes the rest out of Up Next.
+    #[test]
+    fn menu_icons_are_off_by_default_and_their_row_switches_them() {
+        let mut a = unlocked();
+        assert!(!a.menu_icons(), "off by default");
+        assert_eq!(
+            crate::settings::page_of(crate::settings::ROW_MENU_ICONS),
+            crate::settings::GROUPS
+                .iter()
+                .position(|g| g.0 == "Buttons & gestures"),
+            "beside the pull-down panel, which #53 asked for with it"
+        );
+        a.settings_sel = crate::settings::ROW_MENU_ICONS;
+        assert!(
+            a.settings_activate().is_empty(),
+            "render-only: no shell work"
+        );
+        assert!(a.menu_icons());
+        assert!(a.settings_activate().is_empty());
+        assert!(!a.menu_icons());
+    }
+
     #[test]
     fn deleting_music_is_off_by_default_then_asks_and_hands_over_the_files() {
         let mut a = unlocked();
@@ -26614,7 +26730,14 @@ mod r4_tests {
         assert_eq!(a.current(), Screen::ViewEdit);
         // SORT ▸ Plays, SAVE: back on the same page, same name, new rule.
         let (cx, cw) = crate::kit::chip_span(1, 5);
-        a.tap(cx + cw / 2, ve::section_top(3) + crate::kit::SECTION_H + 10);
+        let sort = ve::SECTIONS
+            .iter()
+            .position(|s| *s == ve::Section::Sort)
+            .unwrap();
+        a.tap(
+            cx + cw / 2,
+            ve::section_top(sort) + crate::kit::SECTION_H + 10,
+        );
         a.tap(440, 62);
         assert_eq!(a.current(), Screen::Playlist);
         assert_eq!(a.views[0].sort, crate::views::ViewSort::Plays);
@@ -26804,11 +26927,12 @@ mod r4_tests {
     fn the_preview_menu_row_appears_only_when_the_component_is_installed() {
         let mut a = App::unlocked();
         a.set_sensme_enabled(true);
+        // Less Wi-Fi's row too: tests run without the Wi-Fi option.
         assert!(!a.menu_visible().iter().any(|m| m.0 == Screen::Zappin));
-        assert_eq!(a.menu_len(), MENU.len() - 1);
+        assert_eq!(a.menu_len(), MENU.len() - 2);
         a.set_preview_enabled(true);
         assert!(a.menu_visible().iter().any(|m| m.0 == Screen::Zappin));
-        assert_eq!(a.menu_len(), MENU.len());
+        assert_eq!(a.menu_len(), MENU.len() - 1);
         // Turning it off with the cursor on the last row keeps the cursor on a drawn row.
         a.menu_idx = a.menu_len() - 1;
         a.set_preview_enabled(false);

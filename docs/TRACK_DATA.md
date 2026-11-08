@@ -96,7 +96,7 @@ in `.scrobbler.log`.
 
 ## `cinder_views.conf` — saved views (smart playlists)
 
-A saved view is a name, three rules and a sort. In the Library's Playlists tab it appears as a
+A saved view is a name, four rules and a sort. In the Library's Playlists tab it appears as a
 **smart playlist**, above the ordinary ones, holding whatever its rules match at that moment. The
 songs are not stored; only the rules are.
 
@@ -106,6 +106,7 @@ songs are not stored; only the rules are.
 [Late favourites]
 rating=4
 played=recent
+added=any
 format=flac
 sort=plays
 shuffle=settings
@@ -116,13 +117,14 @@ shuffle=settings
 | `[name]` | up to 48 characters, no `[` or `]` | Starts a view. Names are unique without regard to case; a second `[Mix]` is read as `Mix 2` |
 | `rating` | `0`–`5` | Minimum stars. `0` = any, rated or not |
 | `played` | `any` · `recent` · `not_lately` · `never` | `recent` = in the last 30 days. `not_lately` = played before, but not in the last 90 days. `never` = no counted play |
+| `added` | `any` · `7d` · `30d` · `90d` · `365d` | Came onto the player within that many days (the database's `addedtime`). A song with no date is never matched by a window |
 | `format` | `any` · `flac` · `mp3` · `m4a` · `hires` | By file extension; `hires` is the database's Hi-Res flag |
 | `sort` | `title` · `plays` · `played` · `rating` · `added` | A to Z; most played first; most recently played first; highest rated first; newest in the library first |
 | `shuffle` | `settings`, `songs`, `albums`, `artists` | What this playlist's Shuffle band deals. `settings` (and a file without the key) follows Settings ▸ Shuffle |
 
 * The rules are **and**ed together.
 * A missing key, or a value that is not one of the words above, is that key's default (`0`, `any`,
-  `any`, `title`). An unknown key is ignored. Lines before the first `[section]` are ignored.
+  `any`, `any`, `title`). An unknown key is ignored. Lines before the first `[section]` are ignored.
 * At most 32 views are read.
 * If the file changed underneath, a view in the file that Cinder has never seen is kept when Cinder
   next saves. A view deleted on the player stays deleted.

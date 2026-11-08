@@ -27,6 +27,48 @@ pub const RECENT_DAYS: i64 = 30;
 /// "Not lately" means played before, but not in the last 90 days.
 pub const STALE_DAYS: i64 = 90;
 
+/// How recently the song came onto the player (#23: "added in the last x days"). By the
+/// database's `addedtime`, unix seconds, which a rescan sets for a new file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Added {
+    #[default]
+    Any,
+    Week,
+    Month,
+    Quarter,
+    Year,
+}
+
+impl Added {
+    pub const ALL: [Added; 5] = [
+        Added::Any,
+        Added::Week,
+        Added::Month,
+        Added::Quarter,
+        Added::Year,
+    ];
+    pub const LABELS: [&'static str; 5] = ["Any", "7 days", "30 days", "90 days", "Year"];
+    /// The window, in days; 0 = any.
+    fn days(self) -> i64 {
+        match self {
+            Added::Any => 0,
+            Added::Week => 7,
+            Added::Month => 30,
+            Added::Quarter => 90,
+            Added::Year => 365,
+        }
+    }
+    fn token(self) -> &'static str {
+        match self {
+            Added::Any => "any",
+            Added::Week => "7d",
+            Added::Month => "30d",
+            Added::Quarter => "90d",
+            Added::Year => "365d",
+        }
+    }
+}
+
 /// The rating rule's steps, as minimum stars (0 = any), and their chip labels.
 pub const RATINGS: [u8; 5] = [0, 2, 3, 4, 5];
 pub const RATING_LABELS: [&str; 5] = ["Any", "2+", "3+", "4+", "5"];
@@ -144,6 +186,7 @@ pub struct SavedView {
     /// Minimum stars; 0 = any rating, including none.
     pub min_rating: u8,
     pub played: Played,
+    pub added: Added,
     pub format: FormatRule,
     pub sort: ViewSort,
     /// What this playlist's Shuffle band deals: songs, whole albums or whole artists. `None`
@@ -209,6 +252,9 @@ impl SavedView {
             }
             Played::NotLately => st.plays > 0 && now > 0 && now - st.last_played > STALE_DAYS * DAY,
         };
+        // As "Recent": with the clock not known yet, anything with a date passes.
+        let days = self.added.days();
+        let ok_added = days == 0 || (s.added > 0 && (now <= 0 || now - s.added <= days * DAY));
         let ok_format = match self.format {
             FormatRule::Any => true,
             FormatRule::Flac => s.format == Format::Flac,
@@ -216,7 +262,7 @@ impl SavedView {
             FormatRule::M4a => s.format == Format::M4a,
             FormatRule::HiRes => s.is_hires,
         };
-        ok_played && ok_format
+        ok_played && ok_added && ok_format
     }
 
     /// The songs this view holds, as indices into `lib.songs`, in the view's order. Ties fall back
@@ -276,6 +322,13 @@ impl SavedView {
                     .unwrap_or(0)]
                 .to_string(),
             );
+        }
+        if self.added != Added::Any {
+            parts.push(if self.added == Added::Year {
+                "Added in the last year".to_string()
+            } else {
+                format!("Added in the last {} days", self.added.days())
+            });
         }
         if self.format != FormatRule::Any {
             parts.push(
@@ -358,6 +411,7 @@ pub fn parse(body: &str) -> Vec<SavedView> {
         match k.trim() {
             "rating" => v.min_rating = val.trim().parse::<u8>().unwrap_or(0).min(5),
             "played" => v.played = from_token(&Played::ALL, Played::token, val),
+            "added" => v.added = from_token(&Added::ALL, Added::token, val),
             "format" => v.format = from_token(&FormatRule::ALL, FormatRule::token, val),
             "sort" => v.sort = from_token(&ViewSort::ALL, ViewSort::token, val),
             "shuffle" => v.shuffle = shuffle_from_token(val),
@@ -376,10 +430,11 @@ pub fn serialize(views: &[SavedView]) -> String {
     );
     for v in views {
         s.push_str(&format!(
-            "\n[{}]\nrating={}\nplayed={}\nformat={}\nsort={}\nshuffle={}\n",
+            "\n[{}]\nrating={}\nplayed={}\nadded={}\nformat={}\nsort={}\nshuffle={}\n",
             clean_name(&v.name),
             v.min_rating,
             v.played.token(),
+            v.added.token(),
             v.format.token(),
             v.sort.token(),
             shuffle_token(v.shuffle)
@@ -391,6 +446,40 @@ pub fn serialize(views: &[SavedView]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #23: "added in the last x days". The window holds what came on within it, a song with no
+    /// date is never "new", the rule survives the file, and a file without the key means any.
+    #[test]
+    fn the_added_rule_keeps_what_came_on_lately_and_round_trips() {
+        let now = 1_793_956_950; // 2026-11-06
+        let song = |days_ago: i64| SongRow {
+            added: if days_ago < 0 {
+                0
+            } else {
+                now - days_ago * DAY
+            },
+            ..Default::default()
+        };
+        let mut v = SavedView {
+            name: "New".into(),
+            added: Added::Week,
+            ..Default::default()
+        };
+        let st = TrackStat::default();
+        assert!(v.matches(&song(2), st, now));
+        assert!(!v.matches(&song(8), st, now));
+        assert!(!v.matches(&song(-1), st, now), "no date: not new");
+        assert!(
+            v.matches(&song(300), st, 0),
+            "clock unknown: any dated song"
+        );
+        v.added = Added::Year;
+        assert!(v.matches(&song(300), st, now) && !v.matches(&song(400), st, now));
+        assert_eq!(v.summary(), "Added in the last year");
+        let back = parse(&serialize(std::slice::from_ref(&v)));
+        assert_eq!(back[0].added, Added::Year);
+        assert_eq!(parse("[Old]\nrating=3\n")[0].added, Added::Any);
+    }
 
     /// 2026-10-04: a view remembers what its Shuffle band deals. A file from before the key
     /// existed, or one with a word nobody knows, follows the setting.
@@ -574,6 +663,7 @@ mod tests {
                 name: "Late favourites".into(),
                 min_rating: 4,
                 played: Played::Recent,
+                added: Added::Month,
                 format: FormatRule::Flac,
                 sort: ViewSort::Plays,
                 shuffle: None,

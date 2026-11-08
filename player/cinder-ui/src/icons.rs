@@ -666,3 +666,85 @@ pub fn grip(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
         polyline(c, cx, cy, s, col, w, &[(5.0, y), (19.0, y)]);
     }
 }
+
+/// Points along a circle's arc in viewBox units: centre (x, y), radius `r`, from `a0` to `a1`
+/// degrees (0 = right, 90 = down, as on the screen).
+fn arc_pts(x: f32, y: f32, r: f32, a0: f32, a1: f32) -> Vec<(f32, f32)> {
+    let n = 10;
+    (0..=n)
+        .map(|i| {
+            let a = (a0 + (a1 - a0) * i as f32 / n as f32).to_radians();
+            (x + r * a.cos(), y + r * a.sin())
+        })
+        .collect()
+}
+
+/// A folder: a tab on the top left, the body under it. The Menu's Folders row.
+pub fn folder(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
+    let w = stroke_w(s);
+    polyline(
+        c,
+        cx,
+        cy,
+        s,
+        col,
+        w,
+        &[
+            (3.0, 19.0),
+            (3.0, 5.5),
+            (9.5, 5.5),
+            (11.5, 8.0),
+            (21.0, 8.0),
+            (21.0, 19.0),
+            (3.0, 19.0),
+        ],
+    );
+}
+
+/// Wi-Fi: three arcs over a dot, the shape every phone uses, so it needs no reading.
+pub fn wifi(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
+    let w = stroke_w(s);
+    for r in [4.6, 9.2, 13.8] {
+        polyline(c, cx, cy, s, col, w, &arc_pts(12.0, 19.5, r, 225.0, 315.0));
+    }
+    vdisc(c, cx, cy, s, 12.0, 19.0, 1.8, col);
+}
+
+/// A soundscape: two waves, one over the other. The Menu's Soundscapes row.
+pub fn waves(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
+    let w = stroke_w(s);
+    for y in [9.0, 15.0] {
+        let pts: Vec<(f32, f32)> = (0..=12)
+            .map(|i| {
+                let x = 3.0 + 1.5 * i as f32;
+                (x, y + 2.2 * (x * std::f32::consts::PI / 6.0).sin())
+            })
+            .collect();
+        polyline(c, cx, cy, s, col, w, &pts);
+    }
+}
+
+/// Help: a question mark in a ring. The Menu's Help & controls row.
+pub fn help(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
+    let w = stroke_w(s);
+    circle_stroke(c, cx, cy, s, 12.0, 12.0, 9.5, col, w);
+    let mut hook = arc_pts(12.0, 9.6, 3.0, 180.0, 405.0);
+    hook.push((12.0, 14.0));
+    polyline(c, cx, cy, s, col, w, &hook);
+    vdisc(c, cx, cy, s, 12.0, 17.2, 1.3, col);
+}
+
+/// Night: a crescent moon, its inner edge a second arc. The pull-down's Night row.
+pub fn moon(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
+    let w = stroke_w(s);
+    // The outer circle's arc between the two points where the circles cross (14.1° and 263.6°
+    // on it), then the inner circle's back between them (225° to 52.7° on that one).
+    let mut pts = arc_pts(12.0, 12.0, 8.5, 14.1, 263.6);
+    pts.extend(arc_pts(16.0, 8.5, 7.0, 225.0, 52.7));
+    polyline(c, cx, cy, s, col, w, &pts);
+}

@@ -492,7 +492,8 @@ void cinder_set_radio_status(const char *text);
 /* After CINDER_ACT_RADIO_PLAY: the URL into buf; returns the station index, -1 if none. */
 int cinder_take_radio(char *buf, int cap);
 /* Play to this player (the DLNA renderer), polled once a second: 1 = play the URL now in buf as
- * station -2 (report it with cinder_set_radio_status as usual), 2 = stop it, 0 = nothing. */
+ * station -2 (report it with cinder_set_radio_status as usual), 2 = stop it, 3 = pause it, 4 = go
+ * on from the pause (or play the URL in buf from the start if the stream died), 0 = nothing. */
 int cinder_renderer_take(char *buf, int cap);
 /* Phone remote (Settings > Wi-Fi > Phone remote; the server is cinder-ffi's own). Every frame:
  * a button the page pressed (cinder_button_t; 0 = none — the page never sends UP) to feed through
@@ -501,6 +502,10 @@ int cinder_renderer_take(char *buf, int cap);
 int cinder_remote_take_button(void);
 /* Settings > Wi-Fi > AirPlay (1/0), and the line the shell shows under it. */
 int cinder_wifi_airplay(void);
+/* 1 while Share the drive, Play to this player or the phone remote is running, or a speaker is
+ * playing from the player: the shell keeps the Wi-Fi radio out of power save, which made requests
+ * to the player wait 4-20 s, and does not let Wi-Fi sleep when the player is idle. */
+int cinder_wifi_serving(void);
 void cinder_set_airplay_note(const char *text);
 int cinder_remote_take_uploaded(void);
 /* Night on a schedule: call ~1x/sec. Returns CINDER_ACT_THEME_CHANGED when Night just came on or

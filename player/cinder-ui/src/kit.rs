@@ -17,6 +17,7 @@ use crate::icons;
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
 use crate::widgets::{fill_rect, fit, hline, right, stroke_rect, sty};
+use embedded_graphics::pixelcolor::Rgb888;
 
 /// Section label: 34 px, text bottom-aligned with 6 px under it.
 pub const SECTION_H: i32 = 34;
@@ -144,6 +145,9 @@ pub enum Trail<'a> {
 }
 
 /// One list row of the kit.
+/// An icon from `crate::icons`: canvas, centre x, centre y, box size, colour.
+pub type Icon = fn(&mut Canvas, f32, f32, f32, Rgb888);
+
 #[derive(Clone, Copy, Debug)]
 pub struct Row<'a> {
     pub title: &'a str,
@@ -151,6 +155,8 @@ pub struct Row<'a> {
     pub sub: &'a str,
     /// A 26 px mono lead ("1", "≡"), or empty.
     pub lead: &'a str,
+    /// An icon in the lead's place (`crate::icons`), drawn instead of `lead`.
+    pub icon: Option<Icon>,
     pub trail: Trail<'a>,
     /// The row is the chosen one: `row_sel` wash and the title in the accent.
     pub sel: bool,
@@ -162,6 +168,7 @@ impl<'a> Row<'a> {
             title,
             sub: "",
             lead: "",
+            icon: None,
             trail: Trail::None,
             sel: false,
         }
@@ -172,6 +179,10 @@ impl<'a> Row<'a> {
     }
     pub const fn lead(mut self, s: &'a str) -> Self {
         self.lead = s;
+        self
+    }
+    pub const fn icon(mut self, i: Option<Icon>) -> Self {
+        self.icon = i;
         self
     }
     pub const fn trail(mut self, t: Trail<'a>) -> Self {
@@ -192,7 +203,16 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
     }
     let cy = y + h / 2;
     let mut x = LEFT as f32;
-    if !r.lead.is_empty() {
+    if let Some(icon) = r.icon {
+        icon(
+            c,
+            x + 13.0,
+            cy as f32,
+            24.0,
+            if r.sel { t.acc } else { t.dim },
+        );
+        x += 26.0 + 14.0;
+    } else if !r.lead.is_empty() {
         let lst = sty(
             Family::Mono,
             Weight::Regular,

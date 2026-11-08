@@ -46,9 +46,24 @@ const LEVELS: [&str; 5] = ["1", "2", "3", "4", "5"];
 pub const TOP: i32 = crate::chrome::STATUS_H;
 const BRIGHT_CHIPS: i32 = TOP + kit::SECTION_H;
 pub const ROW_BT: i32 = BRIGHT_CHIPS + kit::CHIP_H + 10;
+/// The rows below Bluetooth move down one when the Wi-Fi row is there. `wifi` is passed rather than
+/// read so the tests can check both layouts; the no-argument forms read the install option.
+fn night_at(wifi: bool) -> i32 {
+    ROW_BT + kit::ROW_H() * (1 + i32::from(wifi))
+}
+fn sleep_chips_at(wifi: bool) -> i32 {
+    night_at(wifi) + kit::ROW_H() + kit::SECTION_H
+}
+fn bottom_at(wifi: bool) -> i32 {
+    sleep_chips_at(wifi) + kit::CHIP_H + 26
+}
+fn wifi_row() -> bool {
+    crate::wifi::installed()
+}
+
 #[allow(non_snake_case)]
 pub fn ROW_NIGHT() -> i32 {
-    ROW_BT + kit::ROW_H()
+    night_at(wifi_row())
 }
 
 #[allow(non_snake_case)]
@@ -58,13 +73,13 @@ fn SLEEP_LABEL() -> i32 {
 
 #[allow(non_snake_case)]
 fn SLEEP_CHIPS() -> i32 {
-    SLEEP_LABEL() + kit::SECTION_H
+    sleep_chips_at(wifi_row())
 }
 
 /// The sheet's bottom edge. Below it the screen shows through, dimmed, and a tap there closes.
 #[allow(non_snake_case)]
 pub fn BOTTOM() -> i32 {
-    SLEEP_CHIPS() + kit::CHIP_H + 26
+    bottom_at(wifi_row())
 }
 
 /// What the panel shows. Built by `nav`.
@@ -77,6 +92,12 @@ pub struct QuickView<'a> {
     pub night: bool,
     /// Index into [`SLEEP_PRESETS`].
     pub sleep_idx: usize,
+    /// The Wi-Fi row: its switch, and the second line (the network, or the state). Drawn only
+    /// with the Wi-Fi install option.
+    pub wifi_on: bool,
+    pub wifi_sub: &'a str,
+    /// Settings ▸ Menu icons: the rows carry their icons here too (#53).
+    pub icons: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -87,6 +108,9 @@ pub enum QuickHit {
     Bluetooth,
     /// The rest of the Bluetooth row, its name: opens the Bluetooth page (#51).
     BluetoothPage,
+    /// The Wi-Fi row's switch, and the rest of it (opens Settings ▸ Wi-Fi), as for Bluetooth.
+    Wifi,
+    WifiPage,
     Night,
     /// An index into [`SLEEP_PRESETS`].
     Sleep(usize),
@@ -102,7 +126,11 @@ const SWITCH_ZONE_X: i32 = kit::RIGHT - kit::SWITCH_W - 80;
 
 /// Which control is under `(x, y)`. Pure geometry, so the hit test and the render cannot drift.
 pub fn hit(x: i32, y: i32) -> QuickHit {
-    if y >= BOTTOM() {
+    hit_at(x, y, wifi_row())
+}
+
+fn hit_at(x: i32, y: i32, wifi: bool) -> QuickHit {
+    if y >= bottom_at(wifi) {
         return QuickHit::Outside;
     }
     if let Some(i) = kit::chip_at(LEVELS.len(), BRIGHT_CHIPS, x, y) {
@@ -115,10 +143,18 @@ pub fn hit(x: i32, y: i32) -> QuickHit {
             QuickHit::BluetoothPage
         };
     }
-    if (ROW_NIGHT()..ROW_NIGHT() + kit::ROW_H()).contains(&y) {
+    if wifi && (ROW_BT + kit::ROW_H()..night_at(true)).contains(&y) {
+        return if x >= SWITCH_ZONE_X {
+            QuickHit::Wifi
+        } else {
+            QuickHit::WifiPage
+        };
+    }
+    let night = night_at(wifi);
+    if (night..night + kit::ROW_H()).contains(&y) {
         return QuickHit::Night;
     }
-    if let Some(i) = kit::chip_at(SLEEP_LABELS.len(), SLEEP_CHIPS(), x, y) {
+    if let Some(i) = kit::chip_at(SLEEP_LABELS.len(), sleep_chips_at(wifi), x, y) {
         return QuickHit::Sleep(i);
     }
     QuickHit::Sheet
@@ -158,8 +194,22 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
         kit::ROW_H(),
         &Row::new(crate::i18n::text("Bluetooth"))
             .sub(bt_sub)
+            .icon(v.icons.then_some(crate::icons::bt as kit::Icon))
             .trail(Trail::Switch(v.bt_on)),
     );
+    if wifi_row() {
+        kit::row(
+            c,
+            t,
+            f,
+            ROW_BT + kit::ROW_H(),
+            kit::ROW_H(),
+            &Row::new(crate::i18n::text("Wi-Fi"))
+                .sub(v.wifi_sub)
+                .icon(v.icons.then_some(crate::icons::wifi as kit::Icon))
+                .trail(Trail::Switch(v.wifi_on)),
+        );
+    }
     kit::row(
         c,
         t,
@@ -168,6 +218,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QuickView) {
         kit::ROW_H(),
         &Row::new(crate::i18n::text("Night"))
             .sub(crate::i18n::text("Dims everything after dark"))
+            .icon(v.icons.then_some(crate::icons::moon as kit::Icon))
             .trail(Trail::Switch(v.night)),
     );
 
@@ -234,10 +285,50 @@ mod tests {
         assert_eq!(hit(240, H as i32 - 1), QuickHit::Outside);
     }
 
+    /// With the Wi-Fi option the Wi-Fi row sits under Bluetooth and everything below moves down
+    /// with it, hit test and drawing alike.
+    #[test]
+    fn the_wifi_row_answers_under_bluetooth_and_the_rest_moves_down() {
+        let y = ROW_BT + kit::ROW_H() + 30;
+        assert_eq!(
+            hit_at(240, y, false),
+            QuickHit::Night,
+            "no Wi-Fi: Night is there"
+        );
+        assert_eq!(
+            hit_at(240, y, true),
+            QuickHit::WifiPage,
+            "the name opens the page"
+        );
+        assert_eq!(
+            hit_at(kit::RIGHT - kit::SWITCH_W / 2, y, true),
+            QuickHit::Wifi
+        );
+        assert_eq!(hit_at(240, night_at(true) + 30, true), QuickHit::Night);
+        assert_eq!(hit_at(240, ROW_BT + 30, true), QuickHit::BluetoothPage);
+        for i in 0..SLEEP_PRESETS.len() {
+            let (x, w) = kit::chip_span(i, SLEEP_PRESETS.len());
+            assert_eq!(
+                hit_at(x + w / 2, sleep_chips_at(true) + kit::CHIP_H / 2, true),
+                QuickHit::Sleep(i)
+            );
+        }
+        assert_eq!(hit_at(240, bottom_at(true), true), QuickHit::Outside);
+        assert!(
+            bottom_at(true) < H as i32 * 3 / 5,
+            "still a panel: {}",
+            bottom_at(true)
+        );
+    }
+
     /// The sheet leaves most of the screen showing, so it reads as a panel and not a page.
     #[test]
     fn the_sheet_is_a_panel_not_a_page() {
-        assert!(BOTTOM() < H as i32 / 2, "the sheet runs to {}", BOTTOM());
+        assert!(
+            bottom_at(false) < H as i32 / 2,
+            "the sheet runs to {}",
+            bottom_at(false)
+        );
         assert_eq!(SLEEP_PRESETS.len(), SLEEP_LABELS.len());
     }
 }

@@ -38,6 +38,10 @@ http-get:*:application/vnd.apple.mpegurl:*,http-get:*:audio/x-mpegurl:*,http-get
 pub enum Ask {
     Play(String),
     Stop,
+    /// Hold the stream where it is (the output is let go).
+    Pause,
+    /// Go on from the pause; the URL is for when the stream died meanwhile.
+    Resume(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +71,8 @@ struct State {
     title: String,
     dur_ms: i64,
     since: Option<Instant>,
+    /// Played before the last pause, so the position goes on from it.
+    played_ms: i64,
     /// A Play was asked for and the radio has not yet said it is connecting or playing.
     awaiting: Option<Instant>,
     ask: Option<Ask>,
@@ -198,6 +204,7 @@ pub fn radio_status(text: &str) {
     match (st.as_str(), ours) {
         ("connecting", true) => {
             s.awaiting = None;
+            s.played_ms = 0;
             s.transport = "TRANSITIONING";
         }
         ("playing", true) => {
@@ -623,7 +630,7 @@ fn control(svc: Svc, action: &str, body: &str) -> (&'static str, String) {
         ("200 OK", envelope(&inner))
     };
     let arg = |name: &str| tag(body, name).unwrap_or_default();
-    let elapsed = s.since.map(|t| t.elapsed().as_millis() as i64).unwrap_or(0);
+    let elapsed = s.played_ms + s.since.map(|t| t.elapsed().as_millis() as i64).unwrap_or(0);
     match (svc, action) {
         (Svc::Avt, "SetAVTransportURI") => {
             let uri = arg("CurrentURI");
@@ -638,6 +645,7 @@ fn control(svc: Svc, action: &str, body: &str) -> (&'static str, String) {
             s.dur_ms = didl_duration(&meta);
             s.uri = uri;
             s.meta = meta;
+            s.played_ms = 0;
             // A new link while one plays replaces it at once, as a speaker would.
             if matches!(s.transport, "PLAYING" | "TRANSITIONING") {
                 s.ask = Some(Ask::Play(s.uri.clone()));
@@ -654,7 +662,12 @@ fn control(svc: Svc, action: &str, body: &str) -> (&'static str, String) {
             if s.uri.is_empty() {
                 return ("500 Internal Server Error", fault(701, "No link to play"));
             }
-            if s.transport != "PLAYING" {
+            if s.transport == "PAUSED_PLAYBACK" {
+                s.ask = Some(Ask::Resume(s.uri.clone()));
+                s.since = Some(Instant::now());
+                s.transport = "PLAYING";
+                notify(&mut s, Svc::Avt);
+            } else if s.transport != "PLAYING" {
                 s.ask = Some(Ask::Play(s.uri.clone()));
                 s.awaiting = Some(Instant::now());
                 s.since = None;
@@ -663,8 +676,18 @@ fn control(svc: Svc, action: &str, body: &str) -> (&'static str, String) {
             }
             ok(&[])
         }
+        (Svc::Avt, "Pause") if s.transport == "PLAYING" => {
+            s.ask = Some(Ask::Pause);
+            s.played_ms = elapsed;
+            s.since = None;
+            s.transport = "PAUSED_PLAYBACK";
+            notify(&mut s, Svc::Avt);
+            ok(&[])
+        }
+        (Svc::Avt, "Pause") if s.transport == "PAUSED_PLAYBACK" => ok(&[]),
         (Svc::Avt, "Stop" | "Pause") => {
-            if matches!(s.transport, "PLAYING" | "TRANSITIONING") {
+            s.played_ms = 0;
+            if matches!(s.transport, "PLAYING" | "TRANSITIONING" | "PAUSED_PLAYBACK") {
                 s.ask = Some(Ask::Stop);
             }
             s.awaiting = None;
@@ -721,6 +744,8 @@ fn control(svc: Svc, action: &str, body: &str) -> (&'static str, String) {
         (Svc::Avt, "GetCurrentTransportActions") => {
             let a = if s.transport == "PLAYING" {
                 "Stop,Pause"
+            } else if s.transport == "PAUSED_PLAYBACK" {
+                "Play,Stop"
             } else if s.uri.is_empty() {
                 ""
             } else {
@@ -1175,6 +1200,17 @@ mod tests {
         );
         assert!(soap_req(port, "avt", "GetTransportInfo", "")
             .contains("<CurrentTransportState>PLAYING</CurrentTransportState>"));
+        // Pause holds the stream, a second Pause changes nothing, and Play goes on from it
+        // (11-08: Pause used to stop it, and Play started the song again).
+        soap_req(port, "avt", "Pause", "");
+        assert_eq!(take(), Some(Ask::Pause));
+        assert!(event(&ev).contains("<TransportState val=\"PAUSED_PLAYBACK\"/>"));
+        soap_req(port, "avt", "Pause", "");
+        assert_eq!(take(), None, "pausing a pause asks for nothing");
+        assert!(soap_req(port, "avt", "GetCurrentTransportActions", "").contains("Play,Stop"));
+        soap_req(port, "avt", "Play", "<Speed>1</Speed>");
+        assert_eq!(take(), Some(Ask::Resume("http://10.0.0.9/a.mp3".into())));
+        assert!(event(&ev).contains("<TransportState val=\"PLAYING\"/>"));
         // The song ends: STOPPED, which moves the controller on.
         radio_status("state=off\nstation=-2\ntitle=\nnote=\n");
         assert!(event(&ev).contains("<TransportState val=\"STOPPED\"/>"));

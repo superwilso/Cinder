@@ -1557,6 +1557,7 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
     body.push_str(&format!("folders_tab={}\n", r.app.folders_tab() as u8));
     body.push_str(&format!("delete_music={}\n", r.app.delete_music() as u8));
+    body.push_str(&format!("menu_icons={}\n", r.app.menu_icons() as u8));
     // Settings ▸ Wi-Fi ▸ Turn on at start / Set the clock, OFF unless switched on.
     body.push_str(&format!(
         "wifi_autostart={}\nwifi_clock={}\nwifi_lb={}\nwifi_updates={}\nwifi_airplay={}\n",
@@ -7896,6 +7897,14 @@ pub extern "C" fn cinder_remote_take_uploaded() -> libc::c_int {
     remote::take_uploaded().min(i32::MAX as u32) as libc::c_int
 }
 
+/// Is the player serving the network: Share the drive, Play to this player or the phone remote?
+/// While it is, the shell keeps the radio out of power save: asleep, a request to the player
+/// waited 4-20 s or timed out (measured 11-05); awake it answered in 0.02-0.12 s.
+#[no_mangle]
+pub extern "C" fn cinder_wifi_serving() -> libc::c_int {
+    (drive::running() || renderer::running() || remote::running() || cast::active()) as libc::c_int
+}
+
 /// Settings ▸ Wi-Fi ▸ AirPlay (1/0): the receiver runs while this is on and Wi-Fi is connected.
 #[no_mangle]
 pub extern "C" fn cinder_wifi_airplay() -> libc::c_int {
@@ -7944,7 +7953,8 @@ pub unsafe extern "C" fn cinder_set_radio_status(text: *const c_char) {
 }
 
 /// Play to this player (the DLNA renderer), polled by the shell once a second: 1 = play the URL
-/// now in `buf` (NUL-terminated) as radio station -2, 2 = stop it, 0 = nothing asked.
+/// now in `buf` (NUL-terminated) as radio station -2, 2 = stop it, 3 = pause it, 4 = go on from the
+/// pause (or play the URL in `buf` from the start, when the stream died meanwhile), 0 = nothing.
 ///
 /// # Safety
 /// `buf` must be valid for `cap` bytes.
@@ -7957,6 +7967,14 @@ pub unsafe extern "C" fn cinder_renderer_take(buf: *mut c_char, cap: libc::c_int
             1
         }
         Some(renderer::Ask::Stop) => 2,
+        Some(renderer::Ask::Pause) => 3,
+        Some(renderer::Ask::Resume(url))
+            if !buf.is_null() && cap > 0 && url.len() < cap as usize =>
+        {
+            std::ptr::copy_nonoverlapping(url.as_ptr() as *const c_char, buf, url.len());
+            *buf.add(url.len()) = 0;
+            4
+        }
         _ => 0,
     }
 }
@@ -9491,6 +9509,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
                     "folders_tab" => r.app.set_folders_tab(v == "1"),
                     "delete_music" => r.app.set_delete_music(v == "1"),
+                    "menu_icons" => r.app.set_menu_icons(v == "1"),
                     "np_back" => r.app.set_np_back(v == "1"),
                     "wifi_autostart" => r.app.set_wifi_autostart(v == "1"),
                     "wifi_clock" => r.app.set_wifi_clock(v == "1"),

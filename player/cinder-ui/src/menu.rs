@@ -37,6 +37,8 @@ pub struct MenuItem<'a> {
     pub home: bool,
     /// Cursor (button navigation).
     pub active: bool,
+    /// Settings ▸ Menu icons: the row's icon, drawn left of the title.
+    pub icon: Option<kit::Icon>,
 }
 
 /// The home screens, in chip order. Index = `App::home_screen`.
@@ -61,14 +63,23 @@ pub const CHIPS_TOP: i32 = LABEL_TOP + kit::SECTION_H;
 /// strip and the START ON label. Never below 52: two lines of text need it (checked by a test for
 /// every count the Menu can have).
 pub fn row_h(rows: usize) -> i32 {
-    if rows == 0 || big() {
+    if rows == 0 || scrolls(rows) {
         return ROW_H();
     }
     ROW_H().min((LABEL_TOP - TOP) / rows as i32)
 }
 
+/// The smallest pitch that still holds two lines of text.
+const MIN_ROW_H: i32 = 52;
+
 fn big() -> bool {
     crate::scale::large()
+}
+
+/// The page scrolls: in Big view, and when there are more rows than fit at [`MIN_ROW_H`] (every
+/// opt-in row installed: SensMe, Preview and Wi-Fi make twelve). The rows then keep the kit's pitch.
+fn scrolls(rows: usize) -> bool {
+    big() || (rows > 0 && (LABEL_TOP - TOP) / (rows as i32) < MIN_ROW_H)
 }
 
 /// START ON's chips per line.
@@ -83,7 +94,7 @@ fn chip_cols() -> usize {
 /// Top of the START ON label: pinned to the bottom of the glass, or in Big view straight under the
 /// last row.
 pub fn label_top(rows: usize) -> i32 {
-    if big() {
+    if scrolls(rows) {
         TOP + rows as i32 * ROW_H()
     } else {
         LABEL_TOP
@@ -97,7 +108,7 @@ fn chip_line_top(rows: usize, line: usize) -> i32 {
 
 /// How far the page scrolls: 0 except in Big view.
 pub fn max_scroll_px(rows: usize) -> i32 {
-    if !big() {
+    if !scrolls(rows) {
         return 0;
     }
     let lines = HOMES.len().div_ceil(chip_cols());
@@ -168,21 +179,24 @@ pub fn render(
                 rh,
                 &Row::new(crate::i18n::text(m.label))
                     .sub(" ")
+                    .icon(m.icon)
                     .trail(trail)
                     .sel(m.active),
             );
             let style = widgets::sty(Family::Sans, Weight::Regular, 12.0, t.dim, 0.0);
             let reserve = if m.home { 96.0 } else { 0.0 };
+            // Under the title, which an icon moves right.
+            let indent = if m.icon.is_some() { 40.0 } else { 0.0 };
             let caption = widgets::fit(
                 f,
                 crate::i18n::text(m.sub),
                 &style,
-                (kit::RIGHT - kit::LEFT) as f32 - reserve,
+                (kit::RIGHT - kit::LEFT) as f32 - reserve - indent,
             );
             text::draw(
                 c,
                 f,
-                kit::LEFT as f32,
+                kit::LEFT as f32 + indent,
                 (yt + rh - 8) as f32,
                 &caption,
                 &style,
@@ -196,6 +210,7 @@ pub fn render(
                 rh,
                 &Row::new(crate::i18n::text(m.label))
                     .sub(m.sub)
+                    .icon(m.icon)
                     .trail(trail)
                     .sel(m.active),
             );
@@ -240,6 +255,22 @@ mod fit_tests {
             ROW_H(),
             "the designed eight rows keep the kit's pitch"
         );
+    }
+
+    /// Twelve rows (SensMe, Preview and Wi-Fi all installed) do not fit at a readable pitch, so
+    /// the page scrolls, as in Big view: full rows, START ON under the last, and every row and
+    /// chip reachable.
+    #[test]
+    fn twelve_rows_scroll_instead_of_squeezing() {
+        let rows = 12;
+        assert_eq!(row_h(rows), ROW_H());
+        assert_eq!(label_top(rows), TOP + 12 * ROW_H());
+        let max = max_scroll_px(rows);
+        assert!(max > 0);
+        let last_chip = chip_line_top(rows, 0) + kit::CHIP_H;
+        assert!(last_chip + BOTTOM_PAD - max <= crate::H as i32);
+        assert_eq!(row_at(TOP + 11 * ROW_H() + 5, rows), Some(11));
+        assert!(home_chip_at(240, chip_line_top(rows, 0) + 5, rows).is_some());
     }
 
     /// The strip, the rows and the chips do not overlap as targets.

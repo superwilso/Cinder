@@ -28,6 +28,8 @@
  */
 #include <sys/reboot.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
@@ -92,6 +94,31 @@ static int cpu_verb(const char *verb)
     return 2;
 }
 
+/* update — Settings ▸ Wi-Fi ▸ Install update (2026-11-08). cinder-home has already put the release's
+ * files and its NW_WM_FW.UPG on /contents, exactly where the PC installer puts them; what it cannot
+ * do as uid 100 is set the flag that makes the next boot run Sony's updater (/dev/icx_nvp is
+ * system:system 0660). Sony's own tool does that: `nvpflag fup 0x70555766`, the same flag the PC's
+ * SCSI command sets, cleared again by the updater on every path. No package on the drive = no flag:
+ * the updater would find nothing and the restart would be for nothing. */
+#define UPG "/contents/NW_WM_FW.UPG"
+static int arm_update(void)
+{
+    struct stat st;
+    if (stat(UPG, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 4096) return 6;
+    if (setuid(0) != 0) return 3;
+    const pid_t p = fork();
+    if (p < 0) return 5;
+    if (p == 0) {
+        char *const argv[] = { "nvpflag", "fup", "0x70555766", 0 };
+        char *const envp[] = { "PATH=/system/bin", 0 };
+        execve("/system/bin/nvpflag", argv, envp);
+        _exit(127);
+    }
+    int ws = 0;
+    if (waitpid(p, &ws, 0) != p || !WIFEXITED(ws) || WEXITSTATUS(ws) != 0) return 5;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int restart;
@@ -101,7 +128,12 @@ int main(int argc, char **argv)
     if (argc != 2) return 2;
     if      (strcmp(argv[1], "off")     == 0) restart = 0;
     else if (strcmp(argv[1], "restart") == 0) restart = 1;
-    else {
+    else if (strcmp(argv[1], "update")  == 0) {
+        if (geteuid() != 0) return 3;
+        const int rc = arm_update();
+        if (rc != 0) return rc;   /* nothing armed: stay up, the caller logs why */
+        restart = 1;
+    } else {
         if (geteuid() != 0) return 3;
         return cpu_verb(argv[1]);
     }

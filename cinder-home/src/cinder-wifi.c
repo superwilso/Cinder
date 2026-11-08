@@ -7,6 +7,7 @@
  * where any process could read it from /proc.
  *
  *   cinder-wifi on        load (once per boot), power, join the saved network, DHCP     -> 0 / 1
+ *                         (none saved: the radio comes up for a scan and joins nothing)
  *   cinder-wifi off       leave the network and power the radio down                   -> 0
  *   cinder-wifi status    key=value lines: state, ssid (hex), ip, signal, mac          -> 0
  *   cinder-wifi scan      one line a network: <signal dBm>\t<security>\t<ssid hex>       -> 0 / 1
@@ -17,6 +18,8 @@
  *   cinder-wifi nqptp-start   AirPlay 2's timing (nqptp) on UDP 319/320, which needs root to
  *                         bind; it then runs as the caller (CINDER_RUN_AS)               -> 0 / 1
  *   cinder-wifi nqptp-stop    stop it (also done by `off`)                               -> 0
+ *   cinder-wifi awake     radio out of power save, while the player serves the network  -> 0 / 1
+ *   cinder-wifi doze      power save back on (the default)                              -> 0 / 1
  *
  * Exit codes: 0 done, 1 the operation failed (last line of output says why), 2 bad input,
  * 3 not running as root (the setuid bit is missing), 4 Wi-Fi is not installed.
@@ -147,6 +150,18 @@ static int wpa_cli(const char* cmd, char* buf, size_t cap)
     return capture(a, buf, cap);
 }
 
+/* The saved list names a network (`on` with none saved writes a list without one). */
+static int has_network(void)
+{
+    char buf[512];
+    FILE* f = fopen(CONF, "r");
+    if (!f) return 0;
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    return strstr(buf, "network=") != NULL;
+}
+
 static int do_status(void)
 {
     static char st[4096], link[2048];
@@ -155,7 +170,8 @@ static int do_status(void)
     wpa_cli("status", st, sizeof st);
     char v[256], ssid[80];
     field(st, "wpa_state", v, sizeof v);
-    const char* state = strcmp(v, "COMPLETED") == 0 ? "connected" : v[0] ? "connecting" : "on";
+    /* No network saved yet (#55): the radio is just on, whatever wpa_supplicant is doing. */
+    const char* state = strcmp(v, "COMPLETED") == 0 ? "connected" : v[0] && has_network() ? "connecting" : "on";
     printf("state=%s\n", state);
     if (field(st, "ssid", v, sizeof v)) {
         unsigned char raw[32];
@@ -362,7 +378,7 @@ int main(int argc, char** argv)
     /* Who asked (cinder-home, uid 100), before becoming root: nqptp goes back to being them. */
     const uid_t caller_uid = getuid();
     const gid_t caller_gid = getgid();
-    if (argc != 2) { fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync|nqptp-start|nqptp-stop\n", stderr); return 2; }
+    if (argc != 2) { fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync|nqptp-start|nqptp-stop|awake|doze\n", stderr); return 2; }
     if (setuid(0) != 0 || setgid(0) != 0) { puts("not root: the setuid bit is missing"); return 3; }
     /* cinder-home's umask is 077; files the scripts make for everyone (/tmp/resolv.conf) must not
      * inherit it. Private files (the saved network) are created with explicit modes regardless. */
@@ -370,7 +386,18 @@ int main(int argc, char** argv)
     const char* v = argv[1];
     if (access(DIR_ "/wlan_mt.ko", R_OK) != 0) { puts("Wi-Fi is not installed"); return 4; }
     if (strcmp(v, "on") == 0) {
-        if (access(CONF, R_OK) != 0) { puts("no saved network"); return 1; }
+        /* No network saved yet (a new player): the radio still has to come up, or Select network
+         * has nothing to scan with and the switch falls back to off (#55). wpa_supplicant with
+         * an empty list scans and joins nothing; `join` replaces this file. */
+        if (access(CONF, R_OK) != 0) {
+            mkdir(DATA, 0700);
+            int fd = open(CONF, O_WRONLY | O_CREAT | O_EXCL, 0600);
+            if (fd < 0) { puts("could not prepare the network list"); return 1; }
+            static const char empty[] = "ctrl_interface=" RUN "/ctrl\nupdate_config=0\n";
+            ssize_t w = write(fd, empty, sizeof empty - 1);
+            close(fd);
+            if (w != (ssize_t)(sizeof empty - 1)) { unlink(CONF); puts("could not prepare the network list"); return 1; }
+        }
         char* const a[] = { "/system/bin/sh", DIR_ "/wifi-up.sh", DIR_, CONF, RUN, NULL };
         return run(a) == 0 ? 0 : 1;
     }
@@ -387,6 +414,13 @@ int main(int argc, char** argv)
     if (strcmp(v, "join") == 0) return do_join();
     if (strcmp(v, "forget") == 0) { unlink(CONF); puts("forgotten"); return 0; }
     if (strcmp(v, "timesync") == 0) return do_timesync();
-    fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync|nqptp-start|nqptp-stop\n", stderr);
+    /* Asleep, the radio wakes for the access point's beacons only: a phone or computer connecting
+     * to the player waited 4-20 s, or gave up (measured 11-05, 192.168.0.x, -65 dBm). Awake it
+     * answers in 0.02-0.12 s. The shell asks for awake only while a server is on. */
+    if (strcmp(v, "awake") == 0 || strcmp(v, "doze") == 0) {
+        char* const a[] = { DIR_ "/iw", "dev", "wlan0", "set", "power_save", v[0] == 'a' ? "off" : "on", NULL };
+        return run(a) == 0 ? 0 : 1;
+    }
+    fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync|nqptp-start|nqptp-stop|awake|doze\n", stderr);
     return 2;
 }

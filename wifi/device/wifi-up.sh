@@ -38,6 +38,8 @@ busybox ifconfig wlan0 up || { say "wlan0 would not come up"; exit 1; }
 [ -f "$CONF" ] || { say "no network list at $CONF"; exit 1; }
 "$D/wpa_cli" -p "$RUN/ctrl" -i wlan0 status >/dev/null 2>&1 \
     || "$D/wpa_supplicant" -B -D nl80211 -i wlan0 -c "$CONF" >/dev/null   # CONF names RUN/ctrl
+# Nothing saved yet: up for Select network to scan, nothing to join.
+grep -q 'network=' "$CONF" || { say "up: no saved network"; exit 0; }
 i=0; while [ $i -lt 30 ]; do
     "$D/wpa_cli" -p "$RUN/ctrl" -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED' && break
     sleep 1; i=$((i + 1))

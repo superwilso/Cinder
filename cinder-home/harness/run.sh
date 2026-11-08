@@ -103,7 +103,13 @@ fails=0
 for s in $scenarios; do
     # Each scenario boots the app, and main.cpp's bring-up is one-shot static state — so each
     # scenario gets its own process, not just its own reset.
-    "$OUT/harness" "$s" || fails=$((fails + 1))
+    # A time limit: a scenario takes a second or two, and one that hangs (rapid-skip, 1 run in 3
+    # on 11-08: the guard's real-time alarm lands inside a faked slow skip's wait) must fail, so
+    # build.sh's retry runs, rather than leave the build waiting forever.
+    timeout 120 "$OUT/harness" "$s" || {
+        [ $? -eq 124 ] && echo "$s: FAILED"   # timed out; the harness names its own failures
+        fails=$((fails + 1))
+    }
     echo
 done
 

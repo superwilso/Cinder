@@ -3682,11 +3682,16 @@ static bool g_wifi_scan_ready = false;
 static bool g_wifi_on = false;           // last status said the radio is on: poll it
 static std::string g_wifi_status, g_wifi_note, g_wifi_scan;
 
-struct WifiJob { int act; std::string join; bool clock; bool lb; bool update; };
+// `awake`: a server is on (Share the drive, Play to this player, the phone remote, AirPlay), so
+// the radio stays out of power save while connected; see `cinder-wifi awake`.
+struct WifiJob { int act; std::string join; bool clock; bool lb; bool update; bool awake; };
 static bool g_wifi_notes_ready = false, g_wifi_lb_set = false, g_wifi_up_set = false, g_wifi_newer = false;
 static std::string g_wifi_lb_note, g_wifi_up_note;
 static bool g_wifi_connected = false;     // last status said connected (render thread only)
 static long long g_wifi_last_update = -1; // monotonic ms of the last update check that ran
+static int g_wifi_pending = 0;            // a user request that came while a worker was out
+static std::string g_wifi_pending_join;   // (render thread only, as wifi_start's callers are)
+static long long g_wifi_slept_at = 0;     // the idle sleep turned Wi-Fi off; 0 = the user's state
 
 // Run the helper with `verb`; its stdout comes back in `out`. `in` (optional) is written to its
 // stdin. Returns the exit code, -1 when it could not be run.
@@ -3755,6 +3760,18 @@ static void* wifi_thread(void* arg) {
     // Over the link, as cinder-home itself (it is in the inet group): ListenBrainz and the update
     // check. Both only when the status says connected, and each only when its switch is on.
     bool online = st.find("state=connected") != std::string::npos;
+    // Power save follows the servers. Applied on a change and after every (re)connect, since a new
+    // association starts asleep. One worker runs at a time, so this needs no lock.
+    static int ps_applied = -1;
+    if (!online) {
+        ps_applied = -1;
+    } else if ((int)job->awake != ps_applied) {
+        ps_applied = job->awake;
+        int prc = wifi_helper(job->awake ? "awake" : "doze", nullptr, nullptr);
+        char pm[96];
+        std::snprintf(pm, sizeof pm, "wifi: power save %s -> rc=%d", job->awake ? "off (serving)" : "on", prc);
+        clog_(pm);
+    }
     bool do_lb = online && job->lb && (connected || job->act == CINDER_ACT_WIFI_LISTENBRAINZ);
     bool do_up = online && job->update;
     std::string lb_note, up_note;
@@ -3798,7 +3815,21 @@ static void* wifi_thread(void* arg) {
 // Start a worker for `act` (0 = just a status poll). `join`: the stdin bytes for a join.
 static void wifi_start(int act, const std::string& join = std::string()) {
     pthread_mutex_lock(&g_wifi_mu);
-    if (g_wifi_running) { pthread_mutex_unlock(&g_wifi_mu); clog_("wifi: busy — request dropped"); return; }
+    if (g_wifi_running) {
+        pthread_mutex_unlock(&g_wifi_mu);
+        // A poll can wait for the next one. Anything the user asked for runs when this worker is
+        // done (wifi_tick): a dropped "off" left the radio up behind a switch that said off.
+        if (act != 0 && act != CINDER_ACT_WIFI_LISTENBRAINZ) {
+            // One waits, the newest. A scan it replaces still gets its answer (an empty one), or
+            // Network would say "Looking for networks…" and refuse SCAN for good.
+            if (g_wifi_pending == CINDER_ACT_WIFI_SCAN && act != CINDER_ACT_WIFI_SCAN) cinder_set_wifi_scan("");
+            std::fill(g_wifi_pending_join.begin(), g_wifi_pending_join.end(), '\0');
+            g_wifi_pending = act;
+            g_wifi_pending_join = join;
+            clog_("wifi: busy — request queued");
+        }
+        return;
+    }
     g_wifi_running = true;
     pthread_mutex_unlock(&g_wifi_mu);
     pthread_attr_t at;
@@ -3815,18 +3846,21 @@ static void wifi_start(int act, const std::string& join = std::string()) {
     bool want_up = cinder_wifi_updates() != 0
                 && (act == CINDER_ACT_WIFI_UPDATE_CHECK
                     || (due && (act == CINDER_ACT_WIFI_ON || act == CINDER_ACT_WIFI_JOIN || g_wifi_connected)));
-    WifiJob* job = new WifiJob{act, join, cinder_wifi_clock() != 0, cinder_wifi_lb() != 0, want_up};
+    WifiJob* job = new WifiJob{act, join, cinder_wifi_clock() != 0, cinder_wifi_lb() != 0, want_up,
+                               cinder_wifi_serving() != 0 || cinder_wifi_airplay() != 0};
     if (pthread_create(&th, &at, wifi_thread, job) != 0) {
         delete job;
         pthread_mutex_lock(&g_wifi_mu);
         g_wifi_running = false;
         pthread_mutex_unlock(&g_wifi_mu);
         clog_("wifi: pthread_create FAILED");
+        if (act == CINDER_ACT_WIFI_SCAN) cinder_set_wifi_scan("");   // the page waits for an answer
     }
     pthread_attr_destroy(&at);
 }
 
 static void wifi_act(int act) {
+    g_wifi_slept_at = 0;   // the user's own choice from here on, not the idle sleep's
     if (act == CINDER_ACT_WIFI_JOIN) {
         unsigned char buf[128];
         int n = cinder_take_wifi_join(buf, (int)sizeof buf);
@@ -3844,7 +3878,7 @@ static void wifi_act(int act) {
 }
 
 // Housekeeping, once a second on the render thread: say whether Wi-Fi is installed (once), hand
-// finished results to the UI, and poll the status every 15 s while the radio is on.
+// finished results to the UI, and poll the status while the radio is on (15 s, 60 s screen off).
 static void wifi_tick(long long now) {
     static int installed = -1;
     if (installed < 0) {
@@ -3860,6 +3894,17 @@ static void wifi_tick(long long now) {
     if (!installed) return;
     std::string st, note, scan;
     bool have = false, have_scan = false;
+    pthread_mutex_lock(&g_wifi_mu);
+    const bool free_now = !g_wifi_running;
+    pthread_mutex_unlock(&g_wifi_mu);
+    if (free_now && g_wifi_pending) {
+        const int act = g_wifi_pending;
+        std::string join;
+        join.swap(g_wifi_pending_join);
+        g_wifi_pending = 0;
+        wifi_start(act, join);
+        std::fill(join.begin(), join.end(), '\0');
+    }
     pthread_mutex_lock(&g_wifi_mu);
     if (g_wifi_ready) { st = g_wifi_status; note = g_wifi_note; have = true; g_wifi_ready = false; }
     if (g_wifi_scan_ready) { scan = g_wifi_scan; have_scan = true; g_wifi_scan_ready = false; }
@@ -3889,7 +3934,15 @@ static void wifi_tick(long long now) {
     // While on: the status every 15 s, and (only with its switch on) a ListenBrainz send every
     // 15 minutes, which is the same worker with the link already up.
     static long long last_poll = 0, last_lb = 0;
-    if (g_wifi_on && now - last_poll >= 15000) {
+    // A server switched on or off: poll now, so power save follows at once rather than in 15 s.
+    static int serving_was = -1;
+    const int serving = cinder_wifi_serving() != 0 || cinder_wifi_airplay() != 0;
+    const bool serving_moved = g_wifi_connected && serving != serving_was;
+    if (serving_moved) serving_was = serving;
+    // Screen off, every 60 s: each poll is three processes and a radio wake, and nobody is
+    // looking. (Power save follows a server at once either way: serving_moved.)
+    const long long poll_ms = g_screen_on ? 15000 : 60000;
+    if (g_wifi_on && (now - last_poll >= poll_ms || serving_moved)) {
         last_poll = now;
         bool lb_due = cinder_wifi_lb() && now - last_lb >= 15LL * 60 * 1000;
         if (lb_due) last_lb = now;
@@ -4090,6 +4143,7 @@ void touch_set_sleep(int slp) {
 // And the escape ladder still holds: even if wake-on-touch fails entirely, the physical Power
 // button restores the screen. That escape depends on strictly less than the thing it rescues (a
 // key event vs. the whole touch stack).
+static const int  kWifiIdleOffS = 2 * 60;  // Wi-Fi sleeps after this long dark and unused
 static const int  kBtIdleOffS = 10 * 60;   // "Turn off when idle": this long dark and silent
 static const long kIdleLockMs = 5 * 60 * 1000L;   // an idle blank locks (touch asleep) after this
 static bool g_screen_auto_off = false;   // dark because of the idle timer (not the Power button)
@@ -11651,6 +11705,8 @@ static const char* const RADIO_CURL = "/system/vendor/cinder/wifi/curl";
 static const char* const RADIO_CA = "/system/vendor/cinder/wifi/cacert.pem";
 static const char* const RADIO_HDR = "/tmp/cinder-radio.hdr";
 static volatile sig_atomic_t g_radio_run = 0;
+// A DLNA controller's Pause: the radio thread holds the stream unread and lets the output go.
+static volatile sig_atomic_t g_radio_paused = 0;
 static bool g_radio_bt = false;           // this play goes to Bluetooth (decided at start)
 static bool g_radio_source_held = false;  // we asked the transmitter for its source
 static bool g_radio_source_want = false;
@@ -11678,8 +11734,11 @@ static pid_t radio_spawn(const std::string& url, int* fd_out, bool live, bool wa
                                    "--cacert", RADIO_CA, "-A", "Cinder" };
     if (live) {
         // Abort a stream that delivers under 1 byte a second for 20 s: a dead station must not
-        // leave the page saying PLAYING over silence.
-        for (const char* s : { "--speed-limit", "1", "--speed-time", "20", "-H", "Icy-MetaData: 1", "-D", RADIO_HDR })
+        // leave the page saying PLAYING over silence. A link a controller sent can be paused, which
+        // stalls it on purpose: 5 minutes there, then Play starts it again from the beginning.
+        // ponytail: a pause longer than that loses the place; resume by Range when anyone asks.
+        const char* stall = g_radio_station == -2 ? "300" : "20";
+        for (const char* s : { "--speed-limit", "1", "--speed-time", stall, "-H", "Icy-MetaData: 1", "-D", RADIO_HDR })
             a.push_back(s);
     } else {
         for (const char* s : { "-f", "--max-time", "20" }) a.push_back(s);
@@ -12144,6 +12203,13 @@ static void* radio_thread(void*) {
         // Decoded PCM to the output: opened at the first frame's rate, reopened if the rate changes,
         // mono and multichannel down to stereo. False = stop (`note` says why).
         auto emit = [&](const short* pcm, int frames, int hz, int ch) -> bool {
+            // Paused: the download waits unread, the output (and the codec or Bluetooth) is free.
+            if (g_radio_paused && g_radio_run) {
+                if (opened) { radio_out_close(out); opened = false; }
+                clog_("radio: paused by the network controller");
+                while (g_radio_paused && g_radio_run) usleep(100000);
+                if (g_radio_run) clog_("radio: going on from the pause");
+            }
             if (opened && (unsigned)hz != out.src_rate) {
                 // The stream changed rate (an HLS stream switching, a station restarting).
                 if (out.fd >= 0) { out.src_rate = (unsigned)hz; out.pos = 0; }
@@ -12323,6 +12389,7 @@ static void radio_play() {
 
 static void radio_start(int idx, const char* url) {
     radio_yield(nullptr);
+    g_radio_paused = 0;
     g_radio_station = idx;
     if (::access(RADIO_CURL, X_OK) != 0) { radio_say("off", "", "Needs the Wi-Fi option"); return; }
     const bool bridge = g_ldac_alive && !g_amb_bt_alive;
@@ -12398,7 +12465,17 @@ static void radio_tick() {
         clog_("radio: a network controller asked to play");
         radio_start(-2, url);
     } else if (ask == 2 && g_radio_station == -2 && g_radio_alive) {
+        g_radio_paused = 0;
         radio_yield(nullptr);
+    } else if (ask == 3 && g_radio_station == -2 && g_radio_alive) {
+        g_radio_paused = 1;
+    } else if (ask == 4) {
+        if (g_radio_station == -2 && g_radio_alive && g_radio_paused) {
+            g_radio_paused = 0;
+        } else {
+            clog_("radio: the paused stream had ended; playing it again from the start");
+            radio_start(-2, url);
+        }
     }
 }
 
@@ -15989,6 +16066,35 @@ void* render_driver(void*) {
                         cinder_set_bt_on(0);
                         run_guarded("bt: idle off", 8, apply_bt_toggle);
                         bt_slept_at = now_ms();
+                    }
+                }
+
+                // ── WI-FI SLEEPS WHEN IDLE ───────────────────────────────────────────────────
+                // The radio is a power domain and four PMIC rails for as long as it is up, and a
+                // saved network out of range keeps it scanning. Nothing turned it off but the
+                // user, so a player put in a pocket with Wi-Fi on paid for it until the battery
+                // was flat (#55's thread, 0.4.0). Two minutes of a dark screen with nothing on
+                // the network and it goes off, every Wi-Fi rail down; the screen or a button
+                // brings it back, ~10 s to rejoin. Two, not Bluetooth's ten: a glance at the
+                // clock does not cost a rejoin, and rejoining costs no one their headphones. Never while it is in use with the screen off: internet radio or AirPlay
+                // playing, a speaker fed from the player, a server switched on (Share the drive,
+                // Play to this player, the phone remote) or AirPlay waiting to be found.
+                {
+                    static int wifi_idle_secs = 0;
+                    if (g_wifi_slept_at && (g_screen_on || g_last_input_ms > g_wifi_slept_at)) {
+                        g_wifi_slept_at = 0;
+                        clog_("wifi: the player is in use again -> Wi-Fi on");
+                        wifi_start(CINDER_ACT_WIFI_ON);
+                    }
+                    const bool wifi_idle = !g_screen_on && g_wifi_on && !src.net && !g_wifi_slept_at
+                                           && cinder_wifi_serving() == 0 && cinder_wifi_airplay() == 0;
+                    if (!wifi_idle) {
+                        wifi_idle_secs = 0;
+                    } else if (++wifi_idle_secs >= kWifiIdleOffS) {
+                        wifi_idle_secs = 0;
+                        clog_("wifi: idle 2 min with the screen off -> Wi-Fi off until the player is used");
+                        wifi_start(CINDER_ACT_WIFI_OFF);
+                        g_wifi_slept_at = now_ms();
                     }
                 }
 
