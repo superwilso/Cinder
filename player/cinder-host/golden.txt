@@ -26,6 +26,7 @@ c26316991e26a298 shelf_day
 1fccf608793f6b1e quick_panel_day
 6ebd37f7df6b2e4b lock_day
 6e80d717bad8b706 menu_day
+94dafaba0ab99c5d menu_icons_day
 00882b2277d65cdf up_next_day
 a2587255d49042ff up_next_queue_day
 0b2080e6022756be up_next_reorder_day
@@ -60,8 +61,8 @@ cb15b3756938b24c artist_songs_open_day
 352813f87d59fdd8 playlist_page_smart_day
 91a4aa174e41ddee playlist_edit_day
 7c414d2bf3f3c719 playlist_edit_drag_day
-fb1e3d36fa1ccb8d view_edit_day
-001b361af6823c11 view_edit_new_day
+896028c7195d6952 view_edit_day
+c11c8481832d83d8 view_edit_new_day
 f98435b1ace39bf7 eq_day
 02c5fd8b9e0b589e eq_off_day
 b2a1116fe8238b5d sound_day
@@ -72,7 +73,7 @@ cd6841fdd8d2c783 clockset_day
 ba2f861362d834c8 sound_balance_day
 2bb25090fcd6b6ba sound_mono_day
 fc6e0948ae425b07 sound_mono_live_day
-43280c758caa5e8f settings_day
+41ac989380c72924 settings_day
 8747d6723756254f display_day
 aa5a1c551b1762a9 genre_picker_day
 a6344e7c4d5b10e8 library_songs_filtered_day
@@ -140,6 +141,7 @@ a203fed464971524 onboard_7_done_night
 ccb81677f5f24186 quick_panel_night
 f16403566ff537bc lock_night
 772393ce06942ca9 menu_night
+953af714b180e840 menu_icons_night
 0aee1d37cfeac99a up_next_night
 86fafcc64a1865c6 up_next_queue_night
 a3f245a38d042373 up_next_reorder_night
@@ -174,8 +176,8 @@ e202d16538d71916 library_playlists_smart_night
 4333bcd4bc203da8 playlist_page_smart_night
 04192043cff5b659 playlist_edit_night
 ecc3ae7a50e243a9 playlist_edit_drag_night
-7e4312354f3f5e1b view_edit_night
-8716c3f61f3cf1fd view_edit_new_night
+9ffa3584790be5df view_edit_night
+3a35d4309c162ead view_edit_new_night
 e4911976c094a2c8 eq_night
 4487b0c843e0fe7c eq_off_night
 13b9dfc92471e178 sound_night
@@ -186,7 +188,7 @@ f6e24799f4cdf803 clockset_night
 aacdef84e4860df7 sound_balance_night
 a3512f475e5a8817 sound_mono_night
 76368ff4b2cabc17 sound_mono_live_night
-a1a507582b731b97 settings_night
+250ad97b24466e16 settings_night
 c2678fbc152740f4 display_night
 6a18465a7a81b920 genre_picker_night
 496dd8875ee4e15e library_songs_filtered_night
@@ -318,7 +320,7 @@ ffb3ee20a29579f8 swipe_play_next_4_100px_armed
 a819fca9925f9cee swipe_queue_5_132px_armed
 9ba17c2e421726bc swipe_play_next_5_132px_armed
 c64207dd9564a16a uiscale_80_library
-a693cc1f6d20c44a uiscale_80_settings
+987147c9882fd76f uiscale_80_settings
 6df637b26764436e uiscale_80_display
 d093aab9a732e82b uiscale_80_bluetooth
 5acc22e90dd131f8 uiscale_80_sound
@@ -331,7 +333,7 @@ fc6d8ca2cdd20ec4 uiscale_80_receiver_ldac
 85245ddff799d4aa uiscale_80_receiver_sbc
 e03cc29f84e057cd uiscale_80_settings_bottom
 570bf237ab47c2ce uiscale_100_library
-45930e205f876180 uiscale_100_settings
+d130204408789ddf uiscale_100_settings
 b5fadd4de5e38092 uiscale_100_display
 210713a5bc48e295 uiscale_100_bluetooth
 ccf46d578eee3a70 uiscale_100_sound
@@ -344,7 +346,7 @@ cc9dda3328990485 uiscale_100_receiver_aac
 b523c3e6a0090d55 uiscale_100_receiver_sbc
 6e95715ceccf3b66 uiscale_100_settings_bottom
 bd4933caf0b84a3b uiscale_120_library
-d370bf2b22a41bfe uiscale_120_settings
+ce52268c55dca275 uiscale_120_settings
 43a888e91f0555d2 uiscale_120_display
 aa4b06517908dd06 uiscale_120_bluetooth
 d927b8f8c0fe5c73 uiscale_120_sound
@@ -357,7 +359,7 @@ a4b2574ff192c824 uiscale_120_receiver_aac
 3570d285f3cf1e76 uiscale_120_receiver_sbc
 684df4a976c63ca8 uiscale_120_settings_bottom
 5436dee7e83680b5 uiscale_140_library
-b9f17804cb05af2a uiscale_140_settings
+adb05d443cd96443 uiscale_140_settings
 18970274fb4ed86e uiscale_140_display
 c4b0928b17ed1b84 uiscale_140_bluetooth
 801d85ab3ca89ee4 uiscale_140_sound
@@ -450,11 +452,14 @@ c6bf06fd52c636a1 usb_storage
 20bfb8b3a769e2f7 usb_storage_140
 c5fadf061989cb1a wifi_off
 3c104aa7f12353a3 wifi_connected
+90370e43a7388ae7 quick_wifi
+1b6d94eefe3a9abb quick_wifi_icons
+6cb4365611259a10 menu_wifi
 56707d779ea3ffa7 wifi_networks
 c36dab556d7186e7 netradio_playing
 adccbaa6999bad73 netradio_find
-e774c6674407efb8 wifi_remote_on
+47674b4c580bca2f wifi_remote_on
 88de3ff2e98d0746 wifi_speakers_casting
-9253392558585e68 wifi_options
+37212362898975f0 wifi_options
 c645830f4cff52da wifi_failed
 1aad37d87fe5677d keyboard_more_symbols

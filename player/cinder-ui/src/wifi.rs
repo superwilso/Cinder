@@ -468,7 +468,7 @@ pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
     let rows: [(&str, &str); 8] = [
         (
             crate::i18n::text("Turn on at start"),
-            crate::i18n::text("Joins your network when the player starts"),
+            crate::i18n::text("Joins your network at start"),
         ),
         (
             crate::i18n::text("Set the clock"),
@@ -477,7 +477,7 @@ pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
         (
             crate::i18n::text("Send plays to ListenBrainz"),
             if v.lb_note.is_empty() {
-                crate::i18n::text("Put your token in cinder_listenbrainz.txt on the drive")
+                crate::i18n::text("Token in cinder_listenbrainz.txt")
             } else {
                 v.lb_note
             },
@@ -501,7 +501,7 @@ pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
         (
             crate::i18n::text("Play to this player"),
             if v.play_to_note.is_empty() {
-                crate::i18n::text("Phones and computers can send music here")
+                crate::i18n::text("Phones and PCs send music here")
             } else {
                 v.play_to_note
             },
@@ -768,9 +768,7 @@ pub fn render_remote(c: &mut Canvas, t: &Theme, f: &FontSet, v: &RemoteView) {
         crate::chrome::HEADER_BOTTOM,
         kit::ROW_H(),
         &Row::new(crate::i18n::text("Phone remote"))
-            .sub(crate::i18n::text(
-                "Play, skip, volume and sending music, from a phone",
-            ))
+            .sub(crate::i18n::text("Control and send music from a phone"))
             .trail(Trail::Switch(v.on)),
     );
     let line = |c: &mut Canvas, y: i32, s: &str, size: f32, w: Weight, ink| {

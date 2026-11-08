@@ -239,7 +239,7 @@ pub fn render_found(c: &mut Canvas, t: &Theme, f: &FontSet, v: &FoundView) {
     let strip = if v.searching {
         crate::ui_format!("SEARCHING · {}", v.query)
     } else if !v.note.is_empty() {
-        v.note.to_string()
+        crate::ui_format!("NOT SEARCHED · {}", v.query)
     } else {
         crate::ui_format!("{} FOUND · {}", v.found.len(), v.query)
     };
@@ -262,7 +262,17 @@ pub fn render_found(c: &mut Canvas, t: &Theme, f: &FontSet, v: &FoundView) {
             &Row::new(&st.name).sub(&st.sub).trail(trail),
         );
     }
-    if v.found.is_empty() && !v.searching {
+    if v.found.is_empty() && !v.searching && !v.note.is_empty() {
+        // The search never ran to an answer: say why in full, not as "nothing found".
+        kit::row(
+            c,
+            t,
+            f,
+            y,
+            kit::ROW_H(),
+            &Row::new(crate::i18n::text("The search failed")).sub(v.note),
+        );
+    } else if v.found.is_empty() && !v.searching {
         kit::row(
             c,
             t,

@@ -148,7 +148,7 @@ if [ "$MODE" = "status" ]; then
     info "rollback available:"
     adb shell "[ -f $BACKUP ] && echo '    yes: $BACKUP' || echo '    no'" 2>/dev/null
     info "helpers installed:"
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery cinder-wifi; do
         adb shell "[ -f $HELPERS_DIR/$h ] && echo '    $h: present' || echo '    $h: -'" 2>/dev/null
     done
     # LAUNCHER FRESHNESS. Worth its own line because a stale launcher is invisible from every
@@ -233,7 +233,7 @@ fi
 
 #    helpers if --full
 if [ "\$FULL" = "1" ]; then
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery cinder-wifi; do
         if [ -f "/data/local/tmp/\$h.new" ]; then
             cp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"
             if cmp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"; then
@@ -263,6 +263,20 @@ if [ "\$FULL" = "1" ]; then
             rm "/data/local/tmp/\$h.new" 2>/dev/null
         fi
     done
+fi
+
+#    the Wi-Fi files 4a staged: kernel modules and certificates 644, the rest 755.
+if [ -d /data/local/tmp/wifi.new ]; then
+    for p in /data/local/tmp/wifi.new/*; do
+        [ -f "\$p" ] || continue
+        f="\${p##*/}"
+        cp "\$p" "/system/vendor/cinder/wifi/\$f.tmp" && cmp "\$p" "/system/vendor/cinder/wifi/\$f.tmp" || {
+            rm "/system/vendor/cinder/wifi/\$f.tmp" 2>/dev/null; echo "[swap] WARN: wifi/\$f copy mismatch, skipped"; continue; }
+        case "\$f" in *.ko|*.pem) chmod 644 "/system/vendor/cinder/wifi/\$f.tmp" ;; *) chmod 755 "/system/vendor/cinder/wifi/\$f.tmp" ;; esac
+        mv "/system/vendor/cinder/wifi/\$f.tmp" "/system/vendor/cinder/wifi/\$f"
+        echo "[swap] installed wifi/\$f"
+    done
+    rm -r /data/local/tmp/wifi.new 2>/dev/null
 fi
 
 #    the preload component if --preload staged it. Everything it does is in that script, which has
@@ -457,12 +471,32 @@ rm -f "$LAUNCHER_TMP"
 # 4. push helpers if --full
 if [ "$FULL" = 1 ]; then
     info "pushing setuid helpers (--full)…"
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery cinder-wifi; do
         if [ -f "$DIST/$h" ]; then
             adb push "$DIST/$h" "/data/local/tmp/$h.new" >/dev/null
             ok "  staged $h"
         fi
     done
+fi
+
+# 4a. the Wi-Fi component's files, if the player has it (the installer's Device ▸ Wi-Fi): only
+#     those that differ from the player's copy, as most are megabytes that rarely change and /data
+#     is 35 MB. cinder-wifi itself goes with the helpers above.
+if [ "$FULL" = 1 ] && adb shell "[ -f /system/vendor/cinder/wifi/wlan_mt.ko ] && echo y" 2>/dev/null | grep -q y; then
+    info "checking the Wi-Fi files (--full)…"
+    adb shell "rm -r /data/local/tmp/wifi.new 2>/dev/null; mkdir /data/local/tmp/wifi.new" >/dev/null
+    for src in "$DIST"/wifi-*; do
+        f="${src##*/wifi-}"
+        [ "$f" = cinder_radio.txt ] && continue   # the starter station list lives in /contents
+        here="$(md5sum "$src" | cut -d' ' -f1)"
+        there="$(adb shell "md5sum /system/vendor/cinder/wifi/$f 2>/dev/null" | cut -d' ' -f1 | tr -d '\r')"
+        [ -n "$there" ] || continue   # not on the player: an optional file it never had (the .UPG adds those)
+        [ "$here" = "$there" ] && continue
+        adb push "$src" "/data/local/tmp/wifi.new/$f" >/dev/null
+        ok "  staged wifi/$f"
+    done
+elif [ "$FULL" = 1 ]; then
+    adb shell "rm -r /data/local/tmp/wifi.new 2>/dev/null; rm /data/local/tmp/cinder-wifi.new 2>/dev/null" >/dev/null || true
 fi
 
 # 4b. the `preload` component if --preload. Staged under .new names; the swap script hands them

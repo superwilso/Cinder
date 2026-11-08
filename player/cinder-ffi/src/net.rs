@@ -155,7 +155,8 @@ pub fn curl_error(code: i32) -> &'static str {
         6 => "No internet: the name did not resolve",
         7 => "No internet: could not connect",
         28 => "No answer in 30 seconds",
-        35 | 60 => "The secure connection failed (is the clock right?)",
+        35 => "The server hung up; try again",
+        60 => "The secure connection failed (is the clock right?)",
         _ => "No answer from the server",
     }
 }
@@ -166,13 +167,22 @@ fn run_curl(args: &[&str]) -> Result<(u32, String), String> {
     if !Path::new(&curl).exists() {
         return Err("Wi-Fi is not installed".into());
     }
-    let out = Command::new(&curl)
-        .args(["-sS", "--max-time", "30", "--cacert"])
-        .arg(format!("{WIFI_DIR}/cacert.pem"))
-        .args(["-w", "\n%{http_code}"])
-        .args(args)
-        .output()
-        .map_err(|e| format!("curl: {e}"))?;
+    // Exit 35 is a handshake that never finished, so nothing was sent and asking again is safe
+    // (POSTs included). radio-browser.info resets about one handshake in three (11-08, on device).
+    let mut tries = 0;
+    let out = loop {
+        let out = Command::new(&curl)
+            .args(["-sS", "--max-time", "30", "--cacert"])
+            .arg(format!("{WIFI_DIR}/cacert.pem"))
+            .args(["-w", "\n%{http_code}"])
+            .args(args)
+            .output()
+            .map_err(|e| format!("curl: {e}"))?;
+        tries += 1;
+        if out.status.code() != Some(35) || tries == 3 {
+            break out;
+        }
+    };
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let (body, code) = text.rsplit_once('\n').unwrap_or(("", text.as_str()));
     let code: u32 = code.trim().parse().unwrap_or(0);
@@ -258,6 +268,142 @@ pub fn update_check(version: &str) -> Result<Option<String>, String> {
         Some(false) => Ok(None),
         None => Err(format!("cannot read the release name {tag}")),
     }
+}
+
+// ── Install an update over Wi-Fi (Settings ▸ Wi-Fi ▸ Install update) ─────────────────────────────
+//
+// What the PC installer does, done by the player: the release's cinder-payload.tar.gz (both
+// channels, every file) is downloaded, checked against the release's SHA256SUMS, and the installed
+// channel's files are put at the top of the drive under the names the installer gives them. The
+// player's own cinder_components.conf stays as it is, so the update keeps every choice. The
+// caller then has cinder-power set Sony's update flag and restart; Sony's updater runs the .UPG
+// exactly as after a PC install.
+
+const UPDATE_DIR: &str = "/contents/.cinder-update";
+const RELEASES: &str = "https://github.com/superwilso/Cinder/releases/download";
+const BUSYBOX: &str = "/system/xbin/busybox";
+const COMPONENTS: &str = "/contents/cinder_components.conf";
+
+/// The name a payload file goes to the drive under, as installer/build.rs stages it; None = not
+/// staged (the other key's package, the uninstall packages, the PC's own copy of the choices,
+/// files from older builds). `w1`: the player runs Walkman One, whose updater takes only the
+/// nw-wm1a package.
+pub fn stage_name(file: &str, w1: bool) -> Option<String> {
+    match file {
+        "cinder_home_install.upg" => (!w1).then(|| "NW_WM_FW.UPG".into()),
+        "cinder_home_install.nw-wm1a.upg" => w1.then(|| "NW_WM_FW.UPG".into()),
+        "cinder_components.conf" | "cinder-gpunode" => None,
+        f if f.starts_with("cinder_home_uninstall") => None,
+        f if f.starts_with("wifi-") => Some(format!("cinder-wifi-{}", &f[5..])),
+        f => Some(f.to_string()),
+    }
+}
+
+/// `KEY=value` from the player's cinder_components.conf (the last one wins, as on the device).
+pub fn component(conf: &str, key: &str) -> Option<String> {
+    conf.lines()
+        .filter_map(|l| l.trim().strip_prefix(key)?.strip_prefix('='))
+        .map(|v| v.trim().to_string())
+        .next_back()
+}
+
+/// The hash SHA256SUMS gives `name`.
+pub fn sum_for(sums: &str, name: &str) -> Option<String> {
+    sums.lines().find_map(|l| {
+        let (h, n) = l.split_once(char::is_whitespace)?;
+        (n.trim().trim_start_matches('*') == name && h.len() == 64).then(|| h.to_lowercase())
+    })
+}
+
+fn busybox(args: &[&str]) -> Result<String, String> {
+    let out = Command::new(BUSYBOX)
+        .args(args)
+        .output()
+        .map_err(|e| format!("{}: {e}", args[0]))?;
+    if !out.status.success() {
+        return Err(format!("{} failed", args[0]));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Download release `tag`, check it, and stage it on the drive. `say` gets each step for the page.
+/// On Ok the drive holds NW_WM_FW.UPG and every file it installs; nothing has been flashed yet.
+pub fn update_stage(tag: &str, w1: bool, say: &mut dyn FnMut(&str)) -> Result<(), String> {
+    let conf = std::fs::read_to_string(COMPONENTS).unwrap_or_default();
+    let channel = match component(&conf, "CINDER_CHANNEL").as_deref() {
+        Some("dev") => "dev",
+        _ => "stable",
+    };
+    // The archive (35 MB), one channel unpacked, and its files moved: 150 MB is plenty.
+    let free_mb = {
+        let path = std::ffi::CString::new("/contents").unwrap();
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+            return Err("Cannot read the free space".into());
+        }
+        st.f_bavail as u64 * st.f_frsize as u64 / (1 << 20)
+    };
+    if free_mb < 150 {
+        return Err("Needs 150 MB free on the player".into());
+    }
+    let _ = std::fs::remove_dir_all(UPDATE_DIR);
+    std::fs::create_dir_all(UPDATE_DIR).map_err(|_| "Cannot write to the drive")?;
+    let ua = "User-Agent: Cinder";
+    say(&cinder_ui::ui_format!("Downloading Cinder {}…", tag));
+    let (code, sums) = run_curl(&["-L", "-H", ua, &format!("{RELEASES}/{tag}/SHA256SUMS")])?;
+    let want = (code == 200)
+        .then(|| sum_for(&sums, "cinder-payload.tar.gz"))
+        .flatten()
+        .ok_or_else(|| format!("No checksums in release {tag}"))?;
+    let archive = format!("{UPDATE_DIR}/payload.tar.gz");
+    let (code, _) = run_curl(&[
+        "-L",
+        "-H",
+        ua,
+        "--max-time",
+        "1800",
+        "-o",
+        &archive,
+        &format!("{RELEASES}/{tag}/cinder-payload.tar.gz"),
+    ])?;
+    if code != 200 {
+        return Err(format!("GitHub answered {code}"));
+    }
+    say(cinder_ui::i18n::text("Checking the download…"));
+    let got = busybox(&["sha256sum", &archive])?;
+    if got.split_whitespace().next() != Some(want.as_str()) {
+        return Err("The download is damaged; try again".into());
+    }
+    say(cinder_ui::i18n::text("Unpacking…"));
+    busybox(&["tar", "-xzf", &archive, "-C", UPDATE_DIR, channel])?;
+    let _ = std::fs::remove_file(&archive);
+    let from = format!("{UPDATE_DIR}/{channel}");
+    let files = std::fs::read_dir(&from).map_err(|_| "The download has no files")?;
+    let mut upg = false;
+    for f in files.flatten() {
+        let name = f.file_name().to_string_lossy().into_owned();
+        let Some(dest) = stage_name(&name, w1) else {
+            continue;
+        };
+        let to = format!("/contents/{dest}");
+        let _ = std::fs::remove_file(&to);
+        std::fs::rename(f.path(), &to).map_err(|_| format!("Cannot place {dest}"))?;
+        upg |= dest == "NW_WM_FW.UPG";
+    }
+    // The low-latency USB DAC module comes from its own project's release: the one installed now
+    // is that file, and the install script takes it only if its SHA-256 is the pinned one.
+    // ponytail: an update that pins a newer module drops it until a PC install fetches that one.
+    if component(&conf, "CINDER_LLUSBDAC").as_deref() == Some("1") {
+        let _ = std::fs::copy(
+            "/system/vendor/cinder/lib/modules/llusbdac.ko",
+            "/contents/llusbdac.ko",
+        );
+    }
+    let _ = std::fs::remove_dir_all(UPDATE_DIR);
+    if !upg {
+        return Err("This release has no package for this player".into());
+    }
+    Ok(())
 }
 
 // ── Lyrics from LRCLIB (lrclib.net: free, no account, synced lyrics) ─────────────────────────────
@@ -589,18 +735,28 @@ pub fn image_ext(head: &[u8]) -> Option<&'static str> {
 pub fn fetch_cover(dir: &str, artist: &str, album: &str, version: &str) -> Result<bool, String> {
     let ua = format!("User-Agent: Cinder/{version} ( https://github.com/superwilso/Cinder )");
     let query = format!("query={}", mb_query(artist, album));
-    let (code, body) = run_curl(&[
-        "-H",
-        &ua,
-        "--get",
-        "--data-urlencode",
-        &query,
-        "--data-urlencode",
-        "fmt=json",
-        "--data-urlencode",
-        "limit=10",
-        "https://musicbrainz.org/ws/2/release-group/",
-    ])?;
+    // MusicBrainz sheds load with 503: half of the player's searches on 11-08, even 3 s apart.
+    // This runs on its own thread, once per album, so waiting and asking again costs nothing.
+    let mut tries = 0;
+    let (code, body) = loop {
+        let got = run_curl(&[
+            "-H",
+            &ua,
+            "--get",
+            "--data-urlencode",
+            &query,
+            "--data-urlencode",
+            "fmt=json",
+            "--data-urlencode",
+            "limit=10",
+            "https://musicbrainz.org/ws/2/release-group/",
+        ])?;
+        tries += 1;
+        if got.0 != 503 || tries == 5 {
+            break got;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2 * tries));
+    };
     if code != 200 {
         return Err(format!("MusicBrainz answered {code}"));
     }
@@ -937,6 +1093,50 @@ mod tests {
             "a certificate failure points at the clock"
         );
         assert!(curl_error(6).starts_with("No internet"));
+        assert!(
+            !curl_error(35).contains("clock"),
+            "a reset handshake is the server's doing, not the clock's"
+        );
+    }
+
+    /// Every file installer/build.rs stages from dist/ goes to the drive under the same name here,
+    /// so the player's update and the PC's install put down the same files.
+    #[test]
+    fn the_player_stages_what_the_installer_stages() {
+        let build = include_str!("../../../installer/build.rs");
+        let table = &build[build.find("const FILES").unwrap()..];
+        let table = &table[..table.find("];").unwrap()];
+        let text: String = table
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut seen = 0;
+        for entry in text.split("(\"").skip(1) {
+            // "dist/{ch}/FILE", "DEST", "OWNER", bool)
+            let q: Vec<&str> = entry.split('"').collect();
+            let Some(file) = q[0].strip_prefix("dist/{ch}/") else {
+                continue; // deploy/ text, not a build output
+            };
+            let (dest, owner) = (q[2], q[4]);
+            let w1 = owner == "fw:nw-wm1a";
+            assert_eq!(stage_name(file, w1).as_deref(), Some(dest), "{file}");
+            seen += 1;
+        }
+        assert!(seen >= 30, "read {seen} entries from build.rs");
+        assert_eq!(stage_name("cinder_home_install.upg", true), None);
+        assert_eq!(stage_name("cinder_home_install.nw-wm1a.upg", false), None);
+        assert_eq!(stage_name("cinder_home_uninstall.upg", false), None);
+        assert_eq!(stage_name("cinder_components.conf", false), None, "the player keeps its own");
+        assert_eq!(
+            sum_for("abc  x\n99e3b092a3f5d76405b483ba10ae651f7c0a8f06b3aa3f6264c2cf673894b5b9  cinder-payload.tar.gz\n", "cinder-payload.tar.gz").as_deref(),
+            Some("99e3b092a3f5d76405b483ba10ae651f7c0a8f06b3aa3f6264c2cf673894b5b9")
+        );
+        let conf = "CINDER_CHANNEL=stable\n# CINDER_LLUSBDAC=0\nCINDER_LLUSBDAC=1\nCINDER_CHANNEL=dev\n";
+        assert_eq!(component(conf, "CINDER_CHANNEL").as_deref(), Some("dev"));
+        assert_eq!(component(conf, "CINDER_LLUSBDAC").as_deref(), Some("1"));
+        assert_eq!(component(conf, "CINDER_WIFI"), None);
     }
 
     /// An answer shaped like lrclib.net/api/get's (copied 2026-11-05, words shortened).

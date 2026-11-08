@@ -5,6 +5,7 @@
 //!   row       Name                                    Late favourites ›
 //!   RATING       Any · 2+ · 3+ · 4+ · 5
 //!   LAST PLAYED  Any · Recent · Not lately · Never
+//!   ADDED        Any · 7 days · 30 days · 90 days · Year     (#23)
 //!   FORMAT       Any · FLAC · MP3 · M4A · Hi-Res
 //!   SORT         Title · Plays · Played · Rating · Added
 //!   SHUFFLE      Settings · Songs · Albums · Artists   (what this list's Shuffle band deals)
@@ -13,7 +14,7 @@
 //! The mock also has "show as" chips and a "Pin to the Library bar" switch. Both are the Library
 //! view bar's, which is R3 and not built; a switch that pins to a bar that does not exist would be
 //! a row that does nothing, so they wait for it (`PLAN_redesign_2026-09.md` Part G). The mock's
-//! "+ add" for further rules is the same: the three rules here are the ones the data exists for.
+//! "+ add" for further rules is the same: the four rules here are the ones the data exists for.
 //!
 //! One page, no scroll: `section_top` is the single table the renderer and the hit tests share.
 
@@ -23,7 +24,7 @@ use crate::shuffle::ShuffleBy;
 use crate::text::FontSet;
 use crate::theme::Theme;
 use crate::views::{
-    FormatRule, Played, SavedView, ViewSort, RATINGS, RATING_LABELS, SHUFFLE_LABELS,
+    Added, FormatRule, Played, SavedView, ViewSort, RATINGS, RATING_LABELS, SHUFFLE_LABELS,
 };
 use crate::Canvas;
 
@@ -32,14 +33,16 @@ use crate::Canvas;
 pub enum Section {
     Rating,
     Played,
+    Added,
     Format,
     Sort,
     Shuffle,
 }
 
-pub const SECTIONS: [Section; 5] = [
+pub const SECTIONS: [Section; 6] = [
     Section::Rating,
     Section::Played,
+    Section::Added,
     Section::Format,
     Section::Sort,
     Section::Shuffle,
@@ -50,6 +53,7 @@ impl Section {
         match self {
             Section::Rating => crate::i18n::text("RATING"),
             Section::Played => crate::i18n::text("LAST PLAYED"),
+            Section::Added => crate::i18n::text("ADDED"),
             Section::Format => crate::i18n::text("FORMAT"),
             Section::Sort => crate::i18n::text("SORT"),
             Section::Shuffle => crate::i18n::text("SHUFFLE"),
@@ -59,6 +63,7 @@ impl Section {
         match self {
             Section::Rating => &RATING_LABELS,
             Section::Played => &Played::LABELS,
+            Section::Added => &Added::LABELS,
             Section::Format => &FormatRule::LABELS,
             Section::Sort => &ViewSort::LABELS,
             Section::Shuffle => &SHUFFLE_LABELS,
@@ -69,6 +74,7 @@ impl Section {
         match self {
             Section::Rating => RATINGS.iter().position(|r| *r == v.min_rating).unwrap_or(0),
             Section::Played => Played::ALL.iter().position(|p| *p == v.played).unwrap_or(0),
+            Section::Added => Added::ALL.iter().position(|p| *p == v.added).unwrap_or(0),
             Section::Format => FormatRule::ALL
                 .iter()
                 .position(|p| *p == v.format)
@@ -86,6 +92,7 @@ impl Section {
         match self {
             Section::Rating => v.min_rating = RATINGS.get(i).copied().unwrap_or(0),
             Section::Played => v.played = Played::ALL.get(i).copied().unwrap_or_default(),
+            Section::Added => v.added = Added::ALL.get(i).copied().unwrap_or_default(),
             Section::Format => v.format = FormatRule::ALL.get(i).copied().unwrap_or_default(),
             Section::Sort => v.sort = ViewSort::ALL.get(i).copied().unwrap_or_default(),
             Section::Shuffle => {
@@ -99,8 +106,9 @@ impl Section {
 
 /// The name row, under the strip.
 pub const NAME_Y: i32 = HEADER_BOTTOM + kit::STRIP_H;
-/// A chip section: its label, the chips, and a little air.
-const SECTION_H: i32 = kit::SECTION_H + kit::CHIP_H + 10;
+/// A chip section: its label, the chips, and a little air (6 px since ADDED made six sections:
+/// the page does not scroll, and 10 ran Delete into the Shelf's swipe zone).
+const SECTION_H: i32 = kit::SECTION_H + kit::CHIP_H + 6;
 
 /// Top of section `i`'s label.
 pub fn section_top(i: usize) -> i32 {

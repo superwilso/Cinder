@@ -16,6 +16,72 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Wi-Fi in the Menu and the pull-down** (discussion #53). With the Wi-Fi option installed, the
+  Menu has a **Wi-Fi** row after Bluetooth (it says the network you're on, or Off), and the
+  pull-down panel has a Wi-Fi switch under Bluetooth's: the switch switches, the name opens
+  Settings ▸ Wi-Fi. Without the option neither appears. With SensMe, Preview and Wi-Fi all
+  installed the Menu has twelve rows, too many to fit, so it scrolls as it does in Big view.
+  *Device-verified* (the Menu row opens Settings ▸ Wi-Fi; the pull-down switch joined the network
+  and turned Wi-Fi off again, its supply rail back to 0).
+- **Menu icons (off by default).** **Settings ▸ Buttons & gestures ▸ Menu icons** puts an icon
+  beside each Menu row: a grid for Library, a folder, a note for SensMe, the radio, a speaker for
+  Sound, waves for Soundscapes, Bluetooth, Wi-Fi, USB, play for Preview, the gear and a question
+  mark (discussion #53). The pull-down's rows get theirs too (and Night a moon). *Device-verified*
+  in Big view.
+- **Smart playlists: an ADDED rule** (#23). Any · 7 days · 30 days · 90 days · Year: the songs
+  that came onto the player in that time, by the library's own date. Saved as `added=` in
+  `cinder_views.conf`; a file from before has no key and means any.
+
+### Fixed
+
+- **Pausing from a phone app no longer starts the song again** (Play to this player). Pause
+  stopped the stream, so Play began it from 0:00 and the app showed 0:00 while paused. Pause now
+  holds the stream and lets the headphone output go; Play goes on from where it was (verified on the
+  player from a DLNA controller: paused at 0:11 for 20 s, went on at 0:11). A pause longer than five
+  minutes loses the place, and Play starts the song again.
+- **Internet radio ▸ FIND failed about one search in three** with "The secure connection failed (is
+  the clock right?)". The clock was fine: radio-browser.info resets some connections mid-handshake.
+  A handshake that never finished is asked again (nothing was sent yet), and that error no longer
+  blames the clock. A failed search now says "The search failed" with the reason, not "No stations
+  found". On the player: 4 of 4 searches, against 3 failures in 5 before.
+- **Fetch missing album art gave up about half the time**, because MusicBrainz answers 503 when it
+  is busy, even to requests 3 s apart. The search is asked again, up to five times, waiting longer
+  each time.
+
+- **Wi-Fi turned itself off again on a player that had never joined a network (#55).** The
+  switch asked the radio to join the saved network, there was none, and the switch fell back to
+  off a second or two later, so **Network** could never list anything to join. Now the radio comes
+  up with nothing to join, the status reads **ON · NOT CONNECTED**, and the scan works.
+  *Device-verified* (helper run on the player with the saved network moved aside: on, then a scan
+  listing two networks; then from the screen: Network opened at once while Wi-Fi was still
+  switching on, and SCAN listed four networks).
+- **Switching Wi-Fi off while it was busy left the radio on.** A tap that came while Wi-Fi was
+  still joining, or polling its status, was thrown away, so the switch said off and the chip stayed
+  powered. Every request now waits its turn and runs when the one before it ends.
+- **Network could hang on "Looking for networks…" and ignore SCAN.** Opened while Wi-Fi was still
+  switching on, its scan was one of those thrown-away requests, no list ever came, and the page
+  waited for one forever. The scan now waits its turn too, and the page always gets an answer.
+- **Wi-Fi's options no longer run off the edge in Big view.** Four second lines were cut short
+  ("Joins your network when the player sta…"); they are shorter now.
+
+### Changed
+
+- **Wi-Fi powers off when the player is idle.** After two minutes with the screen off, Wi-Fi
+  turns fully off, and it comes back when the screen or a button is used (about ten seconds to
+  rejoin). It stays on while something needs it: internet radio or AirPlay playing, a speaker fed from the
+  player, **Share the drive**, **Play to this player**, the phone remote, or AirPlay switched on.
+  Off, every Wi-Fi supply rail is down; connected and idle, the radio added about 22 interrupts
+  and 100 task switches a second (measured with the screen on). *Device-verified:* off 2 minutes
+  after the screen went dark, rejoined when it woke. Once in two tries, turning off took 21 s
+  with the driver holding the processor; the other took 1.8 s.
+- **Wi-Fi checks its status every minute with the screen off**, instead of every 15 seconds.
+- **The radio leaves 802.11 power save only while the player serves the network** (Share the
+  drive, Play to this player, the phone remote, AirPlay, or a speaker playing from the player).
+  In power save a phone or computer waited 4-20 s for each answer from the player, or gave up;
+  awake, 0.02-0.12 s. The rest of the time power save stays on.
+
 ## [0.4.0] — 2026-11-05
 
 ### Added

@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of real rows. The home page's topic links are row ids after them ([`group_row`]).
-pub const ROWS: usize = 34;
+pub const ROWS: usize = 35;
 
 /// The topic pages: title, the home row's second line (what is inside), and the rows, in order.
 /// Every row is on exactly one page: here, or [`HOME_ROWS`].
@@ -45,8 +45,8 @@ pub const GROUPS: [(&str, &str, &[usize]); 7] = [
     ),
     (
         "Buttons & gestures",
-        "Pull-down panel · Hold",
-        &[ROW_QUICK, ROW_HOLD_BUTTONS],
+        "Pull-down panel · Hold · Menu icons",
+        &[ROW_QUICK, ROW_HOLD_BUTTONS, ROW_MENU_ICONS],
     ),
     (
         "Power",
@@ -197,6 +197,9 @@ pub const ROW_FOLDERS_TAB: usize = 14;
 /// fetch music by itself (Wi-Fi drive, phone uploads). OFF by default: with it off no screen can
 /// remove a file, which is how the player has always been.
 pub const ROW_DELETE: usize = 31;
+/// Menu icons: an icon beside each Menu row (discussion #53, "easier to navigate than text only").
+/// OFF by default, like every community-asked change to a screen.
+pub const ROW_MENU_ICONS: usize = 32;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. 30 MIN by default since 2026-10-04 (it was OFF): the owner's rule
@@ -229,8 +232,8 @@ pub const ROW_POWER_OFF: usize = 11;
 pub const ROW_RESET: usize = 28;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
 pub const ROW_LANGUAGE: usize = 29;
-pub const ROW_FIRMWARE: usize = 32;
-pub const ROW_MODEL: usize = 33;
+pub const ROW_FIRMWARE: usize = 33;
+pub const ROW_MODEL: usize = 34;
 /// Wi-Fi (`wifi.rs`): shown only when the Wi-Fi install option is on the player.
 pub const ROW_WIFI: usize = 30;
 
@@ -379,6 +382,8 @@ pub struct SettingsView<'a> {
     pub folders_tab: bool,
     /// Delete music is switched on (`ROW_DELETE`).
     pub delete_music: bool,
+    /// Icons beside the Menu's rows (`ROW_MENU_ICONS`).
+    pub menu_icons: bool,
     /// What a swipe up / down on Now Playing opens (`ROW_SWIPE_UP`, `ROW_SWIPE_DOWN`).
     pub swipe_up: SwipeTo,
     pub swipe_down: SwipeTo,
@@ -456,6 +461,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_QUICK => Trail::Switch(v.quick),
         ROW_FOLDERS_TAB => Trail::Switch(v.folders_tab),
         ROW_DELETE => Trail::Switch(v.delete_music),
+        ROW_MENU_ICONS => Trail::Switch(v.menu_icons),
         ROW_SWIPE_UP => Trail::Value(v.swipe_up.label()),
         ROW_SWIPE_DOWN => Trail::Value(v.swipe_down.label()),
         ROW_NP_BUTTON => Trail::Value(v.np_button.label()),
@@ -518,6 +524,7 @@ fn title(r: usize) -> &'static str {
         ROW_QUICK => crate::i18n::text("Pull-down panel"),
         ROW_FOLDERS_TAB => crate::i18n::text("Folders tab"),
         ROW_DELETE => crate::i18n::text("Delete music"),
+        ROW_MENU_ICONS => crate::i18n::text("Menu icons"),
         ROW_SWIPE_UP => crate::i18n::text("Swipe up"),
         ROW_SWIPE_DOWN => crate::i18n::text("Swipe down"),
         ROW_NP_BUTTON => crate::i18n::text("Now Playing button"),
@@ -583,6 +590,7 @@ fn sub_line<'a>(r: usize, v: &'a SettingsView) -> &'a str {
         ROW_NP_COUNT => crate::i18n::text("Its place in what's playing"),
         ROW_HOLD_BUTTONS => crate::i18n::text("Headphone buttons still work"),
         ROW_DELETE => crate::i18n::text("From Track information and album pages"),
+        ROW_MENU_ICONS => crate::i18n::text("In the Menu and the pull-down panel"),
         ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
         ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
         ROW_STORAGE => storage_parts(v.storage).1,
@@ -632,6 +640,7 @@ mod tests {
             big_icons: false,
             folders_tab: false,
             delete_music: false,
+            menu_icons: false,
             swipe_up: SwipeTo::Off,
             swipe_down: SwipeTo::Off,
             np_button: crate::now_playing::NpButton::Bluetooth,

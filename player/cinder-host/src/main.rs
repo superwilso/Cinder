@@ -221,54 +221,63 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             sub: "6 albums · 8 tracks",
             home: true,
             active: false,
+            icon: None,
         },
         MenuItem {
             label: "Folders",
             sub: "6 folders",
             home: false,
             active: false,
+            icon: None,
         },
         MenuItem {
             label: "SensMe",
             sub: "12 channels · 8 tracks",
             home: false,
             active: false,
+            icon: None,
         },
         MenuItem {
             label: "FM radio",
             sub: "Needs wired headphones as the aerial",
             home: false,
             active: false,
+            icon: None,
         },
         MenuItem {
             label: "Sound",
             sub: "DSEE HX · VPT",
             home: false,
             active: false,
+            icon: None,
         },
         MenuItem {
             label: "Bluetooth",
             sub: "LDAC",
             home: false,
             active: false,
+            icon: None,
         },
         MenuItem {
             label: "USB-DAC",
             sub: "Off",
             home: false,
             active: false,
+            icon: None,
         },
         MenuItem {
             label: "Settings",
             sub: "Display · playback · system",
             home: false,
             active: false,
+            icon: None,
         },
         MenuItem {
             label: "Help & controls",
             sub: "Buttons, swipes, the way back",
             home: false,
             active: false,
+            icon: None,
         },
     ];
 
@@ -583,6 +592,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         bt_device: Some("WH-1000XM5"),
                         night: false,
                         sleep_idx: 2,
+                        wifi_on: true,
+                        wifi_sub: "SKYTZMYA",
+                        icons: false,
                     },
                 );
             }),
@@ -596,6 +608,52 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     &fonts,
                     "NOW › Atlas Hands · Benjamin Francis Leftwich · 1:47",
                     &menu_items,
+                    0,
+                    0,
+                )
+            }),
+            // Settings ▸ Menu icons on, and the Wi-Fi option installed: an icon beside every row,
+            // and Wi-Fi after Bluetooth (discussion #53).
+            ("menu_icons", &|c: &mut Canvas| {
+                use cinder_ui::icons;
+                let rows: [(&str, &str, cinder_ui::kit::Icon); 11] = [
+                    ("Library", "6 albums · 8 tracks", icons::library),
+                    ("Folders", "6 folders", icons::folder),
+                    ("SensMe", "12 channels · 8 tracks", icons::note),
+                    (
+                        "FM radio",
+                        "Needs wired headphones as the aerial",
+                        icons::radio,
+                    ),
+                    ("Sound", "DSEE HX · VPT", icons::sound),
+                    ("Soundscapes", "Off", icons::waves),
+                    ("Bluetooth", "LDAC", icons::bt),
+                    ("Wi-Fi", "SKYTZMYA", icons::wifi),
+                    ("USB-DAC", "Off", icons::usb),
+                    ("Settings", "Display · playback · system", icons::settings),
+                    (
+                        "Help & controls",
+                        "Buttons, swipes, the way back",
+                        icons::help,
+                    ),
+                ];
+                let items: Vec<MenuItem> = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (label, sub, icon))| MenuItem {
+                        label,
+                        sub,
+                        home: i == 0,
+                        active: false,
+                        icon: Some(*icon),
+                    })
+                    .collect();
+                menu::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    "NOW › Atlas Hands · Benjamin Francis Leftwich · 1:47",
+                    &items,
                     0,
                     0,
                 )
@@ -1292,6 +1350,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     name: "Late favourites".into(),
                     min_rating: 4,
                     played: cinder_ui::views::Played::Recent,
+                    added: cinder_ui::views::Added::Year,
                     format: cinder_ui::views::FormatRule::Flac,
                     sort: cinder_ui::views::ViewSort::Plays,
                     shuffle: Some(cinder_ui::shuffle::ShuffleBy::Albums),
@@ -1412,6 +1471,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         quick: false,
                         folders_tab: false,
                         delete_music: false,
+                        menu_icons: false,
                         swipe_up: settings::SwipeTo::Off,
                         swipe_down: settings::SwipeTo::Off,
                         np_button: cinder_ui::now_playing::NpButton::Bluetooth,
@@ -2277,6 +2337,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     quick: false,
                     folders_tab: false,
                     delete_music: false,
+                    menu_icons: false,
                     swipe_up: settings::SwipeTo::Off,
                     swipe_down: settings::SwipeTo::Off,
                     np_button: cinder_ui::now_playing::NpButton::Bluetooth,
@@ -2323,6 +2384,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     quick: false,
                     folders_tab: false,
                     delete_music: false,
+                    menu_icons: false,
                     swipe_up: settings::SwipeTo::Off,
                     swipe_down: settings::SwipeTo::Off,
                     np_button: cinder_ui::now_playing::NpButton::Bluetooth,
@@ -4049,6 +4111,27 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "wifi_connected");
+        // The pull-down with the Wi-Fi option: Wi-Fi under Bluetooth (#53), from the Library.
+        app.set_quick_enabled(true);
+        app.go_for_preview(Screen::Library);
+        app.quick_pull_open();
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "quick_wifi");
+        // …and with Settings ▸ Menu icons on, which reaches the pull-down too.
+        app.set_menu_icons(true);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "quick_wifi_icons");
+        app.set_menu_icons(false);
+        app.set_quick_enabled(false);
+        // The Menu as the App draws it with Settings ▸ Menu icons on: Wi-Fi after Bluetooth.
+        app.set_menu_icons(true);
+        app.go_for_preview(Screen::Menu);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "menu_wifi");
+        app.set_menu_icons(false);
         app.go_for_preview(Screen::WifiNetworks);
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
