@@ -402,7 +402,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
     if v.update.is_empty() {
         kit::strip(c, t, f, l.strip_y, &strip_line(v.status));
     } else if v.update_note.is_empty() {
-        let offer = crate::ui_format!("CINDER {} IS READY · TAP TO INSTALL", v.update);
+        let offer = crate::ui_format!("CINDER {} IS READY · TAP TO INSTALL", v.update.trim_start_matches('v'));
         kit::strip_ink(c, t, f, l.strip_y, &offer, t.acc);
     } else {
         kit::strip_ink(c, t, f, l.strip_y, v.update_note, t.acc);
@@ -464,7 +464,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
         l.options_y,
         kit::ROW_H(),
         &Row::new(crate::i18n::text("Options"))
-            .sub(crate::i18n::text("Start · clock · ListenBrainz · updates"))
+            .sub(crate::i18n::text("Start · clock · plays · updates"))
             .trail(Trail::Open("")),
     );
 }
