@@ -49,11 +49,48 @@ fn preview_paired() -> Vec<cinder_ui::pairing::PairedDevice> {
     .collect()
 }
 
+fn write_png(c: &Canvas, path: &str) {
+    let f = std::io::BufWriter::new(std::fs::File::create(path).expect("create png"));
+    let mut e = png::Encoder::new(f, W as u32, H as u32);
+    e.set_color(png::ColorType::Rgb);
+    let mut w = e.write_header().expect("png header");
+    w.write_image_data(&c.to_rgb_bytes()).expect("save png");
+}
+
 fn save_png(c: &Canvas, name: &str) {
-    let img = image::RgbImage::from_raw(W as u32, H as u32, c.to_rgb_bytes()).expect("buffer size");
     let path = format!("out/{name}.png");
-    img.save(&path).expect("save png");
+    write_png(c, &path);
     println!("wrote {path}");
+}
+
+/// The Settings screen's sample values, on `page`.
+fn sample_settings(page: Option<usize>) -> settings::SettingsView<'static> {
+    settings::SettingsView {
+        page,
+        languages: &cinder_ui::i18n::Language::ALL,
+        shuffle_by: "SONGS",
+        ignore_the: false,
+        opts: Default::default(),
+        swipe_up: settings::SwipeTo::Off,
+        swipe_down: settings::SwipeTo::Off,
+        np_button: cinder_ui::now_playing::NpButton::Bluetooth,
+        volume_limit: false,
+        big_view: false,
+        big_bar: false,
+        big_icons: false,
+        usb_dac: false,
+        battery_care: true,
+        device: "99% · 34.4 °C",
+        database: "3,424 tracks",
+        storage: "12.4 / 58 GB",
+        sleep: "30 MIN",
+        brightness: "4 / 5",
+        screen_off: "OFF",
+        auto_off: "OFF",
+        bt_idle_off: false,
+        boot_stock: "SONY",
+        clock: "17 Aug · 09:01",
+    }
 }
 
 /// What a run needs to know beyond "render everything".
@@ -1457,45 +1494,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0, snd_end)
             }),
             ("settings", &|c: &mut Canvas| {
-                settings::render(
-                    c,
-                    &theme,
-                    &fonts,
-                    1,
-                    0,
-                    &settings::SettingsView {
-                        page: None,
-                        languages: &cinder_ui::i18n::Language::ALL,
-                        shuffle_by: "SONGS",
-                        ignore_the: false,
-                        quick: false,
-                        folders_tab: false,
-                        delete_music: false,
-                        menu_icons: false,
-                        swipe_up: settings::SwipeTo::Off,
-                        swipe_down: settings::SwipeTo::Off,
-                        np_button: cinder_ui::now_playing::NpButton::Bluetooth,
-                        np_back: false,
-                        np_count: false,
-                        hold_buttons: false,
-                        volume_limit: false,
-                        big_view: false,
-                        big_bar: false,
-                        big_icons: false,
-                        usb_dac: false,
-                        battery_care: true,
-                        device: "99% · 34.4 °C",
-                        database: "3,424 tracks",
-                        storage: "12.4 / 58 GB",
-                        sleep: "30 MIN",
-                        brightness: "4 / 5",
-                        screen_off: "OFF",
-                        auto_off: "OFF",
-                        bt_idle_off: false,
-                        boot_stock: "SONY",
-                        clock: "17 Aug · 09:01",
-                    },
-                )
+                settings::render(c, &theme, &fonts, 1, 0, &sample_settings(None))
             }),
             // Settings ▸ Display (handoff 5k): palette, accent, night, the volume readout, size.
             ("display", &|c: &mut Canvas| {
@@ -2329,38 +2328,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 &fonts,
                 settings::ROW_RESTART,
                 0,
-                &settings::SettingsView {
-                    page: settings::page_of(settings::ROW_RESTART),
-                    languages: &cinder_ui::i18n::Language::ALL,
-                    shuffle_by: "SONGS",
-                    ignore_the: false,
-                    quick: false,
-                    folders_tab: false,
-                    delete_music: false,
-                    menu_icons: false,
-                    swipe_up: settings::SwipeTo::Off,
-                    swipe_down: settings::SwipeTo::Off,
-                    np_button: cinder_ui::now_playing::NpButton::Bluetooth,
-                    np_back: false,
-                    np_count: false,
-                    hold_buttons: false,
-                    volume_limit: false,
-                    big_view: false,
-                    big_bar: false,
-                    big_icons: false,
-                    usb_dac: false,
-                    battery_care: true,
-                    device: "99% · 34.4 °C",
-                    database: "3,424 tracks",
-                    storage: "12.4 / 58 GB",
-                    sleep: "30 MIN",
-                    brightness: "4 / 5",
-                    screen_off: "OFF",
-                    auto_off: "OFF",
-                    bt_idle_off: false,
-                    boot_stock: "SONY",
-                    clock: "17 Aug · 09:01",
-                },
+                &sample_settings(settings::page_of(settings::ROW_RESTART)),
             );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
@@ -2376,38 +2344,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 &fonts,
                 settings::ROW_LANGUAGE,
                 0,
-                &settings::SettingsView {
-                    page: settings::page_of(settings::ROW_LANGUAGE),
-                    languages: &cinder_ui::i18n::Language::ALL,
-                    shuffle_by: "SONGS",
-                    ignore_the: false,
-                    quick: false,
-                    folders_tab: false,
-                    delete_music: false,
-                    menu_icons: false,
-                    swipe_up: settings::SwipeTo::Off,
-                    swipe_down: settings::SwipeTo::Off,
-                    np_button: cinder_ui::now_playing::NpButton::Bluetooth,
-                    np_back: false,
-                    np_count: false,
-                    hold_buttons: false,
-                    volume_limit: false,
-                    big_view: false,
-                    big_bar: false,
-                    big_icons: false,
-                    usb_dac: false,
-                    battery_care: true,
-                    device: "99% · 34.4 °C",
-                    database: "3,424 tracks",
-                    storage: "12.4 / 58 GB",
-                    sleep: "30 MIN",
-                    brightness: "4 / 5",
-                    screen_off: "OFF",
-                    auto_off: "OFF",
-                    bt_idle_off: false,
-                    boot_stock: "SONY",
-                    clock: "17 Aug · 09:01",
-                },
+                &sample_settings(settings::page_of(settings::ROW_LANGUAGE)),
             );
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, "settings_scrolled");
@@ -3269,7 +3206,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         use cinder_ui::nav::Screen;
         for (name, end) in [("help_top", false), ("help_end", true)] {
             let mut app = new_app();
-            app.set_quick_enabled(end);
+            app.set_opt(cinder_ui::opt::Opt::Quick, end);
             app.go_for_preview(Screen::Help);
             if end {
                 app.scroll_px(10_000);
@@ -4040,8 +3977,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     {
         use cinder_ui::nav::Screen;
         let mut app = new_app();
-        app.set_np_back(true);
-        app.set_np_count(true);
+        app.set_opt(cinder_ui::opt::Opt::NpBack, true);
+        app.set_opt(cinder_ui::opt::Opt::NpCount, true);
         let rows: Vec<cinder_ui::model::SongRow> = (1..=12)
             .map(|i| cinder_ui::model::SongRow {
                 title: format!("Track {i}"),
@@ -4053,7 +3990,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "now_playing_back_count");
-        app.set_np_back(false);
+        app.set_opt(cinder_ui::opt::Opt::NpBack, false);
     }
 
     // Display ▸ Night on Auto: Starts and Ends come onto the page. Last, like the block above.
@@ -4100,10 +4037,10 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             "state=connected\nssid=486f6d65\nip=192.168.1.40\nfreq=2437\nsignal=-58\n",
             "",
         );
-        app.set_wifi_clock(true);
-        app.set_wifi_lb(true);
+        app.set_opt(cinder_ui::opt::Opt::WifiClock, true);
+        app.set_opt(cinder_ui::opt::Opt::WifiLb, true);
         app.set_wifi_lb_note("Sent 12 songs");
-        app.set_wifi_airplay(true);
+        app.set_opt(cinder_ui::opt::Opt::WifiAirplay, true);
         app.set_airplay_note("Shows up as Walkman (Cinder)");
         app.set_wifi_scan(
             "-58\twpa2\t486f6d65\n-71\twpa3\t4e6578742044696f72\n-80\topen\t43616665\n",
@@ -4123,26 +4060,26 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         app.set_update_install_note("", true);
         app.set_update_offer("");
         // The pull-down with the Wi-Fi option: Wi-Fi under Bluetooth (#53), from the Library.
-        app.set_quick_enabled(true);
+        app.set_opt(cinder_ui::opt::Opt::Quick, true);
         app.go_for_preview(Screen::Library);
         app.quick_pull_open();
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "quick_wifi");
         // …and with Settings ▸ Menu icons on, which reaches the pull-down too.
-        app.set_menu_icons(true);
+        app.set_opt(cinder_ui::opt::Opt::MenuIcons, true);
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "quick_wifi_icons");
-        app.set_menu_icons(false);
-        app.set_quick_enabled(false);
+        app.set_opt(cinder_ui::opt::Opt::MenuIcons, false);
+        app.set_opt(cinder_ui::opt::Opt::Quick, false);
         // The Menu as the App draws it with Settings ▸ Menu icons on: Wi-Fi after Bluetooth.
-        app.set_menu_icons(true);
+        app.set_opt(cinder_ui::opt::Opt::MenuIcons, true);
         app.go_for_preview(Screen::Menu);
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "menu_wifi");
-        app.set_menu_icons(false);
+        app.set_opt(cinder_ui::opt::Opt::MenuIcons, false);
         app.go_for_preview(Screen::WifiNetworks);
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
@@ -4395,9 +4332,7 @@ fn big_view() {
     render_all(
         &mut |name, c| {
             n += 1;
-            let img = image::RgbImage::from_raw(W as u32, H as u32, c.to_rgb_bytes())
-                .expect("buffer size");
-            img.save(format!("out/big/{name}.png")).expect("save png");
+            write_png(c, &format!("out/big/{name}.png"));
             let e = bad.entry(name.to_string()).or_default();
             for run in c.text_runs().iter().filter(|r| r.ends_with('\u{2026}')) {
                 e.push(format!("cut {run:?}"));

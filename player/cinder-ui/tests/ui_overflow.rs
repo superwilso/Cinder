@@ -690,7 +690,7 @@ fn the_pull_down_panel_stays_readable_at_every_scale() {
         let mut a = App::unlocked();
         a.set_bt_on(true);
         a.set_bt_connected(Some("Sony WH-1000XM5 (Living Room) — Headphones"));
-        a.set_quick_enabled(true);
+        a.set_opt(cinder_ui::opt::Opt::Quick, true);
         assert!(a.quick_pull_open());
         let n = overflow_of(&mut a, &fonts, &np);
         let hits = collisions_of(&mut a, &fonts, &np);

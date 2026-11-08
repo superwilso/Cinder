@@ -147,6 +147,21 @@ static void install_diagnostics() {
 static void wd_arm(unsigned sec) { alarm(sec); }
 static void wd_disarm() { alarm(0); }
 
+// The opening most service modes share: crash diagnostics, the pst framework started under a 15 s
+// watchdog, and its pump thread running before the first call (see reference: pst IPC pump).
+static pst::core::Framework& start_probe_framework() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    return fw;
+}
+
 // --analyzer [mode]: validate Sony's AudioAnalyzerService spectrum path in ISOLATION before it is
 // ever enabled in the boot shell. Connects, starts the stream, and reports whether frames flow +
 // the raw band values (so spectrum::from_bands can be calibrated). Play audio while running this.
@@ -1721,15 +1736,7 @@ struct ProbeNfcListener {
 };
 
 static int nfc_probe(int secs, unsigned want_mode) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* nfc = _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv();
     std::fprintf(stderr, "[cinder-probe] nfc: client=%p\n", nfc);
@@ -1961,15 +1968,7 @@ extern "C" void* _ZN3pst8services28BtPlayerServiceClientFactory14CreateInstanceE
 // Safe to run while cinder-home is up: NfcService accepts more than one listener, and a Start on an
 // already-started reader returns 3 ("already") rather than disturbing it.
 static int nfctap_probe(int secs) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* nfc = _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv();
     void* x   = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
@@ -2097,15 +2096,7 @@ static int btrx_probe(int secs, bool fm) {
         std::fprintf(stderr, "[cinder-probe] btrx: restore child pid=%d — MediaPlay in %ds\n",
                      (int)kid, secs + 60);
     }
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     if (fm) {
         funcmode_report("before");
@@ -2237,15 +2228,7 @@ static int btrx_probe(int secs, bool fm) {
 }
 
 static int btscan_probe(int secs) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* cmn = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
     if (!cmn) { clog_("btscan: no BtCommonServiceClient"); _exit(1); }
@@ -2434,15 +2417,7 @@ static int btscan_probe(int secs) {
 // Everything here is reversible and does nothing a user could not do from the Bluetooth screen:
 // connect, disconnect, and two mode flags that are restored unless `keep` is passed.
 static int btlink_probe(const char* sub, const char* a1, int a2, int a3, bool keep) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* x   = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
     void* cmn = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
@@ -2910,15 +2885,7 @@ static void usbmgr_dump_gadget(void) {
 static unsigned g_usbmgr_prev = 0;   // what the service believed before we changed it
 
 static int usbmgr_probe(unsigned want, int window_secs) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* c = _ZN3pst8services28UsbMgrServiceFwClientFactory14CreateInstanceEv();
     if (!c) { clog_("usbmgr: UsbMgrServiceFwClientFactory returned null"); g_pump_run = false; _exit(1); }
@@ -3604,15 +3571,7 @@ enum { VIDX_SetLCDValidate = 8, VIDX_GetLCDValidate = 10,
 // Backlight only: the LCD and the touch panel stay VALID, unlike --dispoff. A restore child is
 // armed first regardless, because the whole point of the test is a screen you cannot read.
 static int displight_probe(unsigned level, int restore_secs) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* d = _ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv();
     if (!d) { clog_("displight: DisplayServiceClientFactory returned null"); g_pump_run = false; _exit(1); }
@@ -3669,15 +3628,7 @@ static int displight_probe(unsigned level, int restore_secs) {
 }
 
 static int disp_probe(int off_secs) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* d = _ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv();
     if (!d) { clog_("disp: DisplayServiceClientFactory returned null"); g_pump_run = false; _exit(1); }
@@ -3791,15 +3742,7 @@ struct VolListener {
 static VolListener g_vol_listener;
 
 static int btvollisten_probe(int secs) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* x = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
     if (!x) { clog_("btvollisten: factory returned null"); g_pump_run = false; _exit(1); }
@@ -4329,15 +4272,7 @@ static int eqmeter_probe() {
 // is not a matter of interpretation. A sink that honours absolute answers the write within a few
 // hundred ms; one that does not stays silent while the steps either side of it report normally.
 static int btvolabs_probe() {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* x = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
     if (!x) { clog_("btvolabs: factory returned null"); g_pump_run = false; _exit(1); }
@@ -4415,15 +4350,7 @@ static int btvolabs_probe() {
 // takes a base::string&, and handing it a uint8_t* would have it marshal from our stack), so a
 // crash must cost one slot rather than the whole scan. The caller checks the service log after each.
 static int btvolslot_probe(int slot, int value) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* x = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
     if (!x) { clog_("btvolslot: factory returned null"); g_pump_run = false; _exit(1); }
@@ -4452,15 +4379,7 @@ static int btvolslot_probe(int slot, int value) {
 // AVRCP scale. Prints IsAvrcpTgVolumeSupported / GetControlAbsoluteVolume / IsSupportedAbsoluteVolume
 // first, because SetCurrentVolume is a no-op unless the last two are BOTH true.
 static int btvol_probe(int want) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* x = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
     if (!x) { clog_("btvol: BtTransmitterServiceClientFactory returned null"); g_pump_run = false; _exit(1); }
@@ -4520,15 +4439,7 @@ static int btvol_probe(int want) {
 }
 
 static int btwho_probe() {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     void* xmit = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
     void* cmn  = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
@@ -4854,15 +4765,7 @@ int cinder_effects_get_eq6_preset(void);
 // +-20) and holds it under the chosen selector value. If the EQ is in the path this is unmissable.
 // The user's own curve is read first and put back on the way out.
 static int eqsel_probe(int only, int hold_s) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     const int sel0 = cinder_effects_get_select_using_eq();
@@ -4913,15 +4816,7 @@ static int eqsel_probe(int only, int hold_s) {
 //     whole of project goal #7 and the reason cinder-home asserts it unconditionally.
 // Any of those makes every other setting inaudible while still reading back exactly as written.
 static int fx_probe() {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[256];
     std::snprintf(m, sizeof m,
@@ -4970,15 +4865,7 @@ static int fx_probe() {
 // before believing a 0 (reference: the pst IPC pump — a silent server means the call never left).
 // Same framework + pump setup as --fx, in case this class needs its replies dispatched too.
 static int soundsettings_probe() {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[256];
     // One call per line, each under its own watchdog and logged BEFORE it is made: if one of
@@ -5057,15 +4944,7 @@ static void tone_sweep(const char* tag, int band,
 }
 
 static int tone_probe() {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     static const char* kBand[3] = { "BASS", "MID", "TREB" };
@@ -5173,15 +5052,7 @@ static int tone_probe() {
 // reports `isproc is 1`. 0, 1 and 3 never do — and the device was sitting on 1, which means the
 // EQ Cinder has been writing since June was stored and never in the path.
 static int inpath_probe(int t) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     const int sel0 = cinder_effects_get_select_using_eq();
@@ -5279,15 +5150,7 @@ static void c_geteq(int v)    { (void)v; (void)cinder_effects_get_eq_band(0); }
 static void c_isvpt(int v)    { (void)v; (void)cinder_effects_is_vpt_on(); }
 
 static int fxtime_probe() {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     const int q0 = cinder_effects_get_eq_band(0);
     const int t0 = cinder_effects_get_tone_value(0);
@@ -5326,15 +5189,7 @@ static int fxtime_probe() {
 // 0..10, eleven slots, and 9/10 are the two Customs (both flat, because nothing has ever written
 // them). This confirms it by writing and reading back under every valid preset.
 static int eq6custom_probe() {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     const int pre0 = cinder_effects_get_eq6_preset();
@@ -5374,15 +5229,7 @@ static int eq6custom_probe() {
 // then select `preset` (default 0). For recovering from a --clearbass or --eq6custom run that was
 // cut off before its restore: both write Custom 1, and EffectCtrlDmp keeps what they wrote.
 static int eq6reset_probe(int preset) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     for (int p = 9; p <= 10; p++) {
@@ -5439,15 +5286,7 @@ static long long clearbass_now_ms() {
 }
 
 static int clearbass_probe(int level, int hold_s, int selector, int period_s) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     const int sel0 = cinder_effects_get_select_using_eq();
@@ -5510,15 +5349,7 @@ static int clearbass_probe(int level, int hold_s, int selector, int period_s) {
 // and not Clear Bass, the recording chain is not the reason Clear Bass reads as silent. Restores the
 // band on the way out, including when interrupted.
 static int eq10alt_probe(int band, int gain, int hold_s, int period_s) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[200];
     const int keep = cinder_effects_get_eq_band(band);
@@ -5632,15 +5463,7 @@ static void fx_log(const char* tag, const FxSnap& s) {
 }
 
 static int userpreset_probe(bool do_write) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     FxSnap live;
@@ -5718,15 +5541,7 @@ static int userpreset_probe(bool do_write) {
 //     cinder-probe --tonefreq
 //     adb shell logcat -d | grep -E 'centerfreq=|FREQ = \['
 static int tonefreq_probe() {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     const int tone0 = cinder_effects_is_tone_on();
@@ -5863,15 +5678,7 @@ static void fm_route_off() { std::system("amixer -c0 cset numid=26 0 >/dev/null 
 //   (device) cinder-probe --fm audioscan 88000 91000 1500
 //   (host) slice the WAV into nsteps bins, RMS each, the loud ones are stations
 static int fm_audioscan(int start_khz, int end_khz, int dwell_ms) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     fm_route_on();
@@ -5941,15 +5748,7 @@ static int fm_audioscan(int start_khz, int end_khz, int dwell_ms) {
 //
 // AudioInPlayerService must NOT be playing during a scan: it owns hw:0,1 and the open would fail.
 static int fm_scan(int start_khz, int end_khz) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     fm_route_on();
@@ -6093,15 +5892,7 @@ struct TunerLsn {
 } // namespace
 
 static int fm_autotune(int from_khz) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     fm_route_on();
@@ -6484,15 +6275,7 @@ static int fm_i2c(void) {
 }
 
 static int fm_seek(int from_khz) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     fm_route_on();
@@ -6547,15 +6330,7 @@ static int fm_seek(int from_khz) {
 }
 
 static int fm_tune(int khz, int seconds, const char* ainame) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     // SELECT THE TUNER AS THE ADC'S SOURCE FIRST. Without this the capture side has nothing to
@@ -6667,15 +6442,7 @@ static int fm_tune(int khz, int seconds, const char* ainame) {
 }
 
 static int fm_probe(bool do_play) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[224];
     clog_("fm: TunerPlayerServiceClientFactory::CreateInstance() …");
@@ -6810,15 +6577,7 @@ static int fm_probe(bool do_play) {
 // Builds its sequences from URIs the caller supplies, repeated — the SIZE is what is under test,
 // not the content.
 static int seqtime_probe(const char* uri) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    start_probe_framework();
 
     char m[256];
     static const int kN[] = { 1, 10, 50, 100, 200, 350, 512 };
@@ -7719,18 +7478,10 @@ static void storage_dump_mounts() {
 // point is to leave the setting changed — but do not assume the change outlives a reboot: it was
 // measured back ON after one. cinder-home re-applies it at startup.
 static int storage_probe(const char* verb) {
-    install_diagnostics();
-    pst::core::Framework& fw = pst::core::Framework::GetReference();
-    wd_arm(15);
-    fw.StartForApplication(std::function<void()>(&pump_finish), true);
-    wd_disarm();
-    g_pump_run = true;
-    pthread_t pt;
-    pthread_create(&pt, nullptr, pump_thread, &fw);
     // The client's replies arrive on the pump, so do not ask it anything until the pump is
-    // demonstrably turning. Without this every call below reads uninitialised stack and reports a
-    // confident wrong answer instead of failing.
-    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    // demonstrably turning (start_probe_framework waits for it). Without this every call below
+    // reads uninitialised stack and reports a confident wrong answer instead of failing.
+    start_probe_framework();
     std::fprintf(stderr, "[cinder-probe] storage: pump ticks=%u\n", g_pump_ticks);
 
     wd_arm(10);
@@ -8246,15 +7997,7 @@ int main(int argc, char** argv) {
         if (argc > 2 && std::strcmp(argv[2], "uac") == 0) want = USBDT_UAC;
         else if (argc > 2 && std::strcmp(argv[2], "msc") == 0) want = USBDT_MSC;
         else if (argc > 2 && std::strcmp(argv[2], "adb") == 0) want = USBDT_ADB;
-        install_diagnostics();
-        pst::core::Framework& fw = pst::core::Framework::GetReference();
-        wd_arm(15);
-        fw.StartForApplication(std::function<void()>(&pump_finish), true);
-        wd_disarm();
-        g_pump_run = true;
-        pthread_t pt;
-        pthread_create(&pt, nullptr, pump_thread, &fw);
-        for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+        start_probe_framework();
         usbmgr_dump_gadget();
         if (want == 0) {
             clog_("usbdt: read-only. Re-run as --usbdt uac|msc|adb [restore_secs] to switch through "

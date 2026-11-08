@@ -105,16 +105,11 @@ impl NpButton {
     }
 
     pub fn from_token(s: &str) -> NpButton {
-        let s = s.trim();
-        Self::ALL
-            .into_iter()
-            .find(|b| b.token() == s)
-            .unwrap_or_default()
+        crate::from_token(&Self::ALL, Self::token, s)
     }
 
     pub fn next(self) -> NpButton {
-        let i = Self::ALL.iter().position(|b| *b == self).unwrap_or(0);
-        Self::ALL[(i + 1) % Self::ALL.len()]
+        crate::next_in(&Self::ALL, self)
     }
 
     /// The Settings row's value, and the word Nocturne writes under the slot.

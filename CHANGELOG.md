@@ -55,6 +55,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Reset preferences now takes the Library's FOLDERS link away too.** The Folders tab switch went
+  off, but the link stayed on the Library until the player restarted. Host-tested.
 - **Pausing from a phone app no longer starts the song again** (Play to this player). Pause
   stopped the stream, so Play began it from 0:00 and the app showed 0:00 while paused. Pause now
   holds the stream and lets the headphone output go; Play goes on from where it was (verified on the

@@ -33,11 +33,7 @@ impl ShuffleBy {
     }
 
     pub fn from_token(s: &str) -> ShuffleBy {
-        match s.trim() {
-            "albums" => ShuffleBy::Albums,
-            "artists" => ShuffleBy::Artists,
-            _ => ShuffleBy::Songs,
-        }
+        crate::from_token(&Self::ALL, Self::token, s)
     }
 
     /// The Settings row's value.
@@ -59,11 +55,7 @@ impl ShuffleBy {
     }
 
     pub fn next(self) -> ShuffleBy {
-        match self {
-            ShuffleBy::Songs => ShuffleBy::Albums,
-            ShuffleBy::Albums => ShuffleBy::Artists,
-            ShuffleBy::Artists => ShuffleBy::Songs,
-        }
+        crate::next_in(&Self::ALL, self)
     }
 }
 

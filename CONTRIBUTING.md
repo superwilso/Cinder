@@ -133,6 +133,38 @@ behind it, the trap it avoids. What the code *used to* do, and the story of find
 commit message, `CHANGELOG.md` or an audit — all three exist here (`docs/AUDIT_2026-10-05_ponytail.md`
 E1: `main.cpp` is 43 % comments, 80 lines of them narrating earlier versions).
 
+## Reuse before you write
+
+Most of what a change needs already exists. Search for it before writing a new one, and when you
+do write a helper that two places need, put it here. Every entry below replaced copies that had
+drifted apart.
+
+| You need to… | Use | Where |
+|---|---|---|
+| Read a value from the renderer in an FFI getter | `read(\|r\| …)` (the default before init) | `player/cinder-ffi/src/lib.rs` |
+| Change the renderer from an FFI setter | `write(\|r\| …)`, or `repaint(\|r\| …)` to also draw a frame | `player/cinder-ffi/src/lib.rs` |
+| Add an on/off opt-in setting (off by default) | a variant in `Opt`; its save key, Settings row, default and Reset come with it | `player/cinder-ui/src/opt.rs` |
+| Step a Settings row through a choice enum, or parse its saved word | `crate::next_in(&ALL, x)`, `crate::from_token(&ALL, token, s)` | `player/cinder-ui/src/lib.rs` |
+| Draw a new screen | the kit's rows, strips (`strip`, `strip_ink`) and headers | `player/cinder-ui/src/kit.rs` |
+| Turn object ids into tracks in their order | `tracks_in_order(r, &ids, n)` (one query; counts survivors before row `n`) | `player/cinder-ffi/src/lib.rs` |
+| Write a file the player must never see half-written | `write_atomic` | `player/cinder-ffi/src/lib.rs` |
+| Plain HTTP to the LAN | `cast::http` (`resolve` adds port 80) | `player/cinder-ffi/src/cast.rs` |
+| Percent-encode / decode a URL path | `drive::pct_encode`, `drive::pct_decode`; a form value: `remote::url_decode` | `player/cinder-ffi/src/{drive,remote}.rs` |
+| Escape text for JSON / XML | `net::json_str`, `cast::escape` / `cast::unescape` | `player/cinder-ffi/src/{net,cast}.rs` |
+| A private temp dir for request bodies | `net::private_tmp` (mode 0700) | `player/cinder-ffi/src/net.rs` |
+| Bytes as lowercase hex (installer) | `llusbdac::hex` | `installer/src/llusbdac.rs` |
+| A monotonic clock in the shell | `now_ms()` | `cinder-home/src/main.cpp` |
+| Start the pst framework in a probe mode | `start_probe_framework()` | `cinder-home/src/probe.cpp` |
+| The Settings screen in a host preview | `sample_settings(page)`; write a PNG with `write_png` | `player/cinder-host/src/main.rs` |
+
+Prefer the standard library and the crates already in `Cargo.lock` over a new dependency.
+`cinder-host` writes previews with `png`, which the player already uses, not `image`.
+
+`tools/reuse_check.py` enforces this table in CI and the pre-push hook: it fails when one of these
+patterns is written out by hand again, or a helper here is defined a second time, and names the
+helper to use. An on/off setting the loader reads as `v == "1"` must be an `Opt` unless it is listed
+in the script's `PLAIN_SWITCHES`. When you add a row here, add its rule there.
+
 ## Commits and pull requests
 
 Conventional-ish subjects (`fix:`, `feat:`, `docs:`) and a body that says **why**. The history is

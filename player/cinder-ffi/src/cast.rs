@@ -212,6 +212,20 @@ fn dechunk(b: &[u8]) -> Vec<u8> {
 }
 
 /// One request; the status and the body (at most 1 MB).
+/// `host` or `host:port` (port 80 when none is given), resolved.
+pub(crate) fn resolve(host: &str) -> Result<std::net::SocketAddr, String> {
+    let target = if host.contains(':') {
+        host.to_string()
+    } else {
+        format!("{host}:80")
+    };
+    target
+        .to_socket_addrs()
+        .map_err(|e| e.to_string())?
+        .next()
+        .ok_or_else(|| "no address".into())
+}
+
 pub fn http(
     method: &str,
     url: &str,
@@ -223,16 +237,7 @@ pub fn http(
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
-    let target = if host.contains(':') {
-        host.to_string()
-    } else {
-        format!("{host}:80")
-    };
-    let addr = target
-        .to_socket_addrs()
-        .map_err(|e| e.to_string())?
-        .next()
-        .ok_or("no address")?;
+    let addr = resolve(host)?;
     let mut s =
         TcpStream::connect_timeout(&addr, Duration::from_secs(4)).map_err(|e| e.to_string())?;
     let _ = s.set_read_timeout(Some(Duration::from_secs(8)));
@@ -530,16 +535,7 @@ pub(crate) fn own_ip_towards(url: &str) -> Result<IpAddr, String> {
         .split_once("://")
         .and_then(|(_, r)| r.split('/').next())
         .ok_or("bad address")?;
-    let target = if host.contains(':') {
-        host.to_string()
-    } else {
-        format!("{host}:80")
-    };
-    let addr = target
-        .to_socket_addrs()
-        .map_err(|e| e.to_string())?
-        .next()
-        .ok_or("no address")?;
+    let addr = resolve(host)?;
     let s = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
     s.connect(addr).map_err(|e| e.to_string())?;
     Ok(s.local_addr().map_err(|e| e.to_string())?.ip())
