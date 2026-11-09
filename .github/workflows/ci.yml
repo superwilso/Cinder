@@ -35,6 +35,8 @@ on:
   schedule:
     # Weekly, so a newly published advisory against unchanged code is found by the calendar rather
     # than by the next unrelated commit. Monday 07:00 UTC.
+    # It runs the `audit` job only: the rest tested this commit when it was pushed, and on 11-09 the
+    # whole matrix made the weekly run red because GitHub had no macOS runner for 15 minutes.
     - cron: "0 7 * * 1"
 
 
@@ -47,6 +49,7 @@ concurrency:
 jobs:
   rust:
     name: ${{ matrix.what }}
+    if: github.event_name != 'schedule'   # the weekly run is for the advisory scan alone
     strategy:
       fail-fast: false
       matrix:
@@ -138,6 +141,7 @@ jobs:
   # pinning below, and hence "run it locally first" being written down rather than assumed.)
   native:
     name: C/C++ syntax + self-tests + shell + harness + launcher
+    if: github.event_name != 'schedule'   # the weekly run is for the advisory scan alone
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -338,6 +342,7 @@ jobs:
   # the C compiler is for SQLite, which rusqlite builds from source.
   arm:
     name: player (32-bit ARM compile)
+    if: github.event_name != 'schedule'   # the weekly run is for the advisory scan alone
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -365,6 +370,7 @@ jobs:
 
   payload:
     name: dist payload is complete
+    if: github.event_name != 'schedule'   # the weekly run is for the advisory scan alone
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
