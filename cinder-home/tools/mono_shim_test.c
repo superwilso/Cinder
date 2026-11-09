@@ -283,6 +283,9 @@ int main(int argc, char** argv)
         char lp[600];
         snprintf(lp, sizeof lp, "%s/cinder_mono.log", dir);
         int rt = roundtrip(cli, srv, pcm, sizeof pcm, got, 0);
+        /* Past the stream's first 1.5 s, which is the link starting and is not timed as late:
+         * steady writes, 10 ms apart, for 1.6 s. */
+        for (int k = 0; k < 160; k++) { nap(10); rt |= roundtrip(cli, srv, pcm, sizeof pcm, got, 0); }
         unlink(lp);                                     /* whatever the rounds above were, they are not this */
         nap(150);
         rt |= roundtrip(cli, srv, pcm, sizeof pcm, got, 0);
@@ -313,6 +316,22 @@ int main(int argc, char** argv)
             lf = fopen(lp, "r");
             if (lf) { char ln[400]; while (fgets(ln, sizeof ln, lf)) late += strstr(ln, "bt: late") != NULL; fclose(lf); }
             check(rt == 0 && late == 1, "bt: a new stream's first write is not late against the old stream");
+            /* …and a gap in its first second is the link starting: logged as that, not as late
+             * (the owner's log, 2026-11-09: 9 of 10 "late" writes came within 1 s of a handshake). */
+            nap(300);
+            rt |= roundtrip(cli2, srv2, pcm, sizeof pcm, got, 0);
+            late = 0;
+            int starts = 0;
+            lf = fopen(lp, "r");
+            if (lf) {
+                char ln[400];
+                while (fgets(ln, sizeof ln, lf)) {
+                    late += strstr(ln, "bt: late") != NULL;
+                    starts += strstr(ln, "bt: stream start") != NULL;
+                }
+                fclose(lf);
+            }
+            check(rt == 0 && late == 1 && starts == 1, "bt: a gap as a stream starts is not counted as late");
             close(cli2); close(srv2);
         }
     }
