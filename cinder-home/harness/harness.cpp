@@ -80,6 +80,8 @@ static int g_fake_rx_sink_status = 1;
 static int g_fake_rx_wait_status = 2;
 static bool g_fake_rx_ldac_fault = false;
 static int g_fake_rx_handle_cookie = 0;
+static int g_fake_dmp_handle_cookie = 0;
+static bool fake_dmp_false() { return false; }
 
 // Per-thread role. 0 = not seen yet, RUNNING = executing app code, SLEEPING = parked with a wake
 // target registered, PASSIVE = the harness's own main thread, which waits out the run budget and
@@ -1005,6 +1007,12 @@ void* dlopen(const char* path, int) {
     // paths keep being exercised in their degraded form, which is what they are here to prove.
     if (p == "libDisplayService.so") return (void*)&g_display_handle_cookie;
     if (p == "libBtPlayerService.so" && g_fake_rx_enabled) return (void*)&g_fake_rx_handle_cookie;
+    // Stock's DmpFeature, only for a scenario that asks: the default keeps "anything that fails
+    // reads as yes", so every other scenario still sees a player with every feature.
+    // (Read g_state directly: cinder_harness_state_get takes the lock this function holds.)
+    if (p == "libDmpFeature.so")
+        for (const auto& kv : *g_state)
+            if (kv.first == "stock_dmp_feature" && kv.second) return (void*)&g_fake_dmp_handle_cookie;
     return nullptr;   // no Sony .so on a build machine — the optional-service paths degrade
 }
 
@@ -1019,6 +1027,10 @@ void* dlsym(void* h, const char* sym) {
     if (h == (void*)&g_fake_rx_handle_cookie &&
         s == "_ZN3pst8services28BtPlayerServiceClientFactory14CreateInstanceEv") {
         return (void*)&fake_rx_create;
+    }
+    if (h == (void*)&g_fake_dmp_handle_cookie &&
+        s == "_ZN3pst10dmpfeature10DmpFeature22IsFeaturedSourceDirectEv") {
+        return (void*)&fake_dmp_false;   // stock A50 1.02 (analysis/RE_dmp_feature.md)
     }
     return nullptr;
 }

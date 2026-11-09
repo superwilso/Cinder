@@ -50,7 +50,7 @@ fn dump_rows(conn: &rusqlite::Connection, table: &str, limit: usize) {
         println!("   (unreadable)");
         return;
     };
-    let cols: Vec<String> = st.column_names().iter().map(|c| c.to_string()).collect();
+    let cols: Vec<String> = st.column_names().map(|c| c.to_string()).collect();
     println!("   cols: {}", cols.join(", "));
     let mut rows = st.query([]).unwrap();
     while let Some(r) = rows.next().unwrap() {
