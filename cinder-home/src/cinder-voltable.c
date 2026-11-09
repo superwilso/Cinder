@@ -52,6 +52,7 @@
  *
  * Exit: 0 ok, 2 bad/absent argument, 3 not setuid root, 4 source unreadable/wrong, 5 write failed.
  */
+#include "clean_env.h"
 #include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
@@ -407,6 +408,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "cinder-voltable: not root (setuid bit lost?)\n");
         return 3;
     }
+    clean_env();   /* nc-load runs a shell: clean_env.h */
     if (argc == 2 + CODEC_EQ_BANDS && strcmp(argv[1], "eq") == 0)
         return apply_eq(argv + 2);
     if (argc == 2 && strcmp(argv[1], "nc-load") == 0)

@@ -26,6 +26,7 @@
  * the host and the kernel have the same vfat mounted twice and the volume corrupts. On the way
  * back, the LUN must be released BEFORE /contents is remounted, for the same reason.
  */
+#include "clean_env.h"
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -631,7 +632,7 @@ int main(int argc, char **argv)
      * requires root, so there is nothing being widened here. */
     if (setuid(0) != 0)
         fprintf(stderr, "cinder-msc: setuid(0) failed errno=%d — children may lose their env\n", errno);
-    setenv("LD_LIBRARY_PATH", "/system/lib:/vendor/lib", 1);
+    clean_env();   /* the caller's LD_PRELOAD must not reach the root shell: clean_env.h */
     if (strcmp(argv[1], "on")  == 0) return msc_on();
     if (strcmp(argv[1], "off") == 0) return msc_off();
     /* The USB-DAC gadget. Same helper because it is the same root-only property switch, and a

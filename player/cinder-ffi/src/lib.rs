@@ -633,6 +633,7 @@ struct Render {
     // settable from the Settings screen); cinder-ffi only owns the animation timing.
     viz_phase: f32,
     last_viz: std::time::Instant, // throttle the visualiser repaint to ~20fps (battery)
+    marquee_due: Option<u32>,     // when a scrolling title next changes, ms on `boot`'s clock
     viz_levels: Vec<f32>, // real spectrum bars (0..1) from the PCM tap or set_spectrum; empty = synthetic
     viz_peak: f32,        // slow-decaying auto-gain peak for Scale::Dynamic
     // Peak-hold markers and how long each has been sitting where it is. Only populated while the
@@ -1003,6 +1004,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         dirty: true, // paint the first frame
         viz_phase: 2.0,
         last_viz: std::time::Instant::now(),
+        marquee_due: None,
         viz_levels: Vec::new(),
         viz_peak: 0.0,
         viz_peaks: Vec::new(),
@@ -3178,7 +3180,16 @@ pub extern "C" fn cinder_render_tick() {
     // asks for the next frame itself (see below), so this and that together are what make it move;
     // a title that fits sets nothing and Now Playing stays exactly as cheap as it was.
     cinder_ui::widgets::set_marquee_ms(r.boot.elapsed().as_millis() as u32);
-    if cinder_ui::widgets::marquee_scrolled() {
+    // A line that scrolls says when it next looks different (the end of a dwell, or one pixel on),
+    // and the repaint waits for that: not every frame, which cost 73% of a core (11-09).
+    let now_ms = r.boot.elapsed().as_millis() as u32;
+    if let Some(wait) = cinder_ui::widgets::marquee_wait_ms() {
+        r.marquee_due = Some(now_ms.wrapping_add(wait));
+    }
+    if r.marquee_due
+        .is_some_and(|due| now_ms.wrapping_sub(due) < u32::MAX / 2)
+    {
+        r.marquee_due = None;
         r.dirty = true;
     }
     // An open album's cover found in its songs (album_cover_fallback): into the grid's thumbnails,
@@ -13470,6 +13481,7 @@ mod tests {
             dirty: true,
             viz_phase: 2.0,
             last_viz: std::time::Instant::now(),
+            marquee_due: None,
             viz_levels: Vec::new(),
             viz_peak: 0.0,
             viz_peaks: Vec::new(),
