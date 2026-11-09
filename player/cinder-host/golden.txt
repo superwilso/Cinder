@@ -237,11 +237,11 @@ bd7592573ca3520d library_playlists_grid_night
 2513c2d1b1efb6b5 viz_size_2_full
 d3157ed0c3680e22 confirm_restart
 b127dab1256bb052 confirm_poweroff
-50fa342db252bf85 settings_scrolled
+c308cb417831fb54 settings_scrolled
 5dd66b36c95c03b2 device
 7f57e56560f6b8e8 storage
 ee4c891f9f9ade65 storage_end
-b629d686437a7c7c device_scrolled
+64a5839fe70c976d device_scrolled
 3f4281c899b9c2bd device_degraded
 2864fac45dfb0e69 np_page_0
 a66c9cc1931a6351 np_page_1
@@ -331,7 +331,7 @@ fb6ebbd88f827cf8 uiscale_80_eq
 fc6d8ca2cdd20ec4 uiscale_80_receiver_ldac
 827ae83f4ebc6018 uiscale_80_receiver_aac
 85245ddff799d4aa uiscale_80_receiver_sbc
-17e0374f26fe1a74 uiscale_80_settings_bottom
+a01bc4c5932a4a7b uiscale_80_settings_bottom
 570bf237ab47c2ce uiscale_100_library
 d130204408789ddf uiscale_100_settings
 b5fadd4de5e38092 uiscale_100_display
@@ -344,7 +344,7 @@ f92e7f91efbc19c9 uiscale_100_eq
 d445fd08e40b1c92 uiscale_100_receiver_ldac
 cc9dda3328990485 uiscale_100_receiver_aac
 b523c3e6a0090d55 uiscale_100_receiver_sbc
-50fa342db252bf85 uiscale_100_settings_bottom
+c308cb417831fb54 uiscale_100_settings_bottom
 bd4933caf0b84a3b uiscale_120_library
 ce52268c55dca275 uiscale_120_settings
 43a888e91f0555d2 uiscale_120_display
@@ -357,7 +357,7 @@ d851e59ec26950fd uiscale_120_receiver_auto
 310aaca7f4d3fc03 uiscale_120_receiver_ldac
 a4b2574ff192c824 uiscale_120_receiver_aac
 3570d285f3cf1e76 uiscale_120_receiver_sbc
-5b05fb0f51057a8e uiscale_120_settings_bottom
+d7b4605d8cc2d92d uiscale_120_settings_bottom
 5436dee7e83680b5 uiscale_140_library
 adb05d443cd96443 uiscale_140_settings
 18970274fb4ed86e uiscale_140_display
@@ -370,7 +370,7 @@ bee54d72ac40bbf5 uiscale_140_receiver_auto
 a7f55ba9dc580433 uiscale_140_receiver_ldac
 a71844a9350319f4 uiscale_140_receiver_aac
 dab481c3e119529e uiscale_140_receiver_sbc
-ff9f1d5986b8febf uiscale_140_settings_bottom
+e379d93206978139 uiscale_140_settings_bottom
 2f8e0d4639490d55 palette_picker_100
 6f18e5dd6dfc242d palette_picker_140
 ba7c469cfb249e17 viz_0_bars
@@ -412,7 +412,7 @@ bc9d2226dfb6c5fd soundscape_rain_alone
 b90d39e01acbb705 soundscape_beach_music_night
 73fa3f850052f3ae language_picker_100
 829cbfd9849c1f67 language_picker_140
-50fa342db252bf85 language_entry_no_sony
+c308cb417831fb54 language_entry_no_sony
 860b062d09a1c047 zappin_ready_en
 04d4d2c383f4229f zappin_no_queue_en
 69bb56768c66caf0 zappin_active_sabi_en
