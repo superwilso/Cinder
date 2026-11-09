@@ -18,6 +18,7 @@ bool g_avls = false;
 bool g_ret = true;
 bool g_throw = false;
 int g_alive = 0;
+int g_set = -1;
 } // namespace
 
 namespace pst { namespace services { namespace volume {
@@ -27,6 +28,7 @@ VolumeService::VolumeService() {
 }
 VolumeService::~VolumeService() { --g_alive; }
 unsigned VolumeService::GetVolume() { return 0; }
+bool VolumeService::SetVolume(unsigned v) { g_set = (int)v; return true; }
 bool VolumeService::GetAvls() { return g_avls; }
 unsigned VolumeService::GetAvlsThresholdValue() { return g_threshold; }
 bool VolumeService::GetAvlsCondition(AvlsCondition* c) {
@@ -70,10 +72,15 @@ int main() {
     g_avls = false;
     eq("off", cinder_volume_avls_enabled(), 0);
 
+    std::printf("Sony's copy of the jack level\n");
+    eq("taken", cinder_volume_service_set(40), 0);
+    eq("the service was given the level", g_set, 40);
+
     std::printf("a service that throws\n");
     g_throw = true;
     eq("threshold: -1, no crash", cinder_volume_avls_threshold(), -1);
     eq("flag: -1, no crash", cinder_volume_avls_enabled(), -1);
+    eq("set: -1, no crash", cinder_volume_service_set(40), -1);
     g_throw = false;
     eq("every client is destroyed again", g_alive, 0);
 

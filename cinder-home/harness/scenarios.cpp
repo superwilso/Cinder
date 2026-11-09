@@ -1861,6 +1861,78 @@ static void s_ram_suspend_not_while_playing(void) {
     check(!ram_unlocked(), "music playing: stage 1 may run, the wakelock is kept");
 }
 
+// ── headphones going back in their case are not a strike against stage 1 (owner's log 11-09) ─
+// Music over Bluetooth with the screen dark, so stage 1 runs on the link. At 260 s the link goes;
+// at 300 s it is back and the music still plays. Only a drop nobody asked for strikes stage 1 off
+// for the boot: one that comes straight after the headphones sent PAUSE is them being put away.
+static void bt_drop_run(bool paused_first) {
+    suspend_fixture();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("Buds", 0x42);
+    cinder_harness_bt_self_connect_at(5000);
+    // The stub UI answers each key in turn: Power darkens the screen by hand (so a headphone key
+    // later does not light it), PAUSE does nothing more here, PLAY after the reconnect plays.
+    const long long acts_paused[] = { 10 /* SLEEP */, 0, 1 /* PLAYPAUSE */ };
+    const long long acts_plain[]  = { 10, 1 };
+    if (paused_first) cinder_harness_script_seq("cinder_input", acts_paused, 3);
+    else              cinder_harness_script_seq("cinder_input", acts_plain, 2);
+    cinder_harness_key_at(20000, 116, 1);
+    cinder_harness_key_at(20100, 116, 0);
+    if (paused_first) {
+        cinder_harness_key_at(259700, 201, 1);   // AVRCP PAUSECD, 0.3 s before the link goes
+        cinder_harness_key_at(259750, 201, 0);
+    }
+    cinder_harness_key_at(330000, 200, 1);       // PLAYCD once they are back
+    cinder_harness_key_at(330050, 200, 0);
+    cinder_harness_bt_drop_at(260000);
+    cinder_harness_set_budget_ms(420000);
+    cinder_harness_run();
+    check(cinder_harness_bt_connected(), "the reconnect ladder brought the link back");
+}
+static const char* power_state(void) {
+    static char st[16];
+    std::memset(st, 0, sizeof st);
+    cinder_harness_fs_read("/sys/power/state", st, sizeof st);
+    return st;
+}
+static void s_bt_drop_strikes(void) {
+    bt_drop_run(false);
+    check(std::strncmp(power_state(), "mem", 3) != 0,
+          "a link lost mid-music stops stage 1 on Bluetooth for the boot");
+}
+static void s_bt_case_no_strike(void) {
+    bt_drop_run(true);
+    check(std::strncmp(power_state(), "mem", 3) == 0,
+          "headphones that paused and then left: stage 1 runs on the next link");
+}
+
+// ── Sony's volume service is told the jack level, once it settles (owner's log 11-09) ─────────
+// The service keeps its own copy and writes it back on a wake or a route change; told nothing, its
+// stale 58 came back over Cinder's 37-40 after every Bluetooth disconnect and wake.
+static void s_volume_tells_service(void) {
+    healthy_device();
+    cinder_harness_script("cinder_settings_load", 3);   // bit 1: a saved level, so boot WRITES the mixer
+    cinder_harness_script("cinder_get_volume", 40);
+    cinder_harness_set_budget_ms(15000);
+    cinder_harness_run();
+    const int n = cinder_harness_count("cinder_volume_service_set");
+    check(n >= 1, "the restored jack level reaches Sony's volume service");
+    check(n <= 2, "…once it settles, not once a frame");
+    if (n) check_eq(cinder_harness_arg("cinder_volume_service_set", n - 1), 40, "…as the level the mixer has");
+}
+static void s_volume_service_not_on_bt(void) {
+    healthy_device();
+    cinder_harness_script("cinder_settings_load", 3);
+    cinder_harness_script("cinder_get_volume", 40);
+    cinder_harness_script("cinder_get_bt_route", 1);
+    cinder_harness_set_budget_ms(15000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_volume_service_set"), 0,
+             "on Bluetooth the service's jack copy is left alone");
+}
+
 static void s_suspend_off_by_file(void) {
     suspend_fixture();
     cinder_harness_fs_write("/contents/cinder_suspend_s", "0\n");
@@ -3127,6 +3199,10 @@ static const Scenario kScenarios[] = {
     {"ram-suspend-off",   s_ram_suspend_default_off, "the old empty no_ram_suspend file switches it off"},
     {"ram-suspend-cable", s_ram_suspend_not_on_cable, "stage 2 never runs on the cable"},
     {"ram-suspend-playing", s_ram_suspend_not_while_playing, "stage 2 never runs while music plays"},
+    {"bt-drop-strikes",   s_bt_drop_strikes,         "a Bluetooth link lost in stage 1 stops stage 1 on Bluetooth"},
+    {"bt-case-no-strike", s_bt_case_no_strike,       "…but not when the headphones paused first"},
+    {"vol-tells-service", s_volume_tells_service,    "the settled jack level reaches Sony's volume service"},
+    {"vol-service-bt",    s_volume_service_not_on_bt, "…but not while the route is Bluetooth"},
     {"suspend-off-file",  s_suspend_off_by_file,     "0 in cinder_suspend_s turns stage 1 off"},
     {"cpu-cap",           s_cpu_cap_follows_screen,  "max 1040 MHz while dark, restored on Power; sched once"},
     {"cpu-tune-off",      s_cpu_tune_off_by_file,    "cinder_no_cpu_tune stops sched and cap"},

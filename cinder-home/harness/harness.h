@@ -169,6 +169,8 @@ int  cinder_harness_bt_retry_mode(void);
 void cinder_harness_bt_page_until(long long ms);
 // The paired headphones connect on their own at `ms` if the radio is up — nobody asked for this link.
 void cinder_harness_bt_self_connect_at(long long ms);
+// The link drops on its own at `ms` (headphones switched off, out of range).
+void cinder_harness_bt_drop_at(long long ms);
 // RequestDisconnection takes `ms` to drop the link; reads in between still name the peer.
 void cinder_harness_bt_disconnect_lag(long long ms);
 void cinder_harness_bt_add_paired(const char* name, int addr_last);

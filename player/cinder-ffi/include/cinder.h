@@ -698,6 +698,9 @@ int  cinder_get_volume_limit(void);
  * would change nothing we do. See analysis/RE_volume_service.md. */
 int  cinder_volume_avls_threshold(void);
 int  cinder_volume_avls_enabled(void);
+/* Keep Sony's VolumeService's copy of the jack level in step with the mixer (volume_shim.cpp), or it
+ * writes its own stale level back on the next wake or route change. 0 = taken, -1 = no answer. */
+int  cinder_volume_service_set(int level);
 /* Push the connected Bluetooth device's name into the UI (NULL or "" = nothing connected). Read it
  * from GetConnectInformation(vector<uint8_t>& addr, string& name). */
 void cinder_set_bt_connected(const char* name);
