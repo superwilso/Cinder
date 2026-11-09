@@ -93,14 +93,18 @@ fi
 # The Settings "Firmware" row is the only place a person can read which build is on their player,
 # and until 0.3.12 it said "CINDER 1.0 · RUST" on every stable release ever cut. One macro in
 # cinder-ui is the source; bump it here or the screen starts lying again the first time it drifts.
+# The FULL tag, -rcN included (0.4.1-rc2): Cargo keeps the plain number, but the player has to
+# know it is a pre-release, or the Wi-Fi updater sees 0.4.1-rc2 and 0.4.1 as the same version and
+# never offers the final to anyone who tested its candidates (net.rs `newer`, 2026-11-09).
+UI_VER="${TAG#v}"
 UI_VER_FILE=player/cinder-ui/src/settings.rs
 UI_HAVE="$(sed -n 's/^macro_rules! cinder_version { () => { "\(.*\)" } }$/\1/p' "$UI_VER_FILE")"
 if [ -z "$UI_HAVE" ]; then
     die "$UI_VER_FILE has no cinder_version! macro line to bump — did its shape change?"
 fi
-if [ "$UI_HAVE" != "$VER" ]; then
-    [ -z "$DRY" ] && sed -i "s/^macro_rules! cinder_version { () => { \"$UI_HAVE\" } }$/macro_rules! cinder_version { () => { \"$VER\" } }/" "$UI_VER_FILE"
-    act "player version $UI_HAVE → $VER ($UI_VER_FILE)${DRY:+  [would]}"
+if [ "$UI_HAVE" != "$UI_VER" ]; then
+    [ -z "$DRY" ] && sed -i "s/^macro_rules! cinder_version { () => { \"$UI_HAVE\" } }$/macro_rules! cinder_version { () => { \"$UI_VER\" } }/" "$UI_VER_FILE"
+    act "player version $UI_HAVE → $UI_VER ($UI_VER_FILE)${DRY:+  [would]}"
     CHANGED+=("player version")
 else
     ok "player version $UI_HAVE matches $TAG"

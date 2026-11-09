@@ -16,6 +16,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Wi-Fi updater will offer 0.4.1 to people on its release candidates.** It compared only the
+  numbers, so 0.4.1 looked the same as 0.4.1-rc2 and was never offered; a final release now counts
+  as newer than its own candidates. Candidates also carry their full name from now on: the Firmware
+  row says `0.4.1-rc2`, not `0.4.1`. Players already on rc1 or rc2 report plain `0.4.1`, so they
+  will be offered the next version after it, not 0.4.1 itself; reinstall to get it sooner.
+
 ## [0.4.1] — 2026-11-08
 
 ### Added

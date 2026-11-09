@@ -154,9 +154,24 @@ pub fn tag_name(body: &str) -> Option<String> {
     Some(rest[..rest.find('"')?].to_string())
 }
 
-/// Newer than this build? `None` when the answer cannot be read.
+/// Where a version sits among its own pre-releases: `-rcN` is N, a final release outranks every
+/// candidate, and any other suffix (an edge build) ranks below them all.
+fn pre_rank(s: &str) -> u32 {
+    let core = s.trim().split('+').next().unwrap_or("");
+    match core.split_once('-') {
+        None => u32::MAX,
+        Some((_, pre)) => pre
+            .strip_prefix("rc")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0),
+    }
+}
+
+/// Newer than this build? `None` when the answer cannot be read. 0.4.1 is newer than 0.4.1-rc2:
+/// without that, everyone who tested a candidate was told the final was the version they had.
 pub fn newer(latest_tag: &str, running: &str) -> Option<bool> {
-    Some(parse_version(latest_tag)? > parse_version(running)?)
+    let (l, r) = (parse_version(latest_tag)?, parse_version(running)?);
+    Some((l, pre_rank(latest_tag)) > (r, pre_rank(running)))
 }
 
 /// What a curl exit code means to the person holding the player.
@@ -1236,6 +1251,24 @@ mod tests {
         assert_eq!(newer("v0.3.22", "0.3.22"), Some(false));
         assert_eq!(newer("v0.4.0", "0.3.22"), Some(true));
         assert_eq!(newer("v0.3.9", "0.3.22"), Some(false), "numbers, not text");
+        assert_eq!(
+            newer("v0.4.1", "0.4.1-rc2"),
+            Some(true),
+            "the final beats its candidates"
+        );
+        assert_eq!(newer("v0.4.1-rc2", "0.4.1-rc1"), Some(true));
+        assert_eq!(
+            newer("v0.4.1-rc2", "0.4.1"),
+            Some(false),
+            "a candidate never replaces its final"
+        );
+        assert_eq!(
+            newer("v0.4.1-rc10", "0.4.1-rc9"),
+            Some(true),
+            "numbers, not text"
+        );
+        assert_eq!(newer("v0.4.0", "0.4.1-rc2"), Some(false));
+        assert_eq!(newer("v0.4.1-rc1", "0.4.1-edge.a20907a"), Some(true));
         let body =
             "{\n  \"url\": \"x\",\n  \"tag_name\": \"v0.3.23\",\n  \"name\": \"Cinder 0.3.23\"\n}";
         assert_eq!(tag_name(body).as_deref(), Some("v0.3.23"));
