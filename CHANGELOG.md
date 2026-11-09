@@ -22,8 +22,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   (Sony's feature table says so), and the sound service quietly ignored the request. The Sound page
   said everything was bypassed while VPT, Clear Bass and the EQ kept playing. Where Sony has no
   Source Direct, Direct now switches every effect off, Clear Bass to 0 and the EQ flat; Walkman One
-  still uses Sony's own bypass. *Device-unverified: found in a player's log, proven in the test
-  harness.*
+  still uses Sony's own bypass. *Device-verified: the sound service now reads VPT off and the
+  10-band EQ selected and flat.*
+- **The jack volume no longer jumps after a Bluetooth disconnect or a screen wake.** Sony's volume
+  service kept its own copy of the jack level, never updated, and wrote it back over Cinder's (58
+  against 37 on one player) until Cinder corrected it a moment later. Cinder now tells the service
+  each level once it settles. *Device-verified: the service's copy reads the same as the mixer.*
+- **Putting headphones away no longer costs screen-off Bluetooth its power saving.** One lost link
+  during early suspend switched early suspend off on Bluetooth for the rest of the boot, and
+  headphones going back in their case counted as one. A link that drops just after the headphones
+  sent pause is now treated as theirs. *Proven in the test harness; device-unverified.*
 - **Dependency advisory:** SQLite (through `rusqlite`) moved to 0.41 for RUSTSEC-2026-0459.
 
 ## [0.4.1] — 2026-11-08

@@ -1729,7 +1729,7 @@ void deferred_up() {
             "SRC=/db/MTPDB.dat; DST=/contents/MTPDB_copy.dat; "
             "if [ -f \"$SRC\" ]; then "
             "  if cp \"$SRC\" \"$DST.tmp\" 2>/tmp/cpdberr && mv \"$DST.tmp\" \"$DST\" 2>>/tmp/cpdberr; then "
-            "    echo \"[cinder-home] db-copy: OK $(wc -c < \\\"$DST\\\") bytes\"; "
+            "    echo \"[cinder-home] db-copy: OK $(wc -c < $DST) bytes\"; "
             "  else echo \"[cinder-home] db-copy: FAILED: $(cat /tmp/cpdberr 2>/dev/null)\"; fi; "
             "else echo \"[cinder-home] db-copy: SRC $SRC not found\"; fi; "
             "sync");
@@ -2975,6 +2975,7 @@ void bt_resync_volume(const char* why) {
 const long VOL_WRITE_EVERY_MS = 150;
 int  g_vol_pending = -1;      // level waiting to be written (-1 = nothing pending)
 int  g_vol_written = -1;      // last level actually written (dedupe)
+int  g_vol_svc_want = -1, g_vol_svc_sent = -1;   // Sony's copy of the jack level: see volume_flush
 
 // Forget what we last wrote, so the next apply_volume() actually writes.
 //
@@ -3010,6 +3011,7 @@ void volume_write_now(int level) {
     }
     g_vol_written = level;
     g_vol_write_ms = now_ms();
+    g_vol_svc_want = level;
 }
 
 // Sony's AVLS threshold, cached for the session. -2 = not asked yet, -1 = the service has no
@@ -3062,12 +3064,25 @@ void apply_volume() {
 
 // Trailing flush: writes the level the user actually stopped on. Called every pump iteration, so
 // the last step of a ramp lands within VOL_WRITE_EVERY_MS of the button coming up.
+// SONY'S VOLUME SERVICE KEEPS ITS OWN COPY OF THE JACK LEVEL, and writes it back to the mixer on a
+// screen wake and on every route change (RE_volume_service.md §7: mixer set to 40 behind its back,
+// the service later put its 63 back). The owner's log, 2026-11-09: after every Bluetooth disconnect
+// and every wake the mixer read 58 against Cinder's 37-40, and bt_resync_volume put it right a
+// fraction of a second later — a jump at the jack each time. So once a level has SETTLED (not on
+// every step of a rocker ramp: the service runs amixer for each call) the service is told it too.
+// Jack only: on Bluetooth the service's SetVolume is a stub and its jack copy is not the one live.
 void volume_flush() {
-    if (g_vol_pending < 0) return;
-    if (now_ms() - g_vol_write_ms < VOL_WRITE_EVERY_MS) return;
-    int level = g_vol_pending;
-    g_vol_pending = -1;
-    volume_write_now(level);
+    if (g_vol_pending >= 0 && now_ms() - g_vol_write_ms >= VOL_WRITE_EVERY_MS) {
+        int level = g_vol_pending;
+        g_vol_pending = -1;
+        volume_write_now(level);
+    }
+    if (g_vol_pending < 0 && g_vol_svc_want >= 0 && g_vol_svc_want != g_vol_svc_sent
+            && now_ms() - g_vol_write_ms >= 600 && cinder_get_bt_route() == 0) {
+        g_vol_svc_sent = g_vol_svc_want;   // first, so a hung call is not retried every frame
+        run_guarded("volume: tell Sony's volume service", 4,
+                    []() { cinder_volume_service_set(g_vol_svc_sent); });
+    }
 }
 
 // ── Backlight (night = minimal light) ───────────────────────────────────────────────────────
@@ -4260,6 +4275,7 @@ static void sync_hold_from_hw() {
     clog_(m);
 }
 long long g_last_input_ms = 0;                // when we last saw ANY input event (see the fwd decl above)
+static long long g_peer_pause_ms = -1000000;  // the headphones' last PAUSE/STOP (AVRCP 201/166)
 
 // ── Actually darken the panel ───────────────────────────────────────────────────────────────────
 //
@@ -14368,6 +14384,7 @@ void input_pump() {
                     // ESCAPE from a level-0 backlight. Here rather than with the other buttons
                     // because this branch `continue`s — the switch never reaches them.
                     brightness_wake_on_input();
+                    clog_(val ? "hold: switch on" : "hold: switch off");   // 11-09: a boot lock left no trace of its unlock
                     cinder_set_hold(val ? 1 : 0);
                     g_held = (val != 0);     // the auto-wake path needs it (pocket-safety, below)
                     g_last_input_ms = now_ms();   // flicking the switch is deliberate activity
@@ -14420,6 +14437,7 @@ void input_pump() {
                 }
                 if (type != EV_KEY_ || val == 0) continue; // releases never act
                 int kc = code;
+                if (val == 1 && (kc == 201 || kc == 166)) g_peer_pause_ms = now_ms();
                 // Key REPEATS (val=2) only ramp the volume rocker; for everything else a held
                 // button is ONE action (a held FF must not machine-gun track skips).
                 if (val == 2 && kc < keymap_size()
@@ -16241,9 +16259,22 @@ void* render_driver(void*) {
                 } else if (audible && !on_jack_now) {
                     bt_held = true;
                 } else if (bt_held && on_jack_now && !bt_struck) {
-                    bt_struck = true;
-                    clog_("suspend: the Bluetooth link went away during stage 1 — no more stage 1 "
-                          "on Bluetooth this boot (/contents/cinder_no_suspend_bt keeps it off for good)");
+                    // HEADPHONES THAT PAUSE AND THEN LEAVE ARE GOING BACK IN THEIR CASE. The owner's
+                    // log, 2026-11-09: PAUSE (AVRCP 201) at 2132.937, link gone 0.27 s later, strike —
+                    // and then five more drops over the next four minutes with stage 1 already off,
+                    // so stage 1 was not the cause, and screen-off Bluetooth went without it for the
+                    // next 70 minutes of listening. A link lost to stage 1 drops mid-music; nobody
+                    // pressed pause first. 20 s, because the drop is SEEN late when the listener
+                    // misses it: the route poll in stage 1 took 16 s in the harness (2.9 s here).
+                    bt_held = false;
+                    if (now_ms() - g_peer_pause_ms < 20000) {
+                        clog_("suspend: the headphones paused, then the link went — their doing, "
+                              "not stage 1's; stage 1 on Bluetooth stays on");
+                    } else {
+                        bt_struck = true;
+                        clog_("suspend: the Bluetooth link went away during stage 1 — no more stage 1 "
+                              "on Bluetooth this boot (/contents/cinder_no_suspend_bt keeps it off for good)");
+                    }
                 }
                 const bool bt_ok = bt_flag && !bt_struck;
                 static int said_bt = -1;

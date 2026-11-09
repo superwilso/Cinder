@@ -383,6 +383,7 @@ int  cinder_harness_bt_retry_mode(void) { return g_retry_mode ? 1 : 0; }
 // ladder's own attempt had left it when the user started tapping on 2026-09-15.
 void cinder_harness_bt_page_until(long long ms) { g_page_until_ms = ms; }
 void cinder_harness_bt_self_connect_at(long long ms) { g_self_connect_ms = ms; }
+void cinder_harness_bt_drop_at(long long ms) { g_drop_at_ms = ms; }
 void cinder_harness_bt_disconnect_lag(long long ms) { g_disconnect_lag_ms = ms; }
 
 // Add a device to the radio's pairing table. `addr_last` is the final byte of a synthetic

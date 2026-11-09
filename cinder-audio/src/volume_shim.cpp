@@ -57,6 +57,7 @@ public:
     VolumeService();
     ~VolumeService();
     unsigned GetVolume();
+    bool     SetVolume(unsigned);
     bool     GetAvls();
     unsigned GetAvlsThresholdValue();
     bool     GetAvlsCondition(AvlsCondition*);
@@ -98,6 +99,19 @@ int cinder_volume_avls_enabled(void) {
     try {
         pst::services::volume::VolumeService vs;
         return vs.GetAvls() ? 1 : 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+// Tell the service the jack level Cinder just wrote to the mixer. The service keeps its own copy and
+// writes it back on a screen wake or a route change (measured 2026-09-07; the owner's log of
+// 2026-11-09: 58 back on the mixer after every Bluetooth disconnect and wake, Cinder at 37-40), so a
+// level Cinder sets behind its back comes undone. 0 on success, -1 if the service did not answer.
+int cinder_volume_service_set(int level) {
+    try {
+        pst::services::volume::VolumeService vs;
+        return vs.SetVolume((unsigned)level) ? 0 : -1;
     } catch (...) {
         return -1;
     }
