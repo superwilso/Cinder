@@ -197,7 +197,17 @@ fn run_curl(args: &[&str]) -> Result<(u32, String), String> {
     let mut tries = 0;
     let out = loop {
         let out = Command::new(&curl)
-            .args(["-sS", "--max-time", "30", "--cacert"])
+            // https only, redirects included: a redirect must not be able to drop the encryption.
+            .args([
+                "-sS",
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                "--max-time",
+                "30",
+                "--cacert",
+            ])
             .arg(format!("{WIFI_DIR}/cacert.pem"))
             .args(["-w", "\n%{http_code}"])
             .args(args)

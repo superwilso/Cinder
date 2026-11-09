@@ -23,6 +23,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   as newer than its own candidates. Candidates also carry their full name from now on: the Firmware
   row says `0.4.1-rc2`, not `0.4.1`. Players already on rc1 or rc2 report plain `0.4.1`, so they
   will be offered the next version after it, not 0.4.1 itself; reinstall to get it sooner.
+- **A long song title no longer costs most of a processor while the screen is on.** A title or
+  artist too long for its line scrolls, and Now Playing repainted the whole screen for it 60 times
+  a second: 78% of a core on the player, against 3% for a title that fits. It now repaints when
+  the text has moved a pixel (32 times a second), and not at all while the line rests at either
+  end.
+- **Two root helpers no longer pass the app's environment to the shell they start.** `cinder-msc`
+  and `cinder-voltable` run Sony's tools through a root shell, and that shell inherited whatever
+  environment the caller had, `LD_PRELOAD` included. Nothing on the player used this, but a fault
+  in the app could have become root through it. Both now start from a fixed environment
+  (`src/clean_env.h`).
+- **Downloads refuse anything but HTTPS, redirects included** (the update, lyrics, covers,
+  scrobbles and the radio search).
 
 ## [0.4.1] — 2026-11-08
 

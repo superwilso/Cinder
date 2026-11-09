@@ -216,6 +216,20 @@ pub fn marquee_scrolled() -> bool {
     MARQUEE_LIVE.swap(false, Ordering::Relaxed)
 }
 
+/// Milliseconds until a scrolling line next LOOKS different, among the lines painted since this
+/// was last called (read-and-clear); `None` when nothing overflows. The rest of a dwell while the
+/// line stands still, one pixel of travel while it slides.
+///
+/// The shell repaints when that time is up, not every frame: a long title used to repaint the
+/// whole of Now Playing at the panel's 60 frames a second for as long as the screen was on, which
+/// measured 73% of a core on the player (2026-11-09) against 3% for a title that fits. The text
+/// moves 32 px a second, so most of those frames drew the same pixels.
+pub fn marquee_wait_ms() -> Option<u32> {
+    let w = MARQUEE_WAIT.swap(u32::MAX, Ordering::Relaxed);
+    (w != u32::MAX).then_some(w)
+}
+static MARQUEE_WAIT: AtomicU32 = AtomicU32::new(u32::MAX);
+
 /// Pause at each end before reversing, ms. Long enough to read the end of a title.
 const MARQUEE_DWELL_MS: u32 = 1500;
 /// Scroll speed. Slow enough to read at 29pt, fast enough that a 90-character title is not a
@@ -266,6 +280,15 @@ pub fn marquee(
     // marquee stops at the end of its first slide until something unrelated happens to repaint.
     // An animation has to keep asking while it is running, not only while it is moving.
     MARQUEE_LIVE.store(true, Ordering::Relaxed);
+    let dwell_left = if t < MARQUEE_DWELL_MS {
+        MARQUEE_DWELL_MS - t
+    } else if (half..half + MARQUEE_DWELL_MS).contains(&t) {
+        half + MARQUEE_DWELL_MS - t
+    } else {
+        0
+    };
+    let px_ms = (1000.0 / MARQUEE_PX_PER_S) as u32;
+    MARQUEE_WAIT.fetch_min(dwell_left.max(px_ms), Ordering::Relaxed);
     c.set_clip_x(x as i32, (x + max_w).ceil() as i32);
     text::draw(c, f, x - off, baseline, s, st);
     c.clear_clip_x();
@@ -436,6 +459,18 @@ mod marquee_tests {
             marquee_scrolled(),
             "an overflowing line drives its own animation"
         );
+        // …but only when it will look different: the rest of the opening dwell, then a pixel at
+        // a time. Asking every frame is what cost 73% of a core on the player.
+        marquee_wait_ms();
+        set_marquee_ms(100);
+        marquee(&mut c, &f, 24.0, 100.0, long, &style(), 372.0);
+        assert_eq!(marquee_wait_ms(), Some(MARQUEE_DWELL_MS - 100));
+        assert_eq!(marquee_wait_ms(), None, "read and clear");
+        set_marquee_ms(MARQUEE_DWELL_MS + 400);
+        marquee(&mut c, &f, 24.0, 100.0, long, &style(), 372.0);
+        assert_eq!(marquee_wait_ms(), Some(31), "one pixel at 32 px/s");
+        marquee(&mut c, &f, 24.0, 100.0, "Atlas Hands", &style(), 372.0);
+        assert_eq!(marquee_wait_ms(), None, "a line that fits asks for nothing");
     }
 
     /// The scrolled run is CUT OFF at the box, not drawn across the panel.

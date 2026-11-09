@@ -58,6 +58,16 @@ sample() {
         s=$(head -1 "$f" 2>/dev/null)
         [ "$s" = "closed" ] || echo "$f $s"
     done
+    # Deep idle: how often the processor reached it, and what refused it (mt_idle.c
+    # dpidle_can_enter: by_oth = the radio chip is powered while the jack's ultra mode is on, or a
+    # key is down; by_vtg = not in early suspend; by_clk = a clock in the mask below is running).
+    echo "-- idle"
+    sed -n 's/^dpidle_cnt\[0\]=\([0-9]*\).*/deep_idle_entries \1/p' /sys/power/idle_state 2>/dev/null
+    grep -E 'dpidle_mode=|dpidle_block_cnt' /sys/power/dpidle_state 2>/dev/null
+    grep -E 'dpidle_block_mask' /sys/power/dpidle_state 2>/dev/null | grep -v 'block_mask\[[A-Z0-9_ ]*\]=0x00000000$' | sed 's/.*dpidle_block_mask/blocked_now/'
+    echo "-- irq"
+    # one line an interrupt: "<name> <count summed over the cores>"
+    busybox awk '{ s = 0; for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+$/) s += $i; print "irq " $1 $NF, s }' /proc/interrupts 2>/dev/null
     echo "-- jack $(cat /sys/class/switch/cxd3778gf_h2w/state 2>/dev/null)"
     echo "-- codec"
     for r in $REGS; do

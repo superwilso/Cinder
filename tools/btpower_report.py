@@ -169,6 +169,31 @@ def main(path: str) -> int:
     if not changed:
         print("   unchanged across the window")
 
+    def nums(lines: list[str], head: str) -> dict[str, int]:
+        out = {}
+        for line in section(lines, head):
+            key, _, val = line.replace("=", " ").rpartition(" ")
+            if val.isdigit():
+                out[key.strip()] = int(val)
+        return out
+
+    i0, i1 = nums(t0, "-- idle"), nums(t1, "-- idle")
+    if i1:
+        print("\nDeep idle (entries, and what refused it), in the window:")
+        for key in i1:
+            if "mode" not in key:
+                print(f"   {key:<28} +{i1[key] - i0.get(key, 0)}  ({(i1[key] - i0.get(key, 0)) / wall:.1f}/s)")
+        for line in section(t1, "-- idle"):
+            if line.startswith(("dpidle_mode", "blocked_now")):
+                print(f"   {line}")
+    q0, q1 = nums(t0, "-- irq"), nums(t1, "-- irq")
+    top = sorted(((q1[k] - q0.get(k, 0), k) for k in q1), reverse=True)[:8]
+    if top:
+        print("\nInterrupts a second, the busiest:")
+        for n, key in top:
+            if n > 0:
+                print(f"   {n / wall:8.1f}  {key.removeprefix('irq ')}")
+
     for label, lines in (("T0", t0), ("T1", t1)):
         alsa = section(lines, "-- alsa")
         print(f"\nALSA {label}: " + ("; ".join(alsa) if alsa else "nothing open"))
