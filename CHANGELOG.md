@@ -16,6 +16,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sound ▸ Direct now bypasses the effects on Sony's stock firmware.** Stock has no Source Direct
+  (Sony's feature table says so), and the sound service quietly ignored the request. The Sound page
+  said everything was bypassed while VPT, Clear Bass and the EQ kept playing. Where Sony has no
+  Source Direct, Direct now switches every effect off, Clear Bass to 0 and the EQ flat; Walkman One
+  still uses Sony's own bypass. *Device-unverified: found in a player's log, proven in the test
+  harness.*
+- **Dependency advisory:** SQLite (through `rusqlite`) moved to 0.41 for RUSTSEC-2026-0459.
+
 ## [0.4.1] — 2026-11-08
 
 ### Added

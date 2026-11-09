@@ -1729,7 +1729,7 @@ void deferred_up() {
             "SRC=/db/MTPDB.dat; DST=/contents/MTPDB_copy.dat; "
             "if [ -f \"$SRC\" ]; then "
             "  if cp \"$SRC\" \"$DST.tmp\" 2>/tmp/cpdberr && mv \"$DST.tmp\" \"$DST\" 2>>/tmp/cpdberr; then "
-            "    echo \"[cinder-home] db-copy: OK $(stat -c %s \\\"$DST\\\" 2>/dev/null) bytes\"; "
+            "    echo \"[cinder-home] db-copy: OK $(wc -c < \\\"$DST\\\") bytes\"; "
             "  else echo \"[cinder-home] db-copy: FAILED: $(cat /tmp/cpdberr 2>/dev/null)\"; fi; "
             "else echo \"[cinder-home] db-copy: SRC $SRC not found\"; fi; "
             "sync");
@@ -2353,6 +2353,7 @@ static int  g_eq_last[10];
 static bool g_eq_have = false;
 
 void fx_cache_drop() { g_fx_have = false; g_eq_have = false; }
+static bool direct_by_hand();
 
 // True if slot `i` changed (and records the new value). Slots are private to each apply_* below.
 static inline bool fx_dirty(int i, int val) {
@@ -2365,6 +2366,7 @@ static inline bool fx_dirty(int i, int val) {
 void apply_eq_fn() {
     signed char bands[10];
     cinder_get_eq_bands(bands);
+    if (direct_by_hand()) std::memset(bands, 0, sizeof bands);   // the trim below is volume: it stays
     // THE BLUETOOTH FINE-VOLUME TRIM rides along here, and this is the only place it is applied.
     //
     // AVRCP gives one step of 4 units in 127 — about 2 dB — and there is no finer command to send:
@@ -2524,18 +2526,35 @@ static bool clear_bass_in_chain() {
 // a static that returns a constant compiled into the build (1 on the stock A50, 0 on Walkman One;
 // analysis/RE_dmp_feature.md). Asked once, by dlopen so the Home app gains no DT_NEEDED. Anything
 // that fails reads as "yes": the write-and-read-back check in apply_sound_fn still catches a no.
+static bool dmp_feature(const char* sym) {
+    if (void* h = dlopen("libDmpFeature.so", RTLD_NOW)) {
+        typedef bool (*fn)();
+        if (fn f = (fn)dlsym(h, sym)) return f();
+    }
+    return true;
+}
 static bool clearaudio_featured() {
     static int known = -1;
     if (known < 0) {
-        known = 1;
-        if (void* h = dlopen("libDmpFeature.so", RTLD_NOW)) {
-            typedef bool (*fn)();
-            if (fn f = (fn)dlsym(h, "_ZN3pst10dmpfeature10DmpFeature24IsFeaturedClearAudioPlusEv"))
-                known = f() ? 1 : 0;
-        }
+        known = dmp_feature("_ZN3pst10dmpfeature10DmpFeature24IsFeaturedClearAudioPlusEv") ? 1 : 0;
         if (!known) clog_("sound: this firmware has no ClearAudio+; the Sound page offers Direct and Custom");
     }
     return known == 1;
+}
+
+// Source Direct is the mirror image: `IsFeaturedSourceDirect` is 0 on the stock A50 and 1 on Walkman
+// One, and on stock the service keeps SetSourceDirect(1) at 0. Read back on the owner's stock player
+// on every apply of 2026-11-09 (`fx-verify: srcdirect=0(want 1)`), with VPT, Clear Bass and the EQ
+// all still in the path under a Sound page that said DIRECT MODE: BYPASSED. So where Sony has no
+// bypass, Direct is made here: every effect off, Clear Bass 0, the EQ flat. Not Sony's path (theirs
+// also sends 32-bit, RE_sound_service.md), but nothing the page calls bypassed is left running.
+static bool direct_by_hand() {
+    static int known = -1;
+    if (known < 0) {
+        known = dmp_feature("_ZN3pst10dmpfeature10DmpFeature22IsFeaturedSourceDirectEv") ? 1 : 0;
+        if (!known) clog_("sound: this firmware has no Source Direct; Direct switches every effect off instead");
+    }
+    return known == 0 && (cinder_get_adv_flags() & 1);
 }
 
 void apply_sound_fn() {
@@ -2563,7 +2582,8 @@ void apply_sound_fn() {
     enum { S_DSEE, S_VINYL, S_VPT, S_VPTMODE, S_DC, S_DCTYPE, S_CLEARPH, S_DSEEAI, S_DSEECUST,
            S_DSEEMODE, S_TONE, S_TONE0, S_TONE1, S_TONE2, S_VINYLTYPE, S_SRCDIRECT,
            S_NORM, S_CLEARAUDIO };
-    int f = cinder_get_sound_flags();
+    const bool by_hand = direct_by_hand();
+    int f = by_hand ? 0 : cinder_get_sound_flags();
     if (fx_dirty(S_DSEE, (f >> 0) & 1)) cinder_effects_set_dsee_hx((f >> 0) & 1);
     if (fx_dirty(S_VINYL, (f >> 1) & 1)) cinder_effects_set_vinylizer((f >> 1) & 1);
     if (fx_dirty(S_VPT, (f >> 2) & 1)) cinder_effects_set_vpt((f >> 2) & 1);
@@ -2580,7 +2600,7 @@ void apply_sound_fn() {
     // it hides have been set. The service keeps each effect's own state regardless, so this only
     // decides what is in the path — but setting the chain first and the bypass after means the
     // chain is already correct the moment the bypass is lifted.
-    int af = cinder_get_adv_flags();
+    int af = by_hand ? 0 : cinder_get_adv_flags();
     if (fx_dirty(S_CLEARPH, (af >> 1) & 1)) cinder_effects_set_clear_phase((af >> 1) & 1);
     if (fx_dirty(S_DSEEAI, (af >> 2) & 1)) cinder_effects_set_dsee_ai((af >> 2) & 1);
     if (fx_dirty(S_DSEECUST, (af >> 3) & 1)) cinder_effects_set_dsee_hx_custom((af >> 3) & 1);
@@ -2617,7 +2637,7 @@ void apply_sound_fn() {
     // with the selector on the 10-band Clear Bass does nothing. So a level above 0 takes the
     // selector, and 0 gives it back. Band 0 is only written back to 0 after this process raised
     // it, so a player that never used the row keeps whatever the stock UI stored there.
-    const int cb = cinder_get_clear_bass();
+    const int cb = by_hand ? 0 : cinder_get_clear_bass();
     static int cb_sent = 0;
     if (cb > 0 || cb_sent > 0) {
         if (cb > 0) { cinder_effects_set_eq6(1); cinder_effects_set_eq6_preset(9); }
@@ -2695,8 +2715,10 @@ static void fx_verify_fn(const char* why) {
             n += (size_t)std::snprintf(bad + n, sizeof bad - n, " %s=%d(want %d)", name, got, want);
         if (n >= sizeof bad) n = sizeof bad - 1;
     };
-    const int f  = cinder_get_sound_flags();
-    const int af = cinder_get_adv_flags();
+    const bool by_hand = direct_by_hand();   // what apply_sound_fn sent, not what the UI holds
+    const int f  = by_hand ? 0 : cinder_get_sound_flags();
+    const int af = by_hand ? 0 : cinder_get_adv_flags();
+    const int cb = by_hand ? 0 : cinder_get_clear_bass();
     chk("dsee",       (f >> 0) & 1, cinder_effects_is_dsee_hx_on());
     chk("vinyl",      (f >> 1) & 1, cinder_effects_is_vinylizer_on());
     chk("vpt",        (f >> 2) & 1, cinder_effects_is_vpt_on());
@@ -2712,7 +2734,7 @@ static void fx_verify_fn(const char* why) {
     chk("dseemode",   cinder_get_dsee_mode(), cinder_effects_get_dsee_hx_mode());
     chk("tone",       (af >> 4) & 1, cinder_effects_is_tone_on());
     chk("vinyltype",  cinder_get_vinyl_type(), cinder_effects_get_vinylizer_type());
-    chk("eqsel",      cinder_get_clear_bass() > 0 ? CINDER_TONE_SYS_EQ6
+    chk("eqsel",      cb > 0 ? CINDER_TONE_SYS_EQ6
                       : ((af >> 4) & 1) ? CINDER_TONE_SYS_TONE : CINDER_TONE_SYS_EQ10,
                       cinder_effects_get_select_using_eq());
     chk("bteffect",   1, cinder_effects_is_bt_effect_on());

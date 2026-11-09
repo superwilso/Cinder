@@ -1378,6 +1378,37 @@ static void s_dsp_reconcile_no_settings(void) {
              "repeat-one is not 'restored' from a file that does not exist");
 }
 
+// ── Direct on a player whose sound service has no Source Direct (owner's log, 2026-11-09) ──────
+// Stock's DmpFeature says no Source Direct, and the service keeps SetSourceDirect(1) at 0: the
+// owner's Sound page said DIRECT MODE: BYPASSED all day while VPT, Clear Bass and the EQ played. So
+// there Direct is made by switching everything off. Two scenarios: stock, and a player with the
+// feature (direct-sony), where Sony's own bypass is used and the effects are left as the user set them.
+static void direct_run(bool stock) {
+    healthy_device();
+    if (stock) cinder_harness_state_set("stock_dmp_feature", 1);
+    cinder_harness_script("cinder_get_adv_flags", 1);    // Direct
+    cinder_harness_script("cinder_get_sound_flags", 4);  // VPT on underneath
+    cinder_harness_script("cinder_get_clear_bass", 1);
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+}
+static long long last_arg(const char* name) {
+    const int n = cinder_harness_count(name);
+    return n ? cinder_harness_arg(name, n - 1) : -1;
+}
+static void s_direct_without_source_direct(void) {
+    direct_run(true);
+    check_eq(last_arg("cinder_effects_set_vpt"), 0, "VPT is switched off under Direct");
+    check_eq(last_arg("cinder_effects_set_source_direct"), 0, "the bypass it lacks is not asked for");
+    check_eq(last_arg("cinder_effects_set_tone_system"), 2, "Clear Bass gives the selector to the ten-band");
+    check_eq(cinder_harness_count("cinder_effects_set_eq6"), 0, "Clear Bass is never raised");
+}
+static void s_direct_with_source_direct(void) {
+    direct_run(false);
+    check_eq(last_arg("cinder_effects_set_source_direct"), 1, "Sony's own bypass is used");
+    check_eq(last_arg("cinder_effects_set_vpt"), 1, "VPT keeps the user's setting under it");
+}
+
 // ── the whole mass-storage round trip: cable in, cable out ───────────────────────────────────
 // The exit path is not a second feature, it is the SAME one — the modal, the remount and the USB
 // mode all have to come back, and the only way out of the modal is Back. `cinder_input` is only
@@ -3134,6 +3165,8 @@ static const Scenario kScenarios[] = {
     {"search-off",        s_search_off_by_default,   "library search stays off without the installer's flag"},
     {"search-on",         s_search_on_with_flag,     "…and turns on, once, when the flag is there"},
     {"dsp-reconcile",     s_dsp_reconcile_no_settings, "the DSP is reconciled even with no settings file"},
+    {"direct-by-hand",    s_direct_without_source_direct, "Direct switches every effect off where Sony has no Source Direct"},
+    {"direct-sony",       s_direct_with_source_direct, "…and uses Sony's bypass where there is one"},
     {"stock-handback",    s_boot_to_stock_hands_the_eq_back, "Boot to stock gives Sony's EQ selector back to the six-band"},
     {"wake-on-touch",     s_wake_on_touch,           "a dark panel wakes on touch, without pressing anything"},
     {"touch-gestures",    s_touch_gestures,          "a tap is a tap and a drag is a drag"},
