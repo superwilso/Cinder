@@ -656,7 +656,7 @@ static void bt_mix_frames(void* ctx, uint8_t* p, size_t n, uint32_t rate)
  * Timed PER STREAM (`gen`): the first write of a new connection is not late against the last one
  * of the stream before it. Without that, every track skip that re-opens the transmitter's socket
  * within two seconds logged one — 83 of the 107 "late" lines on the owner's player, 2026-11-04. */
-static struct { long long prev_ms; long long late; long long since_said; int have; unsigned gen; } g_btt;
+static struct { long long prev_ms; long long start_ms; long long late; long long since_said; int have; unsigned gen; } g_btt;
 /* And the rate it is sent at, against the rate the stream declared (#44). The same measure runs in
  * the Bluetooth service (cinder-aac), so a wrong rate can be placed on one side or the other. */
 static pcm_rate g_btr;
@@ -674,6 +674,7 @@ static void bt_timing(unsigned gen, size_t n, uint32_t rate, uint32_t ch, const 
     const long chunk = (long)((unsigned long long)(n / (2u * ch)) * 1000u / rate);
     g_btt.prev_ms = a;
     g_btt.have = 1;
+    if (gap < 0 || gap >= 2000) g_btt.start_ms = a;
     if (gap < 0 || gap >= 2000) {
         pcm_rate_start(&g_btr, (int)rate, (int)(2u * ch), a);
         pcm_rate_feed(&g_btr, (unsigned)n, a, &(long){0});
@@ -684,6 +685,18 @@ static void bt_timing(unsigned gen, size_t n, uint32_t rate, uint32_t ch, const 
         mlog("bt: PCM sent at %ld Hz for 10 s, the stream declared %u Hz", g_btr.last_hz,
              (unsigned)rate);
     if (gap <= chunk + 40 && took <= 40) return;
+    /* THE FIRST SECOND AND A HALF OF A STREAM IS THE LINK STARTING, not the service falling behind.
+     * The owner's log, 2026-11-09: 9 of the 10 "late" writes came 0.1-1.0 s after a handshake, one
+     * on the very line the link settled on AAC; mid-stream there was one, of 52 ms. Counted with the
+     * rest they read as ten dropouts. Logged as what they are, and kept out of the count. */
+    if (a - g_btt.start_ms < 1500) {
+        if (g_btt_lines < 300) {
+            g_btt_lines++;
+            if (g_log_lines > 0) g_log_lines--;
+            mlog("bt: stream start — %ld ms before the next write (a write is %ld ms of audio)", gap, chunk);
+        }
+        return;
+    }
     g_btt.late++;
     g_btt.since_said++;
     /* The first three hundred one by one; after that one line a hundred, so a link that is late
