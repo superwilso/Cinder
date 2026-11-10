@@ -16,7 +16,7 @@ Cinder's own files for that reason.
 | `compat.ko`, `cfg80211.ko` | backports-3.17.1 in Sony's GPL kernel tree | the wireless core the kernel lacks |
 | `mtk_wmt_wifi_soc.ko` | MediaTek's CONSYS WMT glue, same tree | powers the Wi-Fi function on the combo chip |
 | `wlan_mt.ko` | MediaTek's `mt_soc` wlan driver, same tree, two patches | the driver; makes `wlan0` |
-| `wpa_supplicant`, `wpa_cli` | wpa_supplicant 2.10 + OpenSSL 3.0, static | joins WPA2, WPA3 (SAE) and OWE networks |
+| `wpa_supplicant`, `wpa_cli` | wpa_supplicant 2.10 + OpenSSL 3.0, static | joins WPA2, WPA3 (SAE) and OWE networks, and WPA2 enterprise (PEAP or TTLS with MSCHAPv2) |
 | `iw` | iw 5.19, static | reads the link (signal) |
 | `wifiscan` | [`tools/wifiscan.c`](tools/wifiscan.c) | a scan with no libraries, for bring-up |
 | `curl`, `cacert.pem` | curl 8.22.0 + OpenSSL 3.0, static; Mozilla's CA list as curl.se publishes it | HTTPS: ListenBrainz, the update check, internet radio |
@@ -48,7 +48,13 @@ Everything lives in `/system/vendor/cinder/wifi`. Nothing loads at boot. Cinder'
   ([`device/dhcp.sh`](device/dhcp.sh) applies the lease and writes `/tmp/resolv.conf`, which Sony's
   `/etc/resolv.conf` already points at).
 - `off` runs [`device/wifi-down.sh`](device/wifi-down.sh): the radio off; the modules stay loaded.
-- `status`, `scan`, `join` (network name and password on stdin, never in argv), `forget`, and
+- `on` first reads `/contents/cinder_wifi.txt` if it is there, saves each network in it, and
+  deletes the file. One network a line, `#` starts a comment:
+  `Name | password` (WPA2/WPA3; no password: open), `Name | username | password` (enterprise),
+  `Name | username | password | example.ac.uk` (enterprise, the server's certificate checked
+  against that domain).
+- `status`, `scan`, `join` (network name and password on stdin, never in argv; other saved networks
+  are kept), `forget` (the network the player is on), and
   `timesync`: busybox `ntpd`, then the RTC. The player's clock holds local time (Cinder has no time
   zone), so `timesync` keeps the clock's distance from UTC, rounded to 15 minutes, and corrects only
   the drift (`/data/cinder/wifi/utc_offset`; `status` reports it as `utc_offset=`).

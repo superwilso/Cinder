@@ -64,7 +64,14 @@ CONFIG_SAE=y
 CONFIG_IEEE80211W=y
 CONFIG_OWE=y
 CONFIG_GETRANDOM=y
+CONFIG_IEEE8021X_EAPOL=y
+CONFIG_EAP_PEAP=y
+CONFIG_EAP_TTLS=y
+CONFIG_EAP_MSCHAPV2=y
+CONFIG_EAP_GTC=y
 EOF
+# The methods are compiled in only when listed, and the objects do not notice a changed .config.
+make -C "$WPA/wpa_supplicant" clean >/dev/null 2>&1
 make -C "$WPA/wpa_supplicant" -j"$(nproc)" CC=$CC EXTRA_CFLAGS="-I$T/include -I$P/include -D_GNU_SOURCE" \
     LDFLAGS="-static -L$T -L$P/lib" >"$W/wpa.log" 2>&1
 

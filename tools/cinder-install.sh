@@ -49,6 +49,8 @@ ok()   { printf '%s ok %s %s\n' "$C_G" "$C_0" "$*"; }
 say()  { printf '%s\n' "$*"; }
 warn() { printf '%swarn%s %s\n' "$C_Y" "$C_0" "$*" >&2; }
 die()  { printf '%s err %s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
+# adb push, quiet when it works; under `set -e` a bare failed push ended the script with no word.
+push() { adb push "$1" "$2" >/dev/null || die "could not copy ${1##*/} to the player's $2 (is /data full? adb shell df /data)"; }
 
 # ─── args ──────────────────────────────────────────────────────────────────
 CHANNEL="dev"
@@ -397,7 +399,7 @@ if [ "$MODE" = "rollback" ]; then
     fi
     SWAP_SCRIPT="$(mktemp)"
     make_swap_script "$BACKUP" > "$SWAP_SCRIPT"
-    adb push "$SWAP_SCRIPT" /data/local/tmp/_cinder_swap.sh >/dev/null
+    push "$SWAP_SCRIPT" /data/local/tmp/_cinder_swap.sh
     adb shell "chmod 755 /data/local/tmp/_cinder_swap.sh"
     rm -f "$SWAP_SCRIPT"
     adb shell "sh /data/local/tmp/_cinder_swap.sh" || die "rollback swap failed (see above)"
@@ -441,7 +443,7 @@ ok "/data: $FREE_KB kB free, $NEED_KB kB needed"
 
 # 3. push binary to /data/local/tmp (ext4, safe from MSC mode)
 info "pushing binary to $STAGE…"
-adb push "$BIN" "$STAGE" >/dev/null
+push "$BIN" "$STAGE"
 ok "pushed $BIN_SIZE bytes"
 
 # 3b. push the LAUNCHER — always, not behind --full.
@@ -464,7 +466,7 @@ else
     info "launcher: device has ${DEV_LAUNCHER_MD5:-none}, repo has $LAUNCHER_MD5 — updating"
 fi
 info "pushing launcher to $LAUNCHER_STAGE…"
-adb push "$LAUNCHER_TMP" "$LAUNCHER_STAGE" >/dev/null
+push "$LAUNCHER_TMP" "$LAUNCHER_STAGE"
 ok "pushed launcher ($(wc -l < "$LAUNCHER_TMP") lines)"
 rm -f "$LAUNCHER_TMP"
 
@@ -473,7 +475,7 @@ if [ "$FULL" = 1 ]; then
     info "pushing setuid helpers (--full)…"
     for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery cinder-wifi; do
         if [ -f "$DIST/$h" ]; then
-            adb push "$DIST/$h" "/data/local/tmp/$h.new" >/dev/null
+            push "$DIST/$h" "/data/local/tmp/$h.new"
             ok "  staged $h"
         fi
     done
@@ -492,7 +494,11 @@ if [ "$FULL" = 1 ] && adb shell "[ -f /system/vendor/cinder/wifi/wlan_mt.ko ] &&
         there="$(adb shell "md5sum /system/vendor/cinder/wifi/$f 2>/dev/null" | cut -d' ' -f1 | tr -d '\r')"
         [ -n "$there" ] || continue   # not on the player: an optional file it never had (the .UPG adds those)
         [ "$here" = "$there" ] && continue
-        adb push "$src" "/data/local/tmp/wifi.new/$f" >/dev/null
+        free_kb="$(adb shell "/xbin/busybox df -k /data | /xbin/busybox awk 'END{print \$4}'" | tr -d '\r')"
+        [ "$(( $(stat -c %s "$src") / 1024 + DATA_FLOOR_KB ))" -le "${free_kb:-0}" ] || die "wifi/$f needs \
+$(( $(stat -c %s "$src") / 1024 )) kB on /data and $free_kb kB is free. Free space (adb shell ls -la /data/cinder/),
+or install the .UPG, which carries the Wi-Fi files itself."
+        push "$src" "/data/local/tmp/wifi.new/$f"
         ok "  staged wifi/$f"
     done
 elif [ "$FULL" = 1 ]; then
@@ -505,7 +511,7 @@ if [ "$PRELOAD" = 1 ]; then
     info "pushing the preload component (--preload)…"
     for h in cinder-preload.sh cinder-hagowrap cinder-guard.sh libcinder_mono.so; do
         [ -f "$DIST/$h" ] || die "$DIST/$h is missing — build first (cinder-home/build.sh $CHANNEL)"
-        adb push "$DIST/$h" "/data/local/tmp/$h.new" >/dev/null
+        push "$DIST/$h" "/data/local/tmp/$h.new"
         ok "  staged $h"
     done
 fi
@@ -529,7 +535,7 @@ if ! sh -n "$SWAP_SCRIPT" 2>/dev/null; then
     die "generated swap script is not valid sh"
 fi
 info "uploading swap script…"
-adb push "$SWAP_SCRIPT" /data/local/tmp/_cinder_swap.sh >/dev/null
+push "$SWAP_SCRIPT" /data/local/tmp/_cinder_swap.sh
 adb shell "chmod 755 /data/local/tmp/_cinder_swap.sh"
 rm -f "$SWAP_SCRIPT"
 
@@ -571,6 +577,10 @@ adb shell "sh /data/local/tmp/_cinder_swap.sh" || die "swap failed (see above �
 
 # device reboots here, adb connection drops — that's expected
 info "waiting for the device to come back…"
+# Wait for it to go first: Sony's shutdown takes ~10 s, and until then wait-for-device returns at
+# once, so the rung-0 restore below ran on the OLD boot and removed the cable pass before the
+# reboot it was for (11-10). With the cable in, that boot lands on stock.
+timeout 120 adb wait-for-disconnect >/dev/null 2>&1 || warn "the device did not drop off adb within 2 minutes"
 if adb wait-for-device >/dev/null 2>&1; then
     # Give rung 0 back FIRST, before any deeper verification: if the new build is going to misbehave
     # this is the moment you most want the escape armed, not the moment after a health check that

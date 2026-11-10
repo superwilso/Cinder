@@ -16,34 +16,21 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Fixed
-
-- **The Wi-Fi updater will offer 0.4.1 to people on its release candidates.** It compared only the
-  numbers, so 0.4.1 looked the same as 0.4.1-rc2 and was never offered; a final release now counts
-  as newer than its own candidates. Candidates also carry their full name from now on: the Firmware
-  row says `0.4.1-rc2`, not `0.4.1`. Players already on rc1 or rc2 report plain `0.4.1`, so they
-  will be offered the next version after it, not 0.4.1 itself; reinstall to get it sooner.
-- **A long song title no longer costs most of a processor while the screen is on.** A title or
-  artist too long for its line scrolls, and Now Playing repainted the whole screen for it 60 times
-  a second: 78% of a core on the player, against 3% for a title that fits. It now repaints when
-  the text has moved a pixel (32 times a second), and not at all while the line rests at either
-  end.
-- **A Bluetooth connect or scan no longer costs most of a processor while it runs.** The ring of
-  dots that turns while the player connects or scans made every screen repaint 60 times a second
-  for up to 30 seconds, including screens that do not show it. It now repaints when the ring
-  moves (8 times a second), and only on the two Bluetooth screens.
-- **Two root helpers no longer pass the app's environment to the shell they start.** `cinder-msc`
-  and `cinder-voltable` run Sony's tools through a root shell, and that shell inherited whatever
-  environment the caller had, `LD_PRELOAD` included. Nothing on the player used this, but a fault
-  in the app could have become root through it. Both now start from a fixed environment
-  (`src/clean_env.h`).
-- **Downloads refuse anything but HTTPS, redirects included** (the update, lyrics, covers,
-  scrobbles and the radio search).
-
 ## [0.4.1] — 2026-11-08
 
 ### Added
 
+- **Internet radio can be pinned to the shelf** (#55). Opening the pin loads the station list.
+  *Device-verified.*
+- **Wi-Fi networks can be imported from a file** (#55). Put `cinder_wifi.txt` on the player's drive,
+  one network a line as `Name | password`, and turning Wi-Fi on saves them and deletes the file.
+  See [`wifi/README.md`](wifi/README.md#on-the-player). *Device-verified.*
+- **Wi-Fi networks that ask for a username and password** (#55): WPA2 enterprise, PEAP or TTLS,
+  added through the same file as `Name | username | password`, with the network's domain as a
+  fourth field to check its server. *Device-verified that the player saves and loads such a
+  network; joining one is unverified (no enterprise network to hand).*
+- **The radio logs its dropouts.** In any minute with a problem, the log counts underruns, frames
+  the decoder could not read, and seconds spent waiting for the network.
 - **Wi-Fi in the Menu and the pull-down** (discussion #53). With the Wi-Fi option installed, the
   Menu has a **Wi-Fi** row after Bluetooth (it says the network you're on, or Off), and the
   pull-down panel has a Wi-Fi switch under Bluetooth's: the switch switches, the name opens
@@ -81,6 +68,47 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **MP3 radio stations no longer crackle** (#55). The radio decoded each network read to its last
+  byte, and the MP3 decoder treats a frame cut off at the end as damage: it threw that piece away
+  and lost the data the next frame borrows from it. On Radio Paradise that was 188 to 252 damaged
+  frames a minute, about one in ten. It now waits until a whole frame is in: 0 in three minutes
+  on the same station. AAC and HLS stations were not affected. *Device-verified.*
+- **The Wi-Fi updater will offer 0.4.1 to people on its release candidates.** It compared only the
+  numbers, so 0.4.1 looked the same as 0.4.1-rc2 and was never offered; a final release now counts
+  as newer than its own candidates. Candidates also carry their full name from now on: the Firmware
+  row says `0.4.1-rc2`, not `0.4.1`. Players already on rc1 or rc2 report plain `0.4.1`, so they
+  will be offered the next version after it, not 0.4.1 itself; reinstall to get it sooner.
+- **A long song title no longer costs most of a processor while the screen is on.** A title or
+  artist too long for its line scrolls, and Now Playing repainted the whole screen for it 60 times
+  a second: 78% of a core on the player, against 3% for a title that fits. It now repaints when
+  the text has moved a pixel (32 times a second), and not at all while the line rests at either
+  end.
+- **The library no longer empties when USB storage starts during a scan.** Leaving USB storage
+  asks for a library scan, and going straight back in handed the drives to the PC while that scan
+  was still running. The scan then found no files and removed all 4,769 tracks; they came back only
+  as the next scans rebuilt the library, over several minutes. USB storage now cancels a running
+  scan before it hands the drives over. *Device-verified: back in USB storage under a second after
+  leaving, with the scan running; all 4,769 tracks stayed.*
+- **`tools/cinder-install.sh` no longer spends its one-boot cable pass before the reboot.** It
+  waited for adb to return without first waiting for it to drop, so it removed the pass while the
+  player was still shutting down, and a player left on the cable could start on stock firmware.
+  A failed copy to the player now stops the install with the file's name instead of ending
+  without a word.
+- **The touchscreen answers about a second sooner after start-up.** Starting up checked all
+  eight input devices for another program holding them, and letting go of each took the kernel
+  120 ms; only the touchscreen is checked now. Dev builds also waited 3 seconds to write one adb
+  line to the log, and no longer do.
+- **A Bluetooth connect or scan no longer costs most of a processor while it runs.** The ring of
+  dots that turns while the player connects or scans made every screen repaint 60 times a second
+  for up to 30 seconds, including screens that do not show it. It now repaints when the ring
+  moves (8 times a second), and only on the two Bluetooth screens.
+- **Two root helpers no longer pass the app's environment to the shell they start.** `cinder-msc`
+  and `cinder-voltable` run Sony's tools through a root shell, and that shell inherited whatever
+  environment the caller had, `LD_PRELOAD` included. Nothing on the player used this, but a fault
+  in the app could have become root through it. Both now start from a fixed environment
+  (`src/clean_env.h`).
+- **Downloads refuse anything but HTTPS, redirects included** (the update, lyrics, covers,
+  scrobbles and the radio search).
 - **Sound ▸ Direct now bypasses the effects on Sony's stock firmware.** Stock has no Source Direct
   (Sony's feature table says so), and the sound service quietly ignored the request. The Sound page
   said everything was bypassed while VPT, Clear Bass and the EQ kept playing. Where Sony has no
@@ -130,6 +158,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **Joining a Wi-Fi network keeps the others.** The player remembered one network: joining a new one
+  replaced it. Joining now adds to the list, and Forget removes only the network the player is on.
+  *Device-verified.*
 - **Wi-Fi powers off when the player is idle.** After two minutes with the screen off, Wi-Fi
   turns fully off, and it comes back when the screen or a button is used (about ten seconds to
   rejoin). It stays on while something needs it: internet radio or AirPlay playing, a speaker fed from the

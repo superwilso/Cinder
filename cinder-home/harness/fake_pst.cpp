@@ -365,6 +365,10 @@ int _ZN3pst8services12mediascanner12MediaScanner4ScanEPNS1_21IMediaScannerListen
     return rc;
 }
 
+void _ZN3pst8services12mediascanner12MediaScanner6CancelEv(void*) {
+    cinder_harness_record("pst:MediaScanner::Cancel", 0);
+}
+
 // ── the fake radio, as a test fixture ────────────────────────────────────────────────────────
 void cinder_harness_bt_reset(void) {
     g_radio_on = false; g_connected = false; g_retry_mode = false; g_page_until_ms = 0; g_self_connect_ms = 0; g_disconnect_lag_ms = 0; g_drop_at_ms = 0;
