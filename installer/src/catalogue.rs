@@ -40,6 +40,8 @@ pub struct Comp {
     pub risk: String,
     /// The starting point that ticks it (`+ ` line): a [`Start`]'s word, or empty.
     pub start: String,
+    /// Options this one does not work without (`& id` lines). [`apply_needs`] switches them on.
+    pub needs: Vec<String>,
 }
 
 /// Where a guided install begins, before any page is changed. `Cinder` is the defaults; the other
@@ -76,6 +78,33 @@ impl Start {
     }
 }
 
+/// Switch on every option an option that is on needs (`& id`), and what those need in turn.
+/// Returns (option, what it switched on) for each one it had to switch on, so a front end can say
+/// so: AAC over Bluetooth used to need "Mono and soundscapes" in a sentence nobody found (#Head-Fi
+/// 11-06), and an install with AAC ticked and that one not quietly had no AAC.
+pub fn apply_needs(comps: &mut [Comp]) -> Vec<(String, String)> {
+    let mut turned = Vec::new();
+    loop {
+        let missing: Vec<(String, String)> = comps
+            .iter()
+            .filter(|c| c.is_on())
+            .flat_map(|c| c.needs.iter().map(move |n| (c.title.clone(), n.clone())))
+            .filter(|(_, n)| comps.iter().any(|d| &d.id == n && !d.is_on()))
+            .collect();
+        if missing.is_empty() {
+            return turned;
+        }
+        for (who, n) in missing {
+            if let Some(d) = comps.iter_mut().find(|d| d.id == n) {
+                if !d.is_on() {
+                    d.value = "1".into();
+                    turned.push((who, d.title.clone()));
+                }
+            }
+        }
+    }
+}
+
 /// Set every component to `start`: defaults, then the bools it ticks.
 pub fn apply_start(comps: &mut [Comp], start: Start) {
     for c in comps {
@@ -85,18 +114,6 @@ pub fn apply_start(comps: &mut [Comp], start: Start) {
             c.default.clone()
         };
     }
-}
-
-/// The groups, in catalogue order, each once: the window's option pages.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub fn groups(comps: &[Comp]) -> Vec<String> {
-    let mut g: Vec<String> = Vec::new();
-    for c in comps {
-        if !g.contains(&c.group) {
-            g.push(c.group.clone());
-        }
-    }
-    g
 }
 
 impl Comp {
@@ -152,7 +169,6 @@ impl Comp {
 
     /// The language in its own name only, as language pickers show it: "简体中文", without the
     /// "(Simplified Chinese)" the confirmation and the description keep.
-    #[cfg(any(windows, test))]
     pub fn language_native(&self) -> &str {
         let name = self.language_name();
         name.split_once(" (").map_or(name, |(native, _)| native)
@@ -256,6 +272,7 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
                 },
                 risk: String::new(),
                 start: String::new(),
+                needs: Vec::new(),
             });
             para = false;
         } else if indented {
@@ -269,6 +286,10 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
             }
             if let Some(rest) = t.strip_prefix("+ ") {
                 last.start = rest.trim().to_string();
+                continue;
+            }
+            if let Some(rest) = t.strip_prefix("& ") {
+                last.needs.push(rest.trim().to_string());
                 continue;
             }
             if let Some(rest) = t.strip_prefix('=') {
@@ -300,6 +321,17 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
         return Err("catalogue contained no components".into());
     }
     for c in &out {
+        for n in &c.needs {
+            if !out
+                .iter()
+                .any(|d| &d.id == n && matches!(d.kind, Kind::Bool))
+            {
+                return Err(format!(
+                    "'{}' needs '{n}', which is not a yes/no option",
+                    c.id
+                ));
+            }
+        }
         if !c.valid(&c.default) {
             return Err(format!("default '{}' invalid for '{}'", c.default, c.id));
         }
@@ -443,8 +475,10 @@ preload | CINDER_PRELOAD | bool | 0 | Preload
     #[test]
     fn groups_risks_and_starting_points() {
         let mut c = parse_catalogue(GROUPED).unwrap();
-        assert_eq!(groups(&c), vec!["Library", "Sound"]);
-        assert_eq!(c[2].group, "Sound");
+        assert_eq!(
+            (c[0].group.as_str(), c[2].group.as_str()),
+            ("Library", "Sound")
+        );
         assert_eq!(c[2].risk, "Edits a start-up script. Undo: untick it.");
         assert!(
             !c[0].desc.contains('!') && !c[2].desc.contains('+'),
@@ -469,6 +503,31 @@ preload | CINDER_PRELOAD | bool | 0 | Preload
         .is_err());
     }
 
+    #[test]
+    fn what_an_option_needs_is_switched_on_with_it() {
+        let mut c =
+            parse_catalogue(include_str!("../../cinder-home/deploy/components.conf")).unwrap();
+        let set = |c: &mut [Comp], id: &str, v: &str| {
+            c.iter_mut().find(|x| x.id == id).unwrap().value = v.into()
+        };
+        let get = |c: &[Comp], id: &str| c.iter().find(|x| x.id == id).unwrap().value.clone();
+        set(&mut c, "preload", "0");
+        set(&mut c, "bt-aac", "0");
+        set(&mut c, "bt-sbc-xq", "1");
+        let turned = apply_needs(&mut c);
+        assert_eq!(
+            (get(&c, "bt-aac"), get(&c, "preload")),
+            ("1".into(), "1".into()),
+            "a chain of two"
+        );
+        assert_eq!(turned.len(), 2);
+        assert!(apply_needs(&mut c).is_empty(), "nothing left to switch on");
+        assert!(
+            parse_catalogue("a | A | bool | 0 | A\n    & nope\n").is_err(),
+            "an unknown need"
+        );
+    }
+
     /// The real catalogue: every component has a group and says what it changes.
     #[test]
     fn the_shipped_catalogue_is_grouped_and_explained() {
@@ -477,7 +536,9 @@ preload | CINDER_PRELOAD | bool | 0 | Preload
             assert_ne!(x.group, "Options", "{} has no group", x.id);
             assert!(!x.risk.is_empty(), "{} does not say what it changes", x.id);
         }
-        assert!(groups(&c).len() >= 4);
+        let mut g: Vec<&str> = c.iter().map(|x| x.group.as_str()).collect();
+        g.dedup();
+        assert!(g.len() >= 4);
     }
 
     #[test]

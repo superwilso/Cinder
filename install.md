@@ -18,14 +18,18 @@ forever after.
 
 Download **`cinder-installer-windows-x64.exe`** from the
 [latest release](../../releases/latest). Connect the Walkman by USB in **mass-storage mode**, so
-it shows up as a drive, and run it.
+it shows up as a drive, and run it. Windows asks for administrator rights (the last step needs
+them), and the installer opens in your web browser: it tells you what is on the player, what each
+option does, and what will happen before anything does. It works offline and loads nothing from the
+internet; the page is served by the installer to your computer alone.
 
-`cinder-installer-linux-x64` is published alongside it and does the same job, looking under
-`/media`, `/run/media`, `/mnt` and `/Volumes` — but **run it with `sudo`**, because the final
-upgrade command is a raw SCSI passthrough.
+`cinder-installer-linux-x64` is published alongside it and opens the same page, looking for the
+player under `/media`, `/run/media`, `/mnt` and `/Volumes` — **run it with `sudo`**, because the
+final upgrade command is a raw SCSI passthrough. The page opens in your own browser, as you.
 
-`cinder-installer-macos` (Apple silicon and Intel) is **experimental**: it has not yet installed
-onto a player from a real Mac. It is unsigned, so in Terminal, from the folder it downloaded to:
+`cinder-installer-macos` (Apple silicon and Intel) is **experimental**, though people have
+installed with it on Intel Macs. It is unsigned, so in Terminal, from the folder it downloaded to
+(the same page then opens in your browser):
 
 ```sh
 xattr -d com.apple.quarantine cinder-installer-macos
@@ -48,30 +52,16 @@ notes.
 
 ### A.0 Install, update, uninstall
 
-Double-clicking the `.exe` on Windows opens a window; running the same binary from a terminal
-gives the text interface. Both offer the same three things, and both drive the same code.
+Started with no options — a double-click, or `sudo ./cinder-installer-macos` — the installer opens
+a page in your browser, on every OS. With an option (`--update`, `--yes`, a drive) or with
+`--console` it is the text interface instead. Both drive the same code. Pictures of the page:
+[docs/SCREENSHOTS.md](docs/SCREENSHOTS.md#the-installer).
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  Cinder                                       0.2.0 · stable   │
-├────────────────────────────────────────────────────────────────┤
-│   Player:  D:\                                    [ Rescan ]   │
-│   Cinder is installed (installer 0.1.9, stable) — Wed Sep 10    │
-│                                                                 │
-│   ┌──────────────────────────────────────────────────────────┐ │
-│   │ Install Cinder                                           │ │
-│   │ Fresh install: choose the optional parts, then flash.    │ │
-│   ├──────────────────────────────────────────────────────────┤ │
-│   │ Update Cinder                                            │ │
-│   │ Same components as last time, new build.                 │ │
-│   ├──────────────────────────────────────────────────────────┤ │
-│   │ Uninstall                                                │ │
-│   │ Put the stock Sony player back.                          │ │
-│   └──────────────────────────────────────────────────────────┘ │
-│                                                                 │
-│   [ Check for a newer release ]   [ Clean up 11 staged files ] │
-└────────────────────────────────────────────────────────────────┘
-```
+The page offers what the player's state calls for: Install, or Update to the version the installer
+carries (it reads the version the player actually runs, from `cinder_running.txt`, which Cinder
+writes at each start), and **Fix a problem**: start Cinder again after it failed to start, use
+Sony's player once or until you say otherwise, save a report for a bug, tidy up old install files,
+or remove Cinder. Those are the same files RECOVERY.md describes making by hand.
 
 **Install** shows the component picker, stages what you chose, and flashes. The last page,
 Device, also has **Build**: keep **Stable**, which is for almost everyone. **Developer** is the same
@@ -117,11 +107,11 @@ cinder-installer --install            # pick components, stage, flash
 cinder-installer --update             # keep the choices already on the player
 cinder-installer --uninstall          # restore the stock Sony player
 cinder-installer --dry-run            # walk the whole flow, write nothing, flash nothing
-cinder-installer --gui --dry-run      # ...in the window, on Windows
+cinder-installer --gui --dry-run      # ...in the page, writing nothing
 cinder-installer --clean              # delete staged payload files left in the drive root
 cinder-installer --check              # ask GitHub whether a newer release exists
 cinder-installer -y                   # no questions: saved-or-default answers, then go
-cinder-installer --console            # force the text interface on Windows
+cinder-installer --console            # the text interface instead of the page
 cinder-installer D:\                  # name the player instead of searching for it
 ```
 
@@ -131,8 +121,8 @@ is not. **Removal is never implied** — it is only ever done when asked for by 
 `--dry-run` walks the entire flow — finds the player, reads its state, applies the component
 selection, resolves the plan and reports every file with its size — and **writes nothing and
 flashes nothing**. It is safe to point at a real, connected Walkman. Use it to try the interface,
-or to see exactly what an install would do before letting it. On Windows the window needs
-`--gui --dry-run`, because running the binary from a terminal otherwise gives the text interface.
+or to see exactly what an install would do before letting it. `--gui --dry-run` does the same in
+the page, which says it is in practice mode.
 
 `--clean` removes the payload files a previous install left in the storage root. The device's own
 installer prints *"left staged binary at /contents/cinder-home (safe to delete once cinder-home is
@@ -148,10 +138,11 @@ downloading a newer installer. Everything else works with no connection at all.
 
 ### A.0.3 The component picker
 
-Each option is explained once, then listed. Type a number to switch it on or off (or to step
-through its choices), `?6` to read about item 6 again, `i` to install (or `u` to update). The
-window shows the same options as checkboxes and drop-downs, with the explanation of the one you
-clicked underneath.
+The page lists every option with its explanation and, under it, what it changes on the player.
+An option that needs another (AAC over Bluetooth needs "Mono and soundscapes over music") switches
+that one on with it and says so. In the text interface each option is explained once, then
+listed: type a number to switch it on or off (or to step through its choices), `?6` to read about
+item 6 again, `i` to install (or `u` to update).
 
 ```
   Cinder install  (channel: stable)
@@ -453,18 +444,19 @@ Rust and embeds the device binaries, both `.UPG` packages and the component cata
 time, so a single file is all an end user needs. `build.rs` fails loudly if a payload file is
 missing rather than shipping an incomplete installer — so build the device side first (§1–§2).
 
-`cargo check --target x86_64-pc-windows-gnu` compiles the Windows-only code (the window, the
-Sony-updater handoff, the WinINet release check) without needing a linker, which is worth running
-before a release even from Linux.
+`cargo check --target x86_64-pc-windows-gnu` compiles the Windows-only code (the SCSI
+pass-through, the WinINet release check) without needing a linker, which is worth running before a
+release even from Linux.
 
 **`[dependencies]` is empty and stays empty.** This is the one artefact an end user runs, and every
 crate added is a crate somebody has to trust in order to plug in a music player. That constraint is
-why the GUI talks to `user32`/`gdi32`/`comctl32` directly instead of pulling in a toolkit, and why
+why the window is a page the installer serves itself (`src/web.rs`, `src/page.html`: a small HTTP
+server on 127.0.0.1 with a random port and token, no toolkit, nothing fetched), and why
 the release check rides Windows' own WinINet (or `curl`/`wget` elsewhere) rather than an HTTPS
 stack. It is also what keeps the advisory scan in CI trivially green.
 
-The window needs `cinder-installer.manifest` embedded to get themed controls — without it Windows
-hands the process comctl32 v5 and every button paints in the Windows 95 style, on Windows 11.
+The `.exe` needs `cinder-installer.manifest` embedded, which asks Windows for administrator rights
+up front (the SCSI pass-through needs them).
 `build.rs` passes it to the **MSVC** linker, which is what every published build uses; the GNU
 target skips it (it would need `windres`) and prints a warning saying so.
 

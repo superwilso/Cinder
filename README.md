@@ -217,7 +217,7 @@ UI work needs no device: `cd player && cargo run --release -p cinder-host` rende
 
 ## Screenshots
 
-All 40 screens, from Now Playing to the Windows installer: [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md).
+All 40 screens, from Now Playing to the installer: [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md).
 
 ## License
 

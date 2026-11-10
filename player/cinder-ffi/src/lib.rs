@@ -6931,6 +6931,40 @@ pub extern "C" fn cinder_modal_open() -> libc::c_int {
 /// this to overwrite anything an external process drew on the framebuffer (e.g. the boot
 /// animation's last frame, which survives its kill and would otherwise sit on screen forever
 /// because the dirty-flag renderer skips identical frames).
+/// This build's version, NUL-terminated, for the shell's `cinder_running.txt` (the installer reads
+/// it to say what the player actually runs, not what was last staged).
+#[no_mangle]
+pub extern "C" fn cinder_version() -> *const c_char {
+    concat!(cinder_ui::cinder_version!(), "\0").as_ptr().cast()
+}
+
+/// Set by [`cinder_art_cache_defer`]: the next [`cinder_db_open`] leaves the cover cache for
+/// [`cinder_art_cache_start`]. Reading 431 cached thumbnails took 457 ms of start-up, before the
+/// touchscreen opened (11-10); the covers can arrive a moment after the first tap instead.
+static ART_DEFER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ART_PENDING: Mutex<Option<String>> = Mutex::new(None);
+
+#[no_mangle]
+pub extern "C" fn cinder_art_cache_defer() {
+    ART_DEFER.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Load the cover cache a deferred open left behind. Returns how long it took in ms, or -1 when
+/// nothing was waiting.
+#[no_mangle]
+pub extern "C" fn cinder_art_cache_start() -> libc::c_int {
+    let Some(p) = ART_PENDING.lock().unwrap().take() else {
+        return -1;
+    };
+    let t = std::time::Instant::now();
+    repaint(|r| {
+        if r.db_path.as_deref() == Some(p.as_str()) {
+            start_art_cache(r, &p);
+        }
+    });
+    t.elapsed().as_millis().min(i32::MAX as u128) as libc::c_int
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_force_dirty() {
     write(|r| r.dirty = true);
@@ -10537,7 +10571,10 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     // Sony's playlist rows are kept so a later edit can re-merge the two lists without re-querying;
     // ours come from the .m3u8 folder beside the liked list.
     r.db_playlists = lib.playlists.clone();
+    let t_sub = std::time::Instant::now();
     r.app.set_library(lib);
+    let ms_set = t_sub.elapsed().as_millis();
+    let t_sub = std::time::Instant::now();
     // Ids are this database's; a rebuilt one may give a missed id to an album with a cover.
     r.grid_miss.clear();
     r.undecodable = db.undecodable_paths().into_iter().collect();
@@ -10549,6 +10586,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
             r.undecodable.iter().take(5).collect::<Vec<_>>()
         );
     }
+    let ms_undec = t_sub.elapsed().as_millis();
     r.db = Some(db);
     r.plists = plists;
     // Keep the memory if the flush above could not write it: it is newer than the file.
@@ -10558,10 +10596,14 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     if !r.books.is_dirty() {
         r.books = book_places;
     }
+    let t_sub = std::time::Instant::now();
     load_views(r, VIEWS_PATH);
+    let ms_views = t_sub.elapsed().as_millis();
+    let t_sub = std::time::Instant::now();
     // WAS 3,802 ms OF THE BOOT — 83% of the whole dead time, in this one call. See
     // `user_playlist_rows`, which now batches its filename resolution; it is 133 ms here.
     refresh_playlists(r);
+    let ms_refresh = t_sub.elapsed().as_millis();
     r.liked = liked;
     r.liked_path = Some(likes::INTERNAL_LIKED_PATH.to_string());
     if let Some(ids) = imported {
@@ -10572,12 +10614,17 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     r.db_path = Some(p.clone());
     let ms_install = t_phase.elapsed().as_millis();
     let t_phase = std::time::Instant::now();
-    start_art_cache(r, &p);
+    if ART_DEFER.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        *ART_PENDING.lock().unwrap() = Some(p.clone());
+    } else {
+        start_art_cache(r, &p);
+    }
     let ms_art = t_phase.elapsed().as_millis();
     eprintln!(
         "cinder-ffi: cinder_db_open {} ms = db_open {ms_dbopen} + build {ms_build} + playlists \
          {ms_plists} + likes {ms_liked} + import {ms_import} + lock {ms_lock} + install \
-         {ms_install} + artcache {ms_art}",
+         {ms_install} (set_library {ms_set}, undecodable {ms_undec}, views {ms_views}, playlists \
+         {ms_refresh}) + artcache {ms_art}",
         t_open.elapsed().as_millis()
     );
     db_open_err_reset();

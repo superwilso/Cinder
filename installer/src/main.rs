@@ -17,9 +17,10 @@
 //! instead of inventing a step. There is NO update entry in the player's own menus on this
 //! generation; a host has to trigger it.
 //!
-//! TWO FRONT ENDS, one core. `gui` is a plain Win32 window (no toolkit, no crates — see its
-//! module docs for why); `console` is the text one, and is what runs on Linux, over RDP, and with
-//! `--yes`. Both drive `stage`, so there is one implementation of what an install actually is.
+//! TWO FRONT ENDS, one core. `web` is a page in the browser, served to this computer alone, and is
+//! what opens on every OS when the installer is started without an action (a double-click); see
+//! its module docs for why a page. `console` is the text one: `--console`, `--yes`, and every
+//! action flag. Both drive `stage`, so there is one implementation of what an install actually is.
 
 #[cfg(any(test, target_os = "macos"))]
 mod bot;
@@ -28,13 +29,12 @@ mod console;
 mod device;
 mod llusbdac;
 mod payload;
+mod recover;
 mod release;
 mod report;
 mod sony_tables;
 mod stage;
-
-#[cfg(windows)]
-mod gui;
+mod web;
 
 pub use payload::CATALOGUE;
 
@@ -71,14 +71,10 @@ fn help() {
     println!("  --report         save cinder-report.txt (the player's logs) to attach to an issue");
     println!("  --dry-run        walk the whole flow, write nothing, flash nothing");
     println!("  -y, --yes        no questions: take the saved or default answers and go");
-    println!("  --console        force the text interface");
-    if cfg!(windows) {
-        println!("  --gui            force the window (default when double-clicked)");
-        println!();
-        println!(
-            "  To try the window WITHOUT touching a player:  cinder-installer --gui --dry-run"
-        );
-    }
+    println!("  --console        use the text interface instead of the page in your browser");
+    println!("  --gui            open the page in your browser (the default with no action)");
+    println!();
+    println!("  To try the page WITHOUT touching a player:  cinder-installer --gui --dry-run");
     println!("  -h, --help       this help");
     println!();
     if cfg!(windows) {
@@ -147,15 +143,6 @@ fn check_for_updates() -> i32 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // Not in --help: renders the README's pictures of the window from a canned player, for
-    // tools/render_installer_screenshots.sh. It reads no drive and writes only the PNGs.
-    #[cfg(windows)]
-    if let Some(i) = args.iter().position(|a| a == "--screenshots") {
-        let dir = args
-            .get(i + 1)
-            .map_or_else(|| PathBuf::from("."), PathBuf::from);
-        std::process::exit(gui::screenshots(&dir));
-    }
     let mut explicit: Option<PathBuf> = None;
     let mut assume_yes = false;
     let mut action: Option<Action> = None;
@@ -194,27 +181,17 @@ fn main() {
         }
     }
 
-    // The window is the right default for someone who downloaded an .exe and double-clicked it,
-    // and the wrong one for every scripted or remote use. `owns_its_console` is what tells those
-    // apart: a double-click gets a console created for it and nothing else in it.
-    #[cfg(windows)]
-    let want_gui = force_gui
+    // The page is the right default for someone who downloaded the installer and double-clicked
+    // it, on any OS; anything that names what to do (an action, --yes, a drive) is a script or a
+    // person at a terminal, and gets the text front end it asked for.
+    let want_page = force_gui
         || (!force_console
             && !assume_yes
             && !clean
             && !report
             && action.is_none()
-            && gui::owns_its_console());
-    // Both only steer the Windows front-end choice; off Windows there is one front end.
-    #[cfg(not(windows))]
-    let _ = (force_console, force_gui);
+            && explicit.is_none());
 
-    #[cfg(windows)]
-    if want_gui {
-        std::process::exit(gui::run(action, dry));
-    }
-
-    println!("Cinder installer {VERSION} — channels {}", channels());
     if let Err(rc) = check_payload() {
         std::process::exit(rc);
     }
@@ -222,6 +199,10 @@ fn main() {
         Ok(c) => c,
         Err(rc) => std::process::exit(rc),
     };
+    if want_page {
+        std::process::exit(web::serve(dry));
+    }
+    println!("Cinder installer {VERSION} — channels {}", channels());
 
     // ── locate the player ──
     let target = match explicit {

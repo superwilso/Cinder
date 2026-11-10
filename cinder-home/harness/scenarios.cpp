@@ -2282,7 +2282,9 @@ static void s_codec_bt_lit(void) {
     cinder_harness_run();
     check_eq(codec_standbys(), 1, "playing over Bluetooth with the screen on: the codec goes to standby, once");
     long long at = cinder_harness_first_ms("cinder_codec_set_standby");
-    check_range(at, 28000, 60000, "…about thirty seconds in");
+    // Seconds, not thirty: stage 1 begins 5 s into a dark screen and the driver ignores standby
+    // during it, so a later standby never landed (11-10).
+    check_range(at, 1000, 27999, "…within a few seconds, not thirty");
 }
 static void s_codec_jack_lit(void) {
     healthy_device();

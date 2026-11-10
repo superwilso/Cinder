@@ -257,6 +257,26 @@ fn main() {
 
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let ch_root = manifest.parent().unwrap().join("cinder-home");
+
+    // The player app's own version, which is what the payload installs and what a player reports
+    // in cinder_running.txt. The installer's crate version is the release number alone (0.4.1 for
+    // every 0.4.1-rcN), so comparing a player against that would call rc3 out of date under rc3.
+    let settings = manifest
+        .parent()
+        .unwrap()
+        .join("player/cinder-ui/src/settings.rs");
+    println!("cargo:rerun-if-changed={}", settings.display());
+    let player_version = fs::read_to_string(&settings)
+        .ok()
+        .and_then(|t| {
+            let i = t.find("macro_rules! cinder_version")?;
+            let rest = &t[i..];
+            let a = rest.find('"')? + 1;
+            let b = a + rest[a..].find('"')?;
+            Some(rest[a..b].to_string())
+        })
+        .unwrap_or_else(|| env::var("CARGO_PKG_VERSION").unwrap());
+    println!("cargo:rustc-env=CINDER_PLAYER_VERSION={player_version}");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let mut src = String::new();

@@ -138,7 +138,10 @@ That is the escape. You land on stock. If you want the counter to do it instead,
 alone for ~4 boot attempts.
 
 ## Step 1 — manual escape hatch over USB-MSC
-If it's stable enough to mount as USB-MSC:
+If it's stable enough to mount as USB-MSC, the installer does this for you: open it and choose
+**Fix a problem**, then **Start Cinder again** (clears the latch and retries the installed build),
+**Use Sony's player once**, or **Keep using Sony's player** (until you choose Start Cinder again).
+Each drops or removes one of the files below on the player's drive. By hand, from Linux:
 ```bash
 tools/flash.sh --clear-latch             # arms cinderhome_clear -> retry the installed build
 : > /tmp/cinderhome_off
@@ -146,7 +149,8 @@ tools/flash.sh --push /tmp/cinderhome_off  # stock UI on next boot
 ```
 
 ## Step 2 — flash the uninstaller
-Removes the wrapper entirely and restores the original scrobbler:
+Removes the wrapper entirely and restores the original scrobbler. In the installer: **Remove
+Cinder**. By hand, from Linux:
 ```bash
 tools/flash.sh uninstall
 ```
