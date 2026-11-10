@@ -11,9 +11,10 @@
  *   cinder-wifi off       leave the network and power the radio down                   -> 0
  *   cinder-wifi status    key=value lines: state, ssid (hex), ip, signal, mac          -> 0
  *   cinder-wifi scan      one line a network: <signal dBm>\t<security>\t<ssid hex>       -> 0 / 1
+ *                         (/contents/cinder_wifi.txt, if there, is imported first and deleted)
  *   cinder-wifi join      stdin: SSID line, then password line (empty = open network)  -> 0 / 2
- *                         writes the saved network; does not connect (run `on` after)
- *   cinder-wifi forget    delete the saved network                                     -> 0
+ *                         saves the network beside the others; does not connect (run `on` after)
+ *   cinder-wifi forget    delete the network the player is on (none: every saved one)  -> 0
  *   cinder-wifi timesync  set the system clock and the RTC from the internet (NTP)     -> 0 / 1
  *   cinder-wifi nqptp-start   AirPlay 2's timing (nqptp) on UDP 319/320, which needs root to
  *                         bind; it then runs as the caller (CINDER_RUN_AS)               -> 0 / 1
@@ -46,6 +47,7 @@
 #include <unistd.h>
 
 #include "tz_offset.h"
+#include "wifi_conf.h"
 
 #ifndef DIR_
 #define DIR_ "/system/vendor/cinder/wifi"   /* a test build may say otherwise; the release never does */
@@ -237,35 +239,104 @@ static int line(char* buf, size_t cap)
     return 1;
 }
 
+/* Save one network into the list, replacing one of the same name; the others stay. 0 saved, 2 a
+ * field is not usable (the reason printed), 1 the list could not be written. */
+static int save_network(const char* ssid, const char* user, const char* pass, const char* domain)
+{
+    static char conf[16384], kept[16384], block[1024];
+    size_t sn = strlen(ssid);
+    if (sn == 0 || sn > 32) { puts("the network name must be 1 to 32 bytes"); return 2; }
+    char h[65];
+    hex((const unsigned char*)ssid, sn, h);
+    const char* why;
+    int bn = wifi_block(block, sizeof block, h, user, pass, domain, &why);
+    if (bn < 0) { puts(why); return 2; }
+    size_t cn = 0;
+    FILE* in = fopen(CONF, "r");
+    if (in) { cn = fread(conf, 1, sizeof conf - 1, in); fclose(in); }
+    conf[cn] = 0;
+    if (!strstr(conf, "ctrl_interface=")) strcpy(conf, "ctrl_interface=" RUN "/ctrl\nupdate_config=0\n");
+    size_t kn = wifi_conf_drop(conf, h, kept, sizeof kept);
+    mkdir(DATA, 0700);
+    const char* tmp = CONF ".tmp";
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) { puts("cannot write the saved network"); return 1; }
+    int ok = write(fd, kept, kn) == (ssize_t)kn && write(fd, block, (size_t)bn) == bn && fsync(fd) == 0;
+    close(fd);
+    memset(block, 0, sizeof block);
+    memset(conf, 0, sizeof conf);
+    memset(kept, 0, sizeof kept);
+    if (!ok || rename(tmp, CONF) != 0) { unlink(tmp); puts("cannot save the network"); return 1; }
+    return 0;
+}
+
 static int do_join(void)
 {
     char ssid[256], pass[256];
     if (!line(ssid, sizeof ssid)) return 2;
     line(pass, sizeof pass);
-    size_t sn = strlen(ssid), pn = strlen(pass);
-    if (sn == 0 || sn > 32) { puts("the network name must be 1 to 32 bytes"); return 2; }
-    if (pn && (pn < 8 || pn > 63)) { puts("a WPA password is 8 to 63 characters"); return 2; }
-    for (size_t i = 0; i < pn; i++)
-        if (pass[i] < 32 || pass[i] > 126) { puts("the password has a character WPA does not allow"); return 2; }
-    char h[65];
-    hex((const unsigned char*)ssid, sn, h);
-    mkdir(DATA, 0700);
-    const char* tmp = CONF ".tmp";
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) { puts("cannot write the saved network"); return 1; }
-    FILE* f = fdopen(fd, "w");
-    fprintf(f, "ctrl_interface=" RUN "/ctrl\nupdate_config=0\nnetwork={\n ssid=%s\n", h);
-    if (pn) fprintf(f, " key_mgmt=WPA-PSK SAE\n ieee80211w=1\n psk=\"%s\"\n", pass);
-    else fprintf(f, " key_mgmt=NONE\n");
-    fprintf(f, "}\n");
-    if (fflush(f) != 0 || fsync(fd) != 0) { fclose(f); unlink(tmp); puts("cannot write the saved network"); return 1; }
-    fclose(f);
+    int rc = save_network(ssid, "", pass, "");
     memset(pass, 0, sizeof pass);
-    if (rename(tmp, CONF) != 0) { unlink(tmp); puts("cannot save the network"); return 1; }
+    if (rc) return rc;
     /* A running supplicant reads the new network now; a stopped one at the next `on`. */
     char out[256];
     wpa_cli("reconfigure", out, sizeof out);
     puts("saved");
+    return 0;
+}
+
+/* Networks typed on a computer into /contents/cinder_wifi.txt (wifi_conf.h has the format) go
+ * into the list, and the file is deleted: the drive is readable by any computer it is plugged
+ * into, and the passwords are kept in /data from here on. */
+#define IMPORT "/contents/cinder_wifi.txt"
+static void import_file(void)
+{
+    static char text[16384];
+    FILE* f = fopen(IMPORT, "r");
+    if (!f) return;
+    size_t n = fread(text, 1, sizeof text - 1, f);
+    fclose(f);
+    text[n] = 0;
+    int saved = 0, bad = 0;
+    for (char* l = strtok(text, "\n"); l; l = strtok(NULL, "\n")) {
+        char *ssid, *user, *pass, *domain;
+        if (!wifi_import_line(l, &ssid, &user, &pass, &domain)) continue;
+        if (save_network(ssid, user, pass, domain) == 0) saved++;
+        else bad++;
+    }
+    memset(text, 0, sizeof text);
+    unlink(IMPORT);
+    if (saved) { char out[256]; wpa_cli("reconfigure", out, sizeof out); }
+    printf("cinder_wifi.txt: %d network(s) saved%s, file deleted\n", saved, bad ? ", some lines not usable" : "");
+}
+
+/* Forget the network the player is on; with none, every saved one. */
+static int do_forget(void)
+{
+    static char st[4096], conf[16384], kept[16384];
+    char v[256], h[65];
+    wpa_cli("status", st, sizeof st);
+    FILE* in = fopen(CONF, "r");
+    if (!in || !field(st, "ssid", v, sizeof v)) {
+        if (in) fclose(in);
+        unlink(CONF);
+        puts("forgotten");
+        return 0;
+    }
+    size_t cn = fread(conf, 1, sizeof conf - 1, in);
+    fclose(in);
+    conf[cn] = 0;
+    unsigned char raw[32];
+    hex(raw, unescape(v, raw, sizeof raw), h);
+    size_t kn = wifi_conf_drop(conf, h, kept, sizeof kept);
+    const char* tmp = CONF ".tmp";
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int ok = fd >= 0 && write(fd, kept, kn) == (ssize_t)kn && fsync(fd) == 0;
+    if (fd >= 0) close(fd);
+    memset(conf, 0, sizeof conf);
+    memset(kept, 0, sizeof kept);
+    if (!ok || rename(tmp, CONF) != 0) { unlink(tmp); unlink(CONF); }
+    puts("forgotten");
     return 0;
 }
 
@@ -386,6 +457,7 @@ int main(int argc, char** argv)
     const char* v = argv[1];
     if (access(DIR_ "/wlan_mt.ko", R_OK) != 0) { puts("Wi-Fi is not installed"); return 4; }
     if (strcmp(v, "on") == 0) {
+        import_file();
         /* No network saved yet (a new player): the radio still has to come up, or Select network
          * has nothing to scan with and the switch falls back to off (#55). wpa_supplicant with
          * an empty list scans and joins nothing; `join` replaces this file. */
@@ -412,7 +484,7 @@ int main(int argc, char** argv)
     if (strcmp(v, "status") == 0) return do_status();
     if (strcmp(v, "scan") == 0) return do_scan();
     if (strcmp(v, "join") == 0) return do_join();
-    if (strcmp(v, "forget") == 0) { unlink(CONF); puts("forgotten"); return 0; }
+    if (strcmp(v, "forget") == 0) return do_forget();
     if (strcmp(v, "timesync") == 0) return do_timesync();
     /* Asleep, the radio wakes for the access point's beacons only: a phone or computer connecting
      * to the player waited 4-20 s, or gave up (measured 11-05, 192.168.0.x, -65 dBm). Awake it

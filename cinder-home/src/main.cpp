@@ -1761,11 +1761,13 @@ void deferred_up() {
         // Verification snapshot ~3 s later, straight into cinderhome.log: service state per init,
         // the live process, and the gadget functions (now expected to read `mass_storage,adb`).
         // One log pull answers "is adb enumerated, or is it just the Windows driver?" (docs/adb_setup.md).
-        std::system("sleep 3; echo \"[cinder-home] adb: init.svc.adbd=$(getprop init.svc.adbd) "
+        // In the background: waiting for it here held the touchscreen dead for 3 s of every dev
+        // boot (11-10).
+        std::system("(sleep 3; echo \"[cinder-home] adb: init.svc.adbd=$(getprop init.svc.adbd) "
                     "proc=$(ps | grep -c '[a]dbd') "
                     "functions=$(cat /sys/class/android_usb/android0/functions 2>/dev/null) "
                     "idProduct=$(cat /sys/class/android_usb/android0/idProduct 2>/dev/null) "
-                    "state=$(getprop sys.usb.state)\"");
+                    "state=$(getprop sys.usb.state)\") &");
     });
     // And tell Sony's USB manager, so its own cable and resume handling keeps adb (see
     // usb_adb_enable_dev). dev_adb_keepalive stays as the backstop.
@@ -2285,10 +2287,15 @@ static void input_open() {
     for (int i = 0; i < g_evn; ++i) {
         char name[64] = {0};
         if (ioctl(g_evfds[i], EVIOCGNAME_64, name) < 0) std::snprintf(name, sizeof name, "?");
+        // The touchscreen only. Probing the other seven (grab, then release) cost 120 ms each, the
+        // release waiting on the kernel's RCU grace period: 0.84 s of a dead screen per boot (11-10).
+        if (g_evfds[i] != g_touch_fd) {
+            std::snprintf(msg, sizeof msg, "input: node %d '%s'", i, name);
+            clog_(msg);
+            continue;
+        }
         int grab = ioctl(g_evfds[i], EVIOCGRAB_, (void*)1);
         int gerr = (grab < 0) ? errno : 0;
-        if (grab == 0 && g_evfds[i] != g_touch_fd)
-            ioctl(g_evfds[i], EVIOCGRAB_, (void*)0);   // probe only — release non-touch nodes
         // HOLD the grab on the touchscreen: we are the Home app (the exclusive touch consumer),
         // and holding it locks out any late-grabbing daemon from stealing the stream.
         std::snprintf(msg, sizeof msg, "input: node %d '%s'%s grab=%s%s", i, name,
@@ -3784,7 +3791,12 @@ static void* wifi_thread(void* arg) {
     int rc = 0;
     bool scanned = false;
     switch (job->act) {
-        case CINDER_ACT_WIFI_ON:  rc = wifi_helper("on", nullptr, &out); break;
+        case CINDER_ACT_WIFI_ON: {
+            rc = wifi_helper("on", nullptr, &out);
+            size_t at = out.find("cinder_wifi.txt:");   // networks imported from the drive (#55)
+            if (at != std::string::npos) clog_(("wifi: " + out.substr(at, out.find('\n', at) - at)).c_str());
+            break;
+        }
         case CINDER_ACT_WIFI_OFF: rc = wifi_helper("off", nullptr, &out); break;
         case CINDER_ACT_WIFI_SCAN: rc = wifi_helper("scan", nullptr, &scan); scanned = true; break;
         case CINDER_ACT_WIFI_JOIN:
@@ -9720,6 +9732,7 @@ static unsigned long long g_rescan_stat = 0;  // file signature at the last chec
 static int  g_rescan_quiet       = 0;   // consecutive checks that saw no change
 static int  g_rescan_confirms    = 0;   // consecutive scans issued on a quiet store that found nothing
 static void media_rescan();             // defined with the MediaStore block, far below
+static void media_scan_cancel();        // ditto
 
 // Arm the campaign right after a Scan() has been requested. Both signatures are taken now, before
 // the scanner has had time to write, so the scan's own first write reads as "busy", not "settled".
@@ -10247,6 +10260,7 @@ void enter_usb_msc() {
     //    function already runs under carry_out's "enter USB MSC" guard, which covers the IPC.
     set_transport(false);
     cinder_audio_release_sequence();
+    media_scan_cancel();   // a scan still running would record the whole library as deleted
     // ...AND CLOSE THE SERVICE-SIDE PLAYER. Dropping our own `g_seq`/`g_nts` handles is not the
     // same thing: MediaStoreService keeps the track file itself OPEN under /contents after a stop,
     // and one open fd there is all it takes for the umount below to fail EBUSY. Measured on device
@@ -11341,6 +11355,8 @@ void* ms_scanner_ctor(void* self, void* store)
     asm("_ZN3pst8services12mediascanner12MediaScannerC1EP18IMediaStoreService");
 int   ms_scanner_scan(void* self, void* listener, int lang)
     asm("_ZN3pst8services12mediascanner12MediaScanner4ScanEPNS1_21IMediaScannerListenerENS_12mediascanner10language_tE");
+void  ms_scanner_cancel(void* self)
+    asm("_ZN3pst8services12mediascanner12MediaScanner6CancelEv");
 }
 
 // Defaults, overridable by /contents/cinder_mediastore.conf (db=, root=, extra=, dirs=).
@@ -11441,6 +11457,32 @@ static void media_rescan() {
     char m[96];
     std::snprintf(m, sizeof m, "rescan: MediaScanner::Scan rc=%d (0 = accepted; 20 = not configured)", rc);
     clog_(m);
+}
+
+// Stop whatever scan MediaStoreService is running. Sony's Cancel() sends an empty request (no scan
+// id: disassembled 11-10), so it reaches a scan this object did not start. NEEDED BEFORE USB
+// STORAGE: a scan accepted a moment earlier keeps running after /contents and the card are handed
+// to the PC, sees no files, and records every track as deleted. Measured 11-10: Scan() at 996.5 s,
+// USB storage at 997.2 s, library 4,769 tracks -> 0 on exit.
+static void media_scan_cancel() {
+    void* svc = ms_get_instance();
+    void* proxy = svc ? *reinterpret_cast<void**>(reinterpret_cast<char*>(svc) + 4) : nullptr;
+    if (!proxy) return;
+    unsigned long long scanner[8];
+    std::memset(scanner, 0, sizeof scanner);
+    ms_scanner_ctor(scanner, proxy);
+    ms_scanner_cancel(scanner);
+    // Let a scan that was mid-write finish its current write before the volumes go: wait for the
+    // store's file to stop moving, at most 3 s.
+    unsigned long long prev = 0;
+    for (int i = 0; i < 6; ++i) {
+        const unsigned long long sig =
+            cinder_db_signature("/db/MTPDB.dat", "/db/MTPDB.dat-wal", "/db/MTPDB.dat-journal");
+        if (i && sig == prev) break;
+        prev = sig;
+        usleep(500000);
+    }
+    clog_("usb-msc: asked MediaStore to cancel any scan in progress");
 }
 
 // ── Soundscapes ──────────────────────────────────────────────────────────────────────────────────
@@ -12053,6 +12095,11 @@ static const Fdk* fdk_get() {
 
 enum { RADIO_PCM_MAX = 16384 };  // shorts: 8 channels x 2048 (HE-AAC) and MP3's 1152 x 2 both fit
 
+// What can make a stream break up, counted for the log (#55: "interrupted by random noises every
+// couple of seconds"): the output running dry, frames the decoder could not use, and seconds spent
+// waiting on the network. Reported once a minute while any of them moves.
+static unsigned g_radio_xruns = 0, g_radio_bad = 0, g_radio_waits = 0;
+
 struct RadioDec {
     bool aac = false;
     mp3dec_t mp3;
@@ -12071,9 +12118,15 @@ struct RadioDec {
     int step(const unsigned char* b, size_t n, size_t* used, short* pcm, int* hz, int* ch) {
         *used = 0;
         if (!aac) {
+            // minimp3 reads a frame cut off by the end of the buffer as junk: it skips those bytes
+            // and resets, losing the bits the next frame borrows. Decoding to the last byte of each
+            // network read did that ~200 times a minute: the noise in #55. 4 KB holds a whole frame
+            // (1,441 bytes at most) and the next one's header.
+            if (n < 4096) return -1;
             mp3dec_frame_info_t info;
             int s = mp3dec_decode_frame(&mp3, b, (int)n, pcm, &info);
             if (info.frame_bytes == 0) return -1;
+            if (s == 0) ++g_radio_bad;  // skipped bytes that were not a frame
             *used = (size_t)info.frame_bytes;
             *hz = info.hz;
             *ch = info.channels;
@@ -12089,7 +12142,10 @@ struct RadioDec {
             return si[2] >= 1 && si[1] * si[2] <= RADIO_PCM_MAX ? si[1] : 0;
         }
         if (e >= 0x2000 && e < 0x3000) return -2;  // an initialisation error: a kind of AAC it lacks
-        if (e != 0x1002 /*AAC_DEC_NOT_ENOUGH_BITS*/) return ++errors > 500 ? -2 : 0;  // skipped a damaged frame
+        if (e != 0x1002 /*AAC_DEC_NOT_ENOUGH_BITS*/) {  // skipped a damaged frame
+            ++g_radio_bad;
+            return ++errors > 500 ? -2 : 0;
+        }
         if (n == 0) return -1;
         unsigned char* p = (unsigned char*)b;
         unsigned size = (unsigned)n, valid = (unsigned)n;
@@ -12160,7 +12216,11 @@ static bool radio_out_write(RadioOut& o, const short* pcm, unsigned frames) {
     if (o.pcm) {
         while (n) {
             long w = g_alsa.writei(o.pcm, out, n);
-            if (w == -EPIPE || w == -ESTRPIPE || w == -EINTR) { g_alsa.prepare(o.pcm); continue; }
+            if (w == -EPIPE || w == -ESTRPIPE || w == -EINTR) {
+                if (w == -EPIPE) ++g_radio_xruns;
+                g_alsa.prepare(o.pcm);
+                continue;
+            }
             if (w < 0) return false;
             out += w * 2;
             n -= (size_t)w;
@@ -12304,6 +12364,22 @@ static void* radio_thread(void*) {
                 frame = st;
             }
             if (!radio_out_write(out, frame, (unsigned)frames)) { note = "The output closed"; return false; }
+            {
+                static long long said_ms = 0;
+                static unsigned said[3] = { 0, 0, 0 };
+                const long long t = now_ms();
+                const unsigned now[3] = { g_radio_xruns, g_radio_bad, g_radio_waits };
+                if (t - said_ms >= 60000) {
+                    if (now[0] != said[0] || now[1] != said[1] || now[2] != said[2]) {
+                        char m[160];
+                        std::snprintf(m, sizeof m, "radio: last minute — %u underruns, %u bad frames, %u s waiting "
+                                      "for the network", now[0] - said[0], now[1] - said[1], now[2] - said[2]);
+                        clog_(m);
+                    }
+                    said_ms = t;
+                    std::memcpy(said, now, sizeof said);
+                }
+            }
             if (!playing_said) { radio_say("playing", title, ""); playing_said = true; }
             return true;
         };
@@ -12390,6 +12466,7 @@ static void* radio_thread(void*) {
             audio.erase(audio.begin(), audio.begin() + (long)used);
             if (!g_radio_run) break;
             ssize_t n = radio_read(fd, buf, sizeof buf);
+            if (n == 0) ++g_radio_waits;  // a second with nothing from the network
             if (n < 0) {
                 // A controller's link is one song: its end is the normal end, not a fault.
                 note = g_radio_station == -2 ? "" : "The station stopped sending";

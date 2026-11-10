@@ -1050,6 +1050,9 @@ static void s_usb_msc(void) {
     // see a reader with no medium.
     check(cinder_harness_count("cinder_audio_release_sequence") >= 1,
           "released the pinned track sequence before handing the volume over");
+    // A scan still running when the volumes go sees no files and deletes the whole library (11-10).
+    check(cinder_harness_count("pst:MediaScanner::Cancel") >= 1,
+          "cancelled any library scan before handing the volume over");
 }
 
 // ── auto power-off, and the guards that keep it out of somebody's hand ───────────────────────

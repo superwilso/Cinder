@@ -946,6 +946,7 @@ fn pinnable(s: Screen) -> bool {
             | Screen::Fm
             | Screen::UsbDac
             | Screen::Receiver
+            | Screen::NetRadio
     )
 }
 
@@ -1037,6 +1038,7 @@ fn screen_token(s: Screen) -> &'static str {
         Screen::Fm => "fm",
         Screen::UsbDac => "usbdac",
         Screen::Receiver => "rx",
+        Screen::NetRadio => "radio",
         _ => "np",
     }
 }
@@ -1059,6 +1061,7 @@ fn screen_from_token(t: &str) -> Option<Screen> {
         "fm" => Screen::Fm,
         "usbdac" => Screen::UsbDac,
         "rx" => Screen::Receiver,
+        "radio" => Screen::NetRadio,
         _ => return None,
     })
 }
@@ -3487,10 +3490,15 @@ impl App {
                 }
             }
             ShelfHit::Go(i) => {
+                self.shelf_open = false;
                 if let Some(p) = self.pins.get(i).and_then(|p| p.clone()) {
                     self.restore_pin(&p);
+                    // The station list is the shell's to read (#55, plaquette: radio could not be
+                    // pinned), as it is when the Wi-Fi page opens it.
+                    if p.screen == Screen::NetRadio {
+                        return vec![Action::RadioOpen];
+                    }
                 }
-                self.shelf_open = false;
             }
             ShelfHit::Clear(i) => {
                 if let Some(slot) = self.pins.get_mut(i) {
@@ -14778,6 +14786,7 @@ fn screen_title(s: Screen) -> &'static str {
         Screen::Language => crate::i18n::text("Language"),
         Screen::Skins => crate::i18n::text("Skins"),
         Screen::Eq => crate::i18n::text("Equalizer"),
+        Screen::NetRadio => crate::i18n::text("Internet radio"),
         s => MENU
             .iter()
             .find(|m| m.0 == s)
@@ -25311,6 +25320,27 @@ mod tests {
         a.open_shelf();
         a.tap(100, crate::shelf::slot_center_y(0));
         assert_eq!(a.current(), Screen::Books);
+    }
+
+    #[test]
+    fn internet_radio_can_be_pinned_and_its_pin_reloads_the_stations() {
+        let mut a = unlocked();
+        a.push_for_test(Screen::NetRadio);
+        a.open_shelf();
+        let (pbx, pby) = crate::shelf::pin_button_center();
+        a.tap(pbx, pby);
+        let pin = a.pins[0].as_ref().expect("the radio is a place");
+        assert_eq!(pin.title, "Internet radio");
+        let mut b = unlocked();
+        b.shelf_pin_decode(0, &a.shelf_pin_encode(0));
+        assert_eq!(b.pins[0], a.pins[0], "it survives a reboot");
+        b.go(Screen::Library);
+        b.open_shelf();
+        assert_eq!(
+            b.tap(100, crate::shelf::slot_center_y(0)),
+            vec![Action::RadioOpen]
+        );
+        assert_eq!(b.current(), Screen::NetRadio);
     }
 
     #[test]
