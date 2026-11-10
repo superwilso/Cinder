@@ -641,6 +641,8 @@ pub enum Action {
     /// Settings ▸ Wi-Fi ▸ Phone remote switched on (true) or off. cinder-ffi starts and stops the
     /// server itself; the shell only drains its button presses and uploads.
     Remote(bool),
+    /// Settings ▸ Wi-Fi ▸ Phone remote ▸ Forget phones: every paired phone needs the code again.
+    RemoteForget,
     /// Settings ▸ Wi-Fi ▸ AirPlay switched: the shell reads `cinder_wifi_airplay()` and starts or
     /// stops the receiver to match.
     WifiAirPlay,
@@ -1348,7 +1350,7 @@ pub struct App {
     /// from real elapsed time (never a frame count — this project has already been bitten once by
     /// assuming 60 fps when the device renders at ~32), and only while something is actually in
     /// flight, so an idle screen stays completely static and repaints nothing.
-    bt_busy_phase: f32,
+    busy_phase: f32,
     /// Milliseconds left of the optimistic play/pause hold. See `set_playing_optimistic`.
     playing_hold_ms: u32,
     /// Equalizer: 10 band gains (dB), selected band, active preset index.
@@ -1724,8 +1726,10 @@ pub struct App {
     radio_stations: Vec<crate::netradio::Station>,
     radio_status: crate::netradio::Status,
     radio_pick: Option<usize>,
-    /// Settings ▸ Wi-Fi ▸ Phone remote: on for this boot only (never saved), its code and port.
+    /// Settings ▸ Wi-Fi ▸ Phone remote: serving now (the switch itself is `Opt::WifiRemote`, saved),
+    /// its code and port, and how many phones are paired.
     remote_on: bool,
+    remote_phones: usize,
     remote_code: String,
     remote_port: u16,
     /// The link went while the remote was on: cinder-ffi stops the server at the next frame.
@@ -2098,7 +2102,7 @@ impl Default for App {
             bt_connecting: None,
             bt_connecting_name: None,
             bt_connecting_ms: 0,
-            bt_busy_phase: 0.0,
+            busy_phase: 0.0,
             playing_hold_ms: 0,
             eq_bands: data::EQ_PRESETS[3].1, // "A1"
             eq_sel: 0,
@@ -2270,6 +2274,7 @@ impl Default for App {
             radio_status: crate::netradio::Status::default(),
             radio_pick: None,
             remote_on: false,
+            remote_phones: 0,
             remote_code: String::new(),
             remote_port: 0,
             remote_dropped: false,
@@ -2937,7 +2942,7 @@ impl App {
             enhanced: self.bt_enhanced,
             enhanced_supported: self.bt_enhanced_supported,
             connecting: self.bt_connecting.is_some(),
-            busy_phase: self.bt_busy_phase,
+            busy_phase: self.busy_phase,
             paired: &self.bt_paired,
             debug_log: self.bt_debug_log,
         }
@@ -7508,23 +7513,68 @@ impl App {
     fn remote_row_note(&self) -> String {
         if self.remote_on {
             self.remote_address()
+        } else if self.opt(Opt::WifiRemote) {
+            crate::i18n::text("On").to_string()
         } else {
             crate::i18n::text("Off").to_string()
         }
     }
-    /// A tap on Settings ▸ Wi-Fi ▸ Phone remote: the switch, and only while connected.
+    /// A tap on Settings ▸ Wi-Fi ▸ Phone remote: the switch (saved; the server runs whenever Wi-Fi
+    /// is connected), and Forget phones while any are paired.
     fn tap_remote(&mut self, _x: i32, y: i32) -> Vec<Action> {
+        if self.remote_phones > 0 && crate::wifi::hit_remote_forget(y) {
+            self.remote_phones = 0;
+            self.notify(crate::i18n::text("Phones forgotten"));
+            return vec![Action::RemoteForget];
+        }
         if !crate::wifi::hit_remote(y) {
             return vec![];
         }
-        if !self.remote_on && !matches!(self.wifi_status.state, crate::wifi::State::Connected) {
-            return vec![];
-        }
-        self.remote_on = !self.remote_on;
-        if !self.remote_on {
+        self.toggle_opt(Opt::WifiRemote);
+        let on = self.opt(Opt::WifiRemote);
+        if !on {
+            self.remote_on = false;
             self.remote_code.clear();
         }
-        vec![Action::Remote(self.remote_on)]
+        vec![Action::Remote(on)]
+    }
+    /// cinder-ffi: how many phones open the remote without the code.
+    pub fn set_remote_phones(&mut self, n: usize) {
+        self.remote_phones = n;
+    }
+    pub fn remote_phones(&self) -> usize {
+        self.remote_phones
+    }
+    /// The phone remote's Play: these tracks, from row `at`, in place of what was playing. No
+    /// replace-or-keep question: it would be asked on the player, away from the phone, and the
+    /// page has Play next and Add to queue for keeping.
+    pub fn remote_play(&mut self, ids: Vec<i64>, at: usize) -> Vec<Action> {
+        if at >= ids.len() {
+            return vec![];
+        }
+        self.play_list = ids;
+        vec![Action::PlayListAt(at)]
+    }
+    /// The phone remote's Play next (`next`) and Add to queue: library tracks by id.
+    pub fn remote_queue(&mut self, ids: &[i64], next: bool) -> Vec<Action> {
+        let rows: Vec<SongRow> = ids
+            .iter()
+            .filter_map(|id| self.lib.songs.iter().find(|s| s.object_id == *id).cloned())
+            .collect();
+        let Some(first) = rows.first() else {
+            return vec![];
+        };
+        let name = if rows.len() == 1 {
+            first.title.clone()
+        } else {
+            crate::ui_format!("{} songs", rows.len())
+        };
+        if next {
+            self.notify_format("Playing next — {}", vec![("0", name)]);
+        } else {
+            self.notify_format("Added to Up Next — {}", vec![("0", name)]);
+        }
+        self.insert_rows(rows, if next { QueueAt::Next } else { QueueAt::Later })
     }
     /// cinder-ffi: the server is up with this code on this port (or did not start: `on` false).
     pub fn set_remote(&mut self, on: bool, code: &str, port: u16) {
@@ -10191,6 +10241,20 @@ impl App {
     pub fn rescanning(&self) -> bool {
         self.rescanning
     }
+    /// Is the player working on something that takes seconds and can fail? Drives the ring in the
+    /// status bar, so a scan or a connect can be seen from every screen, not only the one that
+    /// started it (the owner, 11-10).
+    pub fn busy(&self) -> bool {
+        use crate::wifi::State as W;
+        self.rescanning
+            || self.bt_scanning
+            || self.bt_connecting.is_some()
+            || self.bt_connecting_name.is_some()
+            || self.speakers_scanning
+            || self.wifi_scanning
+            || matches!(self.wifi_status.state, W::Busy | W::Connecting)
+            || self.radio_status.state == crate::netradio::State::Connecting
+    }
     /// What Settings ▸ Database shows: progress while a scan is outstanding, otherwise the size of
     /// the library it would rescan — which is the number people open that row to check.
     pub fn database_label(&self) -> String {
@@ -11781,7 +11845,7 @@ impl App {
                     self.bt_forget_armed,
                     self.bt_connecting,
                     self.bt_scanning,
-                    self.bt_busy_phase,
+                    self.busy_phase,
                     self.bt_paired_page,
                 );
                 // Drawn last so it sits over the list, matching how the tap handler treats it.
@@ -12006,7 +12070,9 @@ impl App {
                 &theme,
                 fonts,
                 &crate::wifi::RemoteView {
-                    on: self.remote_on,
+                    on: self.opt(Opt::WifiRemote),
+                    serving: self.remote_on,
+                    phones: self.remote_phones,
                     wifi_connected: matches!(self.wifi_status.state, crate::wifi::State::Connected),
                     address: &self.remote_address(),
                     code: &self.remote_code,
@@ -12290,7 +12356,8 @@ impl App {
                     theme.bg,
                 );
             }
-            crate::chrome::status_bar(c, &theme, fonts, np.clock, np.badge, np.battery);
+            let busy = self.busy().then_some(self.busy_phase);
+            crate::chrome::status_bar(c, &theme, fonts, np.clock, np.badge, np.battery, busy);
         }
 
         // Now Playing return bar, pinned to the bottom of the browsing screens. Drawn after the
@@ -12449,16 +12516,15 @@ impl App {
         // Bluetooth busy spinner. Only runs while a connect attempt or a scan is genuinely in
         // flight, so an idle Devices screen costs nothing and repaints nothing. Wrapped at 8s (one
         // whole number of 8-dot revolutions) to keep the f32 exact forever.
-        if self.bt_connecting.is_some() || self.bt_scanning {
-            // The ring has eight positions a second and only the two Bluetooth screens draw it, so
-            // a repaint is due when its head moves there: not every frame on every screen, which
-            // held most of a processor for the whole of a 30 s connect or scan (11-10).
-            let head = (self.bt_busy_phase * 8.0) as i32;
-            self.bt_busy_phase = (self.bt_busy_phase + dt / 1000.0) % 8.0;
-            animating = (self.bt_busy_phase * 8.0) as i32 != head
-                && matches!(self.current(), Screen::Bluetooth | Screen::Pairing);
-        } else if self.bt_busy_phase != 0.0 {
-            self.bt_busy_phase = 0.0; // one last repaint clears the spinner
+        if self.busy() {
+            // The ring has eight positions a second and the status bar draws it on every screen,
+            // so a repaint is due only when its head moves: not every frame, which held most of a
+            // processor for the whole of a 30 s connect or scan (11-10).
+            let head = (self.busy_phase * 8.0) as i32;
+            self.busy_phase = (self.busy_phase + dt / 1000.0) % 8.0;
+            animating = (self.busy_phase * 8.0) as i32 != head;
+        } else if self.busy_phase != 0.0 {
+            self.busy_phase = 0.0; // one last repaint clears the spinner
             animating = true;
         }
         // Fling momentum: integrate over real time, decay exponentially per unit time (0.92 per
@@ -25875,8 +25941,8 @@ mod tests {
         assert_eq!(a.bt_connecting, None);
     }
 
-    /// The spinner asks for a repaint when its head moves (eight times a second), and only on a
-    /// screen that draws it.
+    /// The spinner asks for a repaint when its head moves (eight times a second), on every screen:
+    /// the status bar carries the ring everywhere.
     #[test]
     fn the_spinner_repaints_per_step_not_per_frame() {
         let mut a = unlocked();
@@ -25887,10 +25953,10 @@ mod tests {
         let painted = (0..60).filter(|_| a.tick_dt(16)).count(); // 0.96 s of 60 Hz ticks
         assert!((6..=9).contains(&painted), "{painted} repaints in a second");
         a.push_for_test(Screen::NowPlaying);
-        assert_eq!(
-            (0..60).filter(|_| a.tick_dt(16)).count(),
-            0,
-            "not drawn here"
+        let painted = (0..60).filter(|_| a.tick_dt(16)).count();
+        assert!(
+            (6..=9).contains(&painted),
+            "{painted} repaints on Now Playing"
         );
     }
 
@@ -27182,13 +27248,9 @@ mod r4_tests {
         let mut a = App::unlocked();
         a.push_for_test(Screen::WifiRemote);
         let y = crate::chrome::HEADER_BOTTOM + 5;
-        a.set_wifi_status("state=on\n", "");
-        assert!(
-            a.tap(240, y).is_empty(),
-            "not connected: nothing to serve on"
-        );
         a.set_wifi_status("state=connected\nssid=6162\nip=192.0.2.5\n", "");
         assert_eq!(a.tap(240, y), vec![Action::Remote(true)]);
+        assert!(a.opt(Opt::WifiRemote), "saved: it comes back on with Wi-Fi");
         a.set_remote(true, "123456", 8080);
         assert_eq!(a.remote_address(), "http://192.0.2.5:8080");
         a.set_wifi_status("state=off\n", "");
@@ -27199,7 +27261,35 @@ mod r4_tests {
         assert!(!a.take_remote_dropped(), "once");
         a.set_wifi_status("state=connected\nssid=6162\nip=192.0.2.5\n", "");
         a.set_remote(true, "123456", 8080);
+        let forget = crate::chrome::HEADER_BOTTOM + crate::kit::ROW_H() + 5;
+        assert!(a.tap(240, forget).is_empty(), "no phones, no Forget row");
+        a.set_remote_phones(2);
+        assert_eq!(a.tap(240, forget), vec![Action::RemoteForget]);
         assert_eq!(a.tap(240, y), vec![Action::Remote(false)]);
+        assert!(!a.opt(Opt::WifiRemote) && !a.remote_on());
+    }
+
+    /// The phone's Play replaces the list without the on-player question; its queue buttons put
+    /// library tracks after the playing one or at the end.
+    #[test]
+    fn phone_remote_plays_and_queues() {
+        let mut a = App::unlocked();
+        let ids: Vec<i64> = a.lib.songs.iter().take(3).map(|s| s.object_id).collect();
+        assert_eq!(a.remote_play(ids.clone(), 1), vec![Action::PlayListAt(1)]);
+        assert_eq!(a.take_play_list(), ids);
+        assert!(a.remote_play(vec![], 0).is_empty());
+        assert_eq!(a.remote_queue(&ids[..1], false), vec![Action::QueueChanged]);
+        assert_eq!(a.context().len(), 1);
+        assert_eq!(a.remote_queue(&ids[1..], true), vec![Action::QueueChanged]);
+        assert_eq!(
+            a.context()[1].object_id,
+            ids[1],
+            "next goes straight after the playing one"
+        );
+        assert!(
+            a.remote_queue(&[-999_999], true).is_empty(),
+            "unknown ids queue nothing"
+        );
     }
 
     /// Internet radio: opening it asks for the file, a station plays (its URL handed over once),

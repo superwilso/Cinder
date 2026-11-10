@@ -18,6 +18,19 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **The phone remote does much more, and remembers your phone.** Besides the buttons and sending
+  music, the page on your phone now shows the cover and how far into the song you are, likes the
+  song, and has the library: search, albums, artists and playlists, each with Play, Shuffle, Play
+  next and Add to Up Next. Up Next is there too, and a tap jumps to a song in it. A phone enters the
+  code once and comes straight in after that (Wi-Fi ▸ Phone remote ▸ Forget phones clears them), and
+  the switch now stays on across restarts, serving whenever Wi-Fi is connected. Under More you can
+  sign the player in to Last.fm (with your own API key, approved on last.fm, so your password is
+  never typed into the player) or ListenBrainz, which also switches on Send plays.
+  *Device-unverified.*
+- **A busy ring in the top bar.** While the player is working on something that takes seconds — a
+  library scan, a Bluetooth or speaker search, a connect, Wi-Fi coming up, a station tuning in — a
+  small turning ring sits just left of ☰, on every screen, and goes when the work is done.
+  *Device-unverified.*
 - **The installer is a page in your browser, on Windows, macOS and Linux.** Double-click it (or run
   `sudo ./cinder-installer-macos`) and it opens a page that says what is on the player, offers what
   fits (install, update, or nothing to do), explains every option and what it changes on the
@@ -46,6 +59,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Wi-Fi that joined slowly had no address.** When joining took longer than 30 s, the player
+  stopped waiting before asking the router for an address. Wi-Fi then showed as connected while
+  nothing on the internet worked. It now keeps asking in the background. *Seen twice on the
+  owner's network on 11-10; the fix is device-unverified.*
+- **The installer offers a reinstall when the player already runs its version.** The button used to
+  read "Change Cinder's options", which looked like nothing could be updated. It now reads
+  "Reinstall Cinder …" and explains when to use it.
 - **The headphone amplifier sleeps during Bluetooth playback again after a reconnect.** Over
   Bluetooth the jack's DAC and amplifier are not used, and Cinder put them to sleep after 30 s.
   When the headphones reconnected and the screen went dark within that time, the player's own

@@ -283,6 +283,7 @@ cdd1bd6747c6fb0e vizset_peaks_fixed
 b9a97b23b9198a50 viz_below_line
 e22dec69c4d7c5ff viz_below_pulse
 2c0314c25f0e38bc accent_amber_now_playing
+3b538ead18ff6c90 status_busy
 90edc59ec783c7c2 accent_amber_display
 4b1a6e1db4f45174 accent_crimson_now_playing
 daccdd4844f5de1c accent_crimson_display
@@ -460,8 +461,8 @@ a11ebb3df4254069 wifi_update_busy
 56707d779ea3ffa7 wifi_networks
 c36dab556d7186e7 netradio_playing
 adccbaa6999bad73 netradio_find
-47674b4c580bca2f wifi_remote_on
+d532c31d8169e6b6 wifi_remote_on
 88de3ff2e98d0746 wifi_speakers_casting
 e9522e26abc6be0f wifi_options
-d1ee949a86f18f86 wifi_failed
+b1db06b4656d8c35 wifi_failed
 1aad37d87fe5677d keyboard_more_symbols

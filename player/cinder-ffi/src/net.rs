@@ -426,6 +426,82 @@ pub fn lf_submit(log_path: &str, offset_s: i64) -> Result<usize, String> {
     Ok(sent)
 }
 
+// ── Last.fm sign-in from the phone remote ────────────────────────────────────────────────────────
+//
+// Flint's way, done by the player: the person's own API key and secret (last.fm/api/account/create),
+// a token, "Yes, allow access" on last.fm in the phone's browser, then the session. The password is
+// never typed anywhere but last.fm. The result is the file Flint would have written.
+
+/// An API key or secret as Last.fm issues them: 32 hex digits.
+pub fn lf_key_ok(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// One signed Last.fm call, answered in JSON.
+fn lf_call(
+    key: &str,
+    secret: &str,
+    method: &str,
+    extra: &[(&str, &str)],
+) -> Result<String, String> {
+    let mut p = vec![
+        ("api_key".to_string(), key.to_string()),
+        ("method".to_string(), method.to_string()),
+    ];
+    p.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    let sig = md5_hex(&[BUSYBOX, "md5sum"], &lf_sign_base(&p, secret))?;
+    p.push(("api_sig".into(), sig));
+    p.push(("format".into(), "json".into()));
+    let (_, body) = run_curl(&[&format!("{LF_URL}?{}", form(&p))])?;
+    match lf_error(&body) {
+        None => Ok(body),
+        Some(14) => {
+            Err("Not allowed yet: press \"Yes, allow access\" on last.fm, then try again".into())
+        }
+        Some(10 | 26) => Err("Last.fm does not know that API key".into()),
+        Some(4 | 13) => Err("The API key and secret do not match".into()),
+        Some(n) => Err(format!("Last.fm said no (error {n})")),
+    }
+}
+
+/// A token to approve, and the page on last.fm that approves it.
+pub fn lf_token(key: &str, secret: &str) -> Result<(String, String), String> {
+    let body = lf_call(key, secret, "auth.getToken", &[])?;
+    let token = json_field(&body, "token").ok_or("Last.fm sent no token")?;
+    let url = format!("https://www.last.fm/api/auth/?api_key={key}&token={token}");
+    Ok((token, url))
+}
+
+/// The approved token's session: (session key, user name).
+pub fn lf_session(key: &str, secret: &str, token: &str) -> Result<(String, String), String> {
+    let body = lf_call(key, secret, "auth.getSession", &[("token", token)])?;
+    let sk = json_field(&body, "key").ok_or("Last.fm sent no session")?;
+    Ok((sk, json_field(&body, "name").unwrap_or_default()))
+}
+
+/// The file Flint writes (flint-core `Credentials::render`), so either can read the other's.
+pub fn lf_conf(key: &str, secret: &str, sk: &str, user: &str) -> String {
+    format!(
+        "# Flint's Last.fm credentials.\napi_key={key}\napi_secret={secret}\nsession_key={sk}\nusername={user}\n"
+    )
+}
+
+/// Who `cinder_lastfm.txt` signs in as, or None.
+pub fn lf_user() -> Option<String> {
+    let body = std::fs::read_to_string(LF_CREDS).ok()?;
+    lf_creds(&body)?;
+    let user = body
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("username="))
+        .unwrap_or("")
+        .trim();
+    Some(if user.is_empty() {
+        "Last.fm".into()
+    } else {
+        user.to_string()
+    })
+}
+
 /// Ask GitHub for the latest release. Ok(Some(tag)) when it is newer than `version`.
 pub fn update_check(version: &str) -> Result<Option<String>, String> {
     let ua = format!("User-Agent: Cinder/{version}");
@@ -1299,6 +1375,25 @@ mod tests {
     #[test]
     fn a_last_fm_scrobble_is_signed_like_flints() {
         let conf = "# Flint's Last.fm credentials.\napi_key=KEY\napi_secret=SECRET\nsession_key=SK\nusername=you\n";
+        assert_eq!(
+            lf_conf("KEY", "SECRET", "SK", "you"),
+            conf,
+            "the file Flint writes"
+        );
+        assert!(lf_key_ok(&"a1".repeat(16)) && !lf_key_ok("a1") && !lf_key_ok(&"zz".repeat(16)));
+        assert_eq!(
+            json_field(
+                r#"{"session":{"name":"you","key":"d58","subscriber":0}}"#,
+                "key"
+            )
+            .as_deref(),
+            Some("d58")
+        );
+        assert_eq!(
+            json_field(r#"{"token": "abc"}"#, "token").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(json_field("{}", "token"), None);
         let (k, secret, sk) = lf_creds(conf).unwrap();
         assert_eq!(
             (k.as_str(), secret.as_str(), sk.as_str()),

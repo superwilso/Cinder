@@ -512,6 +512,9 @@ int cinder_renderer_take(char *buf, int cap);
  * cinder_input; and how many
  * uploads finished since the last call (rescan the library once they stop). */
 int cinder_remote_take_button(void);
+/* Phone remote, every frame after the buttons: carry out what the page asked for (play, queue,
+ * jump, like, a playlist or artist) and return its action code for carry_out_input; 0 = nothing. */
+int cinder_remote_take_action(void);
 /* Settings > Wi-Fi > AirPlay (1/0), and the line the shell shows under it. */
 int cinder_wifi_airplay(void);
 /* 1 while Share the drive, Play to this player or the phone remote is running, or a speaker is
