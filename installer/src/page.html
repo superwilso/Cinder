@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cinder installer</title>
+<style>
+:root{
+  --bg:#0d0c0b; --panel:#13110f; --line:#221f1b; --ink:#ece7df; --dim:#a39d95; --faint:#5f5a52;
+  --acc:#f4651f; --acc-ink:#1a0a02; --sel:#1c1713; --warn:#e8b04a; --bad:#e0573f; --good:#7fbf7a;
+  --radius-card:14px; --radius-ctl:10px;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:#f4f1ea; --panel:#ebe6dc; --line:#d6d0c4; --ink:#1c1a17; --dim:#57524a; --faint:#8f887d;
+    --acc:#c4471a; --acc-ink:#ffffff; --sel:#e9e2d4; --warn:#8a5a00; --bad:#b3311c; --good:#2f6b2a;
+    color-scheme:light;
+  }
+}
+*{box-sizing:border-box}
+html{font-size:16px}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,"SF Pro Text",Cantarell,Ubuntu,"Noto Sans",sans-serif;
+  line-height:1.5;-webkit-font-smoothing:antialiased}
+a{color:var(--acc)}
+:focus-visible{outline:3px solid var(--acc);outline-offset:3px;border-radius:6px}
+main:focus{outline:none}
+.skip{position:absolute;left:-999px}
+.skip:focus{left:16px;top:16px;background:var(--panel);padding:8px 12px;z-index:9}
+
+/* frame */
+.frame{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:100vh}
+.rail{position:sticky;top:0;align-self:start;height:100vh;padding:32px 28px;border-right:1px solid var(--line);
+  display:flex;flex-direction:column;gap:28px}
+.brand{font-weight:800;font-size:1.25rem;letter-spacing:-.01em}
+.brand small{display:block;font-weight:500;font-size:.8rem;color:var(--dim);letter-spacing:0}
+main{padding:40px 48px 64px;max-width:780px;min-width:0}
+
+/* the player drawing */
+.walkman{width:150px;margin:0 auto}
+.walkman svg{width:100%;height:auto;display:block}
+.body{fill:var(--panel);stroke:var(--line);stroke-width:2}
+.glass{fill:#000}
+.glass-line{fill:#ece7df}
+.glass-dim{fill:#8a847c}
+.glass-acc{fill:#f4651f}
+.cable{stroke:var(--dim);stroke-width:6;stroke-linecap:round;fill:none;transition:opacity .3s}
+.working .glow{animation:glow 1.6s ease-in-out infinite}
+@keyframes glow{50%{opacity:.35}}
+@media (prefers-reduced-motion: reduce){.working .glow{animation:none}}
+
+/* steps (a real sequence) */
+.steps{list-style:none;margin:0;padding:0;counter-reset:s}
+.steps li{counter-increment:s;display:flex;gap:12px;align-items:center;padding:7px 0;color:var(--faint);font-weight:600}
+.steps li::before{content:counter(s);width:26px;height:26px;border-radius:50%;border:2px solid var(--line);
+  display:grid;place-items:center;font-size:.8rem;flex:none}
+.steps li.done{color:var(--dim)}
+.steps li.done::before{content:"\2713";border-color:var(--dim)}
+.steps li.now{color:var(--ink)}
+.steps li.now::before{border-color:var(--acc);background:var(--acc);color:var(--acc-ink)}
+
+/* type */
+h1{font-size:2rem;line-height:1.15;letter-spacing:-.02em;margin:0 0 10px;font-weight:800}
+h2{font-size:1.25rem;margin:36px 0 10px;font-weight:750}
+h3{font-size:1rem;margin:0 0 4px;font-weight:700}
+.lead{font-size:1.1rem;color:var(--dim);margin:0 0 24px;max-width:62ch}
+p{max-width:66ch}
+.dim{color:var(--dim)}
+code,.mono{font-family:ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;font-size:.9em}
+
+/* pieces */
+.banner{border-radius:var(--radius-ctl);padding:12px 16px;margin:0 0 20px;background:var(--sel);border-left:4px solid var(--acc)}
+.banner.warn{border-left-color:var(--warn)}
+.banner.bad{border-left-color:var(--bad)}
+.banner.good{border-left-color:var(--good)}
+.status{border:1px solid var(--line);border-radius:var(--radius-card);padding:20px 22px;margin:0 0 28px;background:var(--panel)}
+.status .big{font-size:1.35rem;font-weight:750;margin:0 0 4px}
+.status ul{margin:10px 0 0;padding-left:20px}
+.choices{display:grid;gap:12px}
+.choice{all:unset;box-sizing:border-box;display:block;cursor:pointer;border:1px solid var(--line);border-radius:var(--radius-card);
+  padding:18px 20px;background:var(--panel)}
+.choice:hover{border-color:var(--dim)}
+.choice:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.choice.primary{border:2px solid var(--acc)}
+.choice h3{font-size:1.1rem}
+.choice p{margin:0;color:var(--dim)}
+.choice .tag{float:right;font-size:.8rem;font-weight:700;color:var(--acc)}
+.btn{font:inherit;font-weight:700;border-radius:var(--radius-ctl);padding:12px 22px;border:2px solid var(--acc);
+  background:var(--acc);color:var(--acc-ink);cursor:pointer;min-height:48px}
+.btn.quiet{background:transparent;color:var(--ink);border-color:var(--line)}
+.btn.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:28px}
+.back{all:unset;cursor:pointer;color:var(--dim);font-weight:600;margin:0 0 18px;display:inline-block}
+.back:hover{color:var(--ink)}
+.back:focus-visible{outline:3px solid var(--acc);outline-offset:3px}
+
+/* numbered instructions (a sequence) */
+ol.howto{padding-left:0;list-style:none;counter-reset:h;margin:0 0 20px}
+ol.howto>li{counter-increment:h;position:relative;padding:0 0 18px 48px;max-width:62ch}
+ol.howto>li::before{content:counter(h);position:absolute;left:0;top:-2px;width:32px;height:32px;border-radius:50%;
+  background:var(--sel);color:var(--ink);font-weight:800;display:grid;place-items:center}
+.looking{display:flex;gap:12px;align-items:center;color:var(--dim);margin-top:8px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--acc);animation:glow 1.2s infinite}
+@media (prefers-reduced-motion: reduce){.dot{animation:none}}
+
+/* options */
+fieldset{border:0;padding:0;margin:0}
+legend{padding:0}
+.group{margin:0 0 8px}
+.group>h2{margin-top:32px}
+.opt{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;padding:16px 0;border-top:1px solid var(--line)}
+.opt input[type=checkbox],.opt input[type=radio]{width:22px;height:22px;margin:2px 0 0;accent-color:var(--acc)}
+.opt label{font-weight:700;cursor:pointer}
+.opt .desc{grid-column:2;color:var(--dim)}
+.opt .desc p{margin:0 0 6px}
+.opt .desc ul{margin:0 0 6px;padding-left:18px}
+.opt details{grid-column:2;margin-top:4px}
+.need{color:var(--ink);font-weight:600;border-left:3px solid var(--acc);padding-left:10px}
+.opt summary{cursor:pointer;color:var(--ink);font-weight:600;font-size:.95rem}
+.opt details div{color:var(--dim);margin-top:6px;white-space:pre-line}
+.enum{grid-column:1 / -1}
+.enum .pick{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;padding:10px 12px;border-radius:var(--radius-ctl);margin:4px 0}
+.enum .pick:has(input:checked){background:var(--sel)}
+.enum .pick span{grid-column:2;color:var(--dim)}
+.langs{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.lang{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:6px 14px 6px 10px;cursor:pointer}
+.lang:has(input:checked){border-color:var(--acc);background:var(--sel)}
+.lang input{accent-color:var(--acc);width:18px;height:18px;margin:0}
+.starts{display:grid;gap:10px;margin:8px 0 8px}
+.start{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;border:1px solid var(--line);border-radius:var(--radius-card);padding:14px 16px;cursor:pointer}
+.start:has(input:checked){border:2px solid var(--acc);padding:13px 15px}
+.start input{accent-color:var(--acc);width:20px;height:20px;margin:2px 0 0}
+.start span{grid-column:2;color:var(--dim)}
+
+/* review + progress */
+.summary{border:1px solid var(--line);border-radius:var(--radius-card);padding:6px 20px;background:var(--panel)}
+.summary div{display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-top:1px solid var(--line)}
+.summary div:first-child{border-top:0}
+.summary dt{color:var(--dim)} .summary dd{margin:0;text-align:right;font-weight:600}
+pre.log{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-ctl);padding:14px 16px;
+  max-height:260px;overflow:auto;white-space:pre-wrap;font-size:.85rem;color:var(--dim);margin:16px 0}
+.phase{display:flex;gap:12px;align-items:flex-start;padding:8px 0}
+.phase b{display:block}
+.phase .m{width:22px;height:22px;border-radius:50%;border:2px solid var(--line);flex:none;margin-top:2px}
+.phase.done .m{background:var(--good);border-color:var(--good)}
+.phase.now .m{border-color:var(--acc);background:radial-gradient(var(--acc) 40%,transparent 45%)}
+footer{margin-top:56px;padding-top:20px;border-top:1px solid var(--line);color:var(--dim);font-size:.9rem;display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between;align-items:center}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+/* phone width: the drawing and the name side by side on top, the steps hidden (the page heading
+   says where you are), no sideways scrolling */
+@media (max-width:860px){
+  .frame{grid-template-columns:minmax(0,1fr);align-content:start}
+  .rail{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);padding:16px;
+    flex-direction:row;align-items:center;gap:16px}
+  .rail .steps{display:none}
+  .walkman{width:64px;margin:0}
+  main{padding:24px 16px 48px}
+  h1{font-size:1.6rem}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the installer</a>
+<div class="frame">
+  <aside class="rail" aria-label="Your player and your progress">
+    <div class="brand">Cinder<small id="brandver">installer</small></div>
+    <div class="walkman" id="walkman">
+      <svg viewBox="0 0 160 330" role="img" aria-labelledby="wmlabel">
+        <title id="wmlabel">The Walkman</title>
+        <path class="cable" id="cable" d="M80 300 L80 328" opacity="0"/>
+        <rect class="body" x="10" y="6" width="140" height="296" rx="18"/>
+        <rect class="glass" x="20" y="18" width="120" height="208" rx="6"/>
+        <g class="glow"><circle class="glass-acc" cx="80" cy="96" r="18" id="ember" opacity=".9"/></g>
+        <text x="80" y="146" text-anchor="middle" class="glass-line" font-size="12" font-weight="700" id="scr1">Looking…</text>
+        <text x="80" y="164" text-anchor="middle" class="glass-dim" font-size="10" id="scr2"></text>
+        <rect x="58" y="268" width="44" height="6" rx="3" fill="var(--line)"/>
+      </svg>
+    </div>
+    <ol class="steps" id="steps" aria-label="Steps">
+      <li data-s="connect">Connect the player</li>
+      <li data-s="choose">Choose what to do</li>
+      <li data-s="options">Pick options</li>
+      <li data-s="review">Check and start</li>
+      <li data-s="work">The player does the rest</li>
+    </ol>
+  </aside>
+  <main id="main" tabindex="-1">
+    <div id="dry" class="banner warn" hidden><b>Practice mode.</b> Every step runs, but nothing is written to the player and it is not restarted.</div>
+    <div id="newer" class="banner" hidden></div>
+    <div id="view" aria-live="polite"></div>
+    <footer>
+      <span id="foot"></span>
+      <button class="btn quiet" id="quit" type="button">Close the installer</button>
+    </footer>
+  </main>
+</div>
+<script>
+"use strict";
+const T = new URLSearchParams(location.search).get("t") || "";
+const $ = (s, r = document) => r.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v === true) e.setAttribute(k, "");
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k)));
+  return e;
+};
+const api = async (path, body) => {
+  const sep = path.includes("?") ? "&" : "?";
+  const r = await fetch(path + sep + "t=" + T, body === undefined ? {} : {method: "POST", body});
+  if (!r.ok) throw new Error(await r.text() || r.statusText);
+  const ct = r.headers.get("content-type") || "";
+  return ct.includes("json") ? r.json() : r.text();
+};
+
+// ── state ────────────────────────────────────────────────────────────────────────────────────
+let S = null;            // the last /state
+let view = "connect";    // which screen
+let action = null;       // "install" | "update" | "uninstall"
+let comps = [];          // the options as the person has set them
+let start = "cinder";    // where a fresh install starts
+let logSeen = 0, logLines = [];
+let sentAt = 0, sawGone = false, job = null;
+
+function os() { return S ? S.os : "windows"; }
+function info() { return S && S.info; }
+
+// What the player's own screen says, in the drawing on the left.
+function paintPlayer() {
+  const i = info(), w = $("#walkman");
+  w.classList.toggle("working", !!(S && S.busy) || view === "work" && S && S.result === "sent");
+  $("#cable").setAttribute("opacity", S && S.player ? "1" : "0");
+  let a = "Not connected", b = "";
+  if (S && S.player && i) {
+    if (view === "work" && S.result === "sent") { a = "Updating…"; b = "leave the cable in"; }
+    else if (i.latched) { a = "Sony's player"; b = "Cinder did not start"; }
+    else if (i.off) { a = "Sony's player"; b = "Cinder is turned off"; }
+    else if (i.running_version) { a = "Cinder " + i.running_version; b = i.running_channel === "dev" ? "developer build" : "USB storage"; }
+    else if (i.present) { a = "Cinder"; b = "USB storage"; }
+    else { a = "Sony's player"; b = "USB storage"; }
+  } else if (S) { a = "Not connected"; b = "plug it in"; }
+  $("#scr1").textContent = a; $("#scr2").textContent = b;
+  $("#wmlabel").textContent = "The Walkman: " + a + (b ? ", " + b : "");
+}
+
+function paintSteps() {
+  const order = ["connect", "choose", "options", "review", "work"];
+  const map = {connect: "connect", home: "choose", fix: "choose", remove: "review", options: "options", review: "review", work: "work"};
+  const now = order.indexOf(map[view] || "connect");
+  for (const li of document.querySelectorAll("#steps li")) {
+    const i = order.indexOf(li.dataset.s);
+    li.className = i < now ? "done" : i === now ? "now" : "";
+    if (i === now) li.setAttribute("aria-current", "step"); else li.removeAttribute("aria-current");
+  }
+}
+
+function go(v) {
+  view = v;
+  render();
+  $("#main").focus({preventScroll: true});
+  window.scrollTo(0, 0);
+}
+
+// ── screens ──────────────────────────────────────────────────────────────────────────────────
+function render() {
+  paintSteps(); paintPlayer();
+  const v = $("#view");
+  v.replaceChildren(...({connect, home, options: optionsView, review, work, fix, remove}[view] || connect)());
+}
+
+function connect() {
+  const usb = {
+    windows: "It shows up in File Explorer as a drive called WALKMAN (and a second one for a memory card).",
+    macos: "It shows up in Finder, under Locations, as WALKMAN.",
+    linux: "It shows up in your file manager as a drive called WALKMAN."
+  }[os()];
+  const out = [
+    el("h1", {}, "Connect your Walkman"),
+    el("p", {class: "lead"}, "This installer puts Cinder, a new music player app, on a Sony NW-A50-series Walkman. Your music stays where it is, and you can go back to Sony's own player at any time."),
+    el("ol", {class: "howto"},
+      el("li", {}, el("b", {}, "Plug the Walkman into this computer"), " with its USB cable."),
+      el("li", {}, el("b", {}, "Put it in USB storage mode. "),
+        "On Sony's own player this happens by itself when the cable goes in. On Cinder, open ",
+        el("b", {}, "Settings ▸ Device & storage ▸ USB mode"), "."),
+      el("li", {}, el("b", {}, "Wait for it to appear. "), usb)),
+  ];
+  if (S && S.players.length > 1) {
+    out.push(el("h2", {}, "More than one player is connected"),
+      el("p", {}, "Choose the one to work on:"),
+      el("div", {class: "choices"}, S.players.map(p => el("button", {class: "choice", type: "button",
+        onclick: async () => { await api("/choose", p); await poll(); go("home"); }}, el("h3", {}, p)))));
+  } else {
+    out.push(el("div", {class: "looking", role: "status"}, el("span", {class: "dot"}), "Looking for the player…"));
+  }
+  return out;
+}
+
+function statusCard() {
+  const i = info(), lines = [];
+  let big, sub = "";
+  if (i.running_version) {
+    big = "This player runs Cinder " + i.running_version;
+    if (i.running_channel === "dev") sub = "The developer build, which also turns on adb.";
+  } else if (i.present) {
+    big = "Cinder is installed on this player";
+    sub = "Its version is not on record: older builds did not write it down. Updating fixes that.";
+  } else if (i.last === "uninstalled") {
+    big = "This player runs Sony's own player";
+    sub = "Cinder was installed here before and was removed.";
+  } else if (i.last === "aborted") {
+    big = "The last install stopped, safely";
+    sub = "The player checked the new files, did not like something, and went back to Sony's player. Nothing is broken. Try again, and if it stops again, save a report under “Fix a problem”.";
+  } else {
+    big = "This player runs Sony's own player";
+    sub = "Cinder has not been installed here.";
+  }
+  if (i.last === "unfinished") lines.push("The last install did not finish. Running it again completes it.");
+  if (i.latched) lines.push("Cinder failed to start twice in a row, so the player switched to Sony's player to stay usable. “Fix a problem” ▸ “Start Cinder again” gives it another try.");
+  if (i.off) lines.push("Cinder is turned off: the player starts Sony's player until you choose “Start Cinder again” under “Fix a problem”.");
+  if (i.once) lines.push("The next start goes to Sony's player, once.");
+  if (i.clear_pending) lines.push("At the next start the player tries Cinder again.");
+  if (i.advisory) lines.push(i.advisory);
+  if (i.running_version && i.running_vs_this === "older") lines.push("This installer carries Cinder " + S.carries + ", which is newer.");
+  if (i.running_vs_this === "newer") lines.push("The player runs a newer Cinder than this installer carries (" + S.carries + "). Download the latest installer before changing anything.");
+  return el("section", {class: "status", "aria-label": "What is on the player"},
+    el("p", {class: "big"}, big), sub && el("p", {class: "dim", style: "margin:0"}, sub),
+    lines.length ? el("ul", {}, lines.map(l => el("li", {}, l))) : null);
+}
+
+function home() {
+  const i = info();
+  if (!i) return connect();
+  const cards = [];
+  const card = (title, text, onclick, primary, tag) => el("button", {class: "choice" + (primary ? " primary" : ""), type: "button", onclick},
+    tag ? el("span", {class: "tag"}, tag) : null, el("h3", {}, title), el("p", {}, text));
+  const stuck = i.present && (i.latched || i.off);
+  if (stuck) cards.push(card("Start Cinder again", "Clears what is keeping the player on Sony's player, so it tries Cinder at the next start. Start it with the cable out.",
+    () => run("fix try-again"), true, "Try this first"));
+  if (!i.present) {
+    cards.push(card("Install Cinder " + S.carries, "Choose a few options, then the player installs it by itself in about two minutes. Sony's player stays on the player as a fallback.",
+      () => begin("install"), true, "Recommended"));
+  } else {
+    const older = i.running_vs_this === "older" || i.running_vs_this === "unknown";
+    const newer = i.running_vs_this === "newer";
+    if (!newer) cards.push(card(older ? "Update to Cinder " + S.carries : "Change Cinder's options",
+      older ? "Keeps your options, settings and music, and puts the new version on." : "Reinstall the same version with different options. Your settings and music stay.",
+      () => begin("update"), older && !stuck, older && !stuck ? "Recommended" : null));
+  }
+  cards.push(card("Fix a problem", "Cinder will not start, or you want Sony's player back for a while, or something went wrong and you want to report it.", () => go("fix")));
+  if (i.present) cards.push(card("Remove Cinder", "Put Sony's own player back. Your music and playlists stay.", () => go("remove")));
+  return [el("h1", {}, "Your Walkman is connected"), statusCard(), el("h2", {}, "What would you like to do?"), el("div", {class: "choices"}, cards)];
+}
+
+async function begin(a) {
+  action = a;
+  start = "cinder";
+  comps = await api("/options?mode=" + (a === "update" ? "update" : "cinder"));
+  go("options");
+}
+
+// Catalogue text: paragraphs split by a blank line; "- " or "• " lines are bullets.
+function prose(text) {
+  const out = [];
+  for (const para of (text || "").split(/\n\s*\n/)) {
+    const lines = para.split("\n").map(s => s.trim()).filter(Boolean);
+    if (!lines.length) continue;
+    const bullets = lines.filter(l => /^[-•*] /.test(l));
+    if (bullets.length === lines.length) out.push(el("ul", {}, bullets.map(b => el("li", {}, b.slice(2)))));
+    else out.push(el("p", {}, lines.join(" ")));
+  }
+  return out;
+}
+
+function optionsView() {
+  const out = [el("button", {class: "back", type: "button", onclick: () => go("home")}, "← Back")];
+  out.push(el("h1", {}, action === "update" ? "Your options" : "Pick your options"));
+  out.push(el("p", {class: "lead"}, action === "update"
+    ? "These are the options already on the player. Change any of them, or go straight on."
+    : "Each option says what it does. If you are not sure, leave it as it is: the starting set is what most people want, and you can change any of it later with Update."));
+  if (action === "install") {
+    const starts = [
+      ["cinder", "Cinder", "The player, with the options most people want."],
+      ["sound", "Cinder with the sound options", "Adds the equalizer over Bluetooth, mono, and the AAC and SBC XQ Bluetooth codecs."],
+      ["everything", "Everything", "Every option, including the new ones. You can still untick any of them below."]];
+    out.push(el("fieldset", {class: "starts"}, el("legend", {class: "sr"}, "Start from"),
+      starts.map(([w, l, h]) => el("label", {class: "start"},
+        el("input", {type: "radio", name: "start", value: w, checked: start === w, onchange: async () => {
+          start = w; comps = await api("/options?mode=" + w); render(); }}),
+        el("b", {}, l), el("span", {}, h)))));
+  }
+  const groups = [...new Set(comps.filter(c => !c.language).map(c => c.group))];
+  for (const g of groups) {
+    const sec = el("section", {class: "group"}, el("h2", {}, g || "Options"));
+    for (const c of comps.filter(c => c.group === g && !c.language)) sec.append(optRow(c));
+    out.push(sec);
+  }
+  const langs = comps.filter(c => c.language);
+  if (langs.length) {
+    out.push(el("section", {class: "group"}, el("h2", {}, "Languages"),
+      el("p", {class: "dim"}, "Tick more than one to get Settings ▸ Language on the player, where you switch between them. With none ticked, the player uses English."),
+      el("div", {class: "langs", role: "group", "aria-label": "Languages"}, langs.map(c => el("label", {class: "lang"},
+        el("input", {type: "checkbox", checked: c.value === "1", onchange: e => { c.value = e.target.checked ? "1" : "0"; }}),
+        c.lang_native || c.lang_name, c.lang_native && c.lang_native !== c.lang_name ? el("span", {class: "dim"}, c.lang_name) : null)))));
+  }
+  out.push(el("div", {class: "row"}, el("button", {class: "btn", type: "button", onclick: () => go("review")}, "Next: check and start")));
+  return out;
+}
+
+// Ticking an option ticks what it needs (`& id` in the catalogue); unticking one unticks what
+// needs it. Either way the page says so beside the option, so nothing changes out of sight.
+let needNote = {};
+function setBool(c, on) {
+  c.value = on ? "1" : "0";
+  needNote = {};
+  const byId = id => comps.find(x => x.id === id);
+  if (on) {
+    const walk = x => (x.needs || []).forEach(n => { const d = byId(n); if (d && d.value !== "1") { d.value = "1"; needNote[c.id] = (needNote[c.id] ? needNote[c.id] + ", " : "Also switched on: ") + d.title; walk(d); } });
+    walk(c);
+  } else {
+    let again = true;
+    while (again) {
+      again = false;
+      for (const x of comps) if (x.value === "1" && (x.needs || []).some(n => byId(n) && byId(n).value !== "1")) {
+        x.value = "0"; again = true;
+        needNote[c.id] = (needNote[c.id] ? needNote[c.id] + ", " : "Also switched off, because it needs this: ") + x.title;
+      }
+    }
+  }
+  if (Object.keys(needNote).length) { const y = window.scrollY; render(); window.scrollTo(0, y); const f = document.getElementById("o-" + c.id); if (f) f.focus({preventScroll: true}); }
+}
+
+function optRow(c) {
+  const id = "o-" + c.id;
+  const risk = c.risk ? el("details", {}, el("summary", {}, "What this changes on the player"), el("div", {}, c.risk)) : null;
+  if (c.kind === "bool") {
+    return el("div", {class: "opt"},
+      el("input", {type: "checkbox", id, checked: c.value === "1", "aria-describedby": id + "-d",
+        onchange: e => setBool(c, e.target.checked)}),
+      el("label", {for: id}, c.title),
+      el("div", {class: "desc", id: id + "-d"}, prose(c.desc),
+        needNote[c.id] ? el("p", {class: "need", role: "status"}, needNote[c.id] + ".") : null), risk);
+  }
+  return el("fieldset", {class: "opt"},
+    el("legend", {class: "enum"}, el("b", {}, c.title)),
+    el("div", {class: "desc enum"}, prose(c.desc)),
+    el("div", {class: "enum"}, c.choices.map(ch => el("label", {class: "pick"},
+      el("input", {type: "radio", name: id, value: ch.value, checked: c.value === ch.value, onchange: () => { c.value = ch.value; }}),
+      el("b", {}, ch.label + (ch.value === c.default ? " (default)" : "")), ch.help ? el("span", {}, ch.help) : null))),
+    risk);
+}
+
+function answers() {
+  return comps.map(c => c.var + "=" + c.value).join("\n");
+}
+
+function review() {
+  const out = [el("button", {class: "back", type: "button", onclick: () => go(action === "uninstall" ? "home" : "options")}, "← Back"),
+    el("h1", {}, action === "update" ? "Ready to update" : "Ready to install")];
+  const on = comps.filter(c => !c.language && (c.kind === "bool" ? c.value === "1" : true));
+  const langs = comps.filter(c => c.language && c.value === "1").map(c => c.lang_native || c.lang_name);
+  const sum = el("dl", {class: "summary"},
+    el("div", {}, el("dt", {}, "Cinder version"), el("dd", {}, S.carries)),
+    on.map(c => el("div", {}, el("dt", {}, c.title),
+      el("dd", {}, c.kind === "bool" ? "On" : (c.choices.find(x => x.value === c.value) || {label: c.value}).label))),
+    el("div", {}, el("dt", {}, "Languages"), el("dd", {}, langs.join(", ") || "English")));
+  const planLine = el("p", {class: "dim"}, "Working out the files…");
+  api("/plan", action + "\n" + answers()).then(p => {
+    planLine.textContent = p.files + " files (" + Math.max(1, Math.round(p.kb / 1024)) + " MB) will be copied to the player. Your music is not touched.";
+  }).catch(e => { planLine.textContent = "This installer cannot do that: " + e.message; });
+  out.push(sum, planLine,
+    el("h2", {}, "What happens next"),
+    el("ol", {class: "howto"},
+      el("li", {}, "This installer copies the files onto the player. It takes a few seconds."),
+      el("li", {}, "It asks the player to restart into Sony's updater. ", el("b", {}, "The player disconnects from the computer: that is expected.")),
+      el("li", {}, "The player installs Cinder and starts it by itself, in about two minutes. ", el("b", {}, "Leave the cable in and do not press anything"), " until Cinder is on the screen.")),
+    os() === "windows" ? null : el("p", {class: "dim"}, os() === "macos"
+      ? "On a Mac, the restart command needs administrator rights: start the installer from Terminal with sudo. If it was started without, the files still go on and the page tells you what to do."
+      : "On Linux, the restart command needs root: start the installer with sudo. If it was started without, the files still go on and the page tells you what to do."),
+    el("div", {class: "row"},
+      el("button", {class: "btn", type: "button", onclick: () => run(action + "\n" + answers())}, action === "update" ? "Update Cinder" : "Install Cinder"),
+      el("button", {class: "btn quiet", type: "button", onclick: () => go("options")}, "Change options")));
+  return out;
+}
+
+async function run(body) {
+  job = body.split("\n")[0];
+  logLines = []; logSeen = 0; sentAt = 0; sawGone = false;
+  try { await api("/run", body); } catch (e) { alert("Could not start: " + e.message); return; }
+  go("work");
+}
+
+function work() {
+  const out = [];
+  const title = {install: "Installing Cinder", update: "Updating Cinder", uninstall: "Removing Cinder", clean: "Tidying up", report: "Saving a report"}[job]
+    || (job && job.startsWith("fix") ? "Changing how the player starts" : "Working");
+  out.push(el("h1", {}, title));
+  const r = S ? S.result : "";
+  const staged = ["install", "update", "uninstall"].includes(job);
+  if (staged) {
+    const ph = (state, t, d) => el("div", {class: "phase " + state}, el("span", {class: "m", "aria-hidden": "true"}), el("div", {}, el("b", {}, t), d ? el("span", {class: "dim"}, d) : null));
+    const copying = S && S.busy;
+    out.push(
+      ph(copying ? "now" : "done", "Copy the files to the player"),
+      ph(copying ? "" : (r === "sent" ? "done" : r === "staged" ? "now" : ""), "Ask the player to restart into its updater"),
+      ph(r === "sent" ? "now" : "", "The player installs it and restarts", "About two minutes. Leave the cable in."));
+  }
+  if (r === "sent") {
+    out.push(el("div", {class: "banner good", role: "status"}, S.result_msg));
+    out.push(el("h2", {}, "How to check it worked"),
+      el("ol", {class: "howto"},
+        el("li", {}, "Wait until the player shows ", job === "uninstall" ? "Sony's player." : "Cinder."),
+        job === "uninstall" ? null : el("li", {}, "On the player, open ", el("b", {}, "Settings ▸ Device & storage ▸ USB mode"), " to connect it again."),
+        job === "uninstall" ? null : el("li", {}, "This page then says which Cinder the player runs.")));
+    const i = info();
+    if (job !== "uninstall" && sawGone && S.player && i) {
+      if (i.running_version === S.carries) out.push(el("div", {class: "banner good", role: "status"}, el("b", {}, "Confirmed. "), "The player now runs Cinder " + i.running_version + "."));
+      else if (i.running_version) out.push(el("div", {class: "banner bad", role: "status"}, el("b", {}, "The update did not take. "),
+        "The player still runs Cinder " + i.running_version + ". Choose “Fix a problem” ▸ “Save a report” and attach it to an issue on GitHub."));
+    }
+    out.push(el("div", {class: "row"}, el("button", {class: "btn quiet", type: "button", onclick: () => go(S.player ? "home" : "connect")}, "Done")));
+  } else if (r === "staged" || r === "failed") {
+    out.push(el("div", {class: "banner " + (r === "failed" ? "bad" : "warn"), role: "alert"}, S.result_msg));
+    out.push(el("div", {class: "row"},
+      el("button", {class: "btn", type: "button", onclick: () => go("home")}, "Back to the start"),
+      el("button", {class: "btn quiet", type: "button", onclick: () => run("report")}, "Save a report")));
+  } else if (r === "ok") {
+    out.push(el("div", {class: "banner good", role: "status"}, S.result_msg));
+    out.push(el("div", {class: "row"}, el("button", {class: "btn", type: "button", onclick: () => go("home")}, "Back to the start")));
+  } else {
+    out.push(el("p", {class: "dim", role: "status"}, "Working… do not unplug the player."));
+  }
+  out.push(el("details", {open: r === "failed" || r === "staged"}, el("summary", {}, "Details"), el("pre", {class: "log"}, logLines.join("\n") || "…")));
+  return out;
+}
+
+function fix() {
+  const i = info() || {};
+  const card = (title, text, body, primary) => el("button", {class: "choice" + (primary ? " primary" : ""), type: "button", onclick: () => run(body)},
+    el("h3", {}, title), el("p", {}, text));
+  return [
+    el("button", {class: "back", type: "button", onclick: () => go("home")}, "← Back"),
+    el("h1", {}, "Fix a problem"),
+    el("p", {class: "lead"}, "Each of these changes one thing on the player and says what it did. None of them touches your music."),
+    el("div", {class: "banner"}, el("b", {}, "First, a common cause: "),
+      "a USB cable plugged in while the player starts sends it to Sony's player on purpose, as a safety exit. Start it with the cable out."),
+    el("div", {class: "choices"},
+      card("Start Cinder again", "Cinder failed to start, or was turned off. This clears that and tries Cinder at the next start.", "fix try-again", i.latched || i.off),
+      card("Use Sony's player once", "The next start goes to Sony's player. The start after that goes back to Cinder by itself.", "fix stock-once"),
+      card("Keep using Sony's player", "Every start goes to Sony's player until you choose “Start Cinder again”. Cinder stays installed.", "fix turn-off"),
+      card("Save a report", "Collects the player's logs into one file for a bug report on GitHub. Nothing on the player changes.", "report"),
+      i.leftovers ? card("Tidy up install files", "Deletes the " + i.leftovers + " install file(s) a previous install left on the drive. The player does not need them.", "clean") : null,
+      i.present ? el("button", {class: "choice", type: "button", onclick: () => go("remove")}, el("h3", {}, "Remove Cinder"), el("p", {}, "Put Sony's own player back.")) : null),
+    el("h2", {}, "If the player will not start at all"),
+    el("p", {}, "If it never gets past the Sony logo, these steps cannot reach it. Hold the power button for 15 seconds to force it off, then see ",
+      el("a", {href: "https://github.com/superwilso/Cinder/blob/main/RECOVERY.md", target: "_blank", rel: "noopener"}, "the recovery guide"), ".")];
+}
+
+function remove() {
+  return [
+    el("button", {class: "back", type: "button", onclick: () => go("home")}, "← Back"),
+    el("h1", {}, "Remove Cinder"),
+    el("p", {class: "lead"}, "The player goes back to Sony's own player, exactly as it was before Cinder."),
+    el("dl", {class: "summary"},
+      el("div", {}, el("dt", {}, "Removed"), el("dd", {}, "Cinder and everything it installed")),
+      el("div", {}, el("dt", {}, "Kept"), el("dd", {}, "Your music, playlists and Sony's settings"))),
+    el("h2", {}, "What happens next"),
+    el("ol", {class: "howto"},
+      el("li", {}, "This installer copies the removal package onto the player."),
+      el("li", {}, "The player restarts into Sony's updater and disconnects from the computer."),
+      el("li", {}, "About two minutes later it starts Sony's player. ", el("b", {}, "Leave the cable in"), " until it does.")),
+    el("div", {class: "row"},
+      el("button", {class: "btn danger", type: "button", onclick: () => { action = "uninstall"; run("uninstall"); }}, "Remove Cinder"),
+      el("button", {class: "btn quiet", type: "button", onclick: () => go("home")}, "Keep Cinder"))];
+}
+
+// ── polling ──────────────────────────────────────────────────────────────────────────────────
+async function poll() {
+  let s;
+  try { s = await api("/state?since=" + logSeen); } catch (e) {
+    $("#foot").textContent = "The installer has closed. You can close this tab.";
+    return false;
+  }
+  const had = S && S.player, before = S ? S.result + "|" + S.busy + "|" + JSON.stringify(S.info) + S.players.join() : "";
+  S = s;
+  logLines.push(...s.log); logSeen = s.log_total;
+  $("#brandver").textContent = "installer " + s.version + " · Cinder " + s.carries;
+  // The screenshot addresses (#home, #options…) are for the README's pictures, which run in
+  // practice mode but should show the page as people see it.
+  $("#dry").hidden = !s.dry || !!location.hash;
+  const nb = $("#newer");
+  nb.hidden = s.release.state !== "newer";
+  if (!nb.hidden) nb.replaceChildren(el("b", {}, "A newer installer is out: " + s.release.tag + ". "),
+    el("a", {href: s.release.url, target: "_blank", rel: "noopener"}, "Download it"), " and use that one instead.");
+  $("#foot").textContent = s.release.state === "current" ? "This is the latest installer." : s.release.state === "failed" ? "Could not check for a newer installer (no internet?). Installing does not need it." : "";
+  if (view === "work" && s.result === "sent" && had && !s.player) sawGone = true;
+  // Move on by itself only where nothing the person is doing would be lost.
+  if (view === "connect" && s.player && s.players.length === 1) { go("home"); return true; }
+  if ((view === "home" || view === "fix") && !s.player) { go("connect"); return true; }
+  const after = s.result + "|" + s.busy + "|" + JSON.stringify(s.info) + s.players.join();
+  if (view === "work" || view === "connect" || after !== before && (view === "home" || view === "fix")) render();
+  else paintPlayer();
+  return true;
+}
+$("#quit").addEventListener("click", async () => {
+  try { await api("/quit", ""); } catch (e) {}
+  $("#view").replaceChildren(el("h1", {}, "The installer has closed"), el("p", {class: "lead"}, "You can close this tab."));
+});
+(async function loop() {
+  if (await poll()) setTimeout(loop, 1200);
+})();
+render();
+// For pictures of each screen (tools/render_installer_screenshots.sh): #options, #review, #fix,
+// #remove or #connect opens straight onto it once the player has been read.
+(async function () {
+  const want = location.hash.slice(1);
+  if (!want) return;
+  while (!S) await new Promise(r => setTimeout(r, 50));
+  if (want === "options" || want === "review") {
+    await begin(info() && info().present ? "update" : "install");
+    if (want === "review") go("review");
+  } else if (["fix", "remove", "connect"].includes(want)) go(want);
+})();
+</script>
+</body>
+</html>

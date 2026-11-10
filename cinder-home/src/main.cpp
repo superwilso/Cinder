@@ -1281,8 +1281,10 @@ static void usb_adb_enable_dev();   // with the UsbMgrServiceFw client, below
 // (dev_adb_keepalive). Disable, set functions=mass_storage,adb (keep storage so the log/DB stay
 // reachable), the MSC+adb composite PID 0B8D, re-enable, THEN start adbd.
 static void dev_compose_adb() {
+    // In the background: the `sleep 1` below held the render thread, so every dev boot's
+    // touchscreen stayed dead a second longer for it, and so did each keepalive re-compose (11-10).
     std::system(
-        "echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null; "
+        "( echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null; "
         "echo mass_storage,adb > /sys/class/android_usb/android0/functions 2>/dev/null; "
         "echo 0B8D > /sys/class/android_usb/android0/idProduct 2>/dev/null; "
         // STAY OFF THE BUS LONG ENOUGH FOR THE HOST TO SEE IT. A cable CAN be in here now (the
@@ -1294,7 +1296,7 @@ static void dev_compose_adb() {
         // bounces of the same boot (0.25 s apart or more) each got one.
         "sleep 1; "
         "echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null; "
-        "setprop ctl.start adbd 2>/dev/null");
+        "setprop ctl.start adbd 2>/dev/null ) </dev/null >/dev/null 2>&1 &");
 }
 #endif
 
@@ -1303,6 +1305,37 @@ static void dev_compose_adb() {
 // keeps the glyph correct immediately after a press, and the service's view is how a track ending
 // or PlayerService pausing itself reaches the UI.
 static bool g_playing = true;
+
+// The part of bring-up only playback needs: once the touchscreen has been open 1.5 s with no touch,
+// or just before the first action that does anything (carry_out), whichever comes first. Moving
+// between screens never waits for it; a first press of play waits the 1.1 s instead of every tap.
+static bool g_post_up_done = false;
+static void post_up() {
+    if (g_post_up_done) return;
+    g_post_up_done = true;
+    const long long t0 = now_ms();
+    const int art_ms = cinder_art_cache_start();   // the covers the boot open left (-1: none)
+    fx_cache_drop();   // boot: nothing is known about what the stock player left behind
+    run_guarded("post_up: apply EQ", 6, apply_eq_fn);
+    run_guarded("post_up: apply sound chain", 6, apply_sound_fn);
+    // The whole chain has just been asserted for whichever sound profile the UI came up with, so a
+    // profile switch noted before this point (render_up reconciling the USB-DAC toggle with the
+    // gadget) has nothing left to apply. Collect it, or it would fire as a spurious re-apply on
+    // the first unrelated route report.
+    (void)cinder_take_profile_apply();
+    // The DAC EQ is a table the boot script reloads flat on every boot, so a saved EQ has to be
+    // put back every boot too. A flat one costs nothing: apply_dac_eq skips the helper for it.
+    run_watchdog_only("post_up: apply DAC EQ", 6, apply_dac_eq);
+    // Real storage usage for Settings (statvfs — read-only, no Sony service). GUARD_LOCAL: it can
+    // block on a wedged mount, so it wants a watchdog, but it holds no lock and owns no child, so
+    // abandoning it costs nothing and must not take Sony IPC down with it. ("guarded for parity"
+    // is what this said before, and parity with the IPC guard was exactly the bug.)
+    run_guarded_local("post_up: report storage", 6, report_storage);
+    char m[128];
+    std::snprintf(m, sizeof m, "post_up: covers %d ms, then sound chain + storage, %lld ms in all (touch already open)",
+                  art_ms, now_ms() - t0);
+    clog_(m);
+}
 
 void deferred_up() {
     if (g_deferred_done) return;
@@ -1374,6 +1407,10 @@ void deferred_up() {
         // render thread was blocking rather than merely descheduled. So this may well work now —
         // but it cost two bad boots on a device the user is holding, and the burden of proof is on
         // it. Kept, off, and one file away.
+        // The cover cache waits for post_up (cinder_art_cache_start): 0.46 s of reading
+        // thumbnails that used to stand before the touchscreen (11-10).
+        static bool art_deferred = false;
+        if (!art_deferred) { art_deferred = true; cinder_art_cache_defer(); }
         static int async_lib = -1;
         if (async_lib < 0) async_lib = adv_on("async_library") ? 1 : 0;
         if (async_lib) {
@@ -1671,17 +1708,11 @@ void deferred_up() {
     //     the stock player last left the flag at.
     // Both are assertions about somebody else's state, and neither has anything to do with whether
     // we found a file.
-    fx_cache_drop();   // boot: nothing is known about what the stock player left behind
-    run_guarded("deferred_up: apply EQ", 6, apply_eq_fn);
-    run_guarded("deferred_up: apply sound chain", 6, apply_sound_fn);
-    // The whole chain has just been asserted for whichever sound profile the UI came up with, so a
-    // profile switch noted before this point (render_up reconciling the USB-DAC toggle with the
-    // gadget) has nothing left to apply. Collect it, or it would fire as a spurious re-apply on
-    // the first unrelated route report.
-    (void)cinder_take_profile_apply();
-    // The DAC EQ is a table the boot script reloads flat on every boot, so a saved EQ has to be
-    // put back every boot too. A flat one costs nothing: apply_dac_eq skips the helper for it.
-    run_watchdog_only("deferred_up: apply DAC EQ", 6, apply_dac_eq);
+    // The EQ, the sound chain, the DAC EQ and the storage figures are applied by post_up, after
+    // the touchscreen opens: 1.1 s, nearly all of it Sony's effect service answering its first
+    // call, that used to keep the screen dead (11-10). Nothing is playing yet ("plays on the first
+    // press"), and carry_out runs post_up before any action, so the chain is in place before
+    // anything can be played.
     if (g_settings_loaded) {
         // This one IS a restore: repeat-one is sticky inside the audio shim and applied to every
         // sequence it builds, so pushing the restored value once here is enough — nothing is
@@ -1689,11 +1720,6 @@ void deferred_up() {
         run_guarded("deferred_up: re-apply saved repeat", 4,
                     []() { cinder_audio_set_repeat_one(cinder_get_repeat_one()); });
     }
-    // Real storage usage for Settings (statvfs — read-only, no Sony service). GUARD_LOCAL: it can
-    // block on a wedged mount, so it wants a watchdog, but it holds no lock and owns no child, so
-    // abandoning it costs nothing and must not take Sony IPC down with it. ("guarded for parity"
-    // is what this said before, and parity with the IPC guard was exactly the bug.)
-    run_guarded_local("deferred_up: report storage", 6, report_storage);
     // Volume at boot, stock-style: a PERSISTED level wins (restore it to the hardware — fixes the
     // "boots near-mute at hw level 1" failure); otherwise seed the UI from the mixer, and if that
     // reads back effectively mute (< 5/120 — the boot-default case, not a deliberate user 0),
@@ -1711,38 +1737,8 @@ void deferred_up() {
     // it reflects the persisted choice from first boot. Pure file IO; safe to call unguarded.
     write_bt_pref();
 #ifdef CINDER_DEV
-    // DEV CHANNEL: copy the real library DB out to user-visible storage (once per boot, only if
-    // missing or the size changed — ~a few MB). Pull it via USB-MSC/flash.sh to close the
-    // album-art schema question offline (images.value TEXT-path vs inline BLOB vs bmpfile).
-    // Copy the library DB out to /contents so it's reachable over USB-MSC for offline schema work.
-    // HARDENED 2026-07-25: the previous version silently no-op'd (the copy never landed on device).
-    // Now it forces a sane PATH (the easel-launched context has a minimal one — `arecord`/`stat`
-    // resolved inconsistently) and LOGS the outcome (OK+size / FAILED+error / SRC-missing) to
-    // cinderhome.log, so one log pull tells us exactly what happened. Once adb is up (dev),
-    // `adb pull /db/MTPDB.dat` is the primary route and this is just a fallback.
-    // WATCHDOG ONLY: system() forks, and it swaps out SIGINT/SIGQUIT for the duration and restores
-    // them on return. Unwinding past it leaves an unreaped child and this process' signal handling
-    // altered for good — neither of which a "recovered" app should be carrying.
-    run_watchdog_only("deferred_up: copy MTPDB.dat to /contents (dev)", 15, []() {
-        std::system(
-            "export PATH=/system/bin:/system/xbin:/xbin:/bin:/sbin:/usr/bin:$PATH; "
-            "SRC=/db/MTPDB.dat; DST=/contents/MTPDB_copy.dat; "
-            "if [ -f \"$SRC\" ]; then "
-            "  if cp \"$SRC\" \"$DST.tmp\" 2>/tmp/cpdberr && mv \"$DST.tmp\" \"$DST\" 2>>/tmp/cpdberr; then "
-            "    echo \"[cinder-home] db-copy: OK $(wc -c < $DST) bytes\"; "
-            "  else echo \"[cinder-home] db-copy: FAILED: $(cat /tmp/cpdberr 2>/dev/null)\"; fi; "
-            "else echo \"[cinder-home] db-copy: SRC $SRC not found\"; fi; "
-            "sync");
-    });
-    // DEV CHANNEL: auto-capture the read-only device discovery (volume/ALSA/sysfs/usb + PlayStatus)
-    // so the data needed to wire the device-gated features lands in /contents/cinder_discovery.txt
-    // just by flashing dev — no separate probe run. with_input=0: the pump owns the input nodes, so
-    // raw key codes are logged by input_pump instead (press buttons → cinderhome.log). Guarded.
-    clog_("deferred_up: DEV channel — capturing device discovery (read-only)");
-    run_guarded("deferred_up: discovery dump (dev)", 20,
-                []() { cinder_run_discovery("/contents/cinder_discovery.txt", 1, 0); });
-#endif
-#ifdef CINDER_DEV
+    // The DB copy and the discovery dump run at the first dark screen instead (dev_diagnostics):
+    // here they held the touchscreen dead for 1.3 s of every dev boot (11-10).
     // DEV CHANNEL ONLY (build.sh dev): best-effort enable adb for push-and-run iteration. Guarded,
     // so a failure is harmless — the player runs exactly like stable, just without adb. Touches NO
     // boot-critical files.
@@ -9748,6 +9744,66 @@ static void rescan_campaign_arm() {
 
 static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
 
+// What this player actually runs, in /contents/cinder_running.txt, for the installer: its
+// "installed" line used to come from a stamp it wrote itself before the update ran, so an update
+// that never applied looked done. Once a boot, from the 1 Hz tick until /contents takes the write
+// (it is unreadable for the first 10-12 s of a boot, and handed to the PC in USB storage).
+static void write_running_version() {
+    static bool done = false;
+    if (done || g_msc_active) return;
+    FILE* f = std::fopen("/contents/cinder_running.txt.tmp", "w");
+    if (!f) return;
+#ifdef CINDER_DEV
+    const char* ch = "dev";
+#else
+    const char* ch = "stable";
+#endif
+    std::fprintf(f, "version=%s\nchannel=%s\n", cinder_version(), ch);
+    const bool ok = std::fflush(f) == 0;
+    std::fclose(f);
+    done = ok && std::rename("/contents/cinder_running.txt.tmp", "/contents/cinder_running.txt") == 0;
+}
+
+#ifdef CINDER_DEV
+// Dev diagnostics: the library DB copied to /contents and the read-only device discovery dump. Once
+// a boot, at the first dark screen, so they never stand between start-up and the touchscreen.
+static void dev_diagnostics() {
+    static bool done = false;
+    if (done || g_screen_on || g_msc_active) return;
+    done = true;
+    // DEV CHANNEL: copy the real library DB out to user-visible storage (once per boot, only if
+    // missing or the size changed — ~a few MB). Pull it via USB-MSC/flash.sh to close the
+    // album-art schema question offline (images.value TEXT-path vs inline BLOB vs bmpfile).
+    // Copy the library DB out to /contents so it's reachable over USB-MSC for offline schema work.
+    // HARDENED 2026-07-25: the previous version silently no-op'd (the copy never landed on device).
+    // Now it forces a sane PATH (the easel-launched context has a minimal one — `arecord`/`stat`
+    // resolved inconsistently) and LOGS the outcome (OK+size / FAILED+error / SRC-missing) to
+    // cinderhome.log, so one log pull tells us exactly what happened. Once adb is up (dev),
+    // `adb pull /db/MTPDB.dat` is the primary route and this is just a fallback.
+    // WATCHDOG ONLY: system() forks, and it swaps out SIGINT/SIGQUIT for the duration and restores
+    // them on return. Unwinding past it leaves an unreaped child and this process' signal handling
+    // altered for good — neither of which a "recovered" app should be carrying.
+    run_watchdog_only("dev: copy MTPDB.dat to /contents (dev)", 15, []() {
+        std::system(
+            "export PATH=/system/bin:/system/xbin:/xbin:/bin:/sbin:/usr/bin:$PATH; "
+            "SRC=/db/MTPDB.dat; DST=/contents/MTPDB_copy.dat; "
+            "if [ -f \"$SRC\" ]; then "
+            "  if cp \"$SRC\" \"$DST.tmp\" 2>/tmp/cpdberr && mv \"$DST.tmp\" \"$DST\" 2>>/tmp/cpdberr; then "
+            "    echo \"[cinder-home] db-copy: OK $(wc -c < $DST) bytes\"; "
+            "  else echo \"[cinder-home] db-copy: FAILED: $(cat /tmp/cpdberr 2>/dev/null)\"; fi; "
+            "else echo \"[cinder-home] db-copy: SRC $SRC not found\"; fi; "
+            "sync");
+    });
+    // DEV CHANNEL: auto-capture the read-only device discovery (volume/ALSA/sysfs/usb + PlayStatus)
+    // so the data needed to wire the device-gated features lands in /contents/cinder_discovery.txt
+    // just by flashing dev — no separate probe run. with_input=0: the pump owns the input nodes, so
+    // raw key codes are logged by input_pump instead (press buttons → cinderhome.log). Guarded.
+    clog_("dev: capturing device discovery (read-only)");
+    run_guarded("dev: discovery dump", 20,
+                []() { cinder_run_discovery("/contents/cinder_discovery.txt", 1, 0); });
+}
+#endif
+
 #ifdef CINDER_DEV
 // Dev channel, 1 Hz. On stock firmware Sony's UsbMgrServiceFw rewrites the gadget to bare
 // mass_storage (054c:0ca0) and stops adbd on a cable event: a cable in at boot, a plug-in, a
@@ -12966,6 +13022,7 @@ void apply_vol_curve() {
 static int  g_seek_pending_ms = -1;
 
 void carry_out(int act) {
+    if (g_bringup_settled) post_up();   // the sound chain is in place before anything acts on it
     zappin_clear_stale_handoff_for_action(act);
     if (g_zappin.owns_sequence && g_zappin.active
         && (act == CINDER_ACT_NEXT || act == CINDER_ACT_PREV)) {
@@ -15561,9 +15618,12 @@ void* render_driver(void*) {
         // means waiting forever, and a device that ignores its own power button is worse than a
         // carry_out whose audio calls return -1. See the deferred-init block for the whole story.
         if (g_bringup_settled) {
-            if (!g_input_started) { input_open(); g_input_started = true; }
+            static long long input_opened_ms = 0;
+            if (!g_input_started) { input_open(); g_input_started = true; input_opened_ms = now_ms(); }
             alarm(8); input_pump(); alarm(0);  // touch + buttons -> navigator -> actions -> carry_out
             volume_flush();                    // trailing write of a coalesced volume ramp
+            if (!g_post_up_done
+                && now_ms() - std::max(input_opened_ms, g_last_input_ms) >= 1500) post_up();
         }
 
         // ── EVERYTHING BELOW HERE MAKES SONY IPC CALLS ────────────────────────────────────────
@@ -16079,6 +16139,10 @@ void* render_driver(void*) {
             g_house_due = false;
             last_house_ms = house_now;
             cinder_clock_tick();
+            // A library that first opened after post_up (bring-up stalled past its grace) left its
+            // covers waiting; one mutex and a None otherwise.
+            if (g_post_up_done) cinder_art_cache_start();
+            write_running_version();
             // Night schedule: at Starts and Ends the UI flips Night and hands back the same
             // action the switch does, so the backlight follows it.
             if (int na = cinder_night_tick()) carry_out_input(na);
@@ -16136,9 +16200,8 @@ void* render_driver(void*) {
             // also registers never fires because nothing on this system drives that chain.
             //
             // The 30 s grace matters: pausing between tracks must not power the amp down and back
-            // up. And this deliberately does NOT sleep the codec during Bluetooth playback even
-            // though BT does not use it — g_playing is true then, and being conservative in the
-            // first cut is worth more than the extra saving.
+            // up. (Bluetooth playback, where the codec is not in the path, sleeps it after 3 s —
+            // see `codec_idle` below; the first cut left it awake there.)
             //
             // Not guarded: it is two ioctls on a character device, no Sony IPC and no service that
             // can hang. It also latches, so a device sitting idle costs one ioctl, not one a second.
@@ -16165,6 +16228,7 @@ void* render_driver(void*) {
                 hago_tick(src.library);   // the wrapper's trial: five of these in a row is the proof
 #ifdef CINDER_DEV
                 dev_adb_keepalive();
+                dev_diagnostics();
 #endif
                 const bool audible = src.any();
                 const bool idle = !g_screen_on && !audible;
@@ -16411,14 +16475,25 @@ void* render_driver(void*) {
                 // minutes and were awake for most of the first eleven, driving an empty jack.
                 // When the codec is not in the path it is not in the path with the screen on.
                 const bool codec_idle = !codec_in_path && (!g_screen_on || on_bt);
+                // 3 s ON BLUETOOTH, NOT 30. The 30 s is for the jack, where a pause between tracks
+                // must not switch the amp off and on; on Bluetooth the codec is not in the path. And
+                // it has to land before stage 1 (5 s): the driver ignores the standby control during
+                // early suspend, so a codec awake when stage 1 began stayed awake until the screen
+                // next lit — the whole of a 3-minute LDAC run, measured 11-10 (a link repair had
+                // woken it 16 s before stage 1).
+                static bool said_refused = false;
                 if (codec_idle) {
                     if (idle_secs < 100000) ++idle_secs;
-                    if (!we_slept && idle_secs >= 30 && !g_nc_on) {
+                    if (!we_slept && idle_secs >= (on_bt ? 3 : 30) && !g_nc_on) {
                         if (cinder_codec_set_standby(1) == 0) {
                             we_slept = true;
-                            clog_(on_bt && audible
-                                  ? "codec: playing over Bluetooth 30 s -> DAC/amp to standby (not in the path)"
+                            said_refused = false;
+                            clog_(on_bt
+                                  ? "codec: on Bluetooth 3 s -> DAC/amp to standby (not in the path)"
                                   : "codec: idle 30 s -> DAC/amp to standby (a PCM open wakes it)");
+                        } else if (!said_refused) {
+                            said_refused = true;
+                            clog_("codec: the driver refused standby -> trying again each second");
                         }
                     }
                 } else {

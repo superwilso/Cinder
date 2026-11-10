@@ -388,6 +388,13 @@ int  cinder_modal_open(void);
  *      those quite happily and only faults on the query). The shell answers -3 by restoring its
  *      known-good copy and calling again; see db_snapshot_* in cinder-home. */
 int  cinder_db_open(const char *path);
+/* Start-up: the next cinder_db_open leaves the cover cache unread, and cinder_art_cache_start reads
+ * it later (returns its ms, or -1 when nothing was waiting). Covers appear a moment after the
+ * library instead of holding the touchscreen back. */
+/* This build's version string ("0.4.1-rc3"); static, never freed. */
+const char *cinder_version(void);
+void cinder_art_cache_defer(void);
+int  cinder_art_cache_start(void);
 /* Fingerprint of what the library is BUILT FROM in the store at `path` (every row of the track and
  * lookup tables), or 0 = cannot tell (store busy or damaged — treat as unknown, never as "same").
  * Sony's scanner touches /db/MTPDB.dat on every Scan(), even one that finds nothing, so the file's

@@ -15,6 +15,23 @@ pub const CONF_NAME: &str = "cinder_components.conf";
 /// cinder-home's own log, which the launcher also writes one line to before every hand-over to
 /// Sony's player (0.3.10 on).
 pub const HOME_LOG: &str = "cinderhome.log";
+/// Written by the running app each boot (`write_running_version` in cinder-home): what the player
+/// actually runs, as opposed to what an installer last staged.
+pub const RUNNING_NAME: &str = "cinder_running.txt";
+
+/// The launcher's switches that live on the drive, so they can be set from a PC (RECOVERY.md).
+pub mod flags {
+    /// Present: every start goes to Sony's player until it is removed.
+    pub const OFF: &str = "cinderhome_off";
+    /// Present: the next start goes to Sony's player, once; the launcher deletes it.
+    pub const ONCE: &str = "cinderhome_once";
+    /// Present: clear the "failed to start" latch at the next start and try Cinder again.
+    pub const CLEAR: &str = "cinderhome_clear";
+    /// The launcher's mirror of its latch: Cinder failed to start twice and is switched off.
+    pub const LATCHED: &str = "cinderhome_DISABLED_badboot";
+    /// Its mirror of the failed-start count.
+    pub const BOOTCOUNT: &str = "cinderhome_bootcount";
+}
 
 /// Walkman One keeps its settings and its per-boot log in `CFW/` at the top of the drive
 /// (`settings.txt`, `boot_log.txt` — `analysis/RE_walkmanone_extract.md`). Nothing else writes there.
@@ -138,6 +155,11 @@ pub fn looks_like_walkman(root: &Path) -> bool {
 }
 
 fn candidate_roots() -> Vec<PathBuf> {
+    // For trying the page against made-up players (tools/render_installer_screenshots.sh): a
+    // list of folders to treat as the only places a player could be.
+    if let Some(list) = std::env::var_os("CINDER_PLAYER_ROOTS") {
+        return std::env::split_paths(&list).collect();
+    }
     let mut v = Vec::new();
     if cfg!(windows) {
         for c in b'A'..=b'Z' {
@@ -220,6 +242,14 @@ pub struct Installed {
     pub walkman_one: bool,
     /// The reason the launcher gave for the last boot landing on Sony's player, if it did.
     pub last_boot_stock: Option<String>,
+    /// What the player last STARTED, from [`RUNNING_NAME`]: (version, channel). `None` on a build
+    /// older than the file, or one that has never started.
+    pub running: Option<(String, String)>,
+    /// Which of the drive-side launcher switches are set ([`flags`]).
+    pub off: bool,
+    pub once: bool,
+    pub clear_pending: bool,
+    pub latched: bool,
 }
 
 impl Installed {
@@ -299,7 +329,26 @@ pub fn read_installed(root: &Path, payload_names: &[&str]) -> Installed {
     if let Ok(bytes) = fs::read(root.join(HOME_LOG)) {
         st.last_boot_stock = last_boot_to_stock(&String::from_utf8_lossy(&bytes));
     }
+    st.running = fs::read_to_string(root.join(RUNNING_NAME))
+        .ok()
+        .and_then(|t| parse_running(&t));
+    st.off = root.join(flags::OFF).exists();
+    st.once = root.join(flags::ONCE).exists();
+    st.clear_pending = root.join(flags::CLEAR).exists();
+    st.latched = root.join(flags::LATCHED).exists();
     st
+}
+
+/// `version=…` and `channel=…` lines; a missing version is no answer at all.
+pub fn parse_running(text: &str) -> Option<(String, String)> {
+    let get = |k: &str| {
+        text.lines()
+            .filter_map(|l| l.trim().split_once('='))
+            .find(|(key, _)| key.trim() == k)
+            .map(|(_, v)| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    Some((get("version")?, get("channel").unwrap_or_default()))
 }
 
 /// Did the last install session put the retired `mono` shim in Wampy's slot? Its success line,
@@ -351,6 +400,16 @@ pub fn parse_log(text: &str) -> (Option<LastRun>, Option<String>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_running_file_names_the_version_and_channel() {
+        assert_eq!(
+            super::parse_running("version=0.4.1-rc3\nchannel=dev\n"),
+            Some(("0.4.1-rc3".into(), "dev".into()))
+        );
+        assert_eq!(super::parse_running("channel=dev\n"), None);
+        assert_eq!(super::parse_running(""), None);
+    }
+
     use super::*;
 
     #[test]

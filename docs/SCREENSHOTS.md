@@ -62,14 +62,15 @@ apply. See [`DESIGN_GUIDE.md`](DESIGN_GUIDE.md).
 |---|---|---|---|
 | <img src="screenshots/pull-down.png" width="190" alt="Pull-down panel"> | <img src="screenshots/device.png" width="190" alt="Device: battery, charger, temperatures"> | <img src="screenshots/help.png" width="190" alt="Help and controls, with the way back to Sony"> | <img src="screenshots/gestures.png" width="190" alt="First-run gestures guide"> |
 
-## Windows installer
+## The installer
 
-Captured from the real window by `tools/render_installer_screenshots.sh`.
+The same page on Windows, macOS and Linux: the installer serves it to your browser. Captured from
+the real page by `tools/render_installer_screenshots.sh`.
 
-| Home | Where to start | One group of options |
-|---|---|---|
-| <img src="screenshots/installer-home.png" width="300" alt="Installer home"> | <img src="screenshots/installer-start.png" width="300" alt="Choosing where to start: Cinder, Cinder with the sound options, or everything"> | <img src="screenshots/installer-options-library.png" width="300" alt="The Library options"> |
-
-| Sound options | Review |
+| Your player | Options |
 |---|---|
-| <img src="screenshots/installer-options.png" width="300" alt="The Sound options, with an option's explanation"> | <img src="screenshots/installer-confirm.png" width="300" alt="The review: each choice, and what it changes on the player"> |
+| <img src="screenshots/installer-home.png" width="400" alt="The installer: what the player runs, and what you can do"> | <img src="screenshots/installer-options.png" width="400" alt="Options, each with what it does and what it changes on the player"> |
+
+| Check and start | Fix a problem |
+|---|---|
+| <img src="screenshots/installer-confirm.png" width="400" alt="The review: each choice, and what happens next"> | <img src="screenshots/installer-fix.png" width="400" alt="Fix a problem: start Cinder again, use Sony's player, save a report"> |

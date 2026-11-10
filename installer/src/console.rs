@@ -178,6 +178,9 @@ pub fn run(
             }
         }
 
+        for (who, on) in crate::catalogue::apply_needs(&mut comps) {
+            println!("  also on: {on} ({who} needs it)");
+        }
         let plan = match stage::plan(action, &comps, state.walkman_one) {
             Ok(p) => p,
             Err(e) => {

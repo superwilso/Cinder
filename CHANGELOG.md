@@ -16,6 +16,50 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **The installer is a page in your browser, on Windows, macOS and Linux.** Double-click it (or run
+  `sudo ./cinder-installer-macos`) and it opens a page that says what is on the player, offers what
+  fits (install, update, or nothing to do), explains every option and what it changes on the
+  player, says what will happen before it happens, and follows the player through it. It replaces
+  the Windows window and the text interface macOS and Linux had; the text interface is still there
+  with `--console` and every command-line option. The page is served by the installer to your
+  computer alone (a random port and address), loads nothing from the internet, and works with
+  screen readers, zoom, and light or dark mode. Pictures: `docs/SCREENSHOTS.md`.
+- **Fix a problem, in the installer.** Start Cinder again after it failed to start, use Sony's
+  player for one start or until you say otherwise, save a report for a bug, tidy up old install
+  files, or remove Cinder. These used to mean making files by hand or running `tools/flash.sh` on
+  Linux (RECOVERY.md steps 1 and 2).
+- **The installer knows which Cinder the player runs.** Cinder writes its version to
+  `cinder_running.txt` on the drive at each start, and the installer compares it with the one it
+  carries: it offers Update only when there is something newer, and after an update, reconnecting
+  the player confirms it took. Before, it showed what the last installer had copied, which looked
+  the same whether or not the player had installed it.
+
+### Changed
+
+- **An option that needs another switches it on.** Bluetooth AAC, SBC XQ, ATRAC files and FM
+  recording all work through "Mono and soundscapes over music" (and SBC XQ through AAC), which a
+  sentence in their descriptions said and the installer did not enforce: tick AAC alone and the
+  player got no AAC (reported on Head-Fi). The installer now ticks the needed option too and says
+  so; `components.conf` records it as an `& id` line.
+
+### Fixed
+
+- **The headphone amplifier sleeps during Bluetooth playback again after a reconnect.** Over
+  Bluetooth the jack's DAC and amplifier are not used, and Cinder put them to sleep after 30 s.
+  When the headphones reconnected and the screen went dark within that time, the player's own
+  low-power mode started first, and in that mode the driver did not act on the switch: in a
+  measured 3-minute LDAC run, they stayed powered the whole time. On Bluetooth they now sleep 3 s
+  after the link is up, before that mode can start. The jack keeps its 30 s, so a pause between
+  tracks does not switch the amplifier off. *Device-verified.*
+- **The touchscreen works sooner after start-up: 2.5 s after the first screen appears, from 4.2 s**
+  (6.9 s on developer builds). The EQ and sound chain and the album-cover thumbnails now load
+  after the screen answers, once it has been left alone for 1.5 s or just before the first thing
+  that plays or changes a setting, so moving between screens never waits for them. Covers fill in
+  a couple of seconds later. Developer builds also moved two diagnostics to the first dark screen
+  and no longer hold the screen for adb's 1 s USB pause. *Device-verified (developer build).*
+
 ## [0.4.1] — 2026-11-08
 
 ### Added

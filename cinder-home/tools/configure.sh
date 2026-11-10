@@ -47,7 +47,7 @@ done
 # The grammar is in the catalogue's own header. Description lines are kept as written (the file
 # is wrapped for a terminal already); the first paragraph goes in DESC, the rest in MORE, so the
 # choices can be shown between them. `= value | label | help` lines go in LABEL/HELP.
-IDS=(); declare -A VAR TYPE DEF TITLE DESC MORE LABEL HELP RISK
+IDS=(); declare -A VAR TYPE DEF TITLE DESC MORE LABEL HELP RISK NEEDS
 trim() { sed 's/^[[:space:]]*//;s/[[:space:]]*$//' <<<"$1"; }
 cur=""; para=0
 while IFS= read -r line; do
@@ -68,6 +68,8 @@ while IFS= read -r line; do
         cur="$f_id"; para=0
     elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+\+[[:space:]] ]]; then
         :   # a starting point: the PC installer's, not this picker's
+    elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+\&[[:space:]] ]]; then
+        NEEDS[$cur]+="${NEEDS[$cur]:+ }${line#*& }"
     elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+![[:space:]] ]]; then
         text="${line#*! }"
         RISK[$cur]+="${RISK[$cur]:+ }$text"
@@ -204,6 +206,21 @@ fi
 for id in "${IDS[@]}"; do
     valid "$id" "${SEL[$id]}" \
         || { echo "ERR: refusing to write invalid value '${SEL[$id]}' for '$id'" >&2; exit 1; }
+done
+
+# What a ticked option needs (`& id` in the catalogue) is ticked too, and said, as the PC installer does.
+changed=1
+while [ "$changed" = 1 ]; do
+    changed=0
+    for id in "${IDS[@]}"; do
+        [ "${SEL[$id]}" = 1 ] || continue
+        for n in ${NEEDS[$id]:-}; do
+            if [ "${SEL[$n]:-}" = 0 ]; then
+                SEL[$n]=1; changed=1
+                echo "  also on: ${TITLE[$n]} (${TITLE[$id]} needs it)"
+            fi
+        done
+    done
 done
 
 mkdir -p "$(dirname "$OUT")"
