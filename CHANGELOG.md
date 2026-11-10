@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-11-08
+
 ### Added
 
 - **The phone remote does much more, and remembers your phone.** Besides the buttons and sending
@@ -48,42 +50,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   carries: it offers Update only when there is something newer, and after an update, reconnecting
   the player confirms it took. Before, it showed what the last installer had copied, which looked
   the same whether or not the player had installed it.
-
-### Changed
-
-- **An option that needs another switches it on.** Bluetooth AAC, SBC XQ, ATRAC files and FM
-  recording all work through "Mono and soundscapes over music" (and SBC XQ through AAC), which a
-  sentence in their descriptions said and the installer did not enforce: tick AAC alone and the
-  player got no AAC (reported on Head-Fi). The installer now ticks the needed option too and says
-  so; `components.conf` records it as an `& id` line.
-
-### Fixed
-
-- **Wi-Fi that joined slowly had no address.** When joining took longer than 30 s, the player
-  stopped waiting before asking the router for an address. Wi-Fi then showed as connected while
-  nothing on the internet worked. It now keeps asking in the background. *Seen twice on the
-  owner's network on 11-10; the fix is device-unverified.*
-- **The installer offers a reinstall when the player already runs its version.** The button used to
-  read "Change Cinder's options", which looked like nothing could be updated. It now reads
-  "Reinstall Cinder …" and explains when to use it.
-- **The headphone amplifier sleeps during Bluetooth playback again after a reconnect.** Over
-  Bluetooth the jack's DAC and amplifier are not used, and Cinder put them to sleep after 30 s.
-  When the headphones reconnected and the screen went dark within that time, the player's own
-  low-power mode started first, and in that mode the driver did not act on the switch: in a
-  measured 3-minute LDAC run, they stayed powered the whole time. On Bluetooth they now sleep 3 s
-  after the link is up, before that mode can start. The jack keeps its 30 s, so a pause between
-  tracks does not switch the amplifier off. *Device-verified.*
-- **The touchscreen works sooner after start-up: 2.5 s after the first screen appears, from 4.2 s**
-  (6.9 s on developer builds). The EQ and sound chain and the album-cover thumbnails now load
-  after the screen answers, once it has been left alone for 1.5 s or just before the first thing
-  that plays or changes a setting, so moving between screens never waits for them. Covers fill in
-  a couple of seconds later. Developer builds also moved two diagnostics to the first dark screen
-  and no longer hold the screen for adb's 1 s USB pause. *Device-verified (developer build).*
-
-## [0.4.1] — 2026-11-08
-
-### Added
-
 - **Internet radio can be pinned to the shelf** (#55). Opening the pin loads the station list.
   *Device-verified.*
 - **Wi-Fi networks can be imported from a file** (#55). Put `cinder_wifi.txt` on the player's drive,
@@ -132,6 +98,26 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Wi-Fi that joined slowly had no address.** When joining took longer than 30 s, the player
+  stopped waiting before asking the router for an address. Wi-Fi then showed as connected while
+  nothing on the internet worked. It now keeps asking in the background. *Seen twice on the
+  owner's network on 11-10; the fix is device-unverified.*
+- **The installer offers a reinstall when the player already runs its version.** The button used to
+  read "Change Cinder's options", which looked like nothing could be updated. It now reads
+  "Reinstall Cinder …" and explains when to use it.
+- **The headphone amplifier sleeps during Bluetooth playback again after a reconnect.** Over
+  Bluetooth the jack's DAC and amplifier are not used, and Cinder put them to sleep after 30 s.
+  When the headphones reconnected and the screen went dark within that time, the player's own
+  low-power mode started first, and in that mode the driver did not act on the switch: in a
+  measured 3-minute LDAC run, they stayed powered the whole time. On Bluetooth they now sleep 3 s
+  after the link is up, before that mode can start. The jack keeps its 30 s, so a pause between
+  tracks does not switch the amplifier off. *Device-verified.*
+- **The touchscreen works sooner after start-up: 2.5 s after the first screen appears, from 4.2 s**
+  (6.9 s on developer builds). The EQ and sound chain and the album-cover thumbnails now load
+  after the screen answers, once it has been left alone for 1.5 s or just before the first thing
+  that plays or changes a setting, so moving between screens never waits for them. Covers fill in
+  a couple of seconds later. Developer builds also moved two diagnostics to the first dark screen
+  and no longer hold the screen for adb's 1 s USB pause. *Device-verified (developer build).*
 - **MP3 radio stations no longer crackle** (#55). The radio decoded each network read to its last
   byte, and the MP3 decoder treats a frame cut off at the end as damage: it threw that piece away
   and lost the data the next frame borrows from it. On Radio Paradise that was 188 to 252 damaged
@@ -222,6 +208,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **An option that needs another switches it on.** Bluetooth AAC, SBC XQ, ATRAC files and FM
+  recording all work through "Mono and soundscapes over music" (and SBC XQ through AAC), which a
+  sentence in their descriptions said and the installer did not enforce: tick AAC alone and the
+  player got no AAC (reported on Head-Fi). The installer now ticks the needed option too and says
+  so; `components.conf` records it as an `& id` line.
 - **Joining a Wi-Fi network keeps the others.** The player remembered one network: joining a new one
   replaced it. Joining now adds to the list, and Forget removes only the network the player is on.
   *Device-verified.*
