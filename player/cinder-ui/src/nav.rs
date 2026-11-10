@@ -12442,8 +12442,13 @@ impl App {
         // flight, so an idle Devices screen costs nothing and repaints nothing. Wrapped at 8s (one
         // whole number of 8-dot revolutions) to keep the f32 exact forever.
         if self.bt_connecting.is_some() || self.bt_scanning {
+            // The ring has eight positions a second and only the two Bluetooth screens draw it, so
+            // a repaint is due when its head moves there: not every frame on every screen, which
+            // held most of a processor for the whole of a 30 s connect or scan (11-10).
+            let head = (self.bt_busy_phase * 8.0) as i32;
             self.bt_busy_phase = (self.bt_busy_phase + dt / 1000.0) % 8.0;
-            animating = true;
+            animating = (self.bt_busy_phase * 8.0) as i32 != head
+                && matches!(self.current(), Screen::Bluetooth | Screen::Pairing);
         } else if self.bt_busy_phase != 0.0 {
             self.bt_busy_phase = 0.0; // one last repaint clears the spinner
             animating = true;
@@ -25838,6 +25843,25 @@ mod tests {
         a.bt_paired_add("WH-1000XM4", "Headphones", true);
         a.bt_paired_add("WONDERBOOM", "Speaker", false);
         assert_eq!(a.bt_connecting, None);
+    }
+
+    /// The spinner asks for a repaint when its head moves (eight times a second), and only on a
+    /// screen that draws it.
+    #[test]
+    fn the_spinner_repaints_per_step_not_per_frame() {
+        let mut a = unlocked();
+        a.bt_paired_clear();
+        a.bt_paired_add("WH-1000XM4", "Headphones", false);
+        a.push_for_test(Screen::Pairing);
+        a.bt_connect_row(0);
+        let painted = (0..60).filter(|_| a.tick_dt(16)).count(); // 0.96 s of 60 Hz ticks
+        assert!((6..=9).contains(&painted), "{painted} repaints in a second");
+        a.push_for_test(Screen::NowPlaying);
+        assert_eq!(
+            (0..60).filter(|_| a.tick_dt(16)).count(),
+            0,
+            "not drawn here"
+        );
     }
 
     /// …and a connect that never lands must not lock its row forever.
