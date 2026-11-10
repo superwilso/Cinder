@@ -42,10 +42,12 @@ pub enum Opt {
     WifiArt,
     WifiPlayTo,
     WifiAirplay,
+    /// Wi-Fi ▸ Phone remote: kept on across restarts, serving whenever Wi-Fi is connected.
+    WifiRemote,
 }
 
 impl Opt {
-    pub const ALL: [Opt; 15] = [
+    pub const ALL: [Opt; 16] = [
         Opt::Quick,
         Opt::FoldersTab,
         Opt::DeleteMusic,
@@ -61,6 +63,7 @@ impl Opt {
         Opt::WifiArt,
         Opt::WifiPlayTo,
         Opt::WifiAirplay,
+        Opt::WifiRemote,
     ];
 
     /// The settings-file key.
@@ -81,6 +84,7 @@ impl Opt {
             Opt::WifiArt => "wifi_art",
             Opt::WifiPlayTo => "wifi_play_to",
             Opt::WifiAirplay => "wifi_airplay",
+            Opt::WifiRemote => "wifi_remote",
         }
     }
 
@@ -132,7 +136,7 @@ mod tests {
     fn every_switch_starts_off_and_has_its_own_key_and_row() {
         assert_eq!(
             Opt::ALL.len(),
-            Opt::WifiAirplay as usize + 1,
+            Opt::WifiRemote as usize + 1,
             "ALL lists every variant"
         );
         let none = Opts::default();

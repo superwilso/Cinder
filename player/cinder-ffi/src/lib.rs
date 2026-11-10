@@ -6203,22 +6203,19 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
         // Handled by `carry_action` before this point.
         Action::SpeakersScan | Action::SpeakerPlay(_) | Action::SpeakerStop => return None,
         Action::RadioFind | Action::RadioAdd(_) => return None,
-        // The phone remote is cinder-ffi's own: start or stop the server here, tell the page.
+        // The phone remote is cinder-ffi's own. On: the frame loop starts it whenever Wi-Fi is
+        // connected (`remote_tick`). Off: stop it now.
         Action::Remote(on) => {
-            if *on {
-                let code = remote::new_code();
-                match remote::start(&code) {
-                    Ok(port) => r.app.set_remote(true, &code, port),
-                    Err(_) => {
-                        r.app.set_remote(false, "", 0);
-                        r.app
-                            .notify(cinder_ui::i18n::text("The phone remote could not start"));
-                    }
-                }
-            } else {
+            remote::retry();
+            if !*on {
                 remote::stop();
                 r.app.set_remote(false, "", 0);
             }
+            return None;
+        }
+        Action::RemoteForget => {
+            remote::forget_phones();
+            r.app.set_remote_phones(0);
             return None;
         }
         Action::SoundBypass(_) => 15,
@@ -7723,24 +7720,82 @@ pub unsafe extern "C" fn cinder_take_wifi_join(buf: *mut u8, cap: libc::c_int) -
     }
 }
 
+/// Phone remote, once a frame: start the server when the switch is on and Wi-Fi is connected,
+/// stop it when the link or the switch went, and keep the player's count of paired phones current.
+fn remote_tick(r: &mut Render) {
+    use cinder_ui::opt::Opt;
+    let want = r.app.opt(Opt::WifiRemote);
+    if remote::running() && (r.app.take_remote_dropped() || !want) {
+        remote::stop();
+        r.app.set_remote(false, "", 0);
+        r.dirty = true;
+    }
+    if want && !remote::running() && !remote::gave_up() && r.app.wifi_connected() {
+        let code = remote::new_code();
+        match remote::start(&code) {
+            Ok(port) => r.app.set_remote(true, &code, port),
+            Err(_) => r
+                .app
+                .notify(cinder_ui::i18n::text("The phone remote could not start")),
+        }
+        r.dirty = true;
+    }
+    let n = remote::phone_count();
+    if n != r.app.remote_phones() {
+        r.app.set_remote_phones(n);
+        r.dirty = true;
+    }
+}
+
 /// Phone remote: the next button the page pressed (a cinder_button_t), or 0 for none (the page
 /// never sends UP, so 0 is free — and it is what a stub returns, so a stub can never invent a press).
-/// Call every frame
-/// and feed each through cinder_input, as for a side key. Also stops the server when the Wi-Fi
-/// link went, and keeps the page's "now playing" current.
+/// Call every frame and feed each through cinder_input, as for a side key. Also starts and stops
+/// the server (see `remote_tick`).
 #[no_mangle]
 pub extern "C" fn cinder_remote_take_button() -> libc::c_int {
-    if !remote::running() {
-        return 0;
-    }
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        if r.app.take_remote_dropped() {
-            remote::stop();
-            return 0;
-        }
-        remote::set_now(&r.np.title, &r.np.artist, r.np.playing);
+        remote_tick(r);
     }
     remote::take_button().unwrap_or(0)
+}
+
+/// Phone remote: carry out the next thing the page asked for (play, queue, jump, like, a playlist
+/// or an artist) and return its action code for the shell, or 0 when nothing is waiting or it
+/// needed nothing from the shell. Call every frame after the buttons.
+#[no_mangle]
+pub extern "C" fn cinder_remote_take_action() -> libc::c_int {
+    use cinder_ui::nav::Action;
+    use remote::Cmd;
+    let Some(cmd) = remote::take_cmd() else {
+        return 0;
+    };
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let actions = match cmd {
+        Cmd::Play(ids, at) => r.app.remote_play(ids, at),
+        Cmd::Queue(ids, next) => r.app.remote_queue(&ids, next),
+        Cmd::Jump(i) if i < r.app.context().len() => vec![Action::PlayContextAt(i)],
+        Cmd::Jump(_) => vec![],
+        Cmd::Playlist(id, false) => vec![Action::PlayPlaylist(id)],
+        Cmd::Playlist(id, true) => vec![Action::ShufflePlaylist(id)],
+        Cmd::ShuffleArtist(i) if i < r.app.library().artists.len() => {
+            vec![Action::ShuffleArtist(i)]
+        }
+        Cmd::ShuffleArtist(_) => vec![],
+        Cmd::Like => vec![Action::ToggleLiked],
+        Cmd::SendPlays => {
+            r.app.set_opt(cinder_ui::opt::Opt::WifiLb, true);
+            save_settings(r);
+            vec![]
+        }
+    };
+    r.dirty = true;
+    for a in &actions {
+        if let Some(code) = carry_action(r, a) {
+            return code;
+        }
+    }
+    0
 }
 
 /// Phone remote: how many uploads finished since the last call. The shell rescans the library
@@ -13469,6 +13524,81 @@ mod tests {
     struct ZappinNullPresent;
     impl present::PresentTarget for ZappinNullPresent {
         fn present(&mut self, _: &[u32]) {}
+    }
+
+    /// The phone remote as a phone sees it: the code once, then the library, search and Play by
+    /// cookie, and Play reaching the player's queue of commands.
+    #[test]
+    fn phone_remote_end_to_end() {
+        use std::io::{Read, Write};
+        let _render = global_render();
+        let _g = remote::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("cinder-remote-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("CINDER_REMOTE_PHONES", dir.join("phones"));
+        *cell().lock().unwrap() = Some(zappin_render());
+        let port = remote::start("123456").expect("a free port");
+        let ask = |req: String| {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(req.as_bytes()).unwrap();
+            let mut out = String::new();
+            let _ = s.read_to_string(&mut out);
+            out
+        };
+        let login = |code: &str| {
+            let body = format!("code={code}");
+            ask(format!(
+                "POST /login HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ))
+        };
+        assert!(login("000000").contains("Location: /?wrong"));
+        let ok = login("123456");
+        let token = ok
+            .split("cinder=")
+            .nth(1)
+            .and_then(|t| t.get(..32))
+            .expect("a cookie")
+            .to_string();
+        let cookie = format!("Cookie: cinder={token}\r\n");
+        let get = |p: &str| ask(format!("GET {p} HTTP/1.1\r\n{cookie}\r\n"));
+        assert!(ask("GET /api/albums HTTP/1.1\r\n\r\n".into()).starts_with("HTTP/1.1 403"));
+        assert!(get("/").contains("Up Next"), "the page, not the login");
+        let albums = get("/api/albums");
+        assert!(
+            albums.starts_with("HTTP/1.1 200") && albums.contains("\"n\":"),
+            "{albums}"
+        );
+        let (title, id) = read(|r| {
+            let s = &r.app.library().songs[0];
+            (s.title.clone(), s.object_id)
+        });
+        let q: String = title.split_whitespace().next().unwrap().into();
+        assert!(get(&format!("/api/search?q={}", drive::pct_encode(&q)))
+            .contains(&format!("\"id\":{id}")));
+        assert!(get("/api/album/0").contains("\"tracks\":["));
+        let post = |p: &str, body: &str, header: &str| {
+            ask(format!(
+                "POST {p} HTTP/1.1\r\n{cookie}{header}Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            ))
+        };
+        let play = format!("{id}");
+        assert!(
+            post("/api/play?at=0", &play, "").starts_with("HTTP/1.1 403"),
+            "no X-Cinder"
+        );
+        assert!(post("/api/play?at=0", &play, "X-Cinder: 1\r\n").starts_with("HTTP/1.1 204"));
+        assert_eq!(remote::take_cmd(), Some(remote::Cmd::Play(vec![id], 0)));
+        assert!(post("/api/queue?next=1", &play, "X-Cinder: 1\r\n").starts_with("HTTP/1.1 204"));
+        assert_eq!(
+            cinder_remote_take_action(),
+            0,
+            "queued in-process; the shell has nothing to do"
+        );
+        assert!(get("/api/queue").contains(&format!("\"id\":{id}")));
+        remote::stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn zappin_render() -> Render {

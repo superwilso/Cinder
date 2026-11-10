@@ -14662,6 +14662,9 @@ void input_pump() {
         int act = cinder_input(b);
         if (act != CINDER_ACT_NONE) carry_out_input(act);
     }
+    // ...and what it asked for from the library (play, queue, jump, like): one per frame, so a
+    // burst of taps on the phone cannot hold the loop.
+    if (int act = cinder_remote_take_action()) carry_out_input(act);
     // Held rocker: the events are all drained, so anything still down is a genuine hold.
     vol_repeat_tick();
     // Banked slider/rail applies and the release seek — deliberate gestures, so ahead of a

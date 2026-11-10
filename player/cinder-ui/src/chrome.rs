@@ -141,8 +141,8 @@ const fn zone_right() -> f32 {
 /// Widest a boxed label may be, given it starts at `wx`. The slab is drawn with 6 px of padding
 /// each side, so the text has to give up both — subtracting only the left one is what left the
 /// clamp 5 px short on the first attempt at this.
-fn zone_text_w(wx: f32) -> f32 {
-    (zone_right() - wx - 6.0).max(0.0)
+fn zone_text_w(wx: f32, right: f32) -> f32 {
+    (right - wx - 6.0).max(0.0)
 }
 
 /// A boxed label's slab as `(x, w)`, hard-clamped to `zone_right()`.
@@ -152,13 +152,28 @@ fn zone_text_w(wx: f32) -> f32 {
 /// width that differed between two hosts. Clamping the RECTANGLE as well means the slab cannot
 /// reach the menu glyph even if the fit is wrong, which is the property the test asserts and the
 /// one that matters: a warning banner must never hide the control that navigates away from it.
-fn zone_slab(wx: f32, text_w: f32) -> (i32, i32) {
+fn zone_slab(wx: f32, text_w: f32, right: f32) -> (i32, i32) {
     let x = wx - 6.0;
-    let w = (text_w + 12.0).min((zone_right() - x).max(0.0));
+    let w = (text_w + 12.0).min((right - x).max(0.0));
     (x as i32, w as i32)
 }
 
-pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &str, battery: u8) {
+/// Where the busy ring sits: the right end of the left zone, just short of the ☰. While it is up
+/// the badge, banner and NIGHT stop short of it, so it never covers them or they it.
+const BUSY_CX: f32 = zone_right() - 9.0;
+
+/// `busy` = the phase of the ring (`widgets::spinner`) while the player is working on something —
+/// a library scan, a Bluetooth or speaker search, a connect, Wi-Fi coming up, a station tuning in
+/// — so it shows from every screen, not only the one that started it. `None` draws nothing.
+pub fn status_bar(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    clock: &str,
+    badge: &str,
+    battery: u8,
+    busy: Option<f32>,
+) {
     // Big view ▸ Bigger top bar (#51) grows the clock, the battery, the ☰ and the bookmark by a
     // quarter; the codec badge keeps its size so the zone left of the ☰ still holds it. The strip
     // sizes its own glyphs, so Bigger icons is held off here. With it off, `k` is 1 and every
@@ -189,6 +204,13 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
     // the right-hand glyphs into this branch would have "fixed" it by creating a second copy of
     // that layout to keep in step; one path through it cannot drift.
     let degraded = ipc_dead();
+    let right = match busy {
+        Some(phase) => {
+            crate::widgets::spinner(c, BUSY_CX as i32, STATUS_MID as i32, 7, 3, phase, t.acc);
+            BUSY_CX - 13.0
+        }
+        None => zone_right(),
+    };
     if degraded {
         let wst = sty(Family::Mono, Weight::SemiBold, 12.0, t.acc_ink, 0.10);
         let wx = cx + 12.0;
@@ -210,10 +232,10 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
         // zero-width slab would still have been paired with text drawn AT `wx` — i.e. straight over
         // the glyphs, which is the exact failure this clamp exists to stop. Saying nothing is the
         // right answer there: the banner is a hint, and the way out of the screen is not.
-        let avail = zone_text_w(wx);
+        let avail = zone_text_w(wx, right);
         if avail > 0.0 {
             let msg = crate::widgets::fit(f, "AUDIO STOPPED \u{2014} RESTART", &wst, avail);
-            let (bx, bw) = zone_slab(wx, text::measure(f, &msg, &wst));
+            let (bx, bw) = zone_slab(wx, text::measure(f, &msg, &wst), right);
             fill_rect(c, bx, 10, bw, 23, t.acc);
             text::draw(c, f, wx, 26.0, &msg, &wst);
         }
@@ -227,10 +249,10 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
         // the menu and bookmark glyphs.
         let bst = sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.12);
         let bx = cx + 12.0;
-        let avail = zone_text_w(bx);
+        let avail = zone_text_w(bx, right);
         if avail > 0.0 {
             let shown = crate::widgets::fit(f, badge, &bst, avail);
-            let (ox, ow) = zone_slab(bx, text::measure(f, &shown, &bst));
+            let (ox, ow) = zone_slab(bx, text::measure(f, &shown, &bst), right);
             Rectangle::new(Point::new(ox, 11), Size::new(ow as u32, 21))
                 .into_styled(PrimitiveStyle::with_stroke(t.acc, 1))
                 .draw(c)
@@ -244,7 +266,7 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
         // nothing, and the glyphs behind it matter more than the label does.
         let nst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.18);
         let nx2 = nx + 12.0;
-        if text::measure(f, crate::i18n::text("NIGHT"), &nst) <= (zone_right() - nx2).max(0.0) {
+        if text::measure(f, crate::i18n::text("NIGHT"), &nst) <= (right - nx2).max(0.0) {
             text::draw(c, f, nx2, 26.0, crate::i18n::text("NIGHT"), &nst);
         }
     }
@@ -669,7 +691,7 @@ mod degraded_tests {
         let f = FontSet::load();
         let mut c = Canvas::new();
         c.fill(t.bg);
-        status_bar(&mut c, &t, &f, "14:32", "FLAC 24/96", battery);
+        status_bar(&mut c, &t, &f, "14:32", "FLAC 24/96", battery, None);
         c
     }
 
@@ -737,7 +759,7 @@ mod degraded_tests {
         const BAND: i32 = 320;
         for wx in [20.0_f32, 67.5, 79.5, 120.0, 300.0, 400.0] {
             for text_w in [0.0_f32, 100.0, 193.2, 294.0, 1000.0, 10_000.0] {
-                let (x, w) = zone_slab(wx, text_w);
+                let (x, w) = zone_slab(wx, text_w, zone_right());
                 assert!(w >= 0, "a slab cannot have negative width (wx {wx})");
                 // A zero-width slab draws nothing, and `status_bar` skips the text with it — that
                 // is the "the clock ran long" case, where the banner is dropped rather than
@@ -752,7 +774,7 @@ mod degraded_tests {
         // And the text is given a width that leaves room for BOTH of the slab's 6 px margins —
         // subtracting only the left one is what left the first clamp 5 px short.
         for wx in [20.0_f32, 67.5, 120.0] {
-            let (x, w) = zone_slab(wx, zone_text_w(wx));
+            let (x, w) = zone_slab(wx, zone_text_w(wx, zone_right()), zone_right());
             assert!(w > 0, "these all have room");
             assert!(
                 x + w <= BAND,
@@ -760,7 +782,7 @@ mod degraded_tests {
             );
         }
         // Past the limit there is no room at all, and that must be 0 rather than a negative.
-        assert_eq!(zone_text_w(10_000.0), 0.0);
+        assert_eq!(zone_text_w(10_000.0, zone_right()), 0.0);
     }
 
     /// A long codec badge cannot reach the menu or bookmark glyphs — nor can the NIGHT label
@@ -769,6 +791,29 @@ mod degraded_tests {
     /// The badge is CALLER DATA, built from the file being played, so unlike the fixed banner
     /// string this can be made pathological from the test itself and the rule is checked on every
     /// host rather than only on one whose fonts happen to measure wide.
+    /// The busy ring shows only while busy, and a long badge stops short of it rather than
+    /// painting over it.
+    #[test]
+    fn the_busy_ring_keeps_its_place() {
+        let _g = latch_lock();
+        let _scale = crate::text::scale_guard();
+        set_ipc_dead(false);
+        let t = Theme::day();
+        let bg = crate::canvas::to_u32(t.bg);
+        let ring = |badge: &str, busy: Option<f32>| {
+            let f = FontSet::load();
+            let mut c = Canvas::new();
+            c.fill(t.bg);
+            status_bar(&mut c, &t, &f, "14:32", badge, 50, busy);
+            let x = BUSY_CX as i32;
+            ink(&c, x - 10, x + 10, 6, 38, bg)
+        };
+        assert_eq!(ring("FLAC 24/96", None), 0);
+        let lit = ring("FLAC 24/96", Some(0.0));
+        assert!(lit > 0);
+        assert_eq!(ring(&"W".repeat(200), Some(0.0)), lit);
+    }
+
     #[test]
     fn a_long_codec_badge_never_reaches_the_glyphs() {
         let _g = latch_lock();
@@ -778,7 +823,7 @@ mod degraded_tests {
             let f = FontSet::load();
             let mut c = Canvas::new();
             c.fill(t.bg);
-            status_bar(&mut c, t, &f, "14:32", badge, 50);
+            status_bar(&mut c, t, &f, "14:32", badge, 50, None);
             let bg = crate::canvas::to_u32(t.bg);
             (
                 ink(&c, 320, 356, 6, 38, bg),                     // menu glyph

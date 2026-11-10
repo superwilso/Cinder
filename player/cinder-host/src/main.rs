@@ -618,7 +618,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     0,
                     false,
                 );
-                cinder_ui::chrome::status_bar(c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+                cinder_ui::chrome::status_bar(c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
                 cinder_ui::quick::render(
                     c,
                     &theme,
@@ -2274,7 +2274,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // The status strip is drawn by the NAVIGATOR on device (one place, live values), not by
             // each screen — so these direct screen calls have to add it or every preview would be
             // missing the chrome the real thing has, and UI work would be done against a lie.
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             save(&c, &format!("{screen}_{name}"));
         }
     }
@@ -2310,7 +2310,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ..np
                 },
             );
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             let label = cinder_ui::viz::size_name(size)
                 .to_lowercase()
                 .replace(' ', "_");
@@ -2330,7 +2330,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 0,
                 &sample_settings(settings::page_of(settings::ROW_RESTART)),
             );
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
             save(&c, &format!("confirm_{name}"));
         }
@@ -2346,7 +2346,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 0,
                 &sample_settings(settings::page_of(settings::ROW_LANGUAGE)),
             );
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             save(&c, "settings_scrolled");
         }
 
@@ -2384,7 +2384,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 base_fw: "SONY STOCK",
             };
             cinder_ui::device::render(&mut c, &theme, &fonts, &v, 0);
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99, None);
             save(&c, "device");
         }
         // Settings ▸ Storage, at the top and scrolled to the bottom.
@@ -2405,7 +2405,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 0
             };
             cinder_ui::storage::render(&mut c, &theme, &fonts, &v, scroll);
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99, None);
             save(&c, name);
         }
         // Same screen scrolled to the bottom — the sections below the fold are the reason it
@@ -2441,7 +2441,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             };
             let max = cinder_ui::device::max_scroll_px(&v);
             cinder_ui::device::render(&mut c, &theme, &fonts, &v, max);
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99, None);
             save(&c, "device_scrolled");
         }
         {
@@ -2474,7 +2474,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 base_fw: "SONY STOCK",
             };
             cinder_ui::device::render(&mut c, &theme, &fonts, &v, 0);
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "FLAC 24/96", 46);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "FLAC 24/96", 46, None);
             save(&c, "device_degraded");
         }
 
@@ -2494,7 +2494,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ..np
                 },
             );
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             save(&c, &format!("np_page_{page}"));
         }
         // Night pages too — the theme has a different layout (compact header, no full-bleed
@@ -2515,7 +2515,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ..np
                 },
             );
-            cinder_ui::chrome::status_bar(&mut c, &nt, &fonts, "02:14", "FLAC 24/96", 41);
+            cinder_ui::chrome::status_bar(&mut c, &nt, &fonts, "02:14", "FLAC 24/96", 41, None);
             save(&c, &format!("np_night_page_{page}"));
         }
         // The spectrum page in every style — this is where the style choice actually shows.
@@ -2532,7 +2532,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ..np
                 },
             );
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             save(
                 &c,
                 &format!(
@@ -2554,7 +2554,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ..np
                 },
             );
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             save(&c, "np_spectrum_no_signal");
         }
         // Which style: every VizKind, all at VEIL (the default), so they are judged in the size
@@ -2572,7 +2572,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ..np
                 },
             );
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             save(
                 &c,
                 &format!(
@@ -2660,7 +2660,15 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             for (name, vs, sel) in shots {
                 let mut c = Canvas::new();
                 cinder_ui::vizset::render(&mut c, &theme, &fonts, &vs, sel);
-                cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+                cinder_ui::chrome::status_bar(
+                    &mut c,
+                    &theme,
+                    &fonts,
+                    "14:32",
+                    "FLAC 24/96",
+                    78,
+                    None,
+                );
                 save(&c, name);
             }
         }
@@ -2679,7 +2687,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ..np
                 },
             );
-            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             save(
                 &c,
                 &format!("viz_below_{}", cinder_ui::viz::name(kind).to_lowercase()),
@@ -2697,8 +2705,23 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
 
         let mut c = Canvas::new();
         now_playing::render(&mut c, &theme, &fonts, &np);
-        cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+        cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
         save(&c, &format!("accent_{lower}_now_playing"));
+        if a == cinder_ui::Accent::ALL[0] {
+            // The busy ring (a scan, a connect) at the end of the left zone, on Now Playing.
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &theme, &fonts, &np);
+            cinder_ui::chrome::status_bar(
+                &mut c,
+                &theme,
+                &fonts,
+                "14:32",
+                "FLAC 24/96",
+                78,
+                Some(0.4),
+            );
+            save(&c, "status_busy");
+        }
 
         let mut c = Canvas::new();
         cinder_ui::display::render(
@@ -2720,7 +2743,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             },
             0,
         );
-        cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+        cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
         save(&c, &format!("accent_{lower}_display"));
     }
 
@@ -3049,7 +3072,15 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     0,
                     false,
                 );
-                cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+                cinder_ui::chrome::status_bar(
+                    &mut c,
+                    &theme,
+                    &fonts,
+                    "14:32",
+                    "FLAC 24/96",
+                    78,
+                    None,
+                );
                 cinder_ui::chrome::np_bar(
                     &mut c,
                     &theme,
@@ -3365,7 +3396,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         ..np
                     },
                 );
-                cinder_ui::chrome::status_bar(&mut c, &t, &fonts, "14:32", "FLAC 24/96", 78);
+                cinder_ui::chrome::status_bar(&mut c, &t, &fonts, "14:32", "FLAC 24/96", 78, None);
                 save(
                     &c,
                     &format!("viz_signal_{slug}{}", if night { "_night" } else { "" }),
@@ -4122,7 +4153,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "netradio_find");
+        app.set_opt(cinder_ui::opt::Opt::WifiRemote, true);
         app.set_remote(true, "482913", 8080);
+        app.set_remote_phones(2);
         app.go_for_preview(Screen::WifiRemote);
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);

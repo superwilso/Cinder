@@ -44,7 +44,12 @@ i=0; while [ $i -lt 30 ]; do
     "$D/wpa_cli" -p "$RUN/ctrl" -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED' && break
     sleep 1; i=$((i + 1))
 done
-[ $i -lt 30 ] || { say "did not join a network in 30 s"; exit 1; }
+# A join that comes later still needs an address: wpa_supplicant keeps trying after this gives up,
+# and a player that joined at 40 s sat "connected" with no address (11-10). udhcpc -b keeps asking.
+[ $i -lt 30 ] || {
+    busybox udhcpc -i wlan0 -b -p "$RUN/udhcpc.pid" -t 8 -s "$D/dhcp.sh" >/dev/null 2>&1
+    say "did not join a network in 30 s"; exit 1
+}
 
 # 802.11 power save: the radio sleeps between beacons while nothing is sent, which is what phones
 # do. The driver starts with it off. With it on, internet radio streamed 58 s of 58 without a stall

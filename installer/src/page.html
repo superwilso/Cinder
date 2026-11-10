@@ -327,6 +327,7 @@ function statusCard() {
   if (i.clear_pending) lines.push("At the next start the player tries Cinder again.");
   if (i.advisory) lines.push(i.advisory);
   if (i.running_version && i.running_vs_this === "older") lines.push("This installer carries Cinder " + S.carries + ", which is newer.");
+  if (i.running_vs_this === "same") lines.push("It runs Cinder " + S.carries + ", the version this installer carries.");
   if (i.running_vs_this === "newer") lines.push("The player runs a newer Cinder than this installer carries (" + S.carries + "). Download the latest installer before changing anything.");
   return el("section", {class: "status", "aria-label": "What is on the player"},
     el("p", {class: "big"}, big), sub && el("p", {class: "dim", style: "margin:0"}, sub),
@@ -348,8 +349,8 @@ function home() {
   } else {
     const older = i.running_vs_this === "older" || i.running_vs_this === "unknown";
     const newer = i.running_vs_this === "newer";
-    if (!newer) cards.push(card(older ? "Update to Cinder " + S.carries : "Change Cinder's options",
-      older ? "Keeps your options, settings and music, and puts the new version on." : "Reinstall the same version with different options. Your settings and music stay.",
+    if (!newer) cards.push(card(older ? "Update to Cinder " + S.carries : "Reinstall Cinder " + S.carries,
+      older ? "Keeps your options, settings and music, and puts the new version on." : "The player already runs this version. Reinstalling puts every file on again, so use it if something seems out of date or broken, or to change options. Your settings and music stay.",
       () => begin("update"), older && !stuck, older && !stuck ? "Recommended" : null));
   }
   cards.push(card("Fix a problem", "Cinder will not start, or you want Sony's player back for a while, or something went wrong and you want to report it.", () => go("fix")));

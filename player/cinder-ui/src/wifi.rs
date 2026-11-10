@@ -765,14 +765,25 @@ pub fn render_speakers(c: &mut Canvas, t: &Theme, f: &FontSet, v: &SpeakersView)
 
 // ── Settings ▸ Wi-Fi ▸ Phone remote ─────────────────────────────────────────────────────────────
 
-/// The page's one control: the switch. Everything else on it is text to read.
+/// The switch, the page's first row.
 pub fn hit_remote(y: i32) -> bool {
     let top = crate::chrome::HEADER_BOTTOM;
     y >= top && y < top + kit::ROW_H()
 }
 
+/// Forget phones, the second row (drawn only while a phone is paired).
+pub fn hit_remote_forget(y: i32) -> bool {
+    let top = crate::chrome::HEADER_BOTTOM + kit::ROW_H();
+    y >= top && y < top + kit::ROW_H()
+}
+
 pub struct RemoteView<'a> {
+    /// The switch (saved).
     pub on: bool,
+    /// The server is up now (the switch is on and Wi-Fi connected).
+    pub serving: bool,
+    /// Phones that open the remote without the code.
+    pub phones: usize,
     pub wifi_connected: bool,
     /// `http://192.168.0.20:8080` while on.
     pub address: &'a str,
@@ -790,9 +801,24 @@ pub fn render_remote(c: &mut Canvas, t: &Theme, f: &FontSet, v: &RemoteView) {
         crate::chrome::HEADER_BOTTOM,
         kit::ROW_H(),
         &Row::new(crate::i18n::text("Phone remote"))
-            .sub(crate::i18n::text("Control and send music from a phone"))
+            .sub(crate::i18n::text("Play and send music from a phone"))
             .trail(Trail::Switch(v.on)),
     );
+    if v.phones > 0 {
+        let sub = if v.phones == 1 {
+            crate::i18n::text("1 phone opens it without the code").to_string()
+        } else {
+            crate::ui_format!("{} phones open it without the code", v.phones)
+        };
+        y = kit::row(
+            c,
+            t,
+            f,
+            y,
+            kit::ROW_H(),
+            &Row::new(crate::i18n::text("Forget phones")).sub(&sub),
+        );
+    }
     let line = |c: &mut Canvas, y: i32, s: &str, size: f32, w: Weight, ink| {
         crate::widgets::center(
             c,
@@ -803,15 +829,19 @@ pub fn render_remote(c: &mut Canvas, t: &Theme, f: &FontSet, v: &RemoteView) {
             &crate::widgets::sty(Family::Sans, w, size, ink, 0.0),
         );
     };
-    if !v.wifi_connected {
-        kit::strip(c, t, f, y, crate::i18n::text("CONNECT TO WI-FI FIRST"));
-        return;
-    }
     if !v.on {
         kit::strip(c, t, f, y, crate::i18n::text("OFF"));
         return;
     }
-    y += 70;
+    if !v.wifi_connected {
+        kit::strip(c, t, f, y, crate::i18n::text("STARTS WHEN WI-FI CONNECTS"));
+        return;
+    }
+    if !v.serving {
+        kit::strip(c, t, f, y, crate::i18n::text("STARTING"));
+        return;
+    }
+    y += if v.phones > 0 { 30 } else { 70 };
     line(
         c,
         y,
@@ -848,7 +878,7 @@ pub fn render_remote(c: &mut Canvas, t: &Theme, f: &FontSet, v: &RemoteView) {
     line(
         c,
         y,
-        crate::i18n::text("A new code each time you switch it on."),
+        crate::i18n::text("A phone asks for the code once."),
         15.0,
         Weight::Regular,
         t.faint,
