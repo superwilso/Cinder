@@ -28,6 +28,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   a second: 78% of a core on the player, against 3% for a title that fits. It now repaints when
   the text has moved a pixel (32 times a second), and not at all while the line rests at either
   end.
+- **A Bluetooth connect or scan no longer costs most of a processor while it runs.** The ring of
+  dots that turns while the player connects or scans made every screen repaint 60 times a second
+  for up to 30 seconds, including screens that do not show it. It now repaints when the ring
+  moves (8 times a second), and only on the two Bluetooth screens.
 - **Two root helpers no longer pass the app's environment to the shell they start.** `cinder-msc`
   and `cinder-voltable` run Sony's tools through a root shell, and that shell inherited whatever
   environment the caller had, `LD_PRELOAD` included. Nothing on the player used this, but a fault

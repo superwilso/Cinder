@@ -196,24 +196,13 @@ pub fn row_pair(
 // that already makes `text::set_scale_idx` a process global. The shell advances the phase once a
 // frame; anything that never calls `set_marquee_ms` simply gets a static, fitted line, which is
 // what every test wants anyway.
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 static MARQUEE_MS: AtomicU32 = AtomicU32::new(0);
-static MARQUEE_LIVE: AtomicBool = AtomicBool::new(false);
 
 /// Advance the marquee clock. Monotonic milliseconds; the shell calls this once a frame.
 pub fn set_marquee_ms(ms: u32) {
     MARQUEE_MS.store(ms, Ordering::Relaxed);
-}
-
-/// Did anything actually SCROLL since this was last called? Read-and-clear.
-///
-/// The renderer is dirty-flag gated, so a scrolling line has to ask for the next frame or it
-/// paints once and stops. Asking only when something is really moving is the point: a title that
-/// fits sets nothing, and Now Playing stays as cheap as it was. Text that fits must never keep the
-/// panel repainting — that is the cost the screen-off timer exists to avoid.
-pub fn marquee_scrolled() -> bool {
-    MARQUEE_LIVE.swap(false, Ordering::Relaxed)
 }
 
 /// Milliseconds until a scrolling line next LOOKS different, among the lines painted since this
@@ -279,7 +268,6 @@ pub fn marquee(
     // dirty-gated, so the frame that ends a dwell is itself a frame nobody asked for, and the
     // marquee stops at the end of its first slide until something unrelated happens to repaint.
     // An animation has to keep asking while it is running, not only while it is moving.
-    MARQUEE_LIVE.store(true, Ordering::Relaxed);
     let dwell_left = if t < MARQUEE_DWELL_MS {
         MARQUEE_DWELL_MS - t
     } else if (half..half + MARQUEE_DWELL_MS).contains(&t) {
@@ -432,15 +420,16 @@ mod marquee_tests {
         let _scale = crate::text::scale_guard();
         let f = fonts();
         let mut c = Canvas::new();
-        marquee_scrolled(); // clear anything a neighbouring test left
+        marquee_wait_ms(); // clear anything a neighbouring test left
         set_marquee_ms(0);
         let w = marquee(&mut c, &f, 24.0, 100.0, "Atlas Hands", &style(), 372.0);
         assert!(
             w > 0.0 && w <= 372.0,
             "a fitting line reports its real width"
         );
-        assert!(
-            !marquee_scrolled(),
+        assert_eq!(
+            marquee_wait_ms(),
+            None,
             "a line that fits must not request repaints"
         );
     }
@@ -452,15 +441,8 @@ mod marquee_tests {
         let f = fonts();
         let mut c = Canvas::new();
         let long = "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364 — III. Presto";
-        marquee_scrolled();
-        set_marquee_ms(0);
-        marquee(&mut c, &f, 24.0, 100.0, long, &style(), 372.0);
-        assert!(
-            marquee_scrolled(),
-            "an overflowing line drives its own animation"
-        );
-        // …but only when it will look different: the rest of the opening dwell, then a pixel at
-        // a time. Asking every frame is what cost 73% of a core on the player.
+        // It asks when it will look different: the rest of the opening dwell, then a pixel at a
+        // time. Asking every frame is what cost 73% of a core on the player.
         marquee_wait_ms();
         set_marquee_ms(100);
         marquee(&mut c, &f, 24.0, 100.0, long, &style(), 372.0);
