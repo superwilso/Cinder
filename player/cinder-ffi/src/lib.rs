@@ -7753,9 +7753,7 @@ fn remote_tick(r: &mut Render) {
 /// the server (see `remote_tick`).
 #[no_mangle]
 pub extern "C" fn cinder_remote_take_button() -> libc::c_int {
-    if let Some(r) = cell().lock().unwrap().as_mut() {
-        remote_tick(r);
-    }
+    write(remote_tick);
     remote::take_button().unwrap_or(0)
 }
 
