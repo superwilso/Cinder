@@ -113,3 +113,4 @@ design/
 # are not committed (2026-11-04).
 wifi/work/
 wifi/out/
+cinder-home/.build.lock

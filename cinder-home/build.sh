@@ -40,6 +40,11 @@
 #     PlayerService libs at artifacts/rootfs_mnt/vendor/sony/lib — NO device pull needed.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# One build at a time: both channels compile into the same objects here (main.o, the cargo target),
+# so a stable and a dev build side by side link each other's halves. 2026-11-11 the edge build after
+# a push ran beside a dev build, and a stable cinder-home went to the player in a dev install.
+exec 9>"$HERE/.build.lock"
+flock 9
 REPO="$HERE/.."
 RAMLIB="$REPO/analysis/ramdisk/lib"               # device glibc 2.23 + libc++/libcxxrt/libgcc_s
 SONYLIB="$REPO/artifacts/rootfs_mnt/vendor/sony/lib"  # easel + PlayerService
