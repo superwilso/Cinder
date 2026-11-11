@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-11-11
+
 ### Added
 
 - **Cover colours (Settings ▸ Now Playing).** Now Playing's background takes the colour of the album
@@ -3985,7 +3987,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.2-rc1...HEAD
+[0.4.2]: https://github.com/superwilso/Cinder/compare/v0.4.1...v0.4.2-rc1
 [0.4.1]: https://github.com/superwilso/Cinder/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/superwilso/Cinder/compare/v0.3.22...v0.4.0
 [0.3.22]: https://github.com/superwilso/Cinder/compare/v0.3.21...v0.3.22-rc1
