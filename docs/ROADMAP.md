@@ -19,13 +19,11 @@ Each has a row in [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §41:
 
 ## Being built next
 
-1. **USB after a resume.** Done 2026-10-26: USB comes back after a suspend to RAM
-   (DEVICE_CHECKLIST 33.2 passes).
-2. **A backup tool that can rescue a player stuck in a boot loop.** Built 2026-10-26 as
+1. **A backup tool that can rescue a player stuck in a boot loop.** Built 2026-10-26 as
    `cinder-rescue` (`rescue/`, [`RECOVERY.md`](../RECOVERY.md) Step 3): back up, verify, and
    restore only the partitions a boot loop breaks, only to the player the backup came from. Backup
    and restore have run on one A55 under Windows. Left: a release build, and the help wanted below.
-3. **Big view** (Settings ▸ Big view, off by default): 130 % text and 25 % taller rows and touch
+2. **Big view** (Settings ▸ Big view, off by default): 130 % text and 25 % taller rows and touch
    zones. The switch is built; the pages that still break in it are listed, with a direction for
    each, in [`PLAN_big_view.md`](PLAN_big_view.md). A good first contribution: pick one page.
 
@@ -83,8 +81,9 @@ ones. Read its safety rules first. Grouped by what each needs:
 - **Playing on network speakers.** Built: **Settings ▸ Wi-Fi ▸ Speakers** casts Up Next to any
   UPnP/DLNA media renderer (Sonos, network AV receivers, smart TVs, Kodi; SSDP, AVTransport,
   RenderingControl) and any Google Cast device (mDNS, Cast v2 over TLS, the Default Media
-  Receiver), each song's own file served by the player. Tested against simulated devices only;
-  reports from real speakers are wanted. Open: hi-res files beyond what a speaker takes (Sonos
+  Receiver), each song's own file served by the player. The UPnP side has played on a real Sonos
+  One (2026-11-11); Google Cast has only met a simulated device. Reports from other speakers are
+  wanted. Open: hi-res files beyond what a speaker takes (Sonos
   stops at 24-bit/48 kHz, 16-bit on S1, and plays no DSD) are skipped rather than converted; the
   player's live output (radio, Cinder's sound effects) is not cast; AirPlay speakers need AirPlay
   sending (RAOP), not built.

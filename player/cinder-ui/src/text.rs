@@ -553,6 +553,9 @@ impl FontSet {
     /// Use `bytes` (a TTF/OTF) for all Sans text, Wampy's user font. False if it is not a font.
     /// One weight: bold text draws in it too. Characters it lacks resolve as before.
     pub fn set_user_font(&self, bytes: Vec<u8>) -> bool {
+        if !cmap_is_sane(&bytes) {
+            return false;
+        }
         let Ok(font) = Font::from_bytes(bytes, FontSettings::default()) else {
             return false;
         };
@@ -631,6 +634,70 @@ pub fn draw_land(
         pen += m.advance_width + track;
     }
     pen
+}
+
+/// False for a font whose character map claims more characters than exist. fontdue visits every
+/// character a map claims when it loads a font, so one damaged 12-byte group saying "4 billion
+/// characters" is a load that never ends (found by fuzzing 2026-11-11), on the thread that draws.
+/// Only the three map formats that list ranges can do it: 4, 12 and 13.
+pub fn cmap_is_sane(b: &[u8]) -> bool {
+    let u16_at = |at: usize| {
+        b.get(at..at + 2)
+            .map(|v| u16::from_be_bytes([v[0], v[1]]) as usize)
+    };
+    let u32_at = |at: usize| {
+        b.get(at..at + 4)
+            .map(|v| u32::from_be_bytes([v[0], v[1], v[2], v[3]]) as usize)
+    };
+    let Some(tables) = u16_at(4) else {
+        return true; // not a font: the parser says so
+    };
+    let Some(cmap) = (0..tables)
+        .map(|i| 12 + 16 * i)
+        .find(|&rec| b.get(rec..rec + 4) == Some(b"cmap"))
+        .and_then(|rec| u32_at(rec + 8))
+    else {
+        return true;
+    };
+    const ALL: u64 = 0x11_0000; // every Unicode code point
+    for i in 0..u16_at(cmap + 2).unwrap_or(0) {
+        let Some(sub) = u32_at(cmap + 8 + 8 * i).map(|o| cmap + o) else {
+            return true;
+        };
+        let mut claimed = 0u64;
+        match u16_at(sub) {
+            Some(4) => {
+                let segs = u16_at(sub + 6).unwrap_or(0) / 2;
+                for k in 0..segs {
+                    let (Some(end), Some(start)) = (
+                        u16_at(sub + 14 + 2 * k),
+                        u16_at(sub + 16 + 2 * segs + 2 * k),
+                    ) else {
+                        break;
+                    };
+                    claimed += (end as u64 + 1).saturating_sub(start as u64);
+                }
+            }
+            Some(12 | 13) => {
+                for g in 0..u32_at(sub + 12).unwrap_or(0) {
+                    let (Some(start), Some(end)) =
+                        (u32_at(sub + 16 + 12 * g), u32_at(sub + 20 + 12 * g))
+                    else {
+                        break;
+                    };
+                    claimed += (end as u64 + 1).saturating_sub(start as u64);
+                    if claimed > ALL {
+                        return false;
+                    }
+                }
+            }
+            _ => {}
+        }
+        if claimed > ALL {
+            return false;
+        }
+    }
+    true
 }
 
 pub struct TextStyle {
@@ -794,5 +861,58 @@ mod localization_tests {
         let mut zh = Canvas::new();
         draw(&mut zh, &fonts, 20.0, 40.0, "Settings", &st);
         assert_eq!(en.buf, zh.buf, "a song named Settings must keep its title");
+    }
+}
+
+#[cfg(test)]
+mod cmap_tests {
+    use super::*;
+
+    /// Where a font's first format-12 character map starts.
+    fn format12(b: &[u8]) -> usize {
+        let be = |at: usize, n: usize| {
+            b[at..at + n]
+                .iter()
+                .fold(0usize, |v, x| v << 8 | *x as usize)
+        };
+        let rec = (0..be(4, 2))
+            .map(|i| 12 + 16 * i)
+            .find(|&r| &b[r..r + 4] == b"cmap")
+            .unwrap();
+        let cmap = be(rec + 8, 4);
+        (0..be(cmap + 2, 2))
+            .map(|i| cmap + be(cmap + 8 + 8 * i, 4))
+            .find(|&sub| be(sub, 2) == 12)
+            .expect("a format-12 map")
+    }
+
+    #[test]
+    fn a_font_claiming_more_characters_than_exist_is_refused_before_it_is_parsed() {
+        let good = include_bytes!("../assets/fonts/JetBrainsMono-Light.ttf");
+        for font in [
+            good as &[u8],
+            include_bytes!("../assets/fonts/HankenGrotesk-Regular.ttf"),
+            include_bytes!("../assets/fonts/CinderHansUI-Regular.otf"),
+        ] {
+            assert!(cmap_is_sane(font), "a real font passes");
+        }
+        assert!(cmap_is_sane(b"not a font"), "left to the parser to refuse");
+        assert!(cmap_is_sane(&good[..good.len() / 3]), "a cut-off copy too");
+
+        // One group's last character moved to 0xFFFFFFFF: the load that did not end.
+        let mut bad = good.to_vec();
+        let end_of_first_group = format12(&bad) + 16 + 4;
+        bad[end_of_first_group..end_of_first_group + 4].copy_from_slice(&[0xff; 4]);
+        assert!(!cmap_is_sane(&bad));
+        let t0 = std::time::Instant::now();
+        assert!(!FontSet::load().set_user_font(bad));
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(5),
+            "refused at once"
+        );
+        assert!(
+            FontSet::load().set_user_font(good.to_vec()),
+            "and a good one is still taken"
+        );
     }
 }

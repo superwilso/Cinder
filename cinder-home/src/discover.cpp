@@ -123,7 +123,7 @@ extern "C" void cinder_run_discovery(const char* path, int with_audio, int with_
     section(f, "ALSA TOPOLOGY (USB-DAC / output routing)");
     run("cat /proc/asound/cards");
     run("aplay -l");
-    run("arecord -l");
+    run("cat /proc/asound/pcm");   // playback AND capture; the player has no arecord
     run("ls -l /dev/snd");
     run("cat /proc/asound/card0/pcm*/sub*/status 2>/dev/null");
 

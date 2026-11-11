@@ -36,6 +36,35 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Track information is there after a restart.** It was filled only when the player started a
   song itself, so it stayed empty after a restart until then (and through a whole cast). *Found in the player's log of 2026-11-11 (a cast to
   a Sonos One); fixed and tested on the host, not yet watched on a speaker.*
+- **The Storage page shows the SD card.** Its bar was missing whenever the card was mounted after
+  the library was built, because the card's size was read once, then. It is read again whenever
+  storage is reported, and the first time the card is seen mounted. *Seen on the player
+  2026-11-11 (a 238 GB card, no bar). Host-tested; the bar was there after the fix, on a start
+  where the card happened to mount in time anyway, so the late case is not yet seen fixed.*
+- **An update on the player waits for a battery.** Settings ▸ Wi-Fi ▸ Install update now refuses
+  under 30% with no cable in ("Charge first: updating needs 30% or a cable"). Nothing checked
+  before, and Sony's own updater on the player does not either. *Host-tested.*
+- **The phone remote no longer stalls.** It answered one connection at a time, so one idle
+  connection (browsers open spares) held the next request for 15 s, and a song being sent held
+  everything for as long as it took. Each connection has its own thread now, eight at most, one
+  upload at a time. *Device-verified 2026-11-11: 14.9 s behind an idle connection before, 0.02 s
+  after; a ninth connection is told to try again.*
+- **A damaged skin or font can no longer stop the player.** A Winamp skin whose `pledit.txt` had a
+  character outside ASCII inside a colour (an old Latin-1 skin does) ended the Home app, at every
+  start while that skin was chosen. A `cinder_font.ttf` whose character map claimed four billion
+  characters never finished loading. Both are refused now. *Found by fuzzing (2.4 million damaged
+  files and answers through every parser, on a PC and as 32-bit ARM code); host-tested, and the
+  same fuzz finds nothing in either after the fix.*
+- **Wi-Fi no longer says it failed just before it connects.** Joining was given 30 s; on a home
+  network at a fair signal it sometimes takes longer (37 s, twice on 2026-11-11), so the page
+  said "did not join a network in 30 s" and then connected. It waits 60 s. *The slow join was
+  measured on the player; the join after the fix took 7 s, so the longer wait has not been needed
+  there yet.*
+- **Soundscapes are the same sound on the player as in the tests.** Rain, Storm, Stream and Fire
+  each drew two random numbers inside one function call, which C lets a compiler work out in
+  either order: the tests' compiler and the player's chose differently, so the tests measured a
+  sound the player did not make. One draw a line now, and the self-tests run under both
+  compilers. The sounds are as random as before; nothing about their character changes.
 - **Internet radio lists every station.** The list showed only the stations that fit on one screen
   (seven with Big view) and never scrolled, so the rest of `cinder_radio.txt` (up to 200) could not
   be played. It scrolls now, with FIND on its label moving with it.

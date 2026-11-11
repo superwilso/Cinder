@@ -97,7 +97,9 @@ impl Default for Skin {
 /// `#RRGGBB` (or `RRGGBB`) as a colour.
 pub fn hex_color(v: &str) -> Option<u32> {
     let h = v.trim().trim_start_matches('#');
-    (h.len() >= 6).then(|| u32::from_str_radix(&h[..6], 16).ok())?
+    // `get`, not `[..6]`: a skin's text is whatever bytes its author's editor wrote, and byte 6
+    // inside a character is a panic, which on the player ends the Home app.
+    u32::from_str_radix(h.get(..6)?, 16).ok()
 }
 
 /// pledit.txt's `Normal`, `Current`, `NormalBG` and `SelectedBG`; Winamp's own for any it lacks.
@@ -316,6 +318,26 @@ mod tests {
         assert_eq!(text_cell('-'), (15, 1));
         assert_eq!(text_cell('?'), (3, 2));
         assert_eq!(text_cell('\u{4e2d}'), (30, 0), "anything else is a space");
+    }
+
+    /// Found by fuzzing 2026-11-11: `SelectedBG=#0000ÿÿ` (a Latin-1 skin read as UTF-8) put byte 6
+    /// inside a character, and the slice panicked.
+    #[test]
+    fn a_colour_with_other_than_hex_in_it_is_refused_not_a_panic() {
+        assert_eq!(hex_color("#00FF7f"), Some(0x00ff7f));
+        assert_eq!(hex_color(" 0000FF trailing"), Some(0x0000ff));
+        for bad in [
+            "#0000\u{fffd}\u{fffd}",
+            "#00\u{1f3b5}00",
+            "\u{feff}#0000F",
+            "#12345",
+            "",
+        ] {
+            assert_eq!(hex_color(bad), None, "{bad:?}");
+        }
+        let pl =
+            parse_pledit("Normal=#00FF00\nSelectedBG=#0000\u{fffd}\u{fffd}FF\nCurrent=#FFFFFF\n");
+        assert_eq!((pl[0], pl[1], pl[3]), (0x00ff00, 0xffffff, PL_DEFAULT[3]));
     }
 
     #[test]

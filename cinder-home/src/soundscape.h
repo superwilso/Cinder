@@ -457,15 +457,20 @@ static void ss_block_rain(ss_state* s, int n)
     int np = ss_events(s, 0, (storm ? 520.0f : 300.0f) * inten);
     for (int k = 0; k < np; k++) {
         const float u = ss_rand01(s);
-        ss_grain_spawn(s, 0.03f + 0.32f * u * u * u * u, ss_uniform(s, 0.0004f, 0.0022f),
-                       ss_rand01(s), (int)(ss_rand01(s) * n));
+        /* One draw a line, in this order (see ss_block_fire on why never inside a call). */
+        const int delay = (int)(ss_rand01(s) * n);
+        const float pan = ss_rand01(s);
+        const float secs = ss_uniform(s, 0.0004f, 0.0022f);
+        ss_grain_spawn(s, 0.03f + 0.32f * u * u * u * u, secs, pan, delay);
     }
     int nd = ss_events(s, 1, (storm ? 16.0f : 11.0f) * inten);
     for (int k = 0; k < nd; k++) {
         const float u = ss_rand01(s);
         const float hz = 1000.0f * ss_exp(ss_rand01(s) * 1.1f);      /* 1 .. 3 kHz, log */
-        ss_ring_spawn(s, 0.012f + 0.07f * u * u * u, hz, ss_uniform(s, 0.003f, 0.011f),
-                      ss_rand01(s), (int)(ss_rand01(s) * n));
+        const int delay = (int)(ss_rand01(s) * n);
+        const float pan = ss_rand01(s);
+        const float secs = ss_uniform(s, 0.003f, 0.011f);
+        ss_ring_spawn(s, 0.012f + 0.07f * u * u * u, hz, secs, pan, delay);
     }
 
     float st_bed;
@@ -639,8 +644,10 @@ static void ss_block_stream(ss_state* s, int n)
         const float hz = 520.0f * ss_exp(ss_rand01(s) * 1.55f);       /* 520 Hz .. 2.5 kHz, log */
         /* small bubbles (high) are short and quiet; big ones (low) ring a little longer */
         const float life = 0.006f + 0.030f * (2500.0f - hz) / 2000.0f * ss_uniform(s, 0.5f, 1.0f);
-        ss_bubble_spawn(s, 0.03f + 0.17f * u * u * u, hz, ss_uniform(s, 1.15f, 1.7f), life,
-                        ss_uniform(s, 0.1f, 0.9f), (int)(ss_rand01(s) * n));
+        const int delay = (int)(ss_rand01(s) * n);
+        const float pan = ss_uniform(s, 0.1f, 0.9f);
+        const float rise = ss_uniform(s, 1.15f, 1.7f);
+        ss_bubble_spawn(s, 0.03f + 0.17f * u * u * u, hz, rise, life, pan, delay);
     }
     float st;
     float rush = ss_ctl_from(s, 0, 0.085f * (0.5f + 0.5f * flow), &st, n);
@@ -707,15 +714,26 @@ static void ss_block_fire(ss_state* s, int n)
         int at = (int)(ss_rand01(s) * n);
         for (int j = 0; j < snaps; j++) {
             const float u = ss_rand01(s);
-            ss_grain_spawn(s, 0.06f + 0.55f * u * u * u, ss_uniform(s, 0.0001f, 0.0007f),
-                           pan + ss_uniform(s, -0.08f, 0.08f), at);
+            /* ONE RANDOM DRAW A LINE, NEVER TWO INSIDE ONE CALL. C leaves the order a call's
+             * arguments are worked out in to the compiler: gcc (the host tests) took them right
+             * to left and clang (the player) left to right, so the same seed gave two different
+             * fires, and the tests were checking a sound the player never made (2026-11-11). The
+             * order written here is the one the tests have always measured. */
+            const float snap_pan = pan + ss_uniform(s, -0.08f, 0.08f);
+            const float secs = ss_uniform(s, 0.0001f, 0.0007f);
+            ss_grain_spawn(s, 0.06f + 0.55f * u * u * u, secs, snap_pan, at);
             at += (int)(ss_uniform(s, 0.001f, 0.014f) * s->er);
         }
     }
     const int npop = ss_events(s, 1, 0.5f * heat);
-    for (int k = 0; k < npop; k++)
-        ss_ring_spawn(s, ss_uniform(s, 0.12f, 0.35f), ss_uniform(s, 700.0f, 2400.0f),
-                      ss_uniform(s, 0.008f, 0.022f), ss_rand01(s), (int)(ss_rand01(s) * n));
+    for (int k = 0; k < npop; k++) {
+        const int delay = (int)(ss_rand01(s) * n);
+        const float pop_pan = ss_rand01(s);
+        const float secs = ss_uniform(s, 0.008f, 0.022f);
+        const float hz = ss_uniform(s, 700.0f, 2400.0f);
+        const float amp = ss_uniform(s, 0.12f, 0.35f);
+        ss_ring_spawn(s, amp, hz, secs, pop_pan, delay);
+    }
     float st, sh;
     float roar = ss_ctl_from(s, 0, 0.35f * flick * heat, &st, n);
     float hiss = ss_ctl_from(s, 1, 0.022f * (0.4f + 0.6f * flick), &sh, n);
