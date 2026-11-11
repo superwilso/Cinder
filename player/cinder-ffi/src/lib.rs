@@ -3776,6 +3776,35 @@ fn song_row_of(t: &cinder_db::Track) -> cinder_ui::model::SongRow {
 /// `(label, value)` pairs. A row is OMITTED when its value is unknown, rather than printed empty:
 /// a blank next to "Genre" claims the file has no genre, which is a different statement from the
 /// library not having resolved one.
+/// Track information and lyrics for `t`, the song on Now Playing. `with_cue`: `r.cue` belongs to
+/// `t` (the player's own song); a speaker's song or the resumed one has none loaded.
+fn fill_track_info(r: &mut Render, t: &cinder_db::Track, with_cue: bool) {
+    let lyr = lyrics::load_for(&t.filename);
+    let mut rows = track_info_rows(r, t);
+    if let Some(c) = r.cue.as_ref().filter(|_| with_cue) {
+        let at = rows
+            .iter()
+            .position(|(k, _)| k == "Album")
+            .map_or(rows.len().min(2), |i| i + 1);
+        rows.insert(
+            at,
+            (
+                "CUE sheet".to_string(),
+                format!("{} tracks", c.entries.len()),
+            ),
+        );
+    }
+    if let Some(l) = &lyr {
+        let at = rows
+            .iter()
+            .position(|(k, _)| k == "Album")
+            .map_or(rows.len().min(2), |i| i + 1);
+        rows.insert(at, ("Lyrics".to_string(), l.summary()));
+    }
+    r.app.set_track_info(rows);
+    r.app.set_lyrics(lyr);
+}
+
 fn track_info_rows(r: &Render, t: &cinder_db::Track) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::with_capacity(13);
     // The Rating row leads: it is the one row here that is a control (`track_info::is_rating`),
@@ -5326,6 +5355,7 @@ fn cast_tick(r: &mut Render) {
                 r.np.liked = r.liked.contains(&t.object_id);
                 show_cover(r, t.object_id);
                 r.app.track_started(t.object_id, false);
+                fill_track_info(r, &t, false);
             }
         }
         r.np.playing = st.playing;
@@ -9904,6 +9934,7 @@ pub extern "C" fn cinder_resume_load(
     r.real_pos_ms = -1;
     set_progress(&mut r.np, r.play_pos_ms, r.cur_duration_ms);
     show_cover(r, cur.object_id);
+    fill_track_info(r, cur, false);
     r.last_track = Some(cur.clone());
     r.resume_pending = Some((uris, 0, r.play_pos_ms));
     r.dirty = true;
@@ -11150,7 +11181,11 @@ fn liked_export_tsv(r: &Render) {
 /// Toggle the current track's liked state. Takes `&mut Render` because the action mapper already
 /// holds the lock — calling the FFI wrapper from there would deadlock.
 fn liked_toggle_current(r: &mut Render) -> libc::c_int {
-    let Some(id) = r.last_track.as_ref().map(|t| t.object_id) else {
+    // During a cast the heart is the speaker's song's, as Now Playing shows it.
+    let speaker = casting(r)
+        .then(|| r.cast_ids.get(cast::status().index).copied())
+        .flatten();
+    let Some(id) = speaker.or(r.last_track.as_ref().map(|t| t.object_id)) else {
         return -1;
     };
     let now_liked = if r.liked.remove(&id) {
@@ -11442,30 +11477,7 @@ pub extern "C" fn cinder_set_now_playing_uri(
             // Lyrics likewise: at most three stats for the `.lrc` spellings, then the tag headers —
             // a few seeks and a read of the Vorbis comment block or `USLT` frame, never the pictures
             // or the audio. The row sits with the other links, not below the file facts.
-            let lyr = lyrics::load_for(&t.filename);
-            let mut rows = track_info_rows(r, &t);
-            if let Some(c) = &r.cue {
-                let at = rows
-                    .iter()
-                    .position(|(k, _)| k == "Album")
-                    .map_or(rows.len().min(2), |i| i + 1);
-                rows.insert(
-                    at,
-                    (
-                        "CUE sheet".to_string(),
-                        format!("{} tracks", c.entries.len()),
-                    ),
-                );
-            }
-            if let Some(l) = &lyr {
-                let at = rows
-                    .iter()
-                    .position(|(k, _)| k == "Album")
-                    .map_or(rows.len().min(2), |i| i + 1);
-                rows.insert(at, ("Lyrics".to_string(), l.summary()));
-            }
-            r.app.set_track_info(rows);
-            r.app.set_lyrics(lyr);
+            fill_track_info(r, &t, true);
             r.last_track = Some(t);
             // After `last_track`: the CUE track's scrobble names this file's album.
             cue_title(r);
@@ -13668,6 +13680,31 @@ mod tests {
         // With no cast the same tick moves the player's own bar, as before.
         advance_position(&mut r, now, 1_000);
         assert_eq!(r.np.elapsed, "1:59");
+    }
+
+    /// 2026-11-11: Track information stayed empty after a restart until the player itself played
+    /// a song, and never followed a speaker's songs. Both now fill it through this one helper.
+    #[test]
+    fn track_information_fills_for_a_song_the_player_did_not_start() {
+        let mut r = zappin_render();
+        let t = cinder_db::Track {
+            title: "No Other Way".into(),
+            artist: "Paolo Nutini".into(),
+            filename: "/nonexistent/No Other Way.flac".into(),
+            ..Default::default()
+        };
+        fill_track_info(&mut r, &t, false);
+        let rows = r.app.track_info_rows();
+        assert!(
+            rows.iter()
+                .any(|(k, v)| k == "Title" && v == "No Other Way"),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|(k, v)| k == "Artist" && v == "Paolo Nutini"),
+            "{rows:?}"
+        );
     }
 
     fn zappin_render() -> Render {
