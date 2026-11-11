@@ -447,6 +447,7 @@ d36c5672ac6f5c89 big_display_end
 ff48fc9411bcf7d6 big_extras_settings
 060c79b487233fc5 big_extras_library
 9cb5efc1ca5cae3d now_playing_back_count
+9a65949b599e26a7 now_playing_tint
 9b13256bcc5a777b display_night_auto
 c6bf06fd52c636a1 usb_storage
 5bd059d8d8a7fda6 usb_storage_big

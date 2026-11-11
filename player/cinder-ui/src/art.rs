@@ -5,6 +5,7 @@
 
 use crate::canvas::Canvas;
 use crate::theme::Theme;
+use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 
 fn stops(name: &str) -> [(f32, (u8, u8, u8)); 3] {
@@ -130,6 +131,28 @@ pub struct Image {
 }
 
 impl Image {
+    /// The cover's colour, for Settings ▸ Cover colours. Each sampled pixel counts by how
+    /// saturated it is, so a red cover on a white sleeve reads red rather than pink-grey. Every 8th
+    /// pixel each way: ~3,600 reads on a 480×480 cover, cheap enough to run every frame.
+    pub fn tint(&self) -> Option<Rgb888> {
+        let (mut sum, mut weight) = ([0f32; 3], 0f32);
+        for y in (0..self.h).step_by(8) {
+            for x in (0..self.w).step_by(8) {
+                let i = (y * self.w + x) * 3;
+                let Some(p) = self.rgb.get(i..i + 3) else {
+                    continue;
+                };
+                let w = (p.iter().max().unwrap() - p.iter().min().unwrap()) as f32 + 4.0;
+                for (s, v) in sum.iter_mut().zip(p) {
+                    *s += *v as f32 * w;
+                }
+                weight += w;
+            }
+        }
+        let c = |i: usize| (sum[i] / weight).round() as u8;
+        (weight > 0.0).then(|| Rgb888::new(c(0), c(1), c(2)))
+    }
+
     /// Resample into a new dw×dh image (called once per track change / cache build, not per frame).
     ///
     /// SHRINKING USES AN AREA AVERAGE, not bilinear. Bilinear reads exactly four source pixels

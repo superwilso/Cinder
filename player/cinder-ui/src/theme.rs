@@ -399,6 +399,49 @@ impl Theme {
         }
     }
 
+    /// Settings ▸ Cover colours: the background takes the cover's colour, brought to the
+    /// background's own lightness and mixed in only as far as ink and dim keep 92% of their
+    /// contrast — so any palette, user ones included, stays as readable as it was. Night's bg is
+    /// true black, so there the tint all but vanishes, which is what night is for.
+    pub fn tinted(self, cover: Rgb888) -> Self {
+        use crate::palette::{contrast, luminance};
+        use embedded_graphics::pixelcolor::RgbColor;
+        let at = |f: f32| {
+            let ch = |v: u8| (v as f32 * f).min(255.0) as u8;
+            Rgb888::new(ch(cover.r()), ch(cover.g()), ch(cover.b()))
+        };
+        let keeps = |bg| {
+            [self.ink, self.dim]
+                .iter()
+                .all(|&c| contrast(c, bg) >= 0.92 * contrast(c, self.bg))
+        };
+        // Luminance only grows with f, so halve. A dark palette takes the colour as light as the
+        // contrast rule allows (at the bg's own lightness a near-black bg shows no colour at all);
+        // a light one takes it at the bg's own lightness and the mix below does the rest.
+        let dark = luminance(self.ink) > luminance(self.bg);
+        let target = luminance(self.bg);
+        let (mut lo, mut hi) = (0.0f32, 64.0f32);
+        for _ in 0..24 {
+            let m = (lo + hi) / 2.0;
+            if if dark {
+                keeps(at(m))
+            } else {
+                luminance(at(m)) < target
+            } {
+                lo = m
+            } else {
+                hi = m
+            }
+        }
+        let toned = at(lo);
+        let bg = (0..=20)
+            .rev()
+            .map(|i| crate::viz::mix(self.bg, toned, i as f32 * 0.05))
+            .find(|&bg| keeps(bg))
+            .unwrap_or(self.bg);
+        Theme { bg, ..self }
+    }
+
     /// The outline of an idle control: a switch that is off, a chip that is not chosen.
     ///
     /// The 2026-09 redesign draws these a step brighter than a hairline (`#3a352e` in its mocks)
@@ -443,6 +486,44 @@ mod tests {
     /// screen emits less light at a backlight that cannot go below its own floor. The originals
     /// are still written out here, scaled by the same constant, so this stays a statement about
     /// the palette rather than a row of magic numbers.
+    #[test]
+    fn cover_colours_tint_the_day_bg_and_keep_its_contrast() {
+        use crate::palette::contrast;
+        let covers = [
+            (255, 0, 0),
+            (0, 255, 0),
+            (0, 0, 255),
+            (255, 255, 0),
+            (255, 255, 255),
+            (0, 0, 0),
+            (120, 60, 200),
+        ];
+        for t in [Theme::day(), Theme::night()] {
+            for (r, g, b) in covers {
+                let tt = t.tinted(Rgb888::new(r, g, b));
+                for c in [t.ink, t.dim] {
+                    assert!(contrast(c, tt.bg) >= 0.92 * contrast(c, t.bg) - 1e-3);
+                }
+                assert_eq!(Theme { bg: t.bg, ..tt }, t, "only bg moves");
+            }
+        }
+        // A saturated cover visibly moves the day background.
+        let d = Theme::day();
+        let red = d.tinted(Rgb888::new(220, 30, 30)).bg;
+        assert!(red.r() > d.bg.r() + 6, "{red:?} vs {:?}", d.bg);
+        // The average leans to the cover's colour, not the white sleeve around it.
+        let mut img = crate::art::Image {
+            w: 32,
+            h: 32,
+            rgb: vec![255; 32 * 32 * 3],
+        };
+        for px in img.rgb.chunks_mut(3).take(32 * 8) {
+            px.copy_from_slice(&[200, 20, 20]);
+        }
+        let c = img.tint().unwrap();
+        assert!(c.r() > 200 && c.g() < 120, "{c:?}");
+    }
+
     #[test]
     fn amber_is_byte_identical_to_the_original_palette() {
         let d = Theme::day();

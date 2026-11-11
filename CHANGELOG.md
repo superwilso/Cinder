@@ -16,6 +16,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Cover colours (Settings ▸ Now Playing).** Now Playing's background takes the colour of the album
+  art, mixed in only as far as the text keeps its contrast, so every palette stays as readable as
+  it was. Off by default; at night the background stays black. Asked for on Head-Fi.
+  *Device-verified 2026-11-11* (a yellow cover turned the band under the art dark olive; frames
+  still ~6 ms).
+
+### Fixed
+
+- **Internet radio lists every station.** The list showed only the stations that fit on one screen
+  (seven with Big view) and never scrolled, so the rest of `cinder_radio.txt` (up to 200) could not
+  be played. It scrolls now, with FIND on its label moving with it.
+
 ## [0.4.1] — 2026-11-10
 
 ### Added
