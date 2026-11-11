@@ -200,6 +200,19 @@ else
     act "changelog: [Unreleased] → [$VER] — $TODAY (and a fresh [Unreleased] above it)${DRY:+  [would]}"
     CHANGED+=("changelog")
 fi
+# A stable tag cut from a section an -rc made: date it today and point its links at the stable tag,
+# not the rc (v0.4.1 shipped dated 11-08 with -rc1 links). Plain sed + tmp file, not sed -i (BSD).
+if [[ "$TAG" != *-* ]] && grep -q "^## \[$VER\] — " "$CL" \
+    && { ! grep -q "^## \[$VER\] — $(date +%F)\$" "$CL" || grep -qE "^\[(Unreleased|$VER)\]: .*v$VER-rc" "$CL"; }; then
+    if [ -n "$DRY" ]; then
+        act "changelog: [$VER] dated $(date +%F), links moved off the rc tag  [would]"
+    else
+        sed -E "s/^## \[$VER\] — .*/## [$VER] — $(date +%F)/; /^\[(Unreleased|$VER)\]: /s#v$VER-rc[0-9]+#$TAG#" \
+            "$CL" > "$CL.tmp" && mv "$CL.tmp" "$CL"
+        ok "changelog: [$VER] dated $(date +%F), links moved off the rc tag"
+    fi
+    CHANGED+=("changelog")
+fi
 
 # ── 3. rebuild the payload, so what ships is what the tree produces ─────────────────────────
 # This is the whole point of the script. If the build comes out different from what the manifest
