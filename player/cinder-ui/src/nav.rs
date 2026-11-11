@@ -7392,7 +7392,16 @@ impl App {
         let on = !matches!(self.wifi_status.state, State::Off);
         match crate::wifi::hit(x, y, on, self.update_offered()) {
             Hit::Update => {
-                if !self.update_running {
+                if self.update_running {
+                    return vec![];
+                }
+                if self.too_flat_to_update() {
+                    // The install rewrites the system partition, and nothing below Cinder checks
+                    // the battery: Sony's own updater on the player does not either.
+                    self.notify(crate::i18n::text(
+                        "Charge first: updating needs 30% or a cable",
+                    ));
+                } else {
                     self.confirm = Some(crate::confirm::Ask::WifiUpdate);
                 }
                 vec![]
@@ -7872,6 +7881,16 @@ impl App {
         }
     }
     /// The install strip is on the Wi-Fi page: a newer release is known and the link is up.
+    /// Under 30% with no cable in. A gauge that has not reported yet (no status) does not block,
+    /// and "Not charging" is a cable in with the charge held (Battery care), which is fine.
+    fn too_flat_to_update(&self) -> bool {
+        let on_cable = matches!(
+            self.batt_status.as_str(),
+            "Charging" | "Full" | "Not charging"
+        );
+        !self.batt_status.is_empty() && self.batt_pct < 30 && !on_cable
+    }
+
     fn update_offered(&self) -> bool {
         !self.update_offer.is_empty()
             && matches!(self.wifi_status.state, crate::wifi::State::Connected)
@@ -13912,6 +13931,17 @@ impl App {
         self.dev_music_total_mb = music_total_mb;
         self.dev_music_free_mb = music_free_mb;
         self.dev_data_free_mb = data_free_mb;
+    }
+
+    /// The SD card's size and free space in MB, as the bridge reads them now (0, 0 = no card
+    /// mounted). The library's own reading is taken when the library is built, which is before the
+    /// card mounts on every boot, so the Storage screen had no SD card bar (2026-11-11). True when
+    /// the numbers changed.
+    pub fn set_sd_space(&mut self, total_mb: i32, free_mb: i32) -> bool {
+        let s = &mut self.lib.summary;
+        let changed = (s.sd_total_mb, s.sd_free_mb) != (total_mb, free_mb);
+        (s.sd_total_mb, s.sd_free_mb) = (total_mb, free_mb);
+        changed
     }
 
     /// Which firmware Cinder is installed on top of, as the shell detected it ("SONY STOCK",
@@ -21742,6 +21772,22 @@ mod tests {
         assert_eq!(v.kernel, "3.10.26");
         assert_eq!(a.device_summary(), "83% · 34.4 °C");
 
+        // The card mounts after the library is built: its bar appears when the bridge reads it.
+        a.set_sd_space(0, 0);
+        assert_eq!(a.storage_view().sum.sd_total_mb, 0);
+        assert!(a.set_sd_space(243_000, 101_000));
+        assert!(
+            !a.set_sd_space(243_000, 101_000),
+            "the same reading is no change"
+        );
+        assert_eq!(
+            (
+                a.storage_view().sum.sd_total_mb,
+                a.storage_view().sum.sd_free_mb
+            ),
+            (243_000, 101_000)
+        );
+
         // A gauge reporting over 100 must not be stored as-is; the bar would draw past its box.
         a.set_battery_detail(255, "Full", "Good", 4100, 2, 0, "");
         assert_eq!(a.device_view().percent, 100);
@@ -27455,6 +27501,20 @@ mod r4_tests {
         a.set_update_offer("v0.4.1");
         assert!(a.update_offered());
         let row = wifi_y(true, Hit::Update);
+        // Flat and off the cable: no dialog, a reason instead. On the cable, or charged, it asks.
+        a.set_battery_detail(12, "Discharging", "Good", 3500, 0, 0, "");
+        assert!(a.tap(240, row).is_empty());
+        assert_eq!(
+            a.confirm, None,
+            "12% on the battery alone does not start an update"
+        );
+        assert!(a.toast.contains("30%"), "{}", a.toast);
+        a.set_battery_detail(12, "Not charging", "Good", 3500, 0, 0, "");
+        assert!(
+            !a.too_flat_to_update(),
+            "a cable in, the charge held by Battery care"
+        );
+        a.set_battery_detail(64, "Discharging", "Good", 3900, 0, 0, "");
         assert!(a.tap(240, row).is_empty());
         assert_eq!(a.confirm, Some(crate::confirm::Ask::WifiUpdate));
         let yes = (0..crate::canvas::H as i32)

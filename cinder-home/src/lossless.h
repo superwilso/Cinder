@@ -81,7 +81,7 @@ inline int wav_header(const unsigned char* b, size_t n, Wav* w) {
 inline void to_s16(const unsigned char* in, size_t samples, int bits, short* out) {
     const int bps = bits / 8;
     for (size_t i = 0; i < samples; i++, in += bps)
-        out[i] = bps == 1 ? (short)((in[0] - 128) << 8) : (short)(in[bps - 1] << 8 | in[bps - 2]);
+        out[i] = bps == 1 ? (short)((in[0] - 128) * 256) : (short)(in[bps - 1] << 8 | in[bps - 2]);
 }
 
 // A FLAC stream pulled through `read`, which blocks, may return fewer bytes than asked, and returns

@@ -8901,6 +8901,9 @@ pub extern "C" fn cinder_set_device_storage(
     music_free_mb: libc::c_int,
     data_free_mb: libc::c_int,
 ) {
+    // The card too, read before the lock (its filesystem answers from user space): the shell
+    // calls this whenever storage is reported, which is the first time anyone knows it is mounted.
+    let (sd_total, sd_free) = statvfs_mb("/contents_ext");
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_device_storage(
             mem_total_kb,
@@ -8909,6 +8912,9 @@ pub extern "C" fn cinder_set_device_storage(
             music_free_mb,
             data_free_mb,
         );
+        if r.app.set_sd_space(sd_total, sd_free) {
+            r.dirty = true;
+        }
         mark_device_dirty(r);
     }
 }

@@ -111,7 +111,7 @@ pub struct Status {
     pub ssid: Vec<u8>,
     pub ip: String,
     pub signal: Option<i32>,
-    /// The helper's last complaint ("no saved network", "did not join a network in 30 s"), shown in
+    /// The helper's last complaint ("no saved network", "did not join a network in 60 s"), shown in
     /// the strip until the next status.
     pub note: String,
 }

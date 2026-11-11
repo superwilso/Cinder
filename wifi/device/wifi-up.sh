@@ -40,15 +40,19 @@ busybox ifconfig wlan0 up || { say "wlan0 would not come up"; exit 1; }
     || "$D/wpa_supplicant" -B -D nl80211 -i wlan0 -c "$CONF" >/dev/null   # CONF names RUN/ctrl
 # Nothing saved yet: up for Select network to scan, nothing to join.
 grep -q 'network=' "$CONF" || { say "up: no saved network"; exit 0; }
-i=0; while [ $i -lt 30 ]; do
+# 60 s, not 30: on 2026-11-11 a player at -69 dBm needed 36.6 s from interface up to link ready
+# (five 2 s scans, 5 s apart, before wpa_supplicant tried the network at all), so 30 s said "did
+# not join" seconds before it joined. The same player joined in 7 s an hour later: why some joins
+# need five scans is not known.
+i=0; while [ $i -lt 60 ]; do
     "$D/wpa_cli" -p "$RUN/ctrl" -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED' && break
     sleep 1; i=$((i + 1))
 done
 # A join that comes later still needs an address: wpa_supplicant keeps trying after this gives up,
 # and a player that joined at 40 s sat "connected" with no address (11-10). udhcpc -b keeps asking.
-[ $i -lt 30 ] || {
+[ $i -lt 60 ] || {
     busybox udhcpc -i wlan0 -b -p "$RUN/udhcpc.pid" -t 8 -s "$D/dhcp.sh" >/dev/null 2>&1
-    say "did not join a network in 30 s"; exit 1
+    say "did not join a network in 60 s"; exit 1
 }
 
 # 802.11 power save: the radio sleeps between beacons while nothing is sent, which is what phones

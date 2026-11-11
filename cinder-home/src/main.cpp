@@ -14354,7 +14354,10 @@ void input_pump() {
         const long long hb_now = now_ms();
         if (hb_next_ms == 0) hb_next_ms = hb_now + hb_gap_ms;
         else if (hb_now >= hb_next_ms) {
-            clog_("input: still ZERO events from every node (foreign grab? see node diagnostics above)");
+            // Worded for the common case. On a player nobody has touched yet this is the truth, and
+            // "foreign grab?" made every quiet boot read as a fault (audits 2026-08-16, 11-11).
+            clog_("input: no events yet from any node (untouched so far; if it IS being touched, "
+                  "see the node diagnostics above)");
             // 15 s, 1 min, 4 min, 16 min, then hourly. Clamped, or the last step would land at
             // 64 minutes and quietly not be the "hourly" this says — the same clamp retry_log has.
             if (hb_gap_ms < 3600000) hb_gap_ms *= 4;
@@ -15168,7 +15171,9 @@ static void sd_watch_tick(long long now) {
             std::snprintf(m, sizeof m, "storage: %s", state == 0 ? "no SD card in the slot"
                                                           : "SD card in the slot but NOT mounted");
         clog_(m);
-        if (last != -1) report_storage();
+        // The first sighting too: deferred_up's own report can land before the card is mounted
+        // (4.45 s against 4.65 s on 2026-11-11), and then nothing told the Storage screen.
+        report_storage();
         // The card's playlists: the library was opened before the card was mounted, so the ones
         // synced into its MUSIC folder are read now (cinder_playlists_reload has the measurement).
         if (state == 2) {

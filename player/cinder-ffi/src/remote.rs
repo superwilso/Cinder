@@ -14,7 +14,8 @@
 //! answers — so a link elsewhere cannot press Play or upload. Plain HTTP: anyone on the same
 //! network who can read its traffic can read the token; the Wi-Fi password is what keeps them out.
 //!
-//! The server is a thread here, std only, one connection at a time. READS take the renderer's
+//! The server is a thread here, std only, with a thread for each connection (eight at most), so an
+//! idle connection or a song being sent holds nobody else up. READS take the renderer's
 //! lock briefly (`super::read`) and build JSON from the library the player already holds. WRITES
 //! never touch the navigator from this thread: buttons ([`take_button`]) and everything else
 //! ([`take_cmd`]) are queued, and the shell's frame loop carries them out through the same paths a
@@ -38,6 +39,11 @@ const MAX_UPLOAD: u64 = 2 << 30; // 2 GB, the largest file vfat on the player is
 /// Paired phones, one token per line. /data: the PC never sees it, a rescan never touches it.
 const PHONES: &str = "/data/cinder/remote_phones";
 const MAX_PHONES: usize = 8;
+/// Connections served at once; one more is told to try again.
+const MAX_CONNECTIONS: usize = 8;
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// One song is written at a time: they share the part file.
+static UPLOADING: Mutex<()> = Mutex::new(());
 
 /// What the page asks the player to do. The shell's frame loop carries each out on the render
 /// thread (`cinder_remote_take_action`).
@@ -207,7 +213,26 @@ pub fn start(code: &str) -> Result<u16, String> {
                         let _ = c.set_nonblocking(false);
                         let _ = c.set_read_timeout(Some(Duration::from_secs(15)));
                         let _ = c.set_write_timeout(Some(Duration::from_secs(15)));
-                        serve(c);
+                        // A thread each: a browser opens spare connections and leaves them idle,
+                        // and served in turn, one of those held every request behind it for the
+                        // whole 15 s (measured on the player 2026-11-11: 14.9 s against 0.1 s),
+                        // as did a song being sent.
+                        if ACTIVE.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+                            let mut c = c;
+                            refuse(&mut c, "503 Service Unavailable", "Busy; try again.");
+                            continue;
+                        }
+                        ACTIVE.fetch_add(1, Ordering::SeqCst);
+                        let spawned = std::thread::Builder::new()
+                            .name("cinder-remote-c".into())
+                            .stack_size(256 * 1024)
+                            .spawn(move || {
+                                serve(c);
+                                ACTIVE.fetch_sub(1, Ordering::SeqCst);
+                            });
+                        if spawned.is_err() {
+                            ACTIVE.fetch_sub(1, Ordering::SeqCst);
+                        }
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(
                         if last.elapsed() < Duration::from_secs(5) {
@@ -885,6 +910,7 @@ fn upload(raw: &str, len: u64, r: &mut impl Read) -> Result<String, (&'static st
             "Cannot make the Uploads folder".into(),
         )
     })?;
+    let _one_at_a_time = UPLOADING.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = format!("{UPLOAD_DIR}/.upload.part");
     let mut f = std::fs::File::create(&tmp).map_err(|_| {
         (
@@ -1064,5 +1090,26 @@ mod tests {
         assert_eq!(&b[..2], b"BM");
         assert_eq!(b.len(), 54 + 12 * 2, "rows padded to 4 bytes");
         assert_eq!(&b[54..57], &[2, 1, 0], "BGR");
+    }
+    /// A browser's spare connection says nothing for as long as it likes. Served in turn, it held
+    /// the next request for the 15 s read timeout (seen on the player, 2026-11-11).
+    #[test]
+    fn an_idle_connection_holds_nobody_up() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let port = start("123456").unwrap();
+        let idle = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let t0 = Instant::now();
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let mut out = String::new();
+        c.read_to_string(&mut out).unwrap();
+        stop();
+        drop(idle);
+        assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "answered in {:?} behind an idle connection",
+            t0.elapsed()
+        );
     }
 }
