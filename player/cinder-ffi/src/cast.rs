@@ -548,6 +548,8 @@ pub enum Cmd {
     Next,
     Prev,
     Vol(i32),
+    /// To this many ms into the song (a drag on Now Playing's bar).
+    Seek(i64),
     Stop,
 }
 
@@ -877,6 +879,12 @@ fn session(
                     last_pos = 0;
                 } else {
                     go_to = Some((index - 1, -1));
+                }
+            }
+            Ok(Cmd::Seek(ms)) => {
+                if av("Seek", &[("Unit", "REL_TIME"), ("Target", &ms_hms(ms))]).is_ok() {
+                    last_pos = ms;
+                    set_status(gen, |s| s.pos_ms = ms);
                 }
             }
             Ok(Cmd::Vol(d)) => {
@@ -1231,6 +1239,10 @@ pub(crate) mod tests {
         );
         assert_eq!(status().volume, Some(20));
         assert!(send(Cmd::Vol(3)));
+        assert!(
+            send(Cmd::Seek(30_000)),
+            "a drag on the bar reaches the speaker"
+        );
         std::thread::sleep(Duration::from_millis(1500));
         assert_eq!(status().volume, Some(23));
         stop();
@@ -1241,6 +1253,7 @@ pub(crate) mod tests {
         assert_eq!(count("Play"), 2, "{log:?}");
         assert_eq!(log.last().map(String::as_str), Some("Stop"), "{log:?}");
         assert!(log.contains(&"SetVolume".to_string()));
+        assert_eq!(count("Seek"), 1, "{log:?}");
         let got = got.lock().unwrap().clone();
         assert_eq!(
             got,

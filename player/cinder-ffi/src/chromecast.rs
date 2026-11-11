@@ -655,6 +655,15 @@ fn run(
                     go = Some(index - 1);
                 }
             }
+            Ok(Cmd::Seek(ms)) => {
+                if let Some(id) = session {
+                    let secs = ms.max(0) as f64 / 1000.0;
+                    send(wr, &tid, NS_MEDIA, &format!("{{\"type\":\"SEEK\",\"mediaSessionId\":{id},\"currentTime\":{secs:.1},\"requestId\":{req}}}"));
+                    req += 1;
+                    last_pos = secs;
+                    set_status(gen, |s| s.pos_ms = ms);
+                }
+            }
             Ok(Cmd::Vol(d)) => {
                 if let Some(l) = volume {
                     let nv = (l + d as f64 / 100.0).clamp(0.0, 1.0);

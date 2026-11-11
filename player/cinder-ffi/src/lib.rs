@@ -5183,6 +5183,15 @@ fn speakers_scan() {
     }
 }
 
+/// How long the song on Now Playing is, for a drag on its bar: the speaker's during a cast.
+fn seek_length(r: &Render) -> i64 {
+    if casting(r) {
+        cast::status().dur_ms
+    } else {
+        r.cur_duration_ms
+    }
+}
+
 /// A cast this renderer started is on (`cast.rs` keeps one cast for the process; the flag keeps a
 /// renderer from acting on one it did not start, as host tests running side by side would).
 fn casting(r: &Render) -> bool {
@@ -5320,7 +5329,10 @@ fn cast_tick(r: &mut Render) {
             }
         }
         r.np.playing = st.playing;
-        set_progress(&mut r.np, st.pos_ms, st.dur_ms);
+        // A finger on the bar owns it until it lifts.
+        if r.scrub_ms.is_none() {
+            set_progress(&mut r.np, st.pos_ms, st.dur_ms);
+        }
         let state = if st.playing { "PLAYING" } else { "PAUSED" };
         let line = match st.volume {
             Some(v) => cinder_ui::ui_format!("{} · {} · VOLUME {}", state, st.speaker, v),
@@ -10739,7 +10751,7 @@ pub extern "C" fn cinder_scrub_hit(x: libc::c_int, y: libc::c_int) -> libc::c_in
     }
     // Progress rail: a track with no known duration has nothing to seek within, so decline the
     // gesture and let it classify as a normal tap/drag instead of dead-ending in a scrub.
-    if r.cur_duration_ms <= 0 {
+    if seek_length(r) <= 0 {
         r.app.scrub_end();
         return 0;
     }
@@ -11040,16 +11052,18 @@ pub extern "C" fn cinder_scrub_to(x: libc::c_int, y: libc::c_int) -> libc::c_int
         r.dirty = true;
         return -1;
     }
-    if r.cur_duration_ms <= 0 {
+    let dur = seek_length(r);
+    if dur <= 0 {
         return -1;
     }
     // nav knows where the rail is in every style, the Winamp skin's landscape seek bar included.
     r.app.scrub_move(x, y);
     let frac = r.app.scrub_permille() as f32 / 1000.0;
-    let target = (r.cur_duration_ms as f32 * frac) as i64;
+    let target = (dur as f32 * frac) as i64;
     r.scrub_ms = Some(target);
-    r.play_pos_ms = target;
-    let dur = r.cur_duration_ms;
+    if !casting(r) {
+        r.play_pos_ms = target;
+    }
     set_progress(&mut r.np, target, dur);
     r.dirty = true;
     target as libc::c_int
@@ -11071,6 +11085,12 @@ pub extern "C" fn cinder_scrub_end() -> libc::c_int {
     }
     r.app.scrub_end(); // release nav's claim; the ms target below is this layer's business
     match r.scrub_ms.take() {
+        // The speaker has the music: the seek is its, and the paused player is left where it is.
+        Some(target) if casting(r) => {
+            cast::send(cast::Cmd::Seek(target));
+            r.dirty = true;
+            -1
+        }
         Some(target) => {
             // Re-anchor the interpolator on the seek target. Without this, clock_tick would keep
             // extrapolating from the pre-seek anchor and the bar would jump backwards for the
@@ -13634,11 +13654,16 @@ mod tests {
         r.real_pos_at = now - std::time::Duration::from_secs(5);
         advance_position(&mut r, now, 1_000);
         let shown = (r.np.elapsed.clone(), r.np.remaining.clone());
+        let drag_over = seek_length(&r);
         cast::tests::set_status_for_test(None);
         assert_eq!(
             shown,
             ("0:58".to_string(), "-0:02".to_string()),
             "the speaker's place stays"
+        );
+        assert_eq!(
+            drag_over, 60_000,
+            "a drag on the bar spans the speaker's song"
         );
         // With no cast the same tick moves the player's own bar, as before.
         advance_position(&mut r, now, 1_000);
