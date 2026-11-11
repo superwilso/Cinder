@@ -992,6 +992,11 @@ pub(crate) mod tests {
     /// The casts share one status and one command channel, so the tests that start one take turns.
     pub(crate) static E2E: Mutex<()> = Mutex::new(());
 
+    /// A cast's status without a speaker, for tests of what the screen shows. Take `E2E` first.
+    pub(crate) fn set_status_for_test(st: Option<Status>) {
+        *STATUS.lock().unwrap() = st;
+    }
+
     /// The shape of a Sonos ZonePlayer description: the renderer is an embedded device, the room
     /// has its own element, and the control URLs are host-absolute.
     const SONOS: &str = r#"<?xml version="1.0" encoding="utf-8" ?>

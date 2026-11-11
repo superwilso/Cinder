@@ -26,6 +26,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Now Playing follows a speaker properly while casting.** With the music on a speaker (Wi-Fi ▸
+  Speakers), the progress bar and times jumped every second between the speaker's position and the
+  paused player's own, and when the speaker moved on to the next song the title changed but the
+  old cover and heart stayed. Now the position is the speaker's alone, and each new song brings its
+  cover, its heart and Up Next's place with it. *Found in the player's log of 2026-11-11 (a cast to
+  a Sonos One); fixed and tested on the host, not yet watched on a speaker.*
 - **Internet radio lists every station.** The list showed only the stations that fit on one screen
   (seven with Big view) and never scrolled, so the rest of `cinder_radio.txt` (up to 200) could not
   be played. It scrolls now, with FIND on its label moving with it.
