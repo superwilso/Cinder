@@ -1724,6 +1724,8 @@ pub struct App {
     update_running: bool,
     /// Internet radio: the stations from the drive, what the shell says, and the pick it takes.
     radio_stations: Vec<crate::netradio::Station>,
+    /// How far Internet radio's station list is scrolled.
+    radio_scroll_px: i32,
     radio_status: crate::netradio::Status,
     radio_pick: Option<usize>,
     /// Settings ▸ Wi-Fi ▸ Phone remote: serving now (the switch itself is `Opt::WifiRemote`, saved),
@@ -2272,6 +2274,7 @@ impl Default for App {
             update_running: false,
             radio_stations: Vec::new(),
             radio_status: crate::netradio::Status::default(),
+            radio_scroll_px: 0,
             radio_pick: None,
             remote_on: false,
             remote_phones: 0,
@@ -7420,6 +7423,7 @@ impl App {
             }
             Hit::Radio => {
                 self.push(Screen::NetRadio);
+                self.radio_scroll_px = 0;
                 vec![Action::RadioOpen]
             }
             Hit::Speakers => {
@@ -7683,13 +7687,14 @@ impl App {
     /// searches for more (while connected).
     fn tap_radio(&mut self, x: i32, y: i32) -> Vec<Action> {
         use crate::netradio::State;
-        if crate::netradio::hit_find(x, y) {
+        if crate::netradio::hit_find(x, y, self.radio_scroll_px) {
             if matches!(self.wifi_status.state, crate::wifi::State::Connected) {
                 self.open_keyboard(KbPurpose::RadioFind);
             }
             return vec![];
         }
-        let Some(i) = crate::netradio::hit(x, y, self.radio_stations.len()) else {
+        let Some(i) = crate::netradio::hit(x, y, self.radio_stations.len(), self.radio_scroll_px)
+        else {
             return vec![];
         };
         if self.radio_status.station == Some(i) && !matches!(self.radio_status.state, State::Off) {
@@ -7709,6 +7714,9 @@ impl App {
     /// cinder_radio.txt's text (or "" when there is none).
     pub fn set_radio_stations(&mut self, text: &str) {
         self.radio_stations = crate::netradio::parse_stations(text);
+        self.radio_scroll_px = self
+            .radio_scroll_px
+            .min(crate::netradio::max_scroll(self.radio_stations.len()));
     }
     /// The shell's radio status (`netradio::parse_status`).
     pub fn set_radio_status(&mut self, text: &str) {
@@ -8300,6 +8308,10 @@ impl App {
             Screen::Presets => {
                 let max = crate::presets::max_scroll(self.presets.len());
                 self.presets_scroll_px = (self.presets_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::NetRadio => {
+                let max = crate::netradio::max_scroll(self.radio_stations.len());
+                self.radio_scroll_px = (self.radio_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Sound => {
                 let max = self.sound_max_scroll();
@@ -11093,12 +11105,18 @@ impl App {
                 style: self.style,
                 ..self.palette.theme(self.night, self.accent)
             };
-            if self.night {
+            let t = if self.night {
                 let lvl = (self.brightness.clamp(1, 5) - 1) as usize;
                 t.scaled(Theme::NIGHT_LEVEL_PCT[lvl])
             } else {
                 t
-            }
+            };
+            // Settings ▸ Cover colours: Now Playing only, so the rest of the player keeps its palette.
+            let cover = (self.current() == Screen::NowPlaying && self.opt(Opt::NpTint))
+                .then(|| np.art_full.or(np.art_thumb))
+                .flatten()
+                .and_then(|i| i.tint());
+            cover.map_or(t, |c| t.tinted(c))
         };
         // The hour on the clock the status bar is about to draw ("14:32"), for SensMe's
         // time-of-day channel. Kept when a frame has no clock rather than forgotten.
@@ -12038,9 +12056,14 @@ impl App {
                     drive_note: &self.drive_note,
                 },
             ),
-            Screen::NetRadio => {
-                crate::netradio::render(c, &theme, fonts, &self.radio_stations, &self.radio_status)
-            }
+            Screen::NetRadio => crate::netradio::render(
+                c,
+                &theme,
+                fonts,
+                &self.radio_stations,
+                &self.radio_status,
+                self.radio_scroll_px,
+            ),
             Screen::RadioFind => crate::netradio::render_found(
                 c,
                 &theme,
@@ -12540,6 +12563,7 @@ impl App {
                 Screen::Sound => a.sound_scroll_px,
                 Screen::Advanced => a.adv_scroll_px,
                 Screen::Presets => a.presets_scroll_px,
+                Screen::NetRadio => a.radio_scroll_px,
                 Screen::Device => a.device_scroll_px,
                 Screen::Storage => a.storage_scroll_px,
                 Screen::Display => a.display_scroll(),
@@ -27190,7 +27214,7 @@ mod r4_tests {
         let mut a = App::unlocked();
         a.push_for_test(Screen::NetRadio);
         let (fx, fy) = (0..crate::canvas::H as i32)
-            .find_map(|y| crate::netradio::hit_find(440, y).then_some((440, y)))
+            .find_map(|y| crate::netradio::hit_find(440, y, 0).then_some((440, y)))
             .unwrap();
         a.set_wifi_status("state=off\n", "");
         assert!(a.tap(fx, fy).is_empty());
@@ -27306,7 +27330,7 @@ mod r4_tests {
         assert_eq!(a.current(), Screen::NetRadio);
         a.set_radio_stations("A | http://a.example/1\nB | https://b.example/2\n");
         let y1 = (0..crate::canvas::H as i32)
-            .find(|&y| crate::netradio::hit(240, y, 2) == Some(1))
+            .find(|&y| crate::netradio::hit(240, y, 2, 0) == Some(1))
             .unwrap();
         assert_eq!(a.tap(240, y1), vec![Action::RadioPlay]);
         assert_eq!(a.take_radio(), Some((1, "https://b.example/2".to_string())));

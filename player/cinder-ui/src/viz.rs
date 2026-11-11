@@ -692,7 +692,7 @@ impl Px {
 }
 
 /// `a` toward `b` by `t` (0..1).
-fn mix(a: Rgb888, b: Rgb888, t: f32) -> Rgb888 {
+pub(crate) fn mix(a: Rgb888, b: Rgb888, t: f32) -> Rgb888 {
     use embedded_graphics::pixelcolor::RgbColor;
     let t = t.clamp(0.0, 1.0);
     let m = |p: u8, q: u8| (p as f32 + (q as f32 - p as f32) * t).round() as u8;

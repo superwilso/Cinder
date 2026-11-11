@@ -44,10 +44,12 @@ pub enum Opt {
     WifiAirplay,
     /// Wi-Fi ▸ Phone remote: kept on across restarts, serving whenever Wi-Fi is connected.
     WifiRemote,
+    /// Now Playing's background takes the cover's colour (Head-Fi).
+    NpTint,
 }
 
 impl Opt {
-    pub const ALL: [Opt; 16] = [
+    pub const ALL: [Opt; 17] = [
         Opt::Quick,
         Opt::FoldersTab,
         Opt::DeleteMusic,
@@ -64,6 +66,7 @@ impl Opt {
         Opt::WifiPlayTo,
         Opt::WifiAirplay,
         Opt::WifiRemote,
+        Opt::NpTint,
     ];
 
     /// The settings-file key.
@@ -85,6 +88,7 @@ impl Opt {
             Opt::WifiPlayTo => "wifi_play_to",
             Opt::WifiAirplay => "wifi_airplay",
             Opt::WifiRemote => "wifi_remote",
+            Opt::NpTint => "np_tint",
         }
     }
 
@@ -102,6 +106,7 @@ impl Opt {
             Opt::NpBack => Some(s::ROW_NP_BACK),
             Opt::NpCount => Some(s::ROW_NP_COUNT),
             Opt::HoldButtons => Some(s::ROW_HOLD_BUTTONS),
+            Opt::NpTint => Some(s::ROW_NP_TINT),
             _ => None,
         }
     }
@@ -136,7 +141,7 @@ mod tests {
     fn every_switch_starts_off_and_has_its_own_key_and_row() {
         assert_eq!(
             Opt::ALL.len(),
-            Opt::WifiRemote as usize + 1,
+            Opt::NpTint as usize + 1,
             "ALL lists every variant"
         );
         let none = Opts::default();

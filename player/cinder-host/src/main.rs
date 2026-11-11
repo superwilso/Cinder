@@ -4024,6 +4024,23 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         app.set_opt(cinder_ui::opt::Opt::NpBack, false);
     }
 
+    // Settings ▸ Cover colours: the bottom of Now Playing takes the cover's colour.
+    {
+        use cinder_ui::nav::Screen;
+        let mut app = new_app();
+        app.set_opt(cinder_ui::opt::Opt::NpTint, true);
+        app.go_for_preview(Screen::NowPlaying);
+        let cover =
+            cinder_ui::art::gradient_image(&cinder_ui::theme::Theme::day(), 480, 480, "kind", 1.0);
+        let tinted = now_playing::NowPlaying {
+            art_full: Some(&cover),
+            ..np
+        };
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &tinted);
+        save(&c, "now_playing_tint");
+    }
+
     // Display ▸ Night on Auto: Starts and Ends come onto the page. Last, like the block above.
     {
         use cinder_ui::nav::Screen;

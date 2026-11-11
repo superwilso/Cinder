@@ -1071,6 +1071,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Track info · add to a playlist" => Some("曲目信息 · 添加到播放列表"),
         "Track information" => Some("曲目信息"),
         "Track number" => Some("曲目编号"),
+        "Cover colours" => Some("封面配色"),
+        "Background from the album art" => Some("背景取自专辑封面"),
         "Tuesday" => Some("星期二"),
         "Tune the upscaler to the material" => Some("根据音乐类型调整升频"),
         "Turn Bluetooth on to see your devices" => Some("开启蓝牙以查看设备"),

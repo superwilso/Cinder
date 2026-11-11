@@ -146,30 +146,48 @@ fn layout(stations: usize) -> (i32, i32, i32, usize) {
     (strip_y, section_y, list_y, stations.min(room as usize))
 }
 
-/// FIND, on the STATIONS label: search radio-browser.info for more.
-pub fn hit_find(x: i32, y: i32) -> bool {
-    let (_, section_y, _, _) = layout(0);
-    kit::section_action_hit(section_y, x, y)
+/// How far the stations scroll: the file may hold 200, and only the first few fit.
+pub fn max_scroll(stations: usize) -> i32 {
+    let (_, _, list_y, _) = layout(0);
+    (list_y + stations.max(1) as i32 * kit::ROW_H() + FOOT_H - H as i32).max(0)
 }
 
-/// The station under a tap, if any.
-pub fn hit(x: i32, y: i32, stations: usize) -> Option<usize> {
-    let (_, _, list_y, rows) = layout(stations);
-    if y < list_y || x < 0 || x >= W as i32 {
+/// FIND, on the STATIONS label (which scrolls with the list): search radio-browser.info for more.
+pub fn hit_find(x: i32, y: i32, scroll: i32) -> bool {
+    let (_, section_y, _, _) = layout(0);
+    y >= crate::chrome::HEADER_BOTTOM && kit::section_action_hit(section_y - scroll, x, y)
+}
+
+/// The station under a tap, the list scrolled `scroll` px.
+pub fn hit(x: i32, y: i32, stations: usize, scroll: i32) -> Option<usize> {
+    let (_, _, list_y, _) = layout(0);
+    if y < crate::chrome::HEADER_BOTTOM || x < 0 || x >= W as i32 || y + scroll < list_y {
         return None;
     }
-    let i = ((y - list_y) / kit::ROW_H()) as usize;
-    (i < rows).then_some(i)
+    let i = ((y + scroll - list_y) / kit::ROW_H()) as usize;
+    (i < stations).then_some(i)
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, stations: &[Station], s: &Status) {
+pub fn render(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    stations: &[Station],
+    s: &Status,
+    scroll: i32,
+) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, crate::i18n::text("Internet radio"), None);
-    let (strip_y, section_y, list_y, rows) = layout(stations.len());
-    kit::strip(c, t, f, strip_y, &strip_line(s, stations));
-    kit::section_label(c, t, f, section_y, "STATIONS", Some("FIND"));
-    let mut y = list_y;
-    for (i, st) in stations.iter().take(rows).enumerate() {
+    let (strip_y, section_y, list_y, _) = layout(0);
+    // Everything under the header scrolls together, clipped so a row never paints over it.
+    c.set_clip_y(crate::chrome::HEADER_BOTTOM, H as i32);
+    kit::strip(c, t, f, strip_y - scroll, &strip_line(s, stations));
+    kit::section_label(c, t, f, section_y - scroll, "STATIONS", Some("FIND"));
+    let mut y = list_y - scroll;
+    for (i, st) in stations.iter().enumerate() {
+        if y >= H as i32 {
+            break;
+        }
         let here = s.station == Some(i);
         let trail = match s.state {
             State::Playing if here => Trail::Tag(crate::i18n::text("PLAYING")),
@@ -219,7 +237,12 @@ pub struct Found {
 
 /// The result under a tap, if any.
 pub fn hit_found(x: i32, y: i32, found: usize) -> Option<usize> {
-    hit(x, y, found)
+    let (_, _, list_y, rows) = layout(found);
+    if y < list_y || x < 0 || x >= W as i32 {
+        return None;
+    }
+    let i = ((y - list_y) / kit::ROW_H()) as usize;
+    (i < rows).then_some(i)
 }
 
 pub struct FoundView<'a> {
@@ -287,6 +310,23 @@ pub fn render_found(c: &mut Canvas, t: &Theme, f: &FontSet, v: &FoundView) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_station_can_be_reached_by_scrolling() {
+        let n = 30;
+        let max = max_scroll(n);
+        assert!(max > 0, "30 stations do not fit on one screen");
+        assert_eq!(max_scroll(2), 0, "a short list does not scroll");
+        // At the bottom, the last station is on the glass and answers a tap.
+        let last = (crate::chrome::HEADER_BOTTOM..H as i32)
+            .rev()
+            .find(|&y| hit(240, y, n, max) == Some(n - 1));
+        let y = last.expect("the last station is reachable");
+        assert!(y + kit::ROW_H() / 2 <= H as i32);
+        // Nothing under the header answers, however far it is scrolled.
+        assert_eq!(hit(240, crate::chrome::HEADER_BOTTOM - 1, n, max), None);
+        assert!(!hit_find(440, crate::chrome::HEADER_BOTTOM - 1, max));
+    }
+
     use super::*;
 
     #[test]
@@ -324,20 +364,20 @@ mod tests {
     #[test]
     fn find_is_on_the_label() {
         let (_, section_y, _, _) = layout(0);
-        assert!(hit_find(W as i32 - 30, section_y + 10));
+        assert!(hit_find(W as i32 - 30, section_y + 10, 0));
         assert!(
-            !hit_find(30, section_y + 10),
+            !hit_find(30, section_y + 10, 0),
             "the left half is the label, not the action"
         );
-        assert!(!hit_find(W as i32 - 30, section_y - 10));
+        assert!(!hit_find(W as i32 - 30, section_y - 10, 0));
     }
 
     #[test]
     fn taps_land_on_stations_only() {
         let (_, _, list_y, _) = layout(2);
-        assert_eq!(hit(200, list_y + 5, 2), Some(0));
-        assert_eq!(hit(200, list_y + kit::ROW_H() + 5, 2), Some(1));
-        assert_eq!(hit(200, list_y + 2 * kit::ROW_H() + 5, 2), None);
-        assert_eq!(hit(200, list_y - 5, 2), None);
+        assert_eq!(hit(200, list_y + 5, 2, 0), Some(0));
+        assert_eq!(hit(200, list_y + kit::ROW_H() + 5, 2, 0), Some(1));
+        assert_eq!(hit(200, list_y + 2 * kit::ROW_H() + 5, 2, 0), None);
+        assert_eq!(hit(200, list_y - 5, 2, 0), None);
     }
 }
