@@ -4801,13 +4801,7 @@ fn zappin_restore_origin_state(r: &mut Render) {
     };
     apply_track(&mut r.np, &t);
     r.np.liked = r.liked.contains(&t.object_id);
-    if r.art_key != Some(t.object_id) {
-        r.art_full = None;
-        r.art_thumb = None;
-        bake_gradient_art(r);
-        r.art_key = Some(t.object_id);
-        request_cover(r, t.object_id);
-    }
+    show_cover(r, t.object_id);
     r.cur_duration_ms = t.duration_raw.unwrap_or(0).max(0);
     r.play_pos_ms = if r.cur_duration_ms > 0 {
         r.zappin_origin_pos_ms.clamp(0, r.cur_duration_ms)
@@ -5316,10 +5310,13 @@ fn cast_tick(r: &mut Render) {
                 r.db.as_ref()
                     .and_then(|db| db.track_by_object_id(*oid).ok().flatten())
             });
+            // The speaker's song, all of it: its cover (claimed, or the decoder drops it), its
+            // heart, and Up Next's place, which the speaker moves through on its own.
             if let Some(t) = track {
                 apply_track(&mut r.np, &t);
-                let oid = t.object_id;
-                request_cover(r, oid);
+                r.np.liked = r.liked.contains(&t.object_id);
+                show_cover(r, t.object_id);
+                r.app.track_started(t.object_id, false);
             }
         }
         r.np.playing = st.playing;
@@ -9050,35 +9047,7 @@ pub extern "C" fn cinder_clock_tick() {
         let now = std::time::Instant::now();
         let dt = now.saturating_duration_since(r.last_pos).as_millis() as i64;
         r.last_pos = now;
-        if r.scrub_ms.is_none()
-            && r.np.playing
-            && r.cur_duration_ms > 0
-            && r.play_pos_ms < r.cur_duration_ms
-        {
-            // Prefer the real service position, interpolated forward from when it arrived (it
-            // lands ~1x/sec, which would otherwise make the bar step visibly). Falling back to
-            // the local estimate keeps the bar alive if the listener goes quiet.
-            r.play_pos_ms = if r.real_pos_ms >= 0 {
-                let since = now.saturating_duration_since(r.real_pos_at).as_millis() as i64;
-                (r.real_pos_ms + since).min(r.cur_duration_ms)
-            } else {
-                (r.play_pos_ms + dt).min(r.cur_duration_ms)
-            };
-            let (pos, dur) = (r.play_pos_ms, r.cur_duration_ms);
-            set_progress(&mut r.np, pos, dur);
-            // Repaint only when Now Playing is on screen (the bar/labels are only visible there); the
-            // position still advances off-screen so it's correct when you return.
-            if r.app.is_now_playing() {
-                r.dirty = true;
-            }
-            // The Lyrics page repaints only when the sung line changes. This tick is ~1 s, so the
-            // highlight can trail a line's start by up to that much.
-            if r.app
-                .set_lyrics_position(pos.clamp(0, u32::MAX as i64) as u32)
-            {
-                r.dirty = true;
-            }
-        }
+        advance_position(r, now, dt);
         // Keep the resume files current. The sequence write is body-compared, so it costs a
         // format + memcmp on a tick where nothing changed and a write only when it did; the
         // position write is additionally rate-limited (RESUME_POS_EVERY). Forced while paused —
@@ -9922,13 +9891,7 @@ pub extern "C" fn cinder_resume_load(
     r.play_pos_ms = pos.min(r.cur_duration_ms.max(0));
     r.real_pos_ms = -1;
     set_progress(&mut r.np, r.play_pos_ms, r.cur_duration_ms);
-    if r.art_key != Some(cur.object_id) {
-        r.art_full = None;
-        r.art_thumb = None;
-        bake_gradient_art(r);
-        r.art_key = Some(cur.object_id);
-        request_cover(r, cur.object_id);
-    }
+    show_cover(r, cur.object_id);
     r.last_track = Some(cur.clone());
     r.resume_pending = Some((uris, 0, r.play_pos_ms));
     r.dirty = true;
@@ -10329,6 +10292,56 @@ static COVER_WAKE: std::sync::Condvar = std::sync::Condvar::new();
 static COVER_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Ask for `object_id`'s cover. Returns immediately; the worker installs it when it is ready.
+/// Move Now Playing's position on by real time: the service's last position, interpolated, or the
+/// local estimate. Called from the ~1 Hz clock tick with the time since the last one.
+fn advance_position(r: &mut Render, now: std::time::Instant, dt: i64) {
+    // Not during a cast: the speaker's position is the one shown (cast_tick), and this clock
+    // runs on the paused player's, so it dragged the bar back every second.
+    if r.scrub_ms.is_none()
+        && !casting(r)
+        && r.np.playing
+        && r.cur_duration_ms > 0
+        && r.play_pos_ms < r.cur_duration_ms
+    {
+        // Prefer the real service position, interpolated forward from when it arrived (it
+        // lands ~1x/sec, which would otherwise make the bar step visibly). Falling back to
+        // the local estimate keeps the bar alive if the listener goes quiet.
+        r.play_pos_ms = if r.real_pos_ms >= 0 {
+            let since = now.saturating_duration_since(r.real_pos_at).as_millis() as i64;
+            (r.real_pos_ms + since).min(r.cur_duration_ms)
+        } else {
+            (r.play_pos_ms + dt).min(r.cur_duration_ms)
+        };
+        let (pos, dur) = (r.play_pos_ms, r.cur_duration_ms);
+        set_progress(&mut r.np, pos, dur);
+        // Repaint only when Now Playing is on screen (the bar/labels are only visible there); the
+        // position still advances off-screen so it's correct when you return.
+        if r.app.is_now_playing() {
+            r.dirty = true;
+        }
+        // The Lyrics page repaints only when the sung line changes. This tick is ~1 s, so the
+        // highlight can trail a line's start by up to that much.
+        if r.app
+            .set_lyrics_position(pos.clamp(0, u32::MAX as i64) as u32)
+        {
+            r.dirty = true;
+        }
+    }
+}
+
+/// Show `object_id`'s cover: the gradient now, the decoded cover when the decoder thread lands it.
+/// Claims `art_key` first, which the decoder checks before installing — a cover nobody claimed is
+/// thrown away. Nothing to do when it is the one already shown.
+fn show_cover(r: &mut Render, object_id: i64) {
+    if r.art_key != Some(object_id) {
+        r.art_full = None;
+        r.art_thumb = None;
+        bake_gradient_art(r);
+        r.art_key = Some(object_id);
+        request_cover(r, object_id);
+    }
+}
+
 fn request_cover(r: &Render, object_id: i64) {
     let Some(path) = r.db_path.clone() else {
         return;
@@ -13597,6 +13610,39 @@ mod tests {
         assert!(get("/api/queue").contains(&format!("\"id\":{id}")));
         remote::stop();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-11-11, casting to a Sonos: the 1 Hz tick moved the bar on from the PAUSED player's
+    /// last position and length, so Now Playing jumped between that and the speaker's every second.
+    #[test]
+    fn a_cast_keeps_the_speakers_position_on_now_playing() {
+        let _cast = cast::tests::E2E.lock().unwrap_or_else(|e| e.into_inner());
+        cast::tests::set_status_for_test(Some(cast::Status {
+            on: true,
+            playing: true,
+            pos_ms: 58_000,
+            dur_ms: 60_000,
+            ..Default::default()
+        }));
+        let mut r = zappin_render();
+        r.cast_was_on = true;
+        r.np.playing = true;
+        set_progress(&mut r.np, 58_000, 60_000);
+        // The player's own, paused song: a stale anchor 114 s into five minutes.
+        (r.cur_duration_ms, r.play_pos_ms, r.real_pos_ms) = (300_000, 114_000, 114_000);
+        let now = std::time::Instant::now();
+        r.real_pos_at = now - std::time::Duration::from_secs(5);
+        advance_position(&mut r, now, 1_000);
+        let shown = (r.np.elapsed.clone(), r.np.remaining.clone());
+        cast::tests::set_status_for_test(None);
+        assert_eq!(
+            shown,
+            ("0:58".to_string(), "-0:02".to_string()),
+            "the speaker's place stays"
+        );
+        // With no cast the same tick moves the player's own bar, as before.
+        advance_position(&mut r, now, 1_000);
+        assert_eq!(r.np.elapsed, "1:59");
     }
 
     fn zappin_render() -> Render {
