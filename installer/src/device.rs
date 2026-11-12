@@ -250,6 +250,9 @@ pub struct Installed {
     pub once: bool,
     pub clear_pending: bool,
     pub latched: bool,
+    /// Walkman One's settings file, if the drive still has one: a first install starts from the
+    /// sound choices in it (`catalogue::apply_walkman_one`).
+    pub w1_settings: Option<String>,
 }
 
 impl Installed {
@@ -336,8 +339,28 @@ pub fn read_installed(root: &Path, payload_names: &[&str]) -> Installed {
     st.once = root.join(flags::ONCE).exists();
     st.clear_pending = root.join(flags::CLEAR).exists();
     st.latched = root.join(flags::LATCHED).exists();
+    // Small by nature (about 9 KB); anything far bigger is not that file.
+    let w1 = root.join(W1_DIR).join("settings.txt");
+    if fs::metadata(&w1).is_ok_and(|m| m.len() < 256 * 1024) {
+        st.w1_settings = fs::read(&w1)
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).into_owned());
+    }
     st
 }
+
+/// The sound choices a first install takes from Walkman One's settings file, applied to `comps`,
+/// as lines to show. Empty when Cinder's own choices are saved on the player (they win), or there
+/// is no such file.
+pub fn walkman_one_picks(st: &Installed, comps: &mut [crate::catalogue::Comp]) -> Vec<String> {
+    match (&st.conf, &st.w1_settings) {
+        (None, Some(text)) => crate::catalogue::apply_walkman_one(comps, text),
+        _ => Vec::new(),
+    }
+}
+
+/// The note above those lines.
+pub const W1_PICKS_NOTE: &str = "Set from the Walkman One settings on this player:";
 
 /// `version=…` and `channel=…` lines; a missing version is no answer at all.
 pub fn parse_running(text: &str) -> Option<(String, String)> {
@@ -423,6 +446,24 @@ mod tests {
         assert!(!mono_was_live(
             "== cinder-home installer  Mon\nmono: Wampy is not installed\n"
         ));
+    }
+
+    /// Walkman One's settings shape a FIRST install only: once Cinder's own choices are saved on
+    /// the player, they are what an install starts from.
+    #[test]
+    fn walkman_one_settings_only_shape_a_first_install() {
+        let tmp = std::env::temp_dir().join(format!("cinder-inst-w1picks-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let _ = fs::create_dir_all(tmp.join(W1_DIR));
+        fs::write(tmp.join(W1_DIR).join("settings.txt"), "GMD=1\nPMD=0\n").unwrap();
+        let mut comps =
+            crate::catalogue::parse_catalogue(crate::CATALOGUE.expect("embedded")).unwrap();
+        let st = read_installed(&tmp, &[]);
+        assert_eq!(walkman_one_picks(&st, &mut comps).len(), 2);
+        fs::write(tmp.join(CONF_NAME), "CINDER_VOLTABLE=stock\n").unwrap();
+        let st = read_installed(&tmp, &[]);
+        assert!(walkman_one_picks(&st, &mut comps).is_empty());
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

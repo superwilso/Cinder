@@ -379,6 +379,52 @@ pub fn conf_text(comps: &[Comp], channel: &str) -> String {
     s
 }
 
+/// Start a first install from the sound choices a leftover Walkman One settings file records
+/// (`CFW/settings.txt`, `device::W1_DIR`), so a player that ran it keeps the sound it had:
+///
+/// - `GMD=1` (its lower-gain mode, which is the NW-WM1A volume table) -> volume curve `wm1a`;
+/// - `PMD=0` (a Plus mode unless Hold is on at boot) -> sound signature `pv1` or `pv2` by `PMV`,
+///   `2` when `PMV` is missing or not 1, as its own boot script defaults it.
+///
+/// Nothing else in the file reaches the sound on a player without Walkman One
+/// (`analysis/RE_walkmanone_tunings.md`): its signatures change identity only, its region change
+/// is what Cinder's default curve already does, and `DIM` loads the same data either way. Lines are
+/// read the way its script reads them (`KEY=value` at the start of a line), forgiving `\r` and
+/// spaces. Returns one line per option it set, for the person installing.
+pub fn apply_walkman_one(comps: &mut [Comp], settings: &str) -> Vec<String> {
+    let get = |key: &str| {
+        settings
+            .lines()
+            .filter_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+            .map(str::trim)
+            .next()
+    };
+    let mut picks = Vec::new();
+    if get("GMD") == Some("1") {
+        picks.push(("CINDER_VOLTABLE", "wm1a"));
+    }
+    if get("PMD") == Some("0") {
+        picks.push((
+            "CINDER_SIGNATURE",
+            if get("PMV") == Some("1") {
+                "pv1"
+            } else {
+                "pv2"
+            },
+        ));
+    }
+    let mut said = Vec::new();
+    for (var, v) in picks {
+        if let Some(c) = comps.iter_mut().find(|c| c.var == var) {
+            if c.valid(v) {
+                c.value = v.to_string();
+                said.push(format!("{}: {}", c.title, c.label_of(v)));
+            }
+        }
+    }
+    said
+}
+
 /// Re-apply the choices recorded in a `cinder_components.conf` already on the player.
 ///
 /// This is what makes UPDATE different from INSTALL: an update must not silently reset a user
@@ -797,6 +843,41 @@ preload | CINDER_PRELOAD | bool | 0 | Preload
             "stable",
             "a stamp that is not a channel changes nothing"
         );
+    }
+
+    /// Walkman One's gain and Plus-mode settings carry over to the two options that reproduce
+    /// them; its defaults, and everything that does not reach the sound, change nothing.
+    #[test]
+    fn walkman_one_sound_settings_carry_over() {
+        let fresh = || parse_catalogue(crate::CATALOGUE.expect("embedded")).unwrap();
+        let val = |c: &[Comp], var: &str| c.iter().find(|x| x.var == var).unwrap().value.clone();
+
+        // The settings as the owner's player has them: Normal by default, normal gain.
+        let mut c = fresh();
+        let said = apply_walkman_one(
+            &mut c,
+            "SIG=3\r\nREG=MX3\r\nPMV=2\r\nPMD=1\r\nGMD=0\r\nDIM=0\r\n",
+        );
+        assert!(said.is_empty(), "{said:?}");
+        assert_eq!(val(&c, "CINDER_VOLTABLE"), "stock");
+        assert_eq!(val(&c, "CINDER_SIGNATURE"), "stock");
+
+        let mut c = fresh();
+        let said = apply_walkman_one(&mut c, "# comment GMD=1\nGMD=1\nPMD=0\nPMV=1\n");
+        assert_eq!(val(&c, "CINDER_VOLTABLE"), "wm1a");
+        assert_eq!(val(&c, "CINDER_SIGNATURE"), "pv1");
+        assert_eq!(said.len(), 2);
+        assert!(said[0].contains("NW-WM1A"), "{said:?}");
+
+        // Its script falls back to Plus v2 when PMV is missing or not 1.
+        for pmv in ["", "PMV=2\n", "PMV=7\n"] {
+            let mut c = fresh();
+            apply_walkman_one(&mut c, &format!("PMD=0\n{pmv}"));
+            assert_eq!(val(&c, "CINDER_SIGNATURE"), "pv2", "with {pmv:?}");
+        }
+        // A key only counts at the start of a line.
+        let mut c = fresh();
+        assert!(apply_walkman_one(&mut c, "XGMD=1\n GMD=1\n").is_empty());
     }
 
     #[test]

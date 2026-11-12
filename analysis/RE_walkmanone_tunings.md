@@ -186,6 +186,22 @@ The second flag `ResolveProcCond` takes is the Source Direct flag: with it set, 
 stream uses a different table of output rates. So Source Direct changes what rate DSD is converted
 to. The two tables were not read out.
 
+**Measured, 2026-11-12, stock A55 1.02 with Cinder.** Through `SoundServiceSettings::SetParams`
+(`cinder-probe --dsdnative`), `builtin_dsd_process_mode` reads back 2 at boot. Set to 1, a
+generated DSD64 `.dsf` played from the library opened PCM device 2 (`dsdenc`, `DSD_U8`) instead of
+S32_LE at 176.4 kHz on device 4 (`cxd3778gf-icx-lowpower`); set back to 2, it converted again. The
+setting held across track starts. Both keys were sent. `se_hp_dsd_native_enabled=1` is accepted
+but reads back 0; it is still needed: after a reboot with only `builtin_dsd_process_mode=1` sent
+(read back 1), the file converted, and sending the second key as well made the next start native.
+So the jack is output device 2 (`SeHeadphone`) as the rule above reads, and that key's getter
+reads some other store. Not yet heard at the jack.
+
+**Native DSD and the volume curve.** In DSD mode the driver sets the DSD encoder's gain from
+`ov_dsd_*.tbl` and the analogue attenuator from the `hpout` of tables 12–23 in `ov_*.tbl`
+(`cxd3778gf_set_master_volume`). The A50's own file (`ov_1291`) gives DSD64 the PCM steps (80 at
+20, 100 from 40). The WM1A file holds `hpout` at 4 up to step 70 and starts at 68 at step 80, for
+every DSD rate. So with that curve loaded native DSD is near silent below step 80.
+
 **The runtime setter has no feature check.** `FilterInConfig::Set` (stock `0x1156c8`) takes
 `builtin_dsd_process_mode`, `se_hp_dsd_native_enabled`, `dsd_conv_gain_mode`,
 `dsd_conv_filter_type`, `sourcedirect`, `btaudiosoundeffect`, `disablesoundeffects` and

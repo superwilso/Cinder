@@ -355,6 +355,14 @@ fn options(mode: &str) -> Result<Vec<Comp>, String> {
         "everything" => catalogue::apply_start(&mut comps, Start::Everything),
         _ => catalogue::apply_start(&mut comps, Start::Cinder),
     }
+    if mode != "update" {
+        if let Some(p) = current_player() {
+            device::walkman_one_picks(
+                &device::read_installed(&p, &stage::payload_names()),
+                &mut comps,
+            );
+        }
+    }
     // Saved answers from before an option's needs were written down can hold one without the
     // other; the page starts from what will actually be installed.
     catalogue::apply_needs(&mut comps);
@@ -538,7 +546,7 @@ fn state_json(since: usize) -> String {
         format!(
             "{{\"present\":{},\"last\":{},\"when\":{},\"channel\":{},\"staged_version\":{},\
              \"running_version\":{},\"running_channel\":{},\"running_vs_this\":{},\"walkman_one\":{},\"advisory\":{},\
-             \"leftovers\":{},\"off\":{},\"once\":{},\"clear_pending\":{},\"latched\":{}}}",
+             \"leftovers\":{},\"off\":{},\"once\":{},\"clear_pending\":{},\"latched\":{},\"w1_picks\":[{}]}}",
             st.present(),
             esc(last),
             opt(&st.when),
@@ -554,6 +562,17 @@ fn state_json(since: usize) -> String {
             st.once,
             st.clear_pending,
             st.latched,
+            {
+                // What a first install would take from Walkman One's settings, worked out on a
+                // throwaway catalogue: the page only reports it; `options` applies it.
+                let mut probe = load_comps().unwrap_or_default();
+                let picks = device::walkman_one_picks(&st, &mut probe);
+                let mut l: Vec<String> = picks.iter().map(|p| esc(p)).collect();
+                if !l.is_empty() {
+                    l.insert(0, esc(device::W1_PICKS_NOTE));
+                }
+                l.join(",")
+            },
         )
     });
     let log = LOG.lock().unwrap();

@@ -326,6 +326,7 @@ function statusCard() {
   if (i.once) lines.push("The next start goes to Sony's player, once.");
   if (i.clear_pending) lines.push("At the next start the player tries Cinder again.");
   if (i.advisory) lines.push(i.advisory);
+  if (i.w1_picks && i.w1_picks.length) lines.push(i.w1_picks[0] + " " + i.w1_picks.slice(1).join("; ") + ".");
   if (i.running_version && i.running_vs_this === "older") lines.push("This installer carries Cinder " + S.carries + ", which is newer.");
   if (i.running_vs_this === "same") lines.push("It runs Cinder " + S.carries + ", the version this installer carries.");
   if (i.running_vs_this === "newer") lines.push("The player runs a newer Cinder than this installer carries (" + S.carries + "). Download the latest installer before changing anything.");

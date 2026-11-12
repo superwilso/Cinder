@@ -78,6 +78,28 @@ pub fn band_at(x: i32) -> Option<usize> {
     (0..BANDS as i32).contains(&i).then_some(i as usize)
 }
 
+/// Starting points, one tap each, then any band can be moved. Cinder's own curves, named for what
+/// they do. Half-dB in band order, every value on the 1 dB step and inside the range. They lean on
+/// cuts and keep boosts small, because a boost lowers everything else (see the module note).
+pub const PRESETS: [(&str, [i8; BANDS]); 4] = [
+    ("Bass +", [8, 2, 0, 0, 0]),
+    ("Treble +", [0, 0, 0, 2, 6]),
+    ("Treble \u{2212}", [0, 0, 0, -4, -8]),
+    ("Voice", [-4, 0, 4, 2, -2]),
+];
+/// The preset chips, between the band labels and the footer.
+pub const PRESET_TOP: i32 = 640;
+
+/// Which preset chip is under a tap.
+pub fn preset_at(x: i32, y: i32) -> Option<usize> {
+    crate::kit::chip_at(PRESETS.len(), PRESET_TOP, x, y)
+}
+
+/// The preset these bands are exactly, if any (its chip is drawn filled).
+pub fn preset_of(bands: &[i8; BANDS]) -> Option<usize> {
+    PRESETS.iter().position(|(_, p)| p == bands)
+}
+
 /// Footer controls.
 pub const FOOTER_TOP: i32 = 700;
 const FOOTER_H: i32 = 60;
@@ -246,6 +268,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
     );
 
+    let labels: Vec<&str> = PRESETS.iter().map(|(l, _)| *l).collect();
+    crate::kit::chips(c, t, f, PRESET_TOP, &labels, preset_of(&d.bands));
+
     // ── footer ──────────────────────────────────────────────────────────────────────────────
     let fy = FOOTER_TOP;
     hline(c, fy, t.line);
@@ -357,6 +382,45 @@ mod tests {
         assert_eq!(clamp(i8::MAX), BAND_MAX);
         assert_eq!(band_db(BAND_MAX), 6.0);
         assert_eq!(band_db(BAND_MIN), -12.0);
+    }
+
+    /// Every preset is something the sliders could have set, so the helper accepts it and the
+    /// editor shows it exactly; no two are the same; none is flat (that is Reset).
+    #[test]
+    fn presets_are_reachable_curves() {
+        for (i, (name, p)) in PRESETS.iter().enumerate() {
+            for &v in p {
+                assert!(
+                    (BAND_MIN..=BAND_MAX).contains(&v),
+                    "{name}: {v} out of range"
+                );
+                assert_eq!(v % BAND_STEP, 0, "{name}: {v} off the 1 dB step");
+            }
+            assert_ne!(*p, [0; BANDS], "{name} is flat");
+            assert_eq!(preset_of(p), Some(i), "{name} is not unique");
+        }
+        assert_eq!(preset_of(&[0; BANDS]), None);
+    }
+
+    /// The chips sit between the band captions and the footer, and every chip answers a tap.
+    #[test]
+    fn preset_chips_fit_above_the_footer_and_hit() {
+        const {
+            assert!(
+                PRESET_TOP > FIELD_BOTTOM + 52,
+                "overlaps the caption under the field"
+            );
+            assert!(
+                PRESET_TOP + crate::kit::CHIP_H <= FOOTER_TOP,
+                "runs into the footer"
+            );
+        }
+        for i in 0..PRESETS.len() {
+            let (x, w) = crate::kit::chip_span(i, PRESETS.len());
+            assert_eq!(preset_at(x + w / 2, PRESET_TOP + 10), Some(i));
+        }
+        assert_eq!(preset_at(240, PRESET_TOP - 1), None);
+        assert!(!reset_at(240, PRESET_TOP + 10) && !fit_at(240, PRESET_TOP + 10));
     }
 
     #[test]

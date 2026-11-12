@@ -47,6 +47,7 @@
 // `enum class : int` so a raw int can be cast in without inventing enumerator names.
 #pragma once
 #include <cstddef>
+#include <string>
 
 namespace pst { namespace services { namespace sound {
 
@@ -83,5 +84,17 @@ private:
 };
 static_assert(sizeof(SoundServiceSettingsDmp) >= kSoundServiceSettingsDmpRealSize,
               "SoundServiceSettingsDmp reserved storage smaller than the device object");
+
+// The generic channel under every setter above: `SetParams("<key>=<value>")` and
+// `GetParams(key, out)` (both @0xb6d4/@0xb790 in libSoundServiceSettingsDmp.so). Members whose
+// `this` is never read: SetParams takes the string in r1 and goes straight to
+// Framework::GetServiceClient. Used for `se_hp_dsd_native_enabled`, a key the service takes
+// (FilterInConfig::Set, libSoundServiceFw.so 0x1156c8) and the library spells out but no exported
+// method sends.
+class SoundServiceSettings {
+public:
+    int SetParams(const std::string& key_eq_value);
+    int GetParams(const std::string& key, std::string& out);
+};
 
 } } } // namespace pst::services::sound

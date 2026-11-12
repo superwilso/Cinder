@@ -39,6 +39,13 @@ int cinder_sound_settings_get_lpcm_mode(void);
  * noise-cancelling service and is deliberately not wrapped. */
 int cinder_sound_settings_get_headphone_model(void);
 
+/* The generic channel: send "<key>=<value>" to the sound service, or read one key into `out`
+ * (NUL-terminated, cut to `n`). Sony's status (0 = done), or -1 / -2 as above. Used for the native
+ * DSD keys, `builtin_dsd_process_mode` and `se_hp_dsd_native_enabled`
+ * (analysis/RE_walkmanone_tunings.md section 10). */
+int cinder_sound_settings_set_param(const char* key_eq_value);
+int cinder_sound_settings_get_param(const char* key, char* out, int n);
+
 #ifdef __cplusplus
 }
 #endif

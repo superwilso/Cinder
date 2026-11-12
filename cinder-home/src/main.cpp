@@ -15153,6 +15153,52 @@ void report_storage() {
 // witness: each change of state is one line, with the filesystem type, and a card that is in the
 // slot but still unmounted a minute on says so once. Silent while a mass-storage session holds the
 // card, because unmounted is then the correct state and the exit path reports on its own.
+// Settings ▸ Playback ▸ Play DSD natively. Sony's A50 build converts every DSD file to PCM: its
+// sound service fixes `builtin_dsd_process_mode` at 2 when it starts, because DmpFeature says this
+// model has no native DSD. The service's runtime setter takes the key without that check, and the
+// single-ended jack also needs `se_hp_dsd_native_enabled` (analysis/RE_walkmanone_tunings.md
+// section 10). Measured 2026-11-12 on a stock A55: with both at 1 a DSD64 file opens Sony's DSD
+// output (`dsdenc`, DSD_U8) instead of S32_LE PCM on hw:0,4; with only the first it still
+// converts (the second key reads back 0 either way, so its read-back proves nothing); back at 2
+// and 0 it converts. Set once, it holds across track starts. Both go through the generic settings
+// channel,
+// SoundServiceSettings::SetParams("<key>=<value>") in libSoundServiceSettingsDmp.so, reached by
+// dlopen so the Home app gains no DT_NEEDED. A member whose `this` is never read (r1 carries the
+// string), so a dummy object stands in.
+//
+// OFF BY DEFAULT and silent while off: nothing is sent unless the switch has been on this boot.
+// The setting lives in the service's memory only, so it is sent again when the switch flips and
+// once at start.
+static int sound_service_setting(const char* kv) {
+    typedef int (*set_fn)(void* self, const std::string& kv);
+    static set_fn f = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        if (void* h = dlopen("libSoundServiceSettingsDmp.so", RTLD_NOW))
+            f = (set_fn)dlsym(h, "_ZN3pst8services5sound20SoundServiceSettings9SetParamsERKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEE");
+    }
+    if (!f) return -1;
+    alignas(8) unsigned char dummy[16] = {0};
+    return f(dummy, std::string(kv));
+}
+
+static void dsd_native_tick(long long now) {
+    static long long next_ms = 0;
+    static int sent = -1;   // -1 nothing sent this boot
+    if (now < next_ms) return;
+    next_ms = now + 2000;
+    const int want = cinder_get_dsd_native() ? 1 : 0;
+    if (want == sent || (sent < 0 && !want)) return;
+    const int a = sound_service_setting(want ? "builtin_dsd_process_mode=1" : "builtin_dsd_process_mode=2");
+    const int b = sound_service_setting(want ? "se_hp_dsd_native_enabled=1" : "se_hp_dsd_native_enabled=0");
+    char m[160];
+    std::snprintf(m, sizeof m, "sound: DSD %s on the headphone jack (settings rc %d %d)",
+                  want ? "native" : "converted to PCM", a, b);
+    clog_(m);
+    if (a == 0 && b == 0) sent = want;   // otherwise the service is not up yet: again in 2 s
+}
+
 static void sd_watch_tick(long long now) {
     static long long next_ms = 0;
     if (now < next_ms || g_msc_active) return;
@@ -16155,6 +16201,7 @@ void* render_driver(void*) {
             // action the switch does, so the backlight follows it.
             if (int na = cinder_night_tick()) carry_out_input(na);
             sd_watch_tick(house_now);   // self-paced to 5 s; see its note
+            dsd_native_tick(house_now);  // self-paced to 2 s; sends only while the switch is or was on
             mono_shim_poll();           // one access() on tmpfs; logs and repaints only on a change
             ambient_tick();             // a compare unless the play state or a setting moved
             hci_log_tick();             // one stat() while the Bluetooth debug log runs; else nothing

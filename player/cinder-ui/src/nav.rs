@@ -5995,6 +5995,14 @@ impl App {
                     }
                     return vec![];
                 }
+                if let Some(i) = crate::dac_eq::preset_at(x, y) {
+                    let want = crate::dac_eq::PRESETS[i].1;
+                    if self.dac_eq == want {
+                        return vec![];
+                    }
+                    self.dac_eq = want;
+                    return vec![Action::DacEqChanged];
+                }
                 if crate::dac_eq::reset_at(x, y) {
                     if self.dac_eq == [0; crate::dac_eq::BANDS] {
                         return vec![];
@@ -24464,6 +24472,25 @@ mod tests {
         a.set_bt_route(false);
         assert!(!a.take_profile_apply());
         assert_eq!(a.eq_bands_for_dsp(), [4; 10]);
+    }
+
+    /// A preset chip loads its curve once; the same chip again changes nothing; a slider moved off
+    /// it leaves the curve as edited.
+    #[test]
+    fn a_dac_eq_preset_loads_its_curve() {
+        let mut a = unlocked();
+        a.go(Screen::DacEq);
+        let (x, w) = crate::kit::chip_span(0, crate::dac_eq::PRESETS.len());
+        let y = crate::dac_eq::PRESET_TOP + 10;
+        assert_eq!(a.tap(x + w / 2, y), vec![Action::DacEqChanged]);
+        assert_eq!(a.dac_eq(), crate::dac_eq::PRESETS[0].1);
+        assert!(a.tap(x + w / 2, y).is_empty(), "already loaded");
+        a.tap(
+            crate::dac_eq::band_center_x(4),
+            crate::dac_eq::FIELD_TOP + 20,
+        );
+        assert_ne!(a.dac_eq(), crate::dac_eq::PRESETS[0].1);
+        assert_eq!(crate::dac_eq::preset_of(&a.dac_eq()), None);
     }
 
     /// The Presets row is a route and does not re-apply the chain.

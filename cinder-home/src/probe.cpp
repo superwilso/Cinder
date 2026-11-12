@@ -4895,6 +4895,40 @@ static int soundsettings_probe() {
     _exit(0);   // not return — see --fx
 }
 
+// --dsdnative read|on|off : Sony's native-DSD switches for the built-in output, through the sound
+// settings channel. The stock A50 library fixes `builtin_dsd_process_mode` at 2 (convert) when the
+// service starts, because DmpFeature says the model has no native DSD; its runtime setter takes
+// the key with no such check (FilterInConfig::Set). On the single-ended jack (output device 2)
+// native also needs `se_hp_dsd_native_enabled` (dsdprocessrules::ResolveProcCond).
+// analysis/RE_walkmanone_tunings.md section 10. `on` sends 1 and 1, `off` 2 and 0; both read back.
+// In memory only: the service's next start puts Sony's values back.
+static int dsdnative_probe(const char* what) {
+    start_probe_framework();
+    char m[256], v[64];
+    const bool on = std::strcmp(what, "on") == 0, off = std::strcmp(what, "off") == 0;
+    if (on || off) {
+        const char* kv[2] = { on ? "builtin_dsd_process_mode=1" : "builtin_dsd_process_mode=2",
+                              on ? "se_hp_dsd_native_enabled=1" : "se_hp_dsd_native_enabled=0" };
+        for (const char* k : kv) {
+            wd_arm(8);
+            const int r = cinder_sound_settings_set_param(k);
+            wd_disarm();
+            std::snprintf(m, sizeof m, "dsdnative: set %s -> %d", k, r);
+            clog_(m);
+        }
+    }
+    for (const char* k : { "builtin_dsd_process_mode", "se_hp_dsd_native_enabled" }) {
+        wd_arm(8);
+        const int r = cinder_sound_settings_get_param(k, v, sizeof v);
+        wd_disarm();
+        std::snprintf(m, sizeof m, "dsdnative: get %s -> %d \"%s\"", k, r, v);
+        clog_(m);
+    }
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 // --tone : settle the Tone Control and 6-band EQ units, ranges and enumerators.
 //
 // WHY THIS IS MEASURABLE WITHOUT EARS. On this device a read-back does NOT bound an enum — the
@@ -7856,6 +7890,9 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--tone") == 0) {
         return tone_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--dsdnative") == 0) {
+        return dsdnative_probe(argc > 2 ? argv[2] : "read");
     }
     if (argc > 1 && std::strcmp(argv[1], "--soundsettings") == 0) {
         return soundsettings_probe();
