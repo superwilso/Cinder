@@ -73,7 +73,7 @@ cd6841fdd8d2c783 clockset_day
 ba2f861362d834c8 sound_balance_day
 2bb25090fcd6b6ba sound_mono_day
 fc6e0948ae425b07 sound_mono_live_day
-41ac989380c72924 settings_day
+aa6e5d46a8ea1c27 settings_day
 8747d6723756254f display_day
 aa5a1c551b1762a9 genre_picker_day
 a6344e7c4d5b10e8 library_songs_filtered_day
@@ -188,7 +188,7 @@ f6e24799f4cdf803 clockset_night
 aacdef84e4860df7 sound_balance_night
 a3512f475e5a8817 sound_mono_night
 76368ff4b2cabc17 sound_mono_live_night
-250ad97b24466e16 settings_night
+900496ba3798ddad settings_night
 c2678fbc152740f4 display_night
 6a18465a7a81b920 genre_picker_night
 496dd8875ee4e15e library_songs_filtered_night
@@ -321,7 +321,7 @@ ffb3ee20a29579f8 swipe_play_next_4_100px_armed
 a819fca9925f9cee swipe_queue_5_132px_armed
 9ba17c2e421726bc swipe_play_next_5_132px_armed
 c64207dd9564a16a uiscale_80_library
-987147c9882fd76f uiscale_80_settings
+d0824ecd9b47d4b2 uiscale_80_settings
 6df637b26764436e uiscale_80_display
 d093aab9a732e82b uiscale_80_bluetooth
 5acc22e90dd131f8 uiscale_80_sound
@@ -334,7 +334,7 @@ fc6d8ca2cdd20ec4 uiscale_80_receiver_ldac
 85245ddff799d4aa uiscale_80_receiver_sbc
 ed787dc9c5c4b0e1 uiscale_80_settings_bottom
 570bf237ab47c2ce uiscale_100_library
-d130204408789ddf uiscale_100_settings
+2fe5da8529b90a80 uiscale_100_settings
 b5fadd4de5e38092 uiscale_100_display
 210713a5bc48e295 uiscale_100_bluetooth
 ccf46d578eee3a70 uiscale_100_sound
@@ -347,7 +347,7 @@ cc9dda3328990485 uiscale_100_receiver_aac
 b523c3e6a0090d55 uiscale_100_receiver_sbc
 a48aa89a679590b4 uiscale_100_settings_bottom
 bd4933caf0b84a3b uiscale_120_library
-ce52268c55dca275 uiscale_120_settings
+38eb36d9540c1d62 uiscale_120_settings
 43a888e91f0555d2 uiscale_120_display
 aa4b06517908dd06 uiscale_120_bluetooth
 d927b8f8c0fe5c73 uiscale_120_sound
@@ -360,7 +360,7 @@ a4b2574ff192c824 uiscale_120_receiver_aac
 3570d285f3cf1e76 uiscale_120_receiver_sbc
 22f5cf32a5d16401 uiscale_120_settings_bottom
 5436dee7e83680b5 uiscale_140_library
-adb05d443cd96443 uiscale_140_settings
+2abfa680b1620a87 uiscale_140_settings
 18970274fb4ed86e uiscale_140_display
 c4b0928b17ed1b84 uiscale_140_bluetooth
 801d85ab3ca89ee4 uiscale_140_sound
@@ -392,8 +392,8 @@ b591ec6a78e98255 now_playing_repeat_album
 d6f4d2f16a0e327b help_top
 623de72b8608b85d help_end
 c224339ad58fdbeb advanced
-546d0005b6d0d789 dac_eq
-487d70a38c10e04d dac_eq_source_direct
+9a6d5eae9ff75826 dac_eq
+3d631a442ab14c42 dac_eq_source_direct
 14e367b53f604767 advanced_end
 15b11d9b4b356433 presets_empty
 4feca9de89e98d4f presets_two
@@ -437,14 +437,14 @@ ddfdc33279b976ca now_playing_winamp_noskin
 3264aa31142c3ac6 now_playing_tape_standin
 023b75990664e9c5 big_now_playing
 85595af544aa6df8 big_library
-1efb4cd4636d292c big_settings
+35c06583c64345f0 big_settings
 7495adf7ebae5741 big_menu_end
 d36c5672ac6f5c89 big_display_end
 7bed64c7e58318f3 big_bluetooth
 44b387a1cfacb56b big_sound_quality
 779d2058d3670b06 usbdac_low_latency
 287bbdfb38b3f37a big_usbdac_low_latency
-ff48fc9411bcf7d6 big_extras_settings
+f8b5137e843b739a big_extras_settings
 060c79b487233fc5 big_extras_library
 9cb5efc1ca5cae3d now_playing_back_count
 9a65949b599e26a7 now_playing_tint

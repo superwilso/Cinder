@@ -16,6 +16,23 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Play DSD natively (Settings ▸ Playback).** DSD files go to the headphone jack as 1-bit, the way
+  the codec can play them, instead of being converted to PCM first. Sony's own firmware for this
+  model always converts; the switch asks its sound service for the native output it already
+  contains. Off by default. On the Smooth volume curve DSD is very quiet below volume 80, because
+  that curve's DSD steps start there. *Measured on a stock A55 2026-11-12: a DSD64 file opened
+  Sony's DSD output (`DSD_U8`) instead of 32-bit PCM, and went back to PCM with the switch off.
+  Not yet listened to.*
+- **DAC EQ starting points.** Four chips under the sliders (Bass +, Treble +, Treble −, Voice)
+  set all five bands at once; any band can be moved afterwards. Mostly cuts, small boosts, because
+  a boost lowers everything else.
+- **The installer keeps Walkman One's sound.** On a first install, a player that still has Walkman
+  One's settings file starts with the matching options: its lower gain picks the Smooth (NW-WM1A)
+  volume curve, a Plus mode picks the same sound signature. Its other settings do not change the
+  sound. Cinder's own saved choices always win on an update.
+
 ## [0.4.2] — 2026-11-11
 
 ### Added

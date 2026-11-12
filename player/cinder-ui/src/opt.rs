@@ -46,10 +46,12 @@ pub enum Opt {
     WifiRemote,
     /// Now Playing's background takes the cover's colour (Head-Fi).
     NpTint,
+    /// DSD to the headphone jack as 1-bit (`settings::ROW_DSD_NATIVE`).
+    DsdNative,
 }
 
 impl Opt {
-    pub const ALL: [Opt; 17] = [
+    pub const ALL: [Opt; 18] = [
         Opt::Quick,
         Opt::FoldersTab,
         Opt::DeleteMusic,
@@ -67,6 +69,7 @@ impl Opt {
         Opt::WifiAirplay,
         Opt::WifiRemote,
         Opt::NpTint,
+        Opt::DsdNative,
     ];
 
     /// The settings-file key.
@@ -89,6 +92,7 @@ impl Opt {
             Opt::WifiAirplay => "wifi_airplay",
             Opt::WifiRemote => "wifi_remote",
             Opt::NpTint => "np_tint",
+            Opt::DsdNative => "dsd_native",
         }
     }
 
@@ -107,6 +111,7 @@ impl Opt {
             Opt::NpCount => Some(s::ROW_NP_COUNT),
             Opt::HoldButtons => Some(s::ROW_HOLD_BUTTONS),
             Opt::NpTint => Some(s::ROW_NP_TINT),
+            Opt::DsdNative => Some(s::ROW_DSD_NATIVE),
             _ => None,
         }
     }
@@ -141,7 +146,7 @@ mod tests {
     fn every_switch_starts_off_and_has_its_own_key_and_row() {
         assert_eq!(
             Opt::ALL.len(),
-            Opt::NpTint as usize + 1,
+            Opt::DsdNative as usize + 1,
             "ALL lists every variant"
         );
         let none = Opts::default();

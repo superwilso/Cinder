@@ -1181,7 +1181,6 @@
   "Opens the screen you pick": "打开你选的页面",
   "HOLD LOCK · SIDE KEYS LOCKED · SLIDE HOLD OFF": "HOLD 已锁定 · 侧键已锁定 · 滑动 HOLD 解锁",
   "Playback": "播放",
-  "Shuffle · volume limit": "随机 · 音量限制",
   "Swipes · back arrow · track number": "滑动 · 返回箭头 · 曲目编号",
   "Folders tab · \"The\" · database": "文件夹标签 · \"The\" · 数据库",
   "Buttons & gestures": "按键与手势",
@@ -1190,5 +1189,12 @@
   "Device & storage": "设备与存储",
   "Battery · storage · USB · clock": "电池 · 存储 · USB · 时钟",
   "System": "系统",
-  "Language · boot to stock · reset · version": "语言 · 启动原厂 · 重置 · 固件"
+  "Language · boot to stock · reset · version": "语言 · 启动原厂 · 重置 · 固件",
+  "Bass +": "低音 +",
+  "Treble +": "高音 +",
+  "Treble −": "高音 −",
+  "Voice": "中频 +",
+  "Shuffle · volume limit · DSD": "随机 · 音量限制 · DSD",
+  "Play DSD natively": "以原生格式播放 DSD",
+  "To the headphone jack as 1-bit": "耳机插孔 · 原生 1-bit 输出"
 }

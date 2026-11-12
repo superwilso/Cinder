@@ -68,4 +68,29 @@ int cinder_sound_settings_get_headphone_model(void) {
     return guarded([](snd::SoundServiceSettingsDmp* s) { return static_cast<int>(s->GetHeadphoneModel()); });
 }
 
+int cinder_sound_settings_set_param(const char* kv) {
+    if (!kv) return -1;
+    try {
+        snd::SoundServiceSettings ss;
+        return ss.SetParams(std::string(kv));
+    } catch (...) {
+        return -2;
+    }
+}
+int cinder_sound_settings_get_param(const char* key, char* out, int n) {
+    if (!key || !out || n <= 0) return -1;
+    out[0] = 0;
+    try {
+        snd::SoundServiceSettings ss;
+        std::string v;
+        const int r = ss.GetParams(std::string(key), v);
+        std::size_t k = v.size() < std::size_t(n - 1) ? v.size() : std::size_t(n - 1);
+        v.copy(out, k);
+        out[k] = 0;
+        return r;
+    } catch (...) {
+        return -2;
+    }
+}
+
 } // extern "C"

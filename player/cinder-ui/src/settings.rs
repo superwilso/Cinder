@@ -17,15 +17,15 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of real rows. The home page's topic links are row ids after them ([`group_row`]).
-pub const ROWS: usize = 36;
+pub const ROWS: usize = 37;
 
 /// The topic pages: title, the home row's second line (what is inside), and the rows, in order.
 /// Every row is on exactly one page: here, or [`HOME_ROWS`].
 pub const GROUPS: [(&str, &str, &[usize]); 7] = [
     (
         "Playback",
-        "Shuffle · volume limit",
-        &[ROW_SHUFFLE, ROW_VOLUME_LIMIT],
+        "Shuffle · volume limit · DSD",
+        &[ROW_SHUFFLE, ROW_VOLUME_LIMIT, ROW_DSD_NATIVE],
     ),
     (
         "Now Playing",
@@ -186,6 +186,12 @@ pub const ROW_SLEEP: usize = 6;
 /// at random, each in its own order) or ARTISTS. `shuffle.rs`. SONGS by default, so the button
 /// does what it has always done until the owner picks otherwise.
 pub const ROW_SHUFFLE: usize = 7;
+/// DSD files go to the headphone jack as 1-bit, without Sony's conversion to PCM. OFF by default:
+/// Sony's A50 build always converts (analysis/RE_walkmanone_tunings.md section 10), so this is the
+/// player doing something its own firmware never did. The shell sends Sony's two settings
+/// (`builtin_dsd_process_mode`, `se_hp_dsd_native_enabled`; both are needed, measured) when it
+/// starts and when this flips.
+pub const ROW_DSD_NATIVE: usize = 34;
 /// Ignore "The" in artists — sort "The Beatles" among the B's in the Artists tab, the Albums tab's
 /// artist groups and Songs by artist (and file it under B on the rail). OFF by default: artists
 /// sort as written. Titles and album names keep their "The" either way. See `collate`.
@@ -235,8 +241,8 @@ pub const ROW_POWER_OFF: usize = 11;
 pub const ROW_RESET: usize = 28;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
 pub const ROW_LANGUAGE: usize = 29;
-pub const ROW_FIRMWARE: usize = 34;
-pub const ROW_MODEL: usize = 35;
+pub const ROW_FIRMWARE: usize = 35;
+pub const ROW_MODEL: usize = 36;
 /// Wi-Fi (`wifi.rs`): shown only when the Wi-Fi install option is on the player.
 pub const ROW_WIFI: usize = 30;
 
@@ -521,6 +527,7 @@ fn title(r: usize) -> &'static str {
         ROW_VOLUME_LIMIT => crate::i18n::text("Volume limit"),
         ROW_SLEEP => crate::i18n::text("Sleep timer"),
         ROW_SHUFFLE => crate::i18n::text("Shuffle"),
+        ROW_DSD_NATIVE => crate::i18n::text("Play DSD natively"),
         ROW_IGNORE_THE => crate::i18n::text("Ignore \"The\" in artists"),
         ROW_DATABASE => crate::i18n::text("Database"),
         ROW_AUTO_OFF => crate::i18n::text("Auto power off"),
@@ -577,6 +584,7 @@ fn sub_line<'a>(r: usize, v: &'a SettingsView) -> &'a str {
         ROW_DELETE => crate::i18n::text("From Track information and album pages"),
         ROW_MENU_ICONS => crate::i18n::text("In the Menu and the pull-down panel"),
         ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
+        ROW_DSD_NATIVE => crate::i18n::text("To the headphone jack as 1-bit"),
         ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
         ROW_STORAGE => storage_parts(v.storage).1,
         _ => "",

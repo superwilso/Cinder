@@ -7450,6 +7450,13 @@ pub extern "C" fn cinder_set_bt_negotiated_codec(raw: libc::c_int) {
 
 /// What this boot's Bluetooth stack offers beyond Sony's four codecs, from the `bt-aac`
 /// component: `aac` = AAC (codec index 4), `xq` = SBC goes as SBC XQ. Sets state only.
+/// Settings ▸ Playback ▸ Play DSD natively. 1 = on: the shell asks Sony's sound service for 1-bit
+/// output on the headphone jack.
+#[no_mangle]
+pub extern "C" fn cinder_get_dsd_native() -> libc::c_int {
+    read(|r| r.app.opt(Opt::DsdNative) as libc::c_int)
+}
+
 /// Settings ▸ Hold locks the buttons: while Hold is on, the shell drops the player's own side keys
 /// (not Power, not headphone buttons). 1 = on.
 #[no_mangle]

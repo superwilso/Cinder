@@ -237,6 +237,15 @@ removes something the player cannot do without (`components.conf` explains the d
 How each one works, and why it is optional, is in the `#` notes in
 [`components.conf`](cinder-home/deploy/components.conf).
 
+**A player that ran Walkman One.** Its settings file (`CFW/settings.txt` on the player) can still
+be on the drive after a revert. On a first install the installer reads it and starts from the
+matching sound options: Walkman One's lower gain picks the Smooth (NW-WM1A) volume curve, and a
+Plus mode picks the same sound signature. The installer says what it set before you confirm, and
+you can change either. Nothing else is taken: its region setting matches Cinder's default curve
+(no region cap), and its signature, DAC mode and colour settings do not reach the sound on a player
+without Walkman One. Once Cinder has saved its own
+choices on the player, the file is not read again.
+
 Seven setuid-root helpers exist (an eighth, `cinder-gpunode`, went with the GPU present path on
 2026-10-05). The two that are choices, `fm` and `battery`, are choices for the reason the helpers are listed at all:
 each buys one feature with one piece of attack surface, and where the player works without it you

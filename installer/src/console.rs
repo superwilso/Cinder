@@ -142,6 +142,17 @@ pub fn run(
         crate::catalogue::apply_start(&mut comps, Start::ALL[pick.unwrap_or(1) - 1]);
     }
 
+    // After the starting point, which resets every option: these are the player's own sound.
+    if action == Action::Install {
+        let picks = device::walkman_one_picks(&state, &mut comps);
+        if !picks.is_empty() {
+            println!("  {}", device::W1_PICKS_NOTE);
+            for p in &picks {
+                println!("    {p}");
+            }
+        }
+    }
+
     if !assume_yes {
         // Every description once, up front. They used to be reprinted under the list after
         // every keypress, which scrolled the list itself off the screen.
