@@ -58,6 +58,9 @@ static double at(const unsigned char* block, int half, double hz) {
 }
 
 int main() {
+    std::printf("test 0: the biquads are designed at the codec's 4x rate, not the family rate\n");
+    // Measured 2026-11-13: designed at 44.1 kHz, every band played at 4x its frequency.
+    check(CODEC_EQ_FS[0] == 176400.0 && CODEC_EQ_FS[1] == 192000.0, "176.4 kHz and 192 kHz");
     std::printf("test 1: the trailer is Sony's sum/xor\n");
     {
         const unsigned char v[5] = {1, 2, 3, 4, 5};
@@ -131,10 +134,15 @@ int main() {
             char what[96];
             std::snprintf(what, sizeof what, "%s: peak %.3f dB <= 0", half ? "48k" : "44.1k", peak);
             check(peak <= 0.01, what);
+            // A shelf is half way at its corner: +3 dB at 10 kHz, most of the +6 by 16 kHz.
+            const double mid = at(blk, half, 10000) - at(blk, half, 200);
+            std::snprintf(what, sizeof what, "%s: 10 kHz sits ~3 dB over 200 Hz (%.2f)",
+                          half ? "48k" : "44.1k", mid);
+            check(std::fabs(mid - 3.0) < 0.4, what);
             const double tilt = at(blk, half, 16000) - at(blk, half, 200);
-            std::snprintf(what, sizeof what, "%s: 16 kHz sits ~6 dB over 200 Hz (%.2f)",
+            std::snprintf(what, sizeof what, "%s: 16 kHz sits 5-6 dB over 200 Hz (%.2f)",
                           half ? "48k" : "44.1k", tilt);
-            check(std::fabs(tilt - 6.0) < 0.7, what);
+            check(tilt > 4.8 && tilt < 6.2, what);
         }
     }
 

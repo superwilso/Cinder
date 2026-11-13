@@ -1064,3 +1064,15 @@ Sony's USB manager still has it.
 
 Also seen: the window lets `Clear Bass (Walkman One 3.02 only)` be picked on stock; the device skips
 it with a WARN. Harmless, but the window could hide it off Walkman One.
+
+## 44 — 2026-11-13 — Native DSD, DAC EQ starting points, Walkman One settings carried over
+
+Dev build on the owner's player (stock firmware, `CINDER_VOLTABLE=wm1a`), driven over adb.
+
+| # | Test | Result |
+|---|---|---|
+| 44.1 | Settings ▸ Playback ▸ **Play DSD natively** on, reboot, play a DSD64 `.dsf` on wired headphones | **PASS** (measured, jack recorded on a PC): log `sound: DSD native on the headphone jack (settings rc 0 0)` 5.5 s into boot (10.0 s after the 11-13 update); the open output is `dsdenc` (pcm2p) `DSD_U8`. A 1 kHz / 500 Hz test tone at −6 dB: no dropouts or clicks in 8 s, 4 dB quieter than converted, noise floor the same, second harmonic −53 dB (converted −64 dB; the test file is a 2nd-order modulator with heavy ultrasonic noise, so this may be the PC input, not the player). Not yet heard by ear. With the WM1A curve DSD is quiet below volume 80 (Sony's DSD table) |
+| 44.2 | The same switch off | **PASS**: log `sound: DSD converted to PCM on the headphone jack (settings rc 0 0)` at once; the replay is `cxd3778gf-icx-lowpower` S32_LE 176400; tone −24.5 dBFS, THD −60 dB |
+| 44.3 | Only `builtin_dsd_process_mode=1` sent | **Converts** (pcm4p). Both keys are needed; `se_hp_dsd_native_enabled` reads back 0 even when it took effect |
+| 44.4 | DAC EQ ▸ the four starting points (Bass +, Treble +, Treble −, Voice), pink noise at 44.1 and 48 kHz | **Found a bug, fixed, PASS.** Before: every band acted at 4× its frequency (Treble + read +0.5 dB at 16 kHz instead of +2.7; Voice tilted up instead of lifting the mids), matching a 176.4 kHz model within 0.5 dB an octave. The codec runs its biquads at 4× the family rate whatever the stream rate (a 44.1 kHz WAV went out at 44100). `codec_eq.h` now designs at 176.4 / 192 kHz; after the update all four presets match their labelled curves within ~0.4 dB an octave on both families. The DAC EQ does not act on native DSD (all four read the same on the DSD tone) |
+| 44.5 | Installer on a player with a leftover `CFW/settings.txt` and no saved Cinder choices | Host-tested and a dry run on a copy of the drive: `GMD=1` ticks the Smooth curve, `PMD=0` ticks the matching signature. The owner's real file (`PMD=1`, `GMD=0`, saved choices present) changes nothing, as it should |

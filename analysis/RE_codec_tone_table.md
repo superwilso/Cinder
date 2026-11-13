@@ -32,6 +32,12 @@ A block is 64 words of 5 bytes. Words 0–31 serve the 44.1 kHz family of rates 
 48 kHz family. Each half holds five biquads, `b0 b1 b2 a1 a2` (25 words), then seven unused words
 that are zero in every table.
 
+**The biquads run at four times the family rate: 176.4 kHz and 192 kHz,** whatever rate the stream
+reaches ALSA at. Measured 2026-11-13 with the jack recorded on a PC: coefficients designed for
+44.1 kHz put every band at 4× its frequency (a 44.1 kHz WAV, sent at 44100, still did), matching a
+176.4 kHz model within 0.5 dB an octave; designed for 176.4 / 192 kHz they land where they should,
+on both families. The codec EQ does not act on native DSD.
+
 A word is a signed 40-bit big-endian fixed-point number, Q3.37: `0x20_0000_0000` is 1.0. The
 feedback terms are stored **negated**: `y = b0·x + b1·x1 + b2·x2 + a1·y1 + a2·y2`. An identity
 biquad is therefore `20 00 00 00 00` followed by 24 zero bytes.

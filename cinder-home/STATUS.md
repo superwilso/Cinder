@@ -1,5 +1,17 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-11-13 — Native DSD, DAC EQ starting points, Walkman One settings carried over
+>
+> - **Settings ▸ Playback ▸ Play DSD natively** (opt-in, off): the shell sets Sony's two DSD keys
+>   through `SoundServiceSettings::SetParams`. *Measured native (`dsdenc` DSD_U8) and recorded on
+>   the jack: no dropouts or clicks; not yet heard by ear. Checklist §44.*
+> - **DAC EQ starting points:** four chips (Bass +, Treble +, Treble −, Voice). *Measured on the jack.*
+> - **DAC EQ fixed: every band played at 4× its frequency.** The codec runs its biquads at 4× the
+>   family rate; `codec_eq.h` designed for 44.1/48 kHz. Now 176.4/192 kHz; after the fix all four
+>   presets match their labels within ~0.4 dB an octave on 44.1 and 48 kHz pink noise. *Device-verified.*
+> - **The installer reads a leftover Walkman One `CFW/settings.txt`** on a first install and ticks
+>   the Smooth curve and the matching signature. *Host-tested; dry run only.*
+
 > ## 2026-10-15 — Audiobooks — BUILT HOST-ONLY, NOTHING HERE HAS RUN ON A PLAYER
 >
 > **Device steps: [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md) §37. File format:

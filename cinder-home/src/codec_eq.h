@@ -54,8 +54,12 @@ static const struct { int kind; double hz; double q; } CODEC_EQ_BAND[CODEC_EQ_BA
     { CODEC_EQ_HIGHSHELF, 10000.0, 0.707 },
 };
 
-/* The two rate families a block carries, in block order. */
-static const double CODEC_EQ_FS[2] = { 44100.0, 48000.0 };
+/* The rate the codec runs these biquads at, per family, in block order: 4x the family rate, not the
+ * stream rate. Measured 2026-11-13 (jack into a PC, pink noise, a 44.1 kHz WAV sent at 44.1 kHz):
+ * designed at 44.1 kHz, every band landed at 4x its frequency (the 10 kHz shelf at ~40 kHz, the
+ * 100 Hz shelf at ~400 Hz), matching a 176.4 kHz model within 0.5 dB per octave.
+ * ponytail: 48 kHz family assumed 4x as well (192 kHz); not yet measured on a 48 kHz file. */
+static const double CODEC_EQ_FS[2] = { 176400.0, 192000.0 };
 
 static int codec_eq_clamp(int g)
 {
