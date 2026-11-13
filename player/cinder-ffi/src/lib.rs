@@ -21,6 +21,7 @@ mod delete;
 mod drive;
 mod likes;
 mod lyrics;
+mod mdns;
 mod net;
 mod pcm_tap;
 mod playlists;
@@ -5246,11 +5247,21 @@ fn cast_songs(r: &Render) -> (Vec<cast::Song>, usize) {
             .and_then(|db| db.tracks_by_object_ids(&ids).ok())
             .unwrap_or_default();
     let (mut songs, mut start) = (Vec::new(), 0);
+    // One cover lookup per album, not per song: Up Next can be the whole library.
+    let mut covers: std::collections::HashMap<i64, Option<art_load::CoverRef>> =
+        std::collections::HashMap::new();
     for (row, id) in ids.iter().enumerate() {
         if let Some(t) = tracks.get(id) {
             if row == cur {
                 start = songs.len();
             }
+            let cover = match r.db.as_ref() {
+                Some(db) => covers
+                    .entry(t.album_id.unwrap_or(-t.object_id))
+                    .or_insert_with(|| art_load::cover_ref(db, t.object_id))
+                    .clone(),
+                None => None,
+            };
             songs.push(cast::Song {
                 object_id: t.object_id,
                 path: t.filename.clone(),
@@ -5258,6 +5269,7 @@ fn cast_songs(r: &Render) -> (Vec<cast::Song>, usize) {
                 artist: t.artist.clone(),
                 album: t.album.clone(),
                 dur_ms: t.duration_raw.unwrap_or(0),
+                cover,
             });
         }
     }
@@ -5320,9 +5332,32 @@ fn drive_tick(r: &mut Render) {
     }
 }
 
+/// `cinder.local` answers while the phone remote or the drive share is serving.
+fn mdns_tick(r: &mut Render) {
+    let want = (remote::running() || drive::running()) && r.app.wifi_connected();
+    if want && !mdns::running() && !MDNS_GAVE_UP.load(std::sync::atomic::Ordering::Relaxed) {
+        let ip = match cast::own_ip_towards("http://239.255.255.250:1900") {
+            Ok(std::net::IpAddr::V4(ip)) => ip,
+            _ => return,
+        };
+        match mdns::start(ip) {
+            Ok(()) => eprintln!("cinder-ffi: mdns: {} -> {ip}", mdns::NAME),
+            Err(e) => {
+                // Once a boot: a port nobody shares stays unshared.
+                eprintln!("cinder-ffi: mdns: could not answer for {}: {e}", mdns::NAME);
+                MDNS_GAVE_UP.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    } else if !want && mdns::running() {
+        mdns::stop();
+    }
+}
+static MDNS_GAVE_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn cast_tick(r: &mut Render) {
     renderer_tick(r);
     drive_tick(r);
+    mdns_tick(r);
     if let Some(found) = RADIO_FOUND.lock().unwrap().take() {
         match found {
             Ok(v) => r.app.set_radio_found(v, String::new()),

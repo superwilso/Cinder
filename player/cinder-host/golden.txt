@@ -462,7 +462,7 @@ a11ebb3df4254069 wifi_update_busy
 56707d779ea3ffa7 wifi_networks
 c36dab556d7186e7 netradio_playing
 adccbaa6999bad73 netradio_find
-d532c31d8169e6b6 wifi_remote_on
+0e41bd769c666880 wifi_remote_on
 88de3ff2e98d0746 wifi_speakers_casting
 e9522e26abc6be0f wifi_options
 b1db06b4656d8c35 wifi_failed

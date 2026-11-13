@@ -33,6 +33,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   volume curve, a Plus mode picks the same sound signature. Its other settings do not change the
   sound. Cinder's own saved choices always win on an update.
 
+- **Covers on network speakers.** A cast to a speaker or TV now sends each song's cover with it
+  (UPnP `albumArtURI`, Google Cast `images`), served by the player from the picture inside the
+  file or the cover image in its folder, undecoded. *Host-tested; not yet seen on a real speaker.*
+
+- **`cinder.local`.** While the phone remote or the drive share is on, the player answers to
+  `cinder.local` on the home network, so a phone or PC can open `http://cinder.local:8080` instead
+  of typing the address. iPhones, Macs, Windows 10 and later, and Linux resolve it; some Android
+  browsers do not, so the page still shows the number first. *Device-verified from Windows 11:
+  `cinder.local` resolved to the player and the page answered.*
+
 ### Fixed
 
 - **The DAC EQ played every band at four times its frequency.** The codec runs its five filters at

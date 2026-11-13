@@ -34,6 +34,8 @@ pub struct Song {
     pub artist: String,
     pub album: String,
     pub dur_ms: i64,
+    /// The cover, served beside the song for the speaker's screen or app.
+    pub cover: Option<crate::art_load::CoverRef>,
 }
 
 // ── XML, just enough for device descriptions and SOAP answers ────────────────────────────────────
@@ -445,7 +447,19 @@ pub fn range(h: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()> {
     Ok(Some(r))
 }
 
-fn serve_file(mut c: TcpStream, token: &str, files: &[(String, &'static str)]) {
+/// A file the cast serves: its path, type, and the byte window of it that is the content (a cover
+/// embedded in a track), or None for the whole file.
+type Served = (String, &'static str, Option<(u64, u64)>);
+
+/// The address a speaker fetches song `i`'s cover from, when it has one. Covers follow the songs
+/// in the served list.
+pub fn art_url(base: &str, songs: &[Song], i: usize) -> Option<String> {
+    let c = songs.get(i)?.cover.as_ref()?;
+    let ext = if c.mime == "image/png" { "png" } else { "jpg" };
+    Some(format!("{base}/{}.{ext}", songs.len() + i))
+}
+
+fn serve_file(mut c: TcpStream, token: &str, files: &[Served]) {
     let Ok(read_half) = c.try_clone() else {
         return;
     };
@@ -468,13 +482,16 @@ fn serve_file(mut c: TcpStream, token: &str, files: &[(String, &'static str)]) {
                 .as_bytes(),
         );
     };
-    let (Some((path, ctype)), true) = (file, req.method == "GET" || head_only) else {
+    let (Some((path, ctype, window)), true) = (file, req.method == "GET" || head_only) else {
         return bad(&mut c, "404 Not Found");
     };
     let Ok(mut f) = std::fs::File::open(path) else {
         return bad(&mut c, "404 Not Found");
     };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let (base, len) = match *window {
+        Some(w) => w,
+        None => (0, f.metadata().map(|m| m.len()).unwrap_or(0)),
+    };
     let (status, from, to) = match range(req.header("range"), len) {
         Ok(None) => ("200 OK", 0, len.saturating_sub(1)),
         Ok(Some((a, b))) => ("206 Partial Content", a, b),
@@ -496,7 +513,9 @@ fn serve_file(mut c: TcpStream, token: &str, files: &[(String, &'static str)]) {
         head.push_str(&format!("Content-Range: bytes {from}-{to}/{len}\r\n"));
     }
     head.push_str("\r\n");
-    if c.write_all(head.as_bytes()).is_err() || head_only || f.seek(SeekFrom::Start(from)).is_err()
+    if c.write_all(head.as_bytes()).is_err()
+        || head_only
+        || f.seek(SeekFrom::Start(base + from)).is_err()
     {
         return;
     }
@@ -626,16 +645,19 @@ pub fn ms_hms(ms: i64) -> String {
 }
 
 /// The DIDL-Lite a speaker shows for the song (title, artist, album) and plays from (`res`).
-pub fn didl(s: &Song, url: &str, mime: &str) -> String {
+pub fn didl(s: &Song, url: &str, mime: &str, art: Option<&str>) -> String {
     let dur = if s.dur_ms > 0 {
         format!(" duration=\"{}.000\"", ms_hms(s.dur_ms))
     } else {
         String::new()
     };
+    let art = art
+        .map(|a| format!("<upnp:albumArtURI>{}</upnp:albumArtURI>", escape(a)))
+        .unwrap_or_default();
     format!(
         "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
          xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\"><item id=\"cinder{}\" parentID=\"0\" restricted=\"1\">\
-         <dc:title>{}</dc:title><dc:creator>{}</dc:creator><upnp:artist>{}</upnp:artist><upnp:album>{}</upnp:album>\
+         <dc:title>{}</dc:title><dc:creator>{}</dc:creator><upnp:artist>{}</upnp:artist><upnp:album>{}</upnp:album>{art}\
          <upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo=\"http-get:*:{mime}:*\"{dur}>{}</res>\
          </item></DIDL-Lite>",
         s.object_id,
@@ -657,15 +679,17 @@ pub fn start(sp: Speaker, songs: Vec<Song>, start: usize, start_ms: i64) -> Resu
     let listener = TcpListener::bind((ip, 0)).map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let token = random_token();
-    let files: Arc<Vec<(String, &'static str)>> = Arc::new(
+    let files: Arc<Vec<Served>> = Arc::new(
         songs
             .iter()
             .map(|s| {
-                (
-                    s.path.clone(),
-                    mime(&s.path).unwrap_or("application/octet-stream"),
-                )
+                let m = mime(&s.path).unwrap_or("application/octet-stream");
+                (s.path.clone(), m, None)
             })
+            .chain(songs.iter().map(|s| match &s.cover {
+                Some(c) => (c.path.clone(), c.mime, Some((c.off, c.len))),
+                None => (String::new(), "image/jpeg", None),
+            }))
             .collect(),
     );
     let run = Arc::new(AtomicBool::new(true));
@@ -807,7 +831,10 @@ fn session(
                     "SetAVTransportURI",
                     &[
                         ("CurrentURI", &url),
-                        ("CurrentURIMetaData", &didl(s, &url, m)),
+                        (
+                            "CurrentURIMetaData",
+                            &didl(s, &url, m, art_url(base, songs, i as usize).as_deref()),
+                        ),
                     ],
                 )
                 .and_then(|_| av("Play", &[("Speed", "1")]));
@@ -1122,8 +1149,17 @@ pub(crate) mod tests {
             },
             "http://p/x?a=1&b=2",
             "audio/flac",
+            None,
         );
         assert!(d.contains("<dc:title>A &amp; B</dc:title>") && d.contains("&lt;C&gt;"));
+        assert!(!d.contains("albumArtURI"));
+        let with_art = didl(
+            &Song::default(),
+            "http://p/0.flac",
+            "audio/flac",
+            Some("http://p/2.jpg"),
+        );
+        assert!(with_art.contains("<upnp:albumArtURI>http://p/2.jpg</upnp:albumArtURI>"));
         assert!(d.contains("protocolInfo=\"http-get:*:audio/flac:*\" duration=\"0:01:01.000\">http://p/x?a=1&amp;b=2</res>"));
         assert_eq!(
             dechunk(b"4\r\nWiki\r\n6\r\npedia \r\n0\r\n\r\n"),
@@ -1142,12 +1178,21 @@ pub(crate) mod tests {
         let b = dir.join("b.mp3");
         std::fs::write(&a, b"0123456789abcdef").unwrap();
         std::fs::write(&b, b"mp3 bytes").unwrap();
+        // Song one's cover is embedded in the middle of a file, as in a FLAC's picture block.
+        let c = dir.join("c.flac");
+        std::fs::write(&c, b"xxJPEGDATAyy").unwrap();
         let songs = vec![
             Song {
                 object_id: 1,
                 path: a.to_string_lossy().into(),
                 title: "One".into(),
                 dur_ms: 60_000,
+                cover: Some(crate::art_load::CoverRef {
+                    path: c.to_string_lossy().into(),
+                    off: 2,
+                    len: 8,
+                    mime: "image/jpeg",
+                }),
                 ..Song::default()
             },
             Song {
@@ -1196,6 +1241,12 @@ pub(crate) mod tests {
                             // Fetch the first ten bytes, as a speaker probing the file would.
                             let (code, text) = http("GET", &uri, &[("Range", "bytes=0-9")], "").unwrap();
                             got.lock().unwrap().push(format!("{code} {text}"));
+                            // And the cover, when the DIDL names one.
+                            let meta = tag(&body, "CurrentURIMetaData").unwrap();
+                            if let Some(art) = tag(&meta, "albumArtURI") {
+                                let (code, text) = http("GET", &art, &[], "").unwrap();
+                                got.lock().unwrap().push(format!("art {code} {text}"));
+                            }
                             polls = 0;
                             String::new()
                         }
@@ -1257,7 +1308,11 @@ pub(crate) mod tests {
         let got = got.lock().unwrap().clone();
         assert_eq!(
             got,
-            vec!["206 0123456789".to_string(), "206 mp3 bytes".to_string()]
+            vec![
+                "206 0123456789".to_string(),
+                "art 200 JPEGDATA".to_string(),
+                "206 mp3 bytes".to_string()
+            ]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

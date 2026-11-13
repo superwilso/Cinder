@@ -787,6 +787,8 @@ pub struct RemoteView<'a> {
     pub wifi_connected: bool,
     /// `http://192.168.0.20:8080` while on.
     pub address: &'a str,
+    /// The same by name (`cinder.local:<port>`), for phones that resolve it.
+    pub name_address: &'a str,
     pub code: &'a str,
 }
 
@@ -852,6 +854,7 @@ pub fn render_remote(c: &mut Canvas, t: &Theme, f: &FontSet, v: &RemoteView) {
     );
     y += 44;
     line(c, y, v.address, 24.0, Weight::SemiBold, t.ink);
+    line(c, y + 32, v.name_address, 16.0, Weight::Regular, t.dim);
     y += 70;
     line(
         c,

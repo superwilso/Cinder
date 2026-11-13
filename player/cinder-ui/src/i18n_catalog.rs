@@ -1192,6 +1192,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "look for this Walkman in its Bluetooth list." => Some("在其蓝牙列表中选择此 Walkman。"),
         "next to the song." => Some("放在歌曲文件旁。"),
         "no register access — measured from the audio, about a minute" => Some("无法读取寄存器；通过音频测量，约一分钟"),
+        "or cinder.local:{}" => Some("或 cinder.local:{}"),
         "reads the chip's own signal meter — about ten seconds" => Some("读取芯片信号强度；约十秒"),
         "tap it to go back to the song." => Some("点按即可返回歌曲。"),
         "this filter" => Some("此筛选条件"),
@@ -1705,6 +1706,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("USB：故障 {}" $(, $($args)*)?),
             _ => format!("USB    : {} ERRORS" $(, $($args)*)?),
+        }
+    };
+    ("or cinder.local:{}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("或 cinder.local:{}" $(, $($args)*)?),
+            _ => format!("or cinder.local:{}" $(, $($args)*)?),
         }
     };
     ("{added} ADDED" $(, $($args:tt)*)?) => {

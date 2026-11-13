@@ -286,10 +286,20 @@ fn jstr(s: &str) -> String {
 }
 
 /// The LOAD for one song.
-pub fn load_json(s: &Song, url: &str, mime: &str, start_s: f64, req: u32) -> String {
+pub fn load_json(
+    s: &Song,
+    url: &str,
+    mime: &str,
+    art: Option<&str>,
+    start_s: f64,
+    req: u32,
+) -> String {
+    let images = art
+        .map(|a| format!(",\"images\":[{{\"url\":{}}}]", jstr(a)))
+        .unwrap_or_default();
     format!(
         "{{\"type\":\"LOAD\",\"requestId\":{req},\"autoplay\":true,\"currentTime\":{start_s:.1},\"media\":{{\"contentId\":{},\
-         \"contentType\":{},\"streamType\":\"BUFFERED\",\"metadata\":{{\"metadataType\":3,\"title\":{},\"artist\":{},\"albumName\":{}}}}}}}",
+         \"contentType\":{},\"streamType\":\"BUFFERED\",\"metadata\":{{\"metadataType\":3,\"title\":{},\"artist\":{},\"albumName\":{}{images}}}}}}}",
         jstr(url),
         jstr(mime),
         jstr(&s.title),
@@ -522,7 +532,13 @@ fn run(
             .map_or("bin", |(_, e)| e)
             .to_ascii_lowercase();
         let url = format!("{base}/{i}.{ext}");
-        send(wr, &tid, NS_MEDIA, &load_json(s, &url, mime, at_s, req))
+        let art = crate::cast::art_url(base, songs, i);
+        send(
+            wr,
+            &tid,
+            NS_MEDIA,
+            &load_json(s, &url, mime, art.as_deref(), at_s, req),
+        )
     };
     let next_playable =
         |from: usize| (from..songs.len()).find(|&i| crate::cast::mime(&songs[i].path).is_some());
@@ -842,6 +858,7 @@ mod tests {
             },
             "http://p/0.flac",
             "audio/flac",
+            Some("http://p/2.jpg"),
             12.0,
             4,
         );
@@ -860,6 +877,10 @@ mod tests {
             Some("Say \"hi\"")
         );
         assert_eq!(v.get("currentTime").and_then(Json::num), Some(12.0));
+        assert!(
+            l.contains("\"images\":[{\"url\":\"http://p/2.jpg\"}]"),
+            "{l}"
+        );
     }
 
     /// A pretend Cast device on 127.0.0.1 (plain TCP; the TLS is openssl's): launches the receiver,

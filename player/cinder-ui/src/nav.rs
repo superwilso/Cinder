@@ -12125,6 +12125,7 @@ impl App {
                     phones: self.remote_phones,
                     wifi_connected: matches!(self.wifi_status.state, crate::wifi::State::Connected),
                     address: &self.remote_address(),
+                    name_address: &crate::ui_format!("or cinder.local:{}", self.remote_port),
                     code: &self.remote_code,
                 },
             ),
