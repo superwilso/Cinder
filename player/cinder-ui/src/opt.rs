@@ -48,10 +48,12 @@ pub enum Opt {
     NpTint,
     /// DSD to the headphone jack as 1-bit (`settings::ROW_DSD_NATIVE`).
     DsdNative,
+    /// Headphone crossfeed (Sound ▸ Advanced; libcinder_mono.so reads /tmp/cinder_crossfeed).
+    Crossfeed,
 }
 
 impl Opt {
-    pub const ALL: [Opt; 18] = [
+    pub const ALL: [Opt; 19] = [
         Opt::Quick,
         Opt::FoldersTab,
         Opt::DeleteMusic,
@@ -70,6 +72,7 @@ impl Opt {
         Opt::WifiRemote,
         Opt::NpTint,
         Opt::DsdNative,
+        Opt::Crossfeed,
     ];
 
     /// The settings-file key.
@@ -93,6 +96,7 @@ impl Opt {
             Opt::WifiRemote => "wifi_remote",
             Opt::NpTint => "np_tint",
             Opt::DsdNative => "dsd_native",
+            Opt::Crossfeed => "crossfeed",
         }
     }
 
@@ -146,7 +150,7 @@ mod tests {
     fn every_switch_starts_off_and_has_its_own_key_and_row() {
         assert_eq!(
             Opt::ALL.len(),
-            Opt::DsdNative as usize + 1,
+            Opt::Crossfeed as usize + 1,
             "ALL lists every variant"
         );
         let none = Opts::default();

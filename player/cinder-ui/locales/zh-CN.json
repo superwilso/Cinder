@@ -1197,5 +1197,8 @@
   "Shuffle · volume limit · DSD": "随机 · 音量限制 · DSD",
   "Play DSD natively": "以原生格式播放 DSD",
   "To the headphone jack as 1-bit": "耳机插孔 · 原生 1-bit 输出",
-  "or cinder.local:{}": "或 cinder.local:{}"
+  "or cinder.local:{}": "或 cinder.local:{}",
+  "Crossfeed": "声道混合",
+  "Off while Mono is on": "单声道开启时关闭",
+  "Lets each ear hear a little of the other side": "低频混入另一侧耳机"
 }

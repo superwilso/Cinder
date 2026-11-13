@@ -4952,6 +4952,14 @@ impl App {
                 self.adv_clear_bass = (self.adv_clear_bass + 1) % adv::CLEAR_BASS.len();
             }
             adv::ROW_HP_AMP => self.adv_hp_linear = !self.adv_hp_linear,
+            // Not Sony's chain: the FFI keeps /tmp/cinder_crossfeed in step with the switch, so
+            // there is nothing to re-apply. With Mono on the switch does nothing (and says so).
+            adv::ROW_CROSSFEED => {
+                if !self.mono {
+                    self.toggle_opt(Opt::Crossfeed);
+                }
+                return vec![];
+            }
             // A ROUTE, not a setting — same rule as the Sound screen's "Advanced ›" row: pushing a
             // screen changes nothing about the sound, and emitting SoundChanged here would
             // re-apply the whole chain on a navigation.
@@ -11812,6 +11820,8 @@ impl App {
                     dcphase_on: self.snd_dc,
                     tone_control: self.adv_tone,
                     hp_linear: self.adv_hp_linear,
+                    crossfeed: self.opt(Opt::Crossfeed),
+                    mono: self.mono,
                     dac_eq_on: self.dac_eq != [0; crate::dac_eq::BANDS],
                     vol_curve: self.vol_curve_ok.then_some(self.vol_curve_on),
                     clear_bass: self
@@ -15586,6 +15596,26 @@ mod tests {
         );
         app.advanced_toggle_row();
         assert_eq!(app.adv_flags(), 0);
+    }
+
+    /// Crossfeed is opt-in, its row flips the switch with nothing for Sony's chain to re-apply,
+    /// and with Mono on it leaves the switch alone (there is nothing to blend).
+    #[test]
+    fn the_crossfeed_row_flips_its_switch_unless_mono_is_on() {
+        let mut app = unlocked();
+        assert!(!app.opt(Opt::Crossfeed), "crossfeed ships off");
+        app.adv_sel = crate::advanced::ROW_CROSSFEED;
+        assert!(app.advanced_toggle_row().is_empty());
+        assert!(app.opt(Opt::Crossfeed));
+        app.mono = true;
+        app.advanced_toggle_row();
+        assert!(
+            app.opt(Opt::Crossfeed),
+            "Mono on: the switch is not touched"
+        );
+        app.mono = false;
+        app.advanced_toggle_row();
+        assert!(!app.opt(Opt::Crossfeed));
     }
 
     /// Brightness cycles 1..5, then 0 (backlight off), then wraps.

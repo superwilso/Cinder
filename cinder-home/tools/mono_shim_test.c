@@ -409,6 +409,32 @@ int main(int argc, char** argv)
         check(memcmp(fake_last(), pcm, 400) == 0, "jack: a control file it cannot read is off");
         ambient(dir, NULL);
     }
+
+    /* crossfeed on the jack: a hard-left note reaches the right ear; mono, when on, wins */
+    {
+        char xp[512];
+        snprintf(xp, sizeof xp, "%s/cinder_crossfeed", dir);
+        unsigned char left[400];
+        for (int i = 0; i < 100; i++) { put16(left + i * 4, 8000); put16(left + i * 4 + 2, 0); }
+        int fd = open(xp, O_WRONLY | O_CREAT, 0644);
+        if (fd >= 0) close(fd);
+        nap(300);
+        for (int k = 0; k < 5; k++) snd_pcm_writei(pcmh, left, 100);
+        const int l = get16(fake_last() + 99 * 4), r = get16(fake_last() + 99 * 4 + 2);
+        if (expect_active)
+            check(l > 4800 && l < 5200 && r > 2800 && r < 3200, "jack: crossfeed blends a hard-left note (8000 -> ~5016 / ~2984)");
+        else
+            check(l == 8000 && r == 0, "jack: in any other process no crossfeed");
+        check(get16(left + 2) == 0, "jack: crossfeed never writes the caller's buffer");
+        flag(dir, 1);
+        snd_pcm_writei(pcmh, left, 100);
+        if (expect_active) check(get16(fake_last()) == 4000 && get16(fake_last() + 2) == 4000, "jack: mono on: summed, crossfeed stands aside");
+        flag(dir, 0);
+        unlink(xp);
+        nap(300);
+        snd_pcm_writei(pcmh, left, 100);
+        check(memcmp(fake_last(), left, 400) == 0, "jack: crossfeed off: untouched");
+    }
     snd_pcm_close(pcmh);
 
     /* ── the effect chain ── */
