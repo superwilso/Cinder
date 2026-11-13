@@ -1076,3 +1076,12 @@ Dev build on the owner's player (stock firmware, `CINDER_VOLTABLE=wm1a`), driven
 | 44.3 | Only `builtin_dsd_process_mode=1` sent | **Converts** (pcm4p). Both keys are needed; `se_hp_dsd_native_enabled` reads back 0 even when it took effect |
 | 44.4 | DAC EQ ▸ the four starting points (Bass +, Treble +, Treble −, Voice), pink noise at 44.1 and 48 kHz | **Found a bug, fixed, PASS.** Before: every band acted at 4× its frequency (Treble + read +0.5 dB at 16 kHz instead of +2.7; Voice tilted up instead of lifting the mids), matching a 176.4 kHz model within 0.5 dB an octave. The codec runs its biquads at 4× the family rate whatever the stream rate (a 44.1 kHz WAV went out at 44100). `codec_eq.h` now designs at 176.4 / 192 kHz; after the update all four presets match their labelled curves within ~0.4 dB an octave on both families. The DAC EQ does not act on native DSD (all four read the same on the DSD tone) |
 | 44.5 | Installer on a player with a leftover `CFW/settings.txt` and no saved Cinder choices | Host-tested and a dry run on a copy of the drive: `GMD=1` ticks the Smooth curve, `PMD=0` ticks the matching signature. The owner's real file (`PMD=1`, `GMD=0`, saved choices present) changes nothing, as it should |
+
+## 45 — 2026-11-13 — Covers on network speakers, `cinder.local`
+
+| # | Test | Result |
+|---|---|---|
+| 45.1 | Phone remote on, Wi-Fi connected; from a PC on the same network `ping cinder.local`, then open `http://cinder.local:8080` | **PASS** (Windows 11): log `cinder-ffi: mdns: cinder.local -> 192.168.0.225`; `ping` resolved `cinder.local [192.168.0.225]`; the page answered 200. The remote page shows "or cinder.local:8080" under the address (Big view fits) |
+| 45.2 | The same from an iPhone and from an Android phone's browser | Open. iOS resolves `.local`; some Android browsers do not (the number stays first on the page) |
+| 45.3 | Settings ▸ Wi-Fi ▸ Speakers: cast an album with an embedded cover to a UPnP speaker (Sonos), then to a Google Cast device | Open. Pass = the cover shows in the Sonos app / on the TV for each song; an album with only a `cover.jpg` in its folder shows it too |
+

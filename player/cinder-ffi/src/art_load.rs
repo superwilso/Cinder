@@ -91,6 +91,60 @@ fn load_db(db: &cinder_db::Db, object_id: i64) -> Option<Image> {
     None
 }
 
+/// Where a track's cover lies, undecoded: a byte window of a file (the picture embedded in the
+/// track, or the whole image file beside it) and its type. For handing the picture to something
+/// else, a cast speaker, without decoding or copying it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoverRef {
+    pub path: String,
+    pub off: u64,
+    pub len: u64,
+    pub mime: &'static str,
+}
+
+fn image_mime(magic: &[u8]) -> Option<&'static str> {
+    match magic {
+        [0xFF, 0xD8, ..] => Some("image/jpeg"),
+        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+        _ => None,
+    }
+}
+
+/// The cover `load` would draw, as a `CoverRef`: embedded JPEG/PNG first, then the folder image.
+/// ponytail: a scanner-rendered BMP or an inline DB blob gives None (speakers take JPEG/PNG and a
+/// blob has no file to serve); add them if a library turns up that only has those.
+pub fn cover_ref(db: &cinder_db::Db, object_id: i64) -> Option<CoverRef> {
+    if let Ok(Some(a)) = db.art_for_object(object_id) {
+        if !a.source_path.is_empty() && a.data_size > 0 && (a.data_size as u64) <= MAX_BLOB {
+            let off = a.data_offset.max(0) as u64;
+            if let Some(mime) = read_file_range(&a.source_path, off, 4).and_then(|m| image_mime(&m))
+            {
+                return Some(CoverRef {
+                    path: a.source_path,
+                    off,
+                    len: a.data_size as u64,
+                    mime,
+                });
+            }
+        }
+    }
+    let track = db.track_by_object_id(object_id).ok()??;
+    let dir = std::path::Path::new(&track.filename).parent()?;
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .collect();
+    let path = dir.join(pick_folder_image(&names)?).to_str()?.to_string();
+    let len = std::fs::metadata(&path).ok()?.len();
+    let mime = read_file_range(&path, 0, 4).and_then(|m| image_mime(&m))?;
+    (len <= MAX_BLOB).then_some(CoverRef {
+        path,
+        off: 0,
+        len,
+        mime,
+    })
+}
+
 /// The cover as an IMAGE FILE beside the music — `Cover.jpg`, `folder.jpg` and the like.
 ///
 /// Sony's scanner reads only art embedded in the files, so an album that keeps its cover as a
