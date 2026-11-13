@@ -33,6 +33,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   volume curve, a Plus mode picks the same sound signature. Its other settings do not change the
   sound. Cinder's own saved choices always win on an update.
 
+### Fixed
+
+- **The DAC EQ played every band at four times its frequency.** The codec runs its five filters at
+  four times the family rate (176.4 or 192 kHz), and Cinder designed them for 44.1 or 48 kHz, so
+  Bass "100 Hz" worked at about 400 Hz and Treble "10 kHz" at about 40 kHz, where nobody hears it.
+  Found with the jack recorded on a PC: pink noise through each preset matched a 176.4 kHz model
+  within 0.5 dB an octave. Settings people already saved now sound as their labels say.
+
 ## [0.4.2] — 2026-11-11
 
 ### Added
