@@ -6,6 +6,9 @@
  * `pst::services::bttransmitterservice` socket) goes out with left and right summed. The sums are
  * in mono_sum.h, host-tested by tools/mono_selftest.cpp; this file is only the interposition.
  *
+ * CROSSFEED (crossfeed.h, tools/crossfeed_selftest.cpp) rides them too, while /tmp/cinder_crossfeed
+ * exists and mono is off: a little of each channel's low end reaches the other ear.
+ *
  * SOUNDSCAPES ride the same two hooks. While /tmp/cinder_ambient names a sound and a level, the
  * soundscape (soundscape.h, host-tested by tools/soundscape_selftest.cpp) is added to the same
  * buffers, after the sum — so it plays over the music on the jack and over Bluetooth, after all of
@@ -50,6 +53,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "crossfeed.h"
 #include "filter_chain.h"
 #include "mono_sum.h"
 #include "soundscape.h"
@@ -63,6 +67,7 @@ static const char kFlag[] = CINDER_MONO_DIR "/cinder_mono";
 static const char kAlive[] = CINDER_MONO_DIR "/cinder_mono_shim";
 static const char kLog[] = CINDER_MONO_DIR "/cinder_mono.log";
 static const char kAmbient[] = CINDER_MONO_DIR "/cinder_ambient";
+static const char kXfeed[] = CINDER_MONO_DIR "/cinder_crossfeed";
 static const char kBtName[] = "pst::services::bttransmitterservice";
 
 /* ── how it is loaded, and how it gets out of the way ─────────────────────────────────────────
@@ -166,6 +171,38 @@ static int mono_on(void)
         g_flag_on = on;
     }
     return g_flag_on;
+}
+
+/* ── crossfeed (crossfeed.h) ─────────────────────────────────────────────────────────────────────
+ * Its own flag, polled like mono's; one filter per route behind a try-lock, like the soundscape.
+ * With mono on there is nothing to blend, so it stands aside. */
+static long long g_xf_checked_ms = -1000000;
+static int g_xf_on = 0;
+static int xf_on(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    if (now - g_xf_checked_ms >= 250) {
+        g_xf_checked_ms = now;
+        const int on = access(kXfeed, F_OK) == 0;
+        if (on != g_xf_on) mlog("crossfeed %s", on ? "ON" : "off");
+        g_xf_on = on;
+    }
+    return g_xf_on;
+}
+typedef struct { cf_state st; pthread_mutex_t lock; int said; } xf_route;
+static xf_route g_xf_jack = { .lock = PTHREAD_MUTEX_INITIALIZER };
+static xf_route g_xf_bt = { .lock = PTHREAD_MUTEX_INITIALIZER };
+static int xf_apply(xf_route* r, uint8_t* p, size_t frames, int fmt, unsigned rate, const char* what)
+{
+    if (pthread_mutex_trylock(&r->lock) != 0) return 0;
+    const int done = cf_apply(&r->st, p, frames, fmt, rate);
+    const int first = done && !r->said;
+    if (done) r->said = 1;
+    pthread_mutex_unlock(&r->lock);
+    if (first) mlog("%s: crossfeed (fmt %d, %u Hz)", what, fmt, rate);
+    return done;
 }
 
 /* ── the soundscape ──────────────────────────────────────────────────────────────────────────────
@@ -519,7 +556,8 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     if (!g_active || !buf || frames == 0) return jack_write(pcm, buf, frames);
     const int mono = mono_on();
     const int amb = amb_poll();
-    if (!mono && !amb) return jack_write(pcm, buf, frames);
+    const int xf = !mono && xf_on();
+    if (!mono && !amb && !xf) return jack_write(pcm, buf, frames);
 
     pcm_info info = { NULL, 0, 0, 0, 1 };
     int said = 1;
@@ -541,10 +579,11 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     /* DSD over PCM is never touched, by either: its markers are not samples. */
     const int dop = info.ch == 2 && cm_looks_like_dop(out, frames, info.fmt);
     const int summed = mono && info.ch == 2 && cm_sum_buffer(out, frames, info.fmt, 2);
+    const int crossed = xf && info.ch == 2 && !dop && xf_apply(&g_xf_jack, out, frames, info.fmt, info.rate, "jack");
     const int mixed = amb && !dop && amb_mix(&g_amb_jack, out, frames, info.fmt, info.ch, info.rate, "jack");
     if (!said && mono) mlog("jack: pcm %p fmt %d — %s", pcm, info.fmt, summed ? "summing" : "DSD over PCM, left alone");
     if (!said && amb && !info.rate) mlog("jack: pcm %p — rate never seen, no soundscape on it", pcm);
-    return jack_write(pcm, (summed || mixed) ? out : buf, frames);
+    return jack_write(pcm, (summed || crossed || mixed) ? out : buf, frames);
 }
 
 /* ── Bluetooth: the transmitter socket ───────────────────────────────────────────────────────── */
@@ -637,9 +676,10 @@ static void bt_commit(int fd, unsigned gen, const uint8_t* in, size_t n_avail, s
     pthread_mutex_unlock(&g_bt_lock);
 }
 
+/* `ctx` points at an int: crossfeed wanted on this write. */
 static void bt_mix_frames(void* ctx, uint8_t* p, size_t n, uint32_t rate)
 {
-    (void)ctx;
+    if (*(const int*)ctx) (void)xf_apply(&g_xf_bt, p, n, CM_FMT_S16_LE, rate, "bt");
     (void)amb_mix(&g_amb_bt, p, n, CM_FMT_S16_LE, 2, rate, "bt");
 }
 
@@ -719,15 +759,16 @@ static ssize_t bt_send(int fd, const void* buf, size_t n, ssize_t (*sendfn)(int,
     if (!buf || n == 0 || !bt_begin(fd, &st, &gen, &said)) return sendfn(fd, buf, n, ctx);
     const int mono = mono_on();
     const int amb = amb_poll();
+    int xf = !mono && xf_on();
     const uint8_t* in = (const uint8_t*)buf;
     const void* to_send = buf;
     int said_now = 0;
-    if ((mono || amb) && (st.mode == CM_BT_PCM || st.mode == CM_BT_FRAMES)) {
+    if ((mono || amb || xf) && (st.mode == CM_BT_PCM || st.mode == CM_BT_FRAMES)) {
         uint8_t* out = scratch(n);
         if (out) {
             cm_bt_stream tmp = st;
-            const cm_mix mix = { bt_mix_frames, NULL };
-            cm_bt_walk(&tmp, in, n, n, out, mono, amb ? &mix : NULL, NULL);
+            const cm_mix mix = { bt_mix_frames, &xf };
+            cm_bt_walk(&tmp, in, n, n, out, mono, (amb || xf) ? &mix : NULL, NULL);
             to_send = out;
             if (!said && mono && tmp.mode == CM_BT_PCM && tmp.channels == 2) {
                 mlog("bt: fd %d — summing", fd);

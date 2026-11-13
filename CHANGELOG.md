@@ -43,7 +43,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   browsers do not, so the page still shows the number first. *Device-verified from Windows 11:
   `cinder.local` resolved to the player and the page answered.*
 
+- **Crossfeed** (Sound ▸ Advanced, off by default). Lets each ear hear a little of the other
+  side's low end, as from a pair of speakers, so hard-panned recordings stop being tiring on
+  headphones. Anything in the centre passes exactly unchanged; a hard-panned bass note reaches the
+  far ear 4.5 dB down, treble stays where it was panned. Works on the jack and over Bluetooth,
+  after Sony's effects; it stands aside while Mono is on. *Measured on the jack: a hard-left bass
+  note reaches the right channel 4.6 dB down; not yet heard over Bluetooth.*
+
 ### Fixed
+
+- **Cover colours with Night on turned Now Playing inside out.** With a bright cover (Boris,
+  *Pink*), the background went near white behind Night's dim text: contrast is a ratio, and a
+  white page "kept" it. The background now stays on the dark side of the text it started on.
 
 - **The DAC EQ played every band at four times its frequency.** The codec runs its five filters at
   four times the family rate (176.4 or 192 kHz), and Cinder designed them for 44.1 or 48 kHz, so

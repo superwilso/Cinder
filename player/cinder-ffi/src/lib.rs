@@ -5332,6 +5332,33 @@ fn drive_tick(r: &mut Render) {
     }
 }
 
+/// Keep `/tmp/cinder_crossfeed` in step with the switch (libcinder_mono.so polls it every 250 ms).
+/// Written on a change, and once at start so a flag left by a crash never outlives the setting.
+fn crossfeed_flag(on: bool) {
+    static LAST: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+    if LAST.swap(on as i8, std::sync::atomic::Ordering::Relaxed) == on as i8 {
+        return;
+    }
+    const FLAG: &str = "/tmp/cinder_crossfeed";
+    let r = if on {
+        std::fs::write(FLAG, b"").and_then(|_| {
+            std::fs::set_permissions(FLAG, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+        })
+    } else {
+        std::fs::remove_file(FLAG).or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })
+    };
+    match r {
+        Ok(()) => eprintln!("cinder-ffi: crossfeed {}", if on { "on" } else { "off" }),
+        Err(e) => eprintln!("cinder-ffi: crossfeed flag: {e}"),
+    }
+}
+
 /// `cinder.local` answers while the phone remote or the drive share is serving.
 fn mdns_tick(r: &mut Render) {
     let want = (remote::running() || drive::running()) && r.app.wifi_connected();
@@ -9093,6 +9120,8 @@ pub extern "C" fn cinder_clock_tick() {
                 lyrics_fetch(&t.filename, &t.artist, &t.title, &t.album, len);
             }
         }
+        // Sound ▸ Advanced ▸ Crossfeed: the sound service's library reads this flag.
+        crossfeed_flag(r.app.opt(Opt::Crossfeed));
         // Settings ▸ Wi-Fi ▸ Speakers: a search's result, and a cast's state.
         cast_tick(r);
         // Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing album art: the song playing has no cover.

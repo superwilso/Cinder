@@ -410,10 +410,14 @@ impl Theme {
             let ch = |v: u8| (v as f32 * f).min(255.0) as u8;
             Rgb888::new(ch(cover.r()), ch(cover.g()), ch(cover.b()))
         };
+        // Contrast alone is not enough: it is a ratio, so a bg on the far side of the text keeps it
+        // too, and with Night's dim ink a white bg did — the page came out inverted. The bg stays
+        // on the side of each text colour it started on.
         let keeps = |bg| {
-            [self.ink, self.dim]
-                .iter()
-                .all(|&c| contrast(c, bg) >= 0.92 * contrast(c, self.bg))
+            [self.ink, self.dim].iter().all(|&c| {
+                contrast(c, bg) >= 0.92 * contrast(c, self.bg)
+                    && (luminance(bg) < luminance(c)) == (luminance(self.bg) < luminance(c))
+            })
         };
         // Luminance only grows with f, so halve. A dark palette takes the colour as light as the
         // contrast rule allows (at the bg's own lightness a near-black bg shows no colour at all);
@@ -505,6 +509,26 @@ mod tests {
                     assert!(contrast(c, tt.bg) >= 0.92 * contrast(c, t.bg) - 1e-3);
                 }
                 assert_eq!(Theme { bg: t.bg, ..tt }, t, "only bg moves");
+            }
+        }
+        // A dark palette stays dark: the bg never crosses to the light side of the text. Night's
+        // ink is dim, so a near-white bg also "keeps contrast" with it, and a bright cover (Boris,
+        // Pink, 2026-11-13) came out as a pink page with dark-looking text — inverted.
+        for pct in Theme::NIGHT_LEVEL_PCT {
+            let t = Theme::night().scaled(pct);
+            for (r, g, b) in [
+                (240, 140, 190),
+                (255, 255, 255),
+                (250, 200, 220),
+                (255, 0, 0),
+            ] {
+                let tt = t.tinted(Rgb888::new(r, g, b));
+                assert!(
+                    crate::palette::luminance(tt.bg) < crate::palette::luminance(t.dim),
+                    "night {pct}%: cover ({r},{g},{b}) gave bg {:?} over dim {:?}",
+                    tt.bg,
+                    t.dim
+                );
             }
         }
         // A saturated cover visibly moves the day background.

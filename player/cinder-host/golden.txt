@@ -391,7 +391,7 @@ cb073ae283ed61bb viz_11_meters
 b591ec6a78e98255 now_playing_repeat_album
 d6f4d2f16a0e327b help_top
 623de72b8608b85d help_end
-c224339ad58fdbeb advanced
+ea37eb96349ddb74 advanced
 9a6d5eae9ff75826 dac_eq
 3d631a442ab14c42 dac_eq_source_direct
 14e367b53f604767 advanced_end
