@@ -302,8 +302,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         mhz += 2;
     }
     // found stations as ticks ON the dial — the scan's result, visible where it means something
-    for i in 0..s.n_stations {
-        let x = dial_x(s.stations[i]);
+    for &st in s.stations.iter().take(s.n_stations) {
+        let x = dial_x(st);
         fill_rect(c, x, DIAL_Y - 16, 1, 8, t.acc);
     }
     let nx = dial_x(s.khz);

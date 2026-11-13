@@ -852,11 +852,10 @@ mod scale_tests {
         }
         let one = Image { w: n, h: n, rgb }.scaled_to(1, 1);
         assert_eq!((one.w, one.h), (1, 1));
-        for ch in 0..3 {
+        for &ch in &one.rgb[..3] {
             assert!(
-                (one.rgb[ch] as i32 - 127).abs() <= 1,
-                "checkerboard averaged to {} — the scaler is sampling, not averaging",
-                one.rgb[ch]
+                (ch as i32 - 127).abs() <= 1,
+                "checkerboard averaged to {ch} — the scaler is sampling, not averaging"
             );
         }
     }

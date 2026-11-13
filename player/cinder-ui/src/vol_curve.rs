@@ -174,8 +174,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VolCurve, sel: usize) 
             );
         }
     }
-    for i in 0..POINTS {
-        let (bx, ky) = (point_x(i), knob_y(v.pts[i]));
+    for (i, &pt) in v.pts.iter().enumerate() {
+        let (bx, ky) = (point_x(i), knob_y(pt));
         let on = i == sel;
         if on {
             disc(c, bx, ky, 26, t.ink);
@@ -187,7 +187,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VolCurve, sel: usize) 
             f,
             bx as f32,
             (FIELD_TOP - 10) as f32,
-            &v.pts[i].to_string(),
+            &pt.to_string(),
             &sty(
                 Family::Mono,
                 Weight::Regular,
