@@ -5259,6 +5259,24 @@ static int eq6custom_probe() {
     _exit(0);
 }
 
+// --eq6read : what the six-band EQ holds right now. Reads only: the selector, the switch, the
+// preset in use and its six bands (band 0 is Clear Bass). Nothing is selected or written, so it
+// is safe while music plays.
+static int eq6read_probe() {
+    start_probe_framework();
+    char m[224];
+    std::snprintf(m, sizeof m, "eq6read: selector=%d Eq6On=%d preset=%d bands %d,%d,%d,%d,%d,%d",
+                  cinder_effects_get_select_using_eq(), cinder_effects_is_eq6_on(),
+                  cinder_effects_get_eq6_preset(),
+                  cinder_effects_get_eq6_band(0), cinder_effects_get_eq6_band(1),
+                  cinder_effects_get_eq6_band(2), cinder_effects_get_eq6_band(3),
+                  cinder_effects_get_eq6_band(4), cinder_effects_get_eq6_band(5));
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 // --eq6reset [preset] : put the six-band EQ back to a known state — both Custom slots (9, 10) flat,
 // then select `preset` (default 0). For recovering from a --clearbass or --eq6custom run that was
 // cut off before its restore: both write Custom 1, and EffectCtrlDmp keeps what they wrote.
@@ -7952,6 +7970,9 @@ int main(int argc, char** argv) {
     }
     if (argc > 5 && std::strcmp(argv[1], "--eq10alt") == 0) {
         return eq10alt_probe(std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]), std::atoi(argv[5]));
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--eq6read") == 0) {
+        return eq6read_probe();
     }
     if (argc > 1 && std::strcmp(argv[1], "--eq6reset") == 0) {
         return eq6reset_probe(argc > 2 ? std::atoi(argv[2]) : 0);

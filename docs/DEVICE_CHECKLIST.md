@@ -1097,6 +1097,18 @@ track 2 at 500 Hz tagged 0 dB, both album −12.04 dB. Recorded from the jack on
 | 46.1 | Sound ▸ Advanced ▸ **ReplayGain**: tap through Off → Per track → Per album → Off | **PASS** 2026-11-14: the pill read PER TRACK, PER ALBUM, then off; log `cinder-ffi: replaygain -6.02 dB` and the sound library `replaygain 8389187/16777216`; Off removes `/tmp/cinder_rg` |
 | 46.2 | Per track, play the album through on the jack | **PASS**: song 1 −53.8 dB, song 2 −47.8 dB (5.98 dB apart; designed 6.02). Off: −47.8 dB (Dynamic Normalizer off for the test) |
 | 46.3 | Per album, the same | **PASS**: both −59.8 dB, 12.03 dB under Off (designed 12.04), level within 0.01 dB |
-| 46.4 | Per track, at the change from song 1 to song 2: how late the level follows the song | **Measured, a known limit**: the first 0.85 s of song 2 played at song 1's level, then rose over ~0.15 s with no click. The gain follows Sony's track-change report, which comes after the new song's audio is already on its way. Per album, inside one album, it never shows |
+| 46.4 | Per track, at the change from song 1 to song 2: how late the level follows the song | **PASS** after the fix (2026-11-14, five changes): the level starts to move at the change and is there within 0.15 s; the end of song 1 is untouched. A tapped song is at its level within 0.08 s. Before: the first 0.98 s of song 2 played at song 1's level. The gain now follows the sequence's own "moved to the next song" signal (`sequence(2,0)` in the log), which comes a second before Sony reports the song |
 | 46.5 | Per track over Bluetooth headphones | Open. Pass = the same 6 dB between the songs, by ear; the log shows the gain on the `bt` route |
 
+
+## 47 — 2026-11-14 — Do the sound settings change the sound?
+
+Pink noise (FLAC) on the jack, recorded on a PC, compared per octave against the same noise with
+the setting off. Volume raised to 116 for the test so the noise sits 30+ dB over the recording's
+own floor (at 56 it sat only ~25 dB over, and those readings wandered by ±2 dB). Two off/on pairs each.
+
+| # | Test | Result |
+|---|---|---|
+| 47.1 | Sound ▸ Advanced ▸ **Clear Bass** at +10, Dynamic Normalizer off | **PASS**: 31.5 Hz +6.4/+6.9 dB, 63 Hz +8.3/+8.5 dB, 125 Hz +4.2/+4.2 dB, 250 Hz and up within 0.6 dB. Read-back: selector 1, six-band band 0 = 10. Off returns to within 0.3 dB in every octave |
+| 47.2 | The same with the Dynamic Normalizer on | **PASS**, smaller: 31.5 Hz +4.5/+5.0, 63 Hz +5.9/+5.9, 125 Hz +2.5/+3.1. The normalizer takes back about 2.5 dB of the boost |
+| 47.3 | VPT, Vinyl, Clear Phase, DSEE AI | Open. Rough readings at volume 56 (03:40, near the floor): VPT Club/Hall/Matrix +1.3 to +2.2 dB overall, DSEE AI +2.6 to +3.9 dB, Studio, Vinyl and Clear Phase no change seen. Re-run at volume 116 |
