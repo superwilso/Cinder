@@ -212,16 +212,21 @@ static int xf_apply(xf_route* r, uint8_t* p, size_t frames, int fmt, unsigned ra
  * route is written by one thread, so no lock. */
 static long long g_rg_checked_ms = -1000000;
 static int32_t g_rg = RG_UNITY;
+static int g_rg_seen = 0;
 static rg_state g_rg_jack, g_rg_bt;
 static int32_t rg_target(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     const long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-    if (now - g_rg_checked_ms >= 250) {
+    /* While the file is there (ReplayGain on) it is read every 50 ms, not every 250: a new song's
+     * gain is renamed into place as its first samples arrive, and a quarter second of the song
+     * at the last one's level is heard. Off, it costs what the other flags cost. */
+    if (now - g_rg_checked_ms >= (g_rg_seen ? 50 : 250)) {
         g_rg_checked_ms = now;
         int32_t q = RG_UNITY;
         const int fd = (int)syscall(SYS_open, kRgain, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        g_rg_seen = fd >= 0;
         if (fd >= 0) {
             char b[24];
             const ssize_t n = (ssize_t)syscall(SYS_read, fd, b, sizeof b);
