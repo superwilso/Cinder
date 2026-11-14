@@ -77,3 +77,26 @@ corrected a second or two in (owner's report, a day of use). If the in-place edi
 `cinder_queue_edit_refused` holds it for the end of the song, so the player is never reopened
 mid-song. Measured: an edit about 40 s into a song logged `edit in place: n=12 start=0` at once
 with the stream RUNNING. Not measured: the boundary after it.
+
+## The sequence's callback: an early "moved to the next song" (2026-11-14)
+
+The `function<void(UpdateReason,int)>` given to the constructor is called on a binder thread in
+Cinder's own process. Timed on stock A50 1.02 with two 15 s songs, the jack recorded, every signal
+stamped with `CLOCK_MONOTONIC`:
+
+| Event | Callback | When |
+|---|---|---|
+| Song ends, the next starts (gapless) | reason 2, int 0 | As the new song's first samples reach the sound service: 0.24 s before `libcinder_mono.so` sees them, 1.24 s before they are heard |
+| Next button | reason 2, int 0 | 0.2 s before `onPlayTimeUpdated(0, …)` |
+| In-place edit (`EditNode`) | reason 0, int 0 | At the edit |
+| Last song of the list near its end | reason 5, int 0 | 0.25 s before the last samples pass |
+| Previous button, a new `SetTrackSequence` | none | The shell starts those itself |
+
+`onPlayTimeUpdated` for the new song arrives one second after reason 2: the jack's ALSA buffer
+(`hw:0,4`, 44.1 kHz) is 44104 frames and stays full, so what the service reports is what is heard.
+The shell's track-change poll runs off that report, which is right for the screen and a second
+late for anything applied to the samples.
+
+ReplayGain uses reason 2 (`on_sequence` in `cinder-audio/src/player_shim.cpp`). Measured over five
+changes: the new song's level is in place within 0.15 s of its first sample; it was 0.98 s.
+Not measured: other sample rates, Bluetooth.

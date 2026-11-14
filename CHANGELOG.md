@@ -61,8 +61,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   of level fades over a fraction of a second instead of clicking. Untagged songs play as they are.
   Works on the jack and over Bluetooth, after Sony's effects, with the install option **Mono and
   soundscapes over music**. *Measured on the jack: 5.98 dB per track and 12.03 dB per album
-  against 6.02 and 12.04 tagged. Per track, the first second of a song can still play at the
-  song before's level, then fades over; not yet heard over Bluetooth.*
+  against 6.02 and 12.04 tagged; at a change of song the new level is there within 0.15 s. Not yet
+  heard over Bluetooth.*
 
 ### Fixed
 
