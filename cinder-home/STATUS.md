@@ -11,6 +11,11 @@
 >   presets match their labels within ~0.4 dB an octave on 44.1 and 48 kHz pink noise. *Device-verified.*
 > - **The installer reads a leftover Walkman One `CFW/settings.txt`** on a first install and ticks
 >   the Smooth curve and the matching signature. *Host-tested; dry run only.*
+> - **Sound ▸ Advanced ▸ Crossfeed** (opt-in, off), in `libcinder_mono.so`. *Measured on the jack
+>   (4.6 dB between the ears for a hard-panned bass note); not heard over Bluetooth.* Checklist §45.4.
+> - **Sound ▸ Advanced ▸ ReplayGain** (opt-in, off: Per track / Per album) from FLAC, MP3 and M4A
+>   tags, applied in `libcinder_mono.so` on the jack and Bluetooth. *Measured on the jack within 0.05 dB; per
+>   track the level follows a song change ~0.85 s late. Not heard over Bluetooth.* Checklist §46.
 
 > ## 2026-10-15 — Audiobooks — BUILT HOST-ONLY, NOTHING HERE HAS RUN ON A PLAYER
 >

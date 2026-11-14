@@ -54,6 +54,7 @@
 #include <unistd.h>
 
 #include "crossfeed.h"
+#include "rgain.h"
 #include "filter_chain.h"
 #include "mono_sum.h"
 #include "soundscape.h"
@@ -68,6 +69,7 @@ static const char kAlive[] = CINDER_MONO_DIR "/cinder_mono_shim";
 static const char kLog[] = CINDER_MONO_DIR "/cinder_mono.log";
 static const char kAmbient[] = CINDER_MONO_DIR "/cinder_ambient";
 static const char kXfeed[] = CINDER_MONO_DIR "/cinder_crossfeed";
+static const char kRgain[] = CINDER_MONO_DIR "/cinder_rg";
 static const char kBtName[] = "pst::services::bttransmitterservice";
 
 /* ── how it is loaded, and how it gets out of the way ─────────────────────────────────────────
@@ -203,6 +205,33 @@ static int xf_apply(xf_route* r, uint8_t* p, size_t frames, int fmt, unsigned ra
     pthread_mutex_unlock(&r->lock);
     if (first) mlog("%s: crossfeed (fmt %d, %u Hz)", what, fmt, rate);
     return done;
+}
+
+/* ── ReplayGain (rgain.h) ────────────────────────────────────────────────────────────────────────
+ * The song's gain, from a control file polled like the others. One ramp state per route; each
+ * route is written by one thread, so no lock. */
+static long long g_rg_checked_ms = -1000000;
+static int32_t g_rg = RG_UNITY;
+static rg_state g_rg_jack, g_rg_bt;
+static int32_t rg_target(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    if (now - g_rg_checked_ms >= 250) {
+        g_rg_checked_ms = now;
+        int32_t q = RG_UNITY;
+        const int fd = (int)syscall(SYS_open, kRgain, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd >= 0) {
+            char b[24];
+            const ssize_t n = (ssize_t)syscall(SYS_read, fd, b, sizeof b);
+            (void)syscall(SYS_close, fd);
+            if (n > 0) q = rg_parse(b, (size_t)n);
+        }
+        if (q != g_rg) mlog("replaygain %ld/16777216", (long)q);
+        g_rg = q;
+    }
+    return g_rg;
 }
 
 /* ── the soundscape ──────────────────────────────────────────────────────────────────────────────
@@ -557,7 +586,9 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     const int mono = mono_on();
     const int amb = amb_poll();
     const int xf = !mono && xf_on();
-    if (!mono && !amb && !xf) return jack_write(pcm, buf, frames);
+    const int32_t rg = rg_target();
+    const int gain = rg_busy(&g_rg_jack, rg);
+    if (!mono && !amb && !xf && !gain) return jack_write(pcm, buf, frames);
 
     pcm_info info = { NULL, 0, 0, 0, 1 };
     int said = 1;
@@ -578,12 +609,14 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     memcpy(out, buf, bytes);
     /* DSD over PCM is never touched, by either: its markers are not samples. */
     const int dop = info.ch == 2 && cm_looks_like_dop(out, frames, info.fmt);
+    /* The gain first: what follows sums and blends, and should do it at the song's level. */
+    const int scaled = gain && !dop && rg_apply(&g_rg_jack, out, frames, info.ch, info.fmt, rg);
     const int summed = mono && info.ch == 2 && cm_sum_buffer(out, frames, info.fmt, 2);
     const int crossed = xf && info.ch == 2 && !dop && xf_apply(&g_xf_jack, out, frames, info.fmt, info.rate, "jack");
     const int mixed = amb && !dop && amb_mix(&g_amb_jack, out, frames, info.fmt, info.ch, info.rate, "jack");
     if (!said && mono) mlog("jack: pcm %p fmt %d — %s", pcm, info.fmt, summed ? "summing" : "DSD over PCM, left alone");
     if (!said && amb && !info.rate) mlog("jack: pcm %p — rate never seen, no soundscape on it", pcm);
-    return jack_write(pcm, (summed || crossed || mixed) ? out : buf, frames);
+    return jack_write(pcm, (scaled || summed || crossed || mixed) ? out : buf, frames);
 }
 
 /* ── Bluetooth: the transmitter socket ───────────────────────────────────────────────────────── */
@@ -676,10 +709,13 @@ static void bt_commit(int fd, unsigned gen, const uint8_t* in, size_t n_avail, s
     pthread_mutex_unlock(&g_bt_lock);
 }
 
-/* `ctx` points at an int: crossfeed wanted on this write. */
+/* What this write wants besides any sum. */
+typedef struct { int xf; int gain; int32_t rg; } bt_fx;
 static void bt_mix_frames(void* ctx, uint8_t* p, size_t n, uint32_t rate)
 {
-    if (*(const int*)ctx) (void)xf_apply(&g_xf_bt, p, n, CM_FMT_S16_LE, rate, "bt");
+    const bt_fx* fx = (const bt_fx*)ctx;
+    if (fx->gain) (void)rg_apply(&g_rg_bt, p, n, 2, CM_FMT_S16_LE, fx->rg);
+    if (fx->xf) (void)xf_apply(&g_xf_bt, p, n, CM_FMT_S16_LE, rate, "bt");
     (void)amb_mix(&g_amb_bt, p, n, CM_FMT_S16_LE, 2, rate, "bt");
 }
 
@@ -759,16 +795,17 @@ static ssize_t bt_send(int fd, const void* buf, size_t n, ssize_t (*sendfn)(int,
     if (!buf || n == 0 || !bt_begin(fd, &st, &gen, &said)) return sendfn(fd, buf, n, ctx);
     const int mono = mono_on();
     const int amb = amb_poll();
-    int xf = !mono && xf_on();
+    const int32_t rg = rg_target();
+    bt_fx fx = { !mono && xf_on(), rg_busy(&g_rg_bt, rg), rg };
     const uint8_t* in = (const uint8_t*)buf;
     const void* to_send = buf;
     int said_now = 0;
-    if ((mono || amb || xf) && (st.mode == CM_BT_PCM || st.mode == CM_BT_FRAMES)) {
+    if ((mono || amb || fx.xf || fx.gain) && (st.mode == CM_BT_PCM || st.mode == CM_BT_FRAMES)) {
         uint8_t* out = scratch(n);
         if (out) {
             cm_bt_stream tmp = st;
-            const cm_mix mix = { bt_mix_frames, &xf };
-            cm_bt_walk(&tmp, in, n, n, out, mono, (amb || xf) ? &mix : NULL, NULL);
+            const cm_mix mix = { bt_mix_frames, &fx };
+            cm_bt_walk(&tmp, in, n, n, out, mono, (amb || fx.xf || fx.gain) ? &mix : NULL, NULL);
             to_send = out;
             if (!said && mono && tmp.mode == CM_BT_PCM && tmp.channels == 2) {
                 mlog("bt: fd %d — summing", fd);

@@ -14,7 +14,8 @@ research behind it is [`analysis/RE_mono_audio.md`](../analysis/RE_mono_audio.md
   clips. DSD, and anything that is not plain stereo, passes through untouched.
 - **Cost:** with MONO off, one cached file check every 250 ms on the audio path.
 
-The same library also lets soundscapes play over music (Menu ▸ Soundscapes).
+The same library also lets soundscapes play over music (Menu ▸ Soundscapes), and runs Crossfeed
+and ReplayGain (Sound ▸ Advanced).
 
 ## How it installs
 

@@ -50,6 +50,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   after Sony's effects; it stands aside while Mono is on. *Measured on the jack: a hard-left bass
   note reaches the right channel 4.6 dB down; not yet heard over Bluetooth.*
 
+- **Settings ▸ Now Playing ▸ Lyrics button** (off by default). The Lyrics button at the top left
+  of Now Playing now appears only with this switched on. The lyrics are still on Track
+  information either way.
+
+- **ReplayGain** (Sound ▸ Advanced, off by default). Plays every song, or every album, at the same
+  loudness, from the ReplayGain tags a tagger (foobar2000, MusicBee, beets, Mp3tag) already wrote:
+  FLAC, MP3 and M4A. Tap the row for Off, Per track or Per album; an album keeps its own quiet and
+  loud songs in Per album. A boost is held under the song's peak, so it never clips, and a change
+  of level fades over a fraction of a second instead of clicking. Untagged songs play as they are.
+  Works on the jack and over Bluetooth, after Sony's effects, with the install option **Mono and
+  soundscapes over music**. *Measured on the jack: 5.98 dB per track and 12.03 dB per album
+  against 6.02 and 12.04 tagged. Per track, the first second of a song can still play at the
+  song before's level, then fades over; not yet heard over Bluetooth.*
+
 ### Fixed
 
 - **Cover colours with Night on turned Now Playing inside out.** With a bright cover (Boris,

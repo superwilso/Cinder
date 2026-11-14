@@ -1087,3 +1087,16 @@ Dev build on the owner's player (stock firmware, `CINDER_VOLTABLE=wm1a`), driven
 | 45.4 | Sound ▸ Advanced ▸ **Crossfeed**, a hard-left test tone (100 Hz + 5 kHz) on the jack, recorded on a PC | **PASS**: log `crossfeed ON`, `jack: crossfeed (fmt 2, 44100 Hz)`. Off: right channel at the floor (−74 dB). On: 100 Hz left −47.8, right −52.4 dB (4.6 dB apart; designed 4.5); 5 kHz right −70.6 dB, 26 dB under the left. Not yet heard over Bluetooth |
 | 45.5 | Night on + Settings ▸ Now Playing ▸ Cover colours, a bright cover (Boris, *Pink*) | **PASS** after the fix: a dark magenta background, text readable. Before: a near-white page behind dim text (inverted) |
 
+## 46 — 2026-11-13 — ReplayGain
+
+Test files: two 15 s FLAC tones at −12 dBFS on one album, track 1 at 1 kHz tagged track −6.02 dB,
+track 2 at 500 Hz tagged 0 dB, both album −12.04 dB. Recorded from the jack on a PC.
+
+| # | Test | Result |
+|---|---|---|
+| 46.1 | Sound ▸ Advanced ▸ **ReplayGain**: tap through Off → Per track → Per album → Off | **PASS** 2026-11-14: the pill read PER TRACK, PER ALBUM, then off; log `cinder-ffi: replaygain -6.02 dB` and the sound library `replaygain 8389187/16777216`; Off removes `/tmp/cinder_rg` |
+| 46.2 | Per track, play the album through on the jack | **PASS**: song 1 −53.8 dB, song 2 −47.8 dB (5.98 dB apart; designed 6.02). Off: −47.8 dB (Dynamic Normalizer off for the test) |
+| 46.3 | Per album, the same | **PASS**: both −59.8 dB, 12.03 dB under Off (designed 12.04), level within 0.01 dB |
+| 46.4 | Per track, at the change from song 1 to song 2: how late the level follows the song | **Measured, a known limit**: the first 0.85 s of song 2 played at song 1's level, then rose over ~0.15 s with no click. The gain follows Sony's track-change report, which comes after the new song's audio is already on its way. Per album, inside one album, it never shows |
+| 46.5 | Per track over Bluetooth headphones | Open. Pass = the same 6 dB between the songs, by ear; the log shows the gain on the `bt` route |
+

@@ -2983,6 +2983,15 @@ impl App {
         }
     }
 
+    /// ReplayGain as an index into `advanced::REPLAYGAIN`: 0 off, 1 track, 2 album.
+    pub fn replaygain_mode(&self) -> usize {
+        match (self.opt(Opt::ReplayGain), self.opt(Opt::RgAlbum)) {
+            (false, _) => 0,
+            (true, false) => 1,
+            (true, true) => 2,
+        }
+    }
+
     /// Flip switch `o`. Returns its new state.
     pub fn toggle_opt(&mut self, o: Opt) -> bool {
         let on = !self.opt(o);
@@ -3859,6 +3868,11 @@ impl App {
     /// The playing song has lyrics worth a screen: what draws Now Playing's Lyrics chip.
     pub fn has_lyrics(&self) -> bool {
         self.lyrics.as_ref().is_some_and(|l| !l.lines.is_empty())
+    }
+
+    /// Now Playing draws its Lyrics chip: the switch is on and the song has lyrics.
+    pub fn lyrics_button(&self) -> bool {
+        self.opt(Opt::NpLyrics) && self.has_lyrics()
     }
 
     fn open_lyrics(&mut self) {
@@ -4960,6 +4974,13 @@ impl App {
                 }
                 return vec![];
             }
+            // Off → Track → Album → Off. Also the FFI's to carry out (/tmp/cinder_rg).
+            adv::ROW_REPLAYGAIN => {
+                let (on, album) = (self.opt(Opt::ReplayGain), self.opt(Opt::RgAlbum));
+                self.set_opt(Opt::ReplayGain, !(on && album));
+                self.set_opt(Opt::RgAlbum, on && !album);
+                return vec![];
+            }
             // A ROUTE, not a setting — same rule as the Sound screen's "Advanced ›" row: pushing a
             // screen changes nothing about the sound, and emitting SoundChanged here would
             // re-apply the whole chain on a navigation.
@@ -5310,7 +5331,8 @@ impl App {
                 if crate::now_playing::hit_back(x, y) {
                     return self.press(Button::Back);
                 }
-                let layout = crate::now_playing::layout(self.style, self.night, self.has_lyrics());
+                let layout =
+                    crate::now_playing::layout(self.style, self.night, self.lyrics_button());
                 match layout.hit(x, y) {
                     Some(Hit::Lyrics) => {
                         self.open_lyrics();
@@ -8497,7 +8519,7 @@ impl App {
     }
 
     fn np_layout(&self) -> crate::now_playing::Layout {
-        crate::now_playing::layout(self.style, self.night, self.has_lyrics())
+        crate::now_playing::layout(self.style, self.night, self.lyrics_button())
     }
 
     /// Rail x → permille (0..1000), along the rail the style draws, so the preview position and the
@@ -11208,7 +11230,7 @@ impl App {
                     viz_kind: self.viz_kind,
                     viz_size: if live { self.viz_size } else { 0 },
                     page: self.np_page,
-                    lyrics: self.has_lyrics(),
+                    lyrics: self.lyrics_button(),
                     ..*np
                 };
                 if let (true, Some(tape)) = (self.tape_view(), np2.tape) {
@@ -11822,6 +11844,7 @@ impl App {
                     hp_linear: self.adv_hp_linear,
                     crossfeed: self.opt(Opt::Crossfeed),
                     mono: self.mono,
+                    replaygain: crate::advanced::REPLAYGAIN[self.replaygain_mode()],
                     dac_eq_on: self.dac_eq != [0; crate::dac_eq::BANDS],
                     vol_curve: self.vol_curve_ok.then_some(self.vol_curve_on),
                     clear_bass: self
@@ -15616,6 +15639,18 @@ mod tests {
         app.mono = false;
         app.advanced_toggle_row();
         assert!(!app.opt(Opt::Crossfeed));
+    }
+
+    /// ReplayGain ships off, and its row cycles Off → Track → Album → Off.
+    #[test]
+    fn the_replaygain_row_cycles_off_track_album() {
+        let mut app = unlocked();
+        assert_eq!(app.replaygain_mode(), 0, "ships off");
+        app.adv_sel = crate::advanced::ROW_REPLAYGAIN;
+        for want in [1, 2, 0, 1] {
+            assert!(app.advanced_toggle_row().is_empty());
+            assert_eq!(app.replaygain_mode(), want);
+        }
     }
 
     /// Brightness cycles 1..5, then 0 (backlight off), then wraps.
@@ -20587,6 +20622,7 @@ mod tests {
         let (x, y) = (np::LYRICS_X0 + 20, np::LYRICS_Y0 + np::LYRICS_H / 2);
 
         let mut a = App::unlocked();
+        a.set_opt(Opt::NpLyrics, true);
         assert_eq!(a.current(), Screen::NowPlaying);
         a.tap(x, y);
         assert_eq!(
@@ -20596,11 +20632,13 @@ mod tests {
         );
 
         let mut a = App::unlocked();
+        a.set_opt(Opt::NpLyrics, true);
         a.set_lyrics(Some(Lyrics { lines: vec![] }));
         a.tap(x, y);
         assert_eq!(a.current(), Screen::Menu, "an empty file is no lyrics");
 
         let mut a = App::unlocked();
+        a.set_opt(Opt::NpLyrics, true);
         a.set_lyrics(Some(Lyrics {
             lines: vec![Line {
                 at_ms: None,
@@ -20620,6 +20658,21 @@ mod tests {
         assert!(!np::hit_lyrics(np::HEART_CX, np::HEART_CY, true));
         assert!(!np::hit_lyrics(240, 300, true));
         const { assert!(np::LYRICS_Y0 + np::LYRICS_H <= crate::chrome::STATUS_H + 44) };
+
+        let mut a = App::unlocked();
+        a.set_lyrics(Some(Lyrics {
+            lines: vec![Line {
+                at_ms: None,
+                text: "words".into(),
+            }],
+        }));
+        assert!(!a.opt(Opt::NpLyrics), "the chip ships off");
+        a.tap(x, y);
+        assert_eq!(
+            a.current(),
+            Screen::Menu,
+            "switched off: no chip, even with words"
+        );
     }
 
     /// Library search is opt-in: no button without the component. With it, the header button opens
