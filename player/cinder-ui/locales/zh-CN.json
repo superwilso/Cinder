@@ -1200,5 +1200,13 @@
   "or cinder.local:{}": "或 cinder.local:{}",
   "Crossfeed": "声道混合",
   "Off while Mono is on": "单声道开启时关闭",
-  "Lets each ear hear a little of the other side": "低频混入另一侧耳机"
+  "Lets each ear hear a little of the other side": "低频混入另一侧耳机",
+  "Per track": "按曲目",
+  "Per album": "按专辑",
+  "Evens out loudness from the songs' tags": "根据标签平衡歌曲响度",
+  "Every song at the same loudness": "每首歌同样的响度",
+  "Each album at the same loudness, its own mix kept": "每张专辑同样的响度，保留其自身的混音",
+  "Lyrics button": "歌词按钮",
+  "Top left, when the song has lyrics": "有歌词时显示在左上角",
+  "ReplayGain": "响度均衡"
 }

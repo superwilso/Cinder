@@ -5339,23 +5339,60 @@ fn crossfeed_flag(on: bool) {
     if LAST.swap(on as i8, std::sync::atomic::Ordering::Relaxed) == on as i8 {
         return;
     }
-    const FLAG: &str = "/tmp/cinder_crossfeed";
-    let r = if on {
-        std::fs::write(FLAG, b"").and_then(|_| {
-            std::fs::set_permissions(FLAG, std::os::unix::fs::PermissionsExt::from_mode(0o644))
-        })
-    } else {
-        std::fs::remove_file(FLAG).or_else(|e| {
+    match tmp_flag("/tmp/cinder_crossfeed", on.then_some(b"")) {
+        Ok(()) => eprintln!("cinder-ffi: crossfeed {}", if on { "on" } else { "off" }),
+        Err(e) => eprintln!("cinder-ffi: crossfeed flag: {e}"),
+    }
+}
+
+/// A control file for libcinder_mono.so (it runs in the sound service, another uid): `Some` writes
+/// it world-readable, `None` removes it.
+fn tmp_flag(path: &str, body: Option<&[u8]>) -> std::io::Result<()> {
+    match body {
+        Some(b) => std::fs::write(path, b).and_then(|_| {
+            std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+        }),
+        None => std::fs::remove_file(path).or_else(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 Ok(())
             } else {
                 Err(e)
             }
-        })
-    };
-    match r {
-        Ok(()) => eprintln!("cinder-ffi: crossfeed {}", if on { "on" } else { "off" }),
-        Err(e) => eprintln!("cinder-ffi: crossfeed flag: {e}"),
+        }),
+    }
+}
+
+/// Sound ▸ Advanced ▸ ReplayGain: the song's gain as a Q24 multiplier in /tmp/cinder_rg, which
+/// libcinder_mono.so applies on the jack and on Bluetooth. No file = unchanged (off, no tags, or
+/// no song). Called on every track change and once a second; the tags are read only when the song
+/// or the mode changed.
+fn replaygain_flag(r: &Render) {
+    static LAST: Mutex<Option<(String, usize)>> = Mutex::new(None);
+    let mode = r.app.replaygain_mode();
+    let path = r
+        .last_track
+        .as_ref()
+        .map_or(String::new(), |t| t.filename.clone());
+    let mut last = LAST.lock().unwrap();
+    if last.as_ref().is_some_and(|(p, m)| *p == path && *m == mode) {
+        return;
+    }
+    *last = Some((path.clone(), mode));
+    let q = (mode != 0 && !path.is_empty())
+        .then(|| lyrics::replaygain(&path).q24(mode == 2))
+        .flatten();
+    match tmp_flag(
+        "/tmp/cinder_rg",
+        q.map(|q| format!("{q}\n")).as_deref().map(str::as_bytes),
+    ) {
+        Ok(()) => eprintln!(
+            "cinder-ffi: replaygain {}",
+            q.map_or("unchanged".into(), |q| format!(
+                "{:.2} dB",
+                20.0 * (q as f32 / 16_777_216.0).log10()
+            ))
+        ),
+        Err(e) => eprintln!("cinder-ffi: replaygain flag: {e}"),
     }
 }
 
@@ -9122,6 +9159,9 @@ pub extern "C" fn cinder_clock_tick() {
         }
         // Sound ▸ Advanced ▸ Crossfeed: the sound service's library reads this flag.
         crossfeed_flag(r.app.opt(Opt::Crossfeed));
+        // Sound ▸ Advanced ▸ ReplayGain: catches a change of mode (a song change is caught as
+        // it happens, below).
+        replaygain_flag(r);
         // Settings ▸ Wi-Fi ▸ Speakers: a search's result, and a cast's state.
         cast_tick(r);
         // Settings ▸ Wi-Fi ▸ Options ▸ Fetch missing album art: the song playing has no cover.
@@ -11556,6 +11596,8 @@ pub extern "C" fn cinder_set_now_playing_uri(
             // or the audio. The row sits with the other links, not below the file facts.
             fill_track_info(r, &t, true);
             r.last_track = Some(t);
+            // Now, not at the next second: the new song's first notes are already on their way.
+            replaygain_flag(r);
             // After `last_track`: the CUE track's scrobble names this file's album.
             cue_title(r);
             0

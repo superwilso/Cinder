@@ -15,6 +15,9 @@
 //! not change which words are shown when: fraction widths, repeated timestamps on one line,
 //! metadata tags, enhanced (per-word) stamps, and the encoding. A file that cannot be read simply
 //! has no lyrics; nothing here can fail loudly.
+//!
+//! The same tag walk also gives ReplayGain's values ([`replaygain`]): they sit in the same blocks
+//! and frames, and one reader for both keeps one set of bounds checks.
 
 use cinder_ui::lyrics::{Line, Lyrics};
 use std::fs::File;
@@ -53,9 +56,18 @@ pub fn load_for(track_path: &str) -> Option<Lyrics> {
     best
 }
 
-/// Every lyrics value in the file's tags, in file order. Only headers and the lyrics themselves are
-/// read; pictures and audio are seeked over.
+/// Every lyrics value in the file's tags, in file order.
 fn embedded(track_path: &str) -> Vec<String> {
+    tags(track_path)
+        .into_iter()
+        .filter_map(|(k, v)| (k == "LYRICS").then_some(v))
+        .collect()
+}
+
+/// The tags anything here reads, as (key, value) in file order: the lyrics (key `LYRICS`, whatever
+/// the format calls them) and ReplayGain's (`REPLAYGAIN_…`, upper-cased). Only headers and those
+/// values are read; pictures and audio are seeked over.
+fn tags(track_path: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let Ok(mut f) = File::open(track_path) else {
         return out;
@@ -66,7 +78,7 @@ fn embedded(track_path: &str) -> Vec<String> {
     }
     let mut at = 0u64;
     if &head[..3] == b"ID3" {
-        at = id3_uslt(&mut f, &head, &mut out).unwrap_or(0);
+        at = id3_frames(&mut f, &head, &mut out).unwrap_or(0);
         if at == 0 || f.seek(SeekFrom::Start(at)).is_err() || f.read_exact(&mut head[..4]).is_err()
         {
             return out;
@@ -76,9 +88,76 @@ fn embedded(track_path: &str) -> Vec<String> {
         flac_comments(&mut f, at + 4, &mut out);
     } else if at == 0 && &head[4..8] == b"ftyp" {
         let end = f.metadata().map(|m| m.len()).unwrap_or(0);
-        mp4_lyr(&mut f, 0, end, 0, &mut out);
+        mp4_tags(&mut f, end, &mut out);
     }
     out
+}
+
+/// ReplayGain from a file's tags: gains in dB, peaks as a fraction of full scale. Read from FLAC
+/// Vorbis comments, ID3 `TXXX` frames and MP4 `----` items. ponytail: not APEv2 (MP3s tagged by
+/// old foobar2000 only), Opus R128 or MP4 Sound Check; add one if a library turns up with it.
+#[derive(Debug, Default, PartialEq)]
+pub struct Gain {
+    pub track_db: Option<f32>,
+    pub album_db: Option<f32>,
+    pub track_peak: Option<f32>,
+    pub album_peak: Option<f32>,
+}
+
+pub fn replaygain(track_path: &str) -> Gain {
+    // "-7.10 dB", "+3.2 dB", "-7,10 dB" (a comma locale), "0.98765".
+    let num = |v: &str| {
+        let v = v.trim();
+        let v = v
+            .strip_suffix("dB")
+            .or_else(|| v.strip_suffix("DB"))
+            .or_else(|| v.strip_suffix("db"))
+            .unwrap_or(v);
+        v.trim()
+            .replace(',', ".")
+            .parse::<f32>()
+            .ok()
+            .filter(|x| x.is_finite())
+    };
+    let mut g = Gain::default();
+    for (k, v) in tags(track_path) {
+        let slot = match k.as_str() {
+            "REPLAYGAIN_TRACK_GAIN" => &mut g.track_db,
+            "REPLAYGAIN_ALBUM_GAIN" => &mut g.album_db,
+            "REPLAYGAIN_TRACK_PEAK" => &mut g.track_peak,
+            "REPLAYGAIN_ALBUM_PEAK" => &mut g.album_peak,
+            _ => continue,
+        };
+        if slot.is_none() {
+            *slot = num(&v);
+        }
+    }
+    g
+}
+
+impl Gain {
+    /// The multiplier to play at, in Q24 (`1 << 24` = unchanged), or None when the tags have no
+    /// gain. `album`: the album's gain, falling back to the track's (and the other way round).
+    /// Never louder than the peak allows, so a boost cannot clip; kept within -24..+12 dB.
+    pub fn q24(&self, album: bool) -> Option<u32> {
+        let (a, b) = if album {
+            (
+                (self.album_db, self.album_peak),
+                (self.track_db, self.track_peak),
+            )
+        } else {
+            (
+                (self.track_db, self.track_peak),
+                (self.album_db, self.album_peak),
+            )
+        };
+        let (db, peak) = if a.0.is_some() { a } else { b };
+        let mut lin = 10f32.powf(db? / 20.0);
+        if let Some(p) = peak.filter(|p| *p > 0.0) {
+            lin = lin.min(1.0 / p);
+        }
+        Some((lin.clamp(0.063, 3.98) * 16_777_216.0).round() as u32)
+    }
 }
 
 /// Read `len` bytes at the current position, refusing anything over `cap`.
@@ -95,9 +174,22 @@ fn take(f: &mut File, len: u64, cap: u64) -> Option<Vec<u8>> {
 /// base64 cover in it — so it gets more room than the lyrics alone.
 const MAX_COMMENT_BLOCK: u64 = 4 * 1024 * 1024;
 
-/// FLAC metadata blocks from `pos`: the Vorbis comment block's lyrics keys. Field names are
-/// case-insensitive by the Vorbis spec, and the value is always UTF-8.
-fn flac_comments(f: &mut File, mut pos: u64, out: &mut Vec<String>) {
+/// The key a tag is kept under, or None for one nothing here reads. Case-insensitive, as Vorbis
+/// field names are and taggers' TXXX descriptions are in practice.
+fn keep(key: &str) -> Option<String> {
+    if ["LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS"]
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(key))
+    {
+        return Some("LYRICS".into());
+    }
+    let k = key.to_ascii_uppercase();
+    k.starts_with("REPLAYGAIN_").then_some(k)
+}
+
+/// FLAC metadata blocks from `pos`: the Vorbis comment block's kept keys. The value is always
+/// UTF-8.
+fn flac_comments(f: &mut File, mut pos: u64, out: &mut Vec<(String, String)>) {
     // FLAC allows 127 block types but real files have a handful; the bound stops a corrupt chain.
     for _ in 0..64 {
         let mut h = [0u8; 4];
@@ -128,12 +220,8 @@ fn flac_comments(f: &mut File, mut pos: u64, out: &mut Vec<String>) {
                 };
                 i += 4 + n;
                 if let Some(eq) = c.iter().position(|&x| x == b'=') {
-                    let key = std::str::from_utf8(&c[..eq]).unwrap_or("");
-                    if ["LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS"]
-                        .iter()
-                        .any(|k| k.eq_ignore_ascii_case(key))
-                    {
-                        out.push(String::from_utf8_lossy(&c[eq + 1..]).into_owned());
+                    if let Some(k) = keep(std::str::from_utf8(&c[..eq]).unwrap_or("")) {
+                        out.push((k, String::from_utf8_lossy(&c[eq + 1..]).into_owned()));
                     }
                 }
             }
@@ -146,9 +234,9 @@ fn flac_comments(f: &mut File, mut pos: u64, out: &mut Vec<String>) {
     }
 }
 
-/// An ID3v2 tag at the start of the file: every `USLT` frame's text. Returns where the tag ends, so
-/// a FLAC behind it can be read too.
-fn id3_uslt(f: &mut File, head: &[u8; 12], out: &mut Vec<String>) -> Option<u64> {
+/// An ID3v2 tag at the start of the file: every `USLT` frame's text, and the `TXXX` frames with a
+/// kept description. Returns where the tag ends, so a FLAC behind it can be read too.
+fn id3_frames(f: &mut File, head: &[u8; 12], out: &mut Vec<(String, String)>) -> Option<u64> {
     let syncsafe = |b: &[u8]| b.iter().fold(0u64, |a, &x| (a << 7) | (x & 0x7F) as u64);
     let (ver, flags) = (head[3], head[5]);
     let end = 10 + syncsafe(&head[6..10]) + if flags & 0x10 != 0 { 10 } else { 0 };
@@ -168,10 +256,10 @@ fn id3_uslt(f: &mut File, head: &[u8; 12], out: &mut Vec<String>) -> Option<u64>
             4 + u32::from_be_bytes(e) as u64
         };
     }
-    let (hdr, id) = if ver == 2 {
-        (6u64, &b"ULT"[..])
+    let (hdr, id, txxx) = if ver == 2 {
+        (6u64, &b"ULT"[..], &b"TXX"[..])
     } else {
-        (10u64, &b"USLT"[..])
+        (10u64, &b"USLT"[..], &b"TXXX"[..])
     };
     while pos + hdr <= end {
         f.seek(SeekFrom::Start(pos)).ok()?;
@@ -188,7 +276,8 @@ fn id3_uslt(f: &mut File, head: &[u8; 12], out: &mut Vec<String>) -> Option<u64>
         };
         // Compressed, encrypted or (v2.4) unsynchronised frames: skip the frame.
         let mangled = (ver == 4 && h[9] & 0x0E != 0) || (ver == 3 && h[9] & 0xC0 != 0);
-        if &h[..idl] == id && !mangled {
+        let (lyr, user) = (&h[..idl] == id, &h[..idl] == txxx);
+        if (lyr || user) && !mangled {
             if let Some(b) = take(f, len, MAX_BYTES) {
                 // v2.4's data-length indicator puts four bytes of size before the frame's own.
                 let body = if ver == 4 && h[9] & 0x01 != 0 {
@@ -196,8 +285,14 @@ fn id3_uslt(f: &mut File, head: &[u8; 12], out: &mut Vec<String>) -> Option<u64>
                 } else {
                     Some(&b[..])
                 };
-                if let Some(text) = body.and_then(uslt_text) {
-                    out.push(text);
+                if lyr {
+                    if let Some(text) = body.and_then(uslt_text) {
+                        out.push(("LYRICS".into(), text));
+                    }
+                } else if let Some((k, v)) = body.and_then(txxx_pair) {
+                    if let Some(k) = keep(&k).filter(|k| k != "LYRICS") {
+                        out.push((k, v));
+                    }
                 }
             }
         }
@@ -206,37 +301,54 @@ fn id3_uslt(f: &mut File, head: &[u8; 12], out: &mut Vec<String>) -> Option<u64>
     Some(end)
 }
 
+/// An ID3 string in encoding `enc` up to its terminator, and the bytes after it.
+fn id3_split(enc: u8, b: &[u8]) -> Option<(&[u8], &[u8])> {
+    if enc == 1 || enc == 2 {
+        let i = b.as_chunks::<2>().0.iter().position(|u| *u == [0, 0])?;
+        Some((&b[..i * 2], &b[(i + 1) * 2..]))
+    } else {
+        let i = b.iter().position(|&x| x == 0)?;
+        Some((&b[..i], &b[i + 1..]))
+    }
+}
+
+fn id3_str(enc: u8, b: &[u8]) -> String {
+    match enc {
+        0 => b.iter().map(|&x| x as char).collect(),
+        1 => decode(b),                                // UTF-16 with a BOM
+        2 => decode(&[&[0xFE, 0xFF][..], b].concat()), // UTF-16BE, no BOM
+        _ => String::from_utf8_lossy(b).into_owned(),
+    }
+}
+
 /// `USLT` body: encoding, language, a terminated description, then the lyrics.
 fn uslt_text(b: &[u8]) -> Option<String> {
     let (&enc, rest) = b.split_first()?;
-    let rest = rest.get(3..)?;
-    let wide = enc == 1 || enc == 2;
-    let body = if wide {
-        let i = rest.as_chunks::<2>().0.iter().position(|u| *u == [0, 0])?;
-        &rest[(i + 1) * 2..]
-    } else {
-        &rest[rest.iter().position(|&x| x == 0)? + 1..]
-    };
-    Some(match enc {
-        0 => body.iter().map(|&x| x as char).collect(),
-        1 => decode(body),                                // UTF-16 with a BOM
-        2 => decode(&[&[0xFE, 0xFF][..], body].concat()), // UTF-16BE, no BOM
-        _ => String::from_utf8_lossy(body).into_owned(),
-    })
+    let (_, body) = id3_split(enc, rest.get(3..)?)?;
+    Some(id3_str(enc, body))
 }
 
-/// MP4 atoms in `[pos, end)`: descend `moov › udta › meta › ilst` to `©lyr › data`.
-fn mp4_lyr(f: &mut File, mut pos: u64, end: u64, depth: u32, out: &mut Vec<String>) {
-    const PATH: [&[u8; 4]; 5] = [b"moov", b"udta", b"meta", b"ilst", b"\xA9lyr"];
-    while pos + 8 <= end {
+/// `TXXX` body: encoding, a terminated description, then the value (sometimes terminated too).
+fn txxx_pair(b: &[u8]) -> Option<(String, String)> {
+    let (&enc, rest) = b.split_first()?;
+    let (desc, val) = id3_split(enc, rest)?;
+    let v = id3_str(enc, val);
+    Some((id3_str(enc, desc), v.trim_end_matches('\0').to_string()))
+}
+
+/// The atoms in `[pos, end)`: name, and where each one's body starts and ends.
+fn mp4_atoms(f: &mut File, mut pos: u64, end: u64) -> Vec<([u8; 4], u64, u64)> {
+    let mut v = Vec::new();
+    // The bound stops a file of tiny atoms; a real `ilst` has a few dozen.
+    while pos + 8 <= end && v.len() < 1024 {
         let mut h = [0u8; 16];
         if f.seek(SeekFrom::Start(pos)).is_err() || f.read_exact(&mut h[..8]).is_err() {
-            return;
+            break;
         }
         let (mut size, mut hlen) = (u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as u64, 8u64);
         if size == 1 {
             if f.read_exact(&mut h[8..16]).is_err() {
-                return;
+                break;
             }
             size = u64::from_be_bytes(h[8..16].try_into().unwrap());
             hlen = 16;
@@ -244,25 +356,54 @@ fn mp4_lyr(f: &mut File, mut pos: u64, end: u64, depth: u32, out: &mut Vec<Strin
             size = end - pos;
         }
         if size < hlen || pos + size > end {
-            return;
+            break;
         }
-        let name = &h[4..8];
-        if depth == PATH.len() as u32 {
-            // Inside ©lyr: the `data` atom is type(4) + locale(4) + UTF-8 text.
-            if name == b"data" {
-                if let Some(b) = take(f, size - hlen, MAX_BYTES) {
-                    if b.len() > 8 {
-                        out.push(String::from_utf8_lossy(&b[8..]).into_owned());
-                    }
-                }
-            }
-        } else if name == PATH[depth as usize] {
-            // `meta` is a full box: four bytes of version and flags before its children.
-            let skip = if name == b"meta" { 4 } else { 0 };
-            mp4_lyr(f, pos + hlen + skip, pos + size, depth + 1, out);
-            return;
-        }
+        v.push(([h[4], h[5], h[6], h[7]], pos + hlen, pos + size));
         pos += size;
+    }
+    v
+}
+
+/// The body of the first `want` among `kids`, past `skip` bytes of header.
+fn mp4_body(
+    f: &mut File,
+    kids: &[([u8; 4], u64, u64)],
+    want: &[u8; 4],
+    skip: u64,
+) -> Option<Vec<u8>> {
+    let &(_, s, e) = kids.iter().find(|k| &k.0 == want)?;
+    f.seek(SeekFrom::Start(s + skip)).ok()?;
+    take(f, e.checked_sub(s + skip)?, MAX_BYTES)
+}
+
+/// MP4 tags: `moov › udta › meta › ilst`, then `©lyr` (lyrics) and the `----` items (iTunes'
+/// free-form tags, where ReplayGain goes: a `name` and a `data`).
+fn mp4_tags(f: &mut File, end: u64, out: &mut Vec<(String, String)>) {
+    let mut range = (0, end);
+    for name in [b"moov", b"udta", b"meta", b"ilst"] {
+        let Some(&(_, s, e)) = mp4_atoms(f, range.0, range.1).iter().find(|a| &a.0 == name) else {
+            return;
+        };
+        // `meta` is a full box: four bytes of version and flags before its children.
+        range = (s + if name == b"meta" { 4 } else { 0 }, e);
+    }
+    for (item, s, e) in mp4_atoms(f, range.0, range.1) {
+        let key = match &item {
+            b"\xA9lyr" => Some("LYRICS".to_string()),
+            b"----" => {
+                let kids = mp4_atoms(f, s, e);
+                mp4_body(f, &kids, b"name", 4)
+                    .and_then(|n| keep(&String::from_utf8_lossy(&n)))
+                    .filter(|k| k != "LYRICS")
+            }
+            _ => None,
+        };
+        let Some(key) = key else { continue };
+        // `data`: type(4) + locale(4) + UTF-8 text.
+        let kids = mp4_atoms(f, s, e);
+        if let Some(b) = mp4_body(f, &kids, b"data", 8) {
+            out.push((key, String::from_utf8_lossy(&b).into_owned()));
+        }
     }
 }
 
@@ -670,6 +811,119 @@ mod tests {
             b"data",
             &[&[0, 0, 0, 1, 0, 0, 0, 0][..], text.as_bytes()].concat(),
         )
+    }
+
+    #[test]
+    fn replaygain_is_read_from_flac_id3_and_mp4() {
+        let p = scratch(
+            "rg.flac",
+            &flac(&[
+                "replaygain_track_gain=-7.10 dB",
+                "REPLAYGAIN_TRACK_PEAK=0.988",
+                "ReplayGain_Album_Gain=-6,5 dB",
+                "LYRICS=words",
+            ]),
+        );
+        let g = replaygain(p.to_str().unwrap());
+        assert_eq!(g.track_db, Some(-7.1));
+        assert_eq!(g.album_db, Some(-6.5), "a comma locale");
+        assert_eq!(g.track_peak, Some(0.988));
+        assert_eq!(
+            load(&p).unwrap().lines[0].text,
+            "words",
+            "lyrics still read"
+        );
+
+        let txxx = |d: &str, v: &str| [&[3u8][..], d.as_bytes(), &[0], v.as_bytes()].concat();
+        let utf16 = |d: &str, v: &str| {
+            let w = |x: &str| {
+                let mut b = vec![0xFF, 0xFE];
+                b.extend(x.encode_utf16().flat_map(|u| u.to_le_bytes()));
+                b
+            };
+            [&[1u8][..], &w(d), &[0, 0], &w(v)].concat()
+        };
+        let mp3 = [
+            id3(
+                4,
+                &[
+                    (b"TXXX", txxx("REPLAYGAIN_TRACK_GAIN", "+2.50 dB\0")),
+                    (b"TXXX", utf16("replaygain_album_gain", "-1.00 dB")),
+                    (b"TXXX", txxx("MusicBrainz Album Id", "x")),
+                ],
+            ),
+            vec![0xFF, 0xFB, 0x90, 0],
+        ]
+        .concat();
+        let p = scratch("rg.mp3", &mp3);
+        let g = replaygain(p.to_str().unwrap());
+        assert_eq!((g.track_db, g.album_db), (Some(2.5), Some(-1.0)));
+
+        let free = |name: &str, v: &str| {
+            atom(
+                b"----",
+                &[
+                    atom(b"mean", b"\0\0\0\0com.apple.iTunes"),
+                    atom(b"name", &[b"\0\0\0\0", name.as_bytes()].concat()),
+                    mp4_data(v),
+                ]
+                .concat(),
+            )
+        };
+        let ilst = atom(
+            b"ilst",
+            &[
+                free("replaygain_track_gain", "-3.00 dB"),
+                atom(b"\xA9lyr", &mp4_data("sung")),
+            ]
+            .concat(),
+        );
+        let meta = atom(b"meta", &[&[0u8; 4][..], &ilst].concat());
+        let m4a = [
+            atom(b"ftyp", b"M4A \0\0\0\0"),
+            atom(b"moov", &atom(b"udta", &meta)),
+        ]
+        .concat();
+        let p = scratch("rg.m4a", &m4a);
+        assert_eq!(replaygain(p.to_str().unwrap()).track_db, Some(-3.0));
+        assert_eq!(load(&p).unwrap().lines[0].text, "sung");
+    }
+
+    #[test]
+    fn the_gain_picks_its_mode_falls_back_and_never_clips() {
+        let unity = 1u32 << 24;
+        assert_eq!(Gain::default().q24(false), None, "no tags, no gain");
+        let g = Gain {
+            track_db: Some(-6.0206),
+            album_db: Some(0.0),
+            ..Gain::default()
+        };
+        assert_eq!(g.q24(false), Some(unity / 2), "-6 dB is half");
+        assert_eq!(g.q24(true), Some(unity));
+        let only_track = Gain {
+            track_db: Some(0.0),
+            ..Gain::default()
+        };
+        assert_eq!(
+            only_track.q24(true),
+            Some(unity),
+            "album falls back to track"
+        );
+        let loud = Gain {
+            track_db: Some(6.0206),
+            track_peak: Some(0.8),
+            ..Gain::default()
+        };
+        assert_eq!(
+            loud.q24(false),
+            Some((unity as f32 * 1.25) as u32),
+            "+6 dB held to 1/peak"
+        );
+        let wild = Gain {
+            track_db: Some(60.0),
+            ..Gain::default()
+        };
+        assert!(wild.q24(false).unwrap() < 4 * unity, "kept under +12 dB");
     }
 
     #[test]

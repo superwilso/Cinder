@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of real rows. The home page's topic links are row ids after them ([`group_row`]).
-pub const ROWS: usize = 37;
+pub const ROWS: usize = 38;
 
 /// The topic pages: title, the home row's second line (what is inside), and the rows, in order.
 /// Every row is on exactly one page: here, or [`HOME_ROWS`].
@@ -36,6 +36,7 @@ pub const GROUPS: [(&str, &str, &[usize]); 7] = [
             ROW_NP_BUTTON,
             ROW_NP_BACK,
             ROW_NP_COUNT,
+            ROW_NP_LYRICS,
             ROW_NP_TINT,
         ],
     ),
@@ -167,6 +168,9 @@ pub const ROW_NP_BACK: usize = 18;
 pub const ROW_NP_COUNT: usize = 19;
 /// Now Playing's background takes the cover's colour (`Theme::tinted`). OFF by default.
 pub const ROW_NP_TINT: usize = 33;
+/// The Lyrics chip at the top left of Now Playing, for a song with lyrics. OFF by default (owner,
+/// 2026-11-14); the lyrics stay one tap away on Track information either way.
+pub const ROW_NP_LYRICS: usize = 35;
 /// Hold locks the player's own buttons too, not only the screen (#51, plaquette). Power still
 /// toggles the screen and headphone buttons still work. OFF by default: under Hold the side
 /// buttons have always controlled playback.
@@ -241,8 +245,8 @@ pub const ROW_POWER_OFF: usize = 11;
 pub const ROW_RESET: usize = 28;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
 pub const ROW_LANGUAGE: usize = 29;
-pub const ROW_FIRMWARE: usize = 35;
-pub const ROW_MODEL: usize = 36;
+pub const ROW_FIRMWARE: usize = 36;
+pub const ROW_MODEL: usize = 37;
 /// Wi-Fi (`wifi.rs`): shown only when the Wi-Fi install option is on the player.
 pub const ROW_WIFI: usize = 30;
 
@@ -520,6 +524,7 @@ fn title(r: usize) -> &'static str {
         ROW_NP_BACK => crate::i18n::text("Back arrow"),
         ROW_NP_COUNT => crate::i18n::text("Track number"),
         ROW_NP_TINT => crate::i18n::text("Cover colours"),
+        ROW_NP_LYRICS => crate::i18n::text("Lyrics button"),
         ROW_HOLD_BUTTONS => crate::i18n::text("Hold locks the buttons"),
         ROW_BIG => crate::i18n::text("Big view"),
         ROW_BIG_BAR => crate::i18n::text("Bigger top bar"),
@@ -580,6 +585,7 @@ fn sub_line<'a>(r: usize, v: &'a SettingsView) -> &'a str {
         ROW_NP_BACK => crate::i18n::text("Top left, like the edge swipe"),
         ROW_NP_COUNT => crate::i18n::text("Its place in what's playing"),
         ROW_NP_TINT => crate::i18n::text("Background from the album art"),
+        ROW_NP_LYRICS => crate::i18n::text("Top left, when the song has lyrics"),
         ROW_HOLD_BUTTONS => crate::i18n::text("Headphone buttons still work"),
         ROW_DELETE => crate::i18n::text("From Track information and album pages"),
         ROW_MENU_ICONS => crate::i18n::text("In the Menu and the pull-down panel"),

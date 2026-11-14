@@ -435,6 +435,27 @@ int main(int argc, char** argv)
         snd_pcm_writei(pcmh, left, 100);
         check(memcmp(fake_last(), left, 400) == 0, "jack: crossfeed off: untouched");
     }
+
+    /* ReplayGain on the jack: -6 dB once the ramp is through; gone again when the file is */
+    {
+        char gp[512];
+        snprintf(gp, sizeof gp, "%s/cinder_rg", dir);
+        unsigned char tone[400];
+        for (int i = 0; i < 200; i++) put16(tone + i * 2, i & 1 ? -12000 : 12000);
+        int fd = open(gp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) { (void)!write(fd, "8388608\n", 8); close(fd); }
+        nap(300);
+        for (int k = 0; k < 3; k++) snd_pcm_writei(pcmh, tone, 100);
+        if (expect_active)
+            check(get16(fake_last()) == 6000 && get16(fake_last() + 2) == -6000, "jack: replaygain -6 dB (12000 -> 6000)");
+        else
+            check(memcmp(fake_last(), tone, 400) == 0, "jack: in any other process no replaygain");
+        check(get16(tone) == 12000, "jack: replaygain never writes the caller's buffer");
+        unlink(gp);
+        nap(300);
+        for (int k = 0; k < 2; k++) snd_pcm_writei(pcmh, tone, 100);
+        check(memcmp(fake_last(), tone, 400) == 0, "jack: replaygain off: back to untouched after one ramp");
+    }
     snd_pcm_close(pcmh);
 
     /* ── the effect chain ── */

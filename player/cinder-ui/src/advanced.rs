@@ -28,7 +28,7 @@ use crate::widgets::{fill_rect, hline, sty, toggle};
 use crate::Canvas;
 
 /// Row ids. IDENTITIES, not positions: the screen draws them in [`order`].
-pub const ROWS: usize = 14;
+pub const ROWS: usize = 15;
 pub const ROW_CLEAR_PHASE: usize = 0;
 pub const ROW_DSEE_AI: usize = 1;
 pub const ROW_DSEE_CUSTOM: usize = 2;
@@ -55,6 +55,10 @@ pub const ROW_VOL_CURVE: usize = 12;
 /// Headphone crossfeed. Cinder's own, after Sony's chain (libcinder_mono.so), so no effect mode
 /// takes it out of the path; it stands aside while Mono is on.
 pub const ROW_CROSSFEED: usize = 13;
+/// ReplayGain, from the song's tags. Cinder's own like crossfeed, so never dimmed.
+pub const ROW_REPLAYGAIN: usize = 14;
+/// The ReplayGain row's values, in tap order.
+pub const REPLAYGAIN: [&str; 3] = ["Off", "Per track", "Per album"];
 
 /// Clear Bass steps. The index times two is the gain handed to the six-band's band 0. Measured at
 /// the jack 2026-10-11: +10 is about +7 dB from 35 to 90 Hz.
@@ -64,7 +68,7 @@ pub const CLEAR_BASS: [&str; 6] = ["Off", "+2", "+4", "+6", "+8", "+10"];
 /// chain), then the tone stage, then the two hardware rows. The Clear Bass row exists only where
 /// the firmware can run it.
 pub fn order(clear_bass: bool) -> Vec<usize> {
-    let mut v = vec![ROW_VPT, ROW_CROSSFEED, ROW_DC];
+    let mut v = vec![ROW_VPT, ROW_CROSSFEED, ROW_REPLAYGAIN, ROW_DC];
     if clear_bass {
         v.push(ROW_CLEAR_BASS);
     }
@@ -169,6 +173,8 @@ pub struct Advanced {
     pub crossfeed: bool,
     /// Mono is on: crossfeed then has nothing to blend, and the row says so.
     pub mono: bool,
+    /// One of [`REPLAYGAIN`].
+    pub replaygain: &'static str,
     /// The DAC EQ has at least one band off zero.
     pub dac_eq_on: bool,
     /// The volume curve: None without the installer's volume-curve option, else whether the
@@ -188,7 +194,10 @@ pub struct Advanced {
 /// the thing doing the overriding, so greying it out would strand the user with no way back.
 fn dimmed(a: &Advanced, row: usize) -> bool {
     (a.overridden_by.is_some()
-        && !matches!(row, ROW_HP_AMP | ROW_DAC_EQ | ROW_VOL_CURVE | ROW_CROSSFEED))
+        && !matches!(
+            row,
+            ROW_HP_AMP | ROW_DAC_EQ | ROW_VOL_CURVE | ROW_CROSSFEED | ROW_REPLAYGAIN
+        ))
         || not_here(a, row)
 }
 
@@ -409,6 +418,15 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             }),
             End::Switch(a.crossfeed && !a.mono),
         ),
+        ROW_REPLAYGAIN => (
+            "ReplayGain",
+            s(match a.replaygain {
+                "Per album" => "Each album at the same loudness, its own mix kept",
+                "Per track" => "Every song at the same loudness",
+                _ => "Evens out loudness from the songs' tags",
+            }),
+            End::Pill(a.replaygain, a.replaygain != "Off"),
+        ),
         ROW_VOL_CURVE => (
             "Volume curve",
             s(match a.vol_curve {
@@ -524,6 +542,7 @@ mod tests {
             hp_linear: false,
             crossfeed: false,
             mono: false,
+            replaygain: "Off",
             dac_eq_on: false,
             vol_curve: Some(false),
             clear_bass: None,
@@ -579,17 +598,20 @@ mod tests {
         }
     }
 
-    /// An upstream mode dims every effect row; the hardware rows and crossfeed (Cinder's own,
-    /// after Sony's chain) stay live.
+    /// An upstream mode dims every effect row; the hardware rows, crossfeed and ReplayGain
+    /// (Cinder's own, after Sony's chain) stay live.
     #[test]
     fn an_override_dims_the_effects_and_not_the_hardware_rows() {
         let a = Advanced {
             overridden_by: Some("Direct mode"),
             ..sample()
         };
-        assert!(!dimmed(&a, ROW_CROSSFEED));
+        assert!(!dimmed(&a, ROW_CROSSFEED) && !dimmed(&a, ROW_REPLAYGAIN));
         for r in 0..ROWS {
-            if r == ROW_HP_AMP || r == ROW_DAC_EQ || r == ROW_VOL_CURVE || r == ROW_CROSSFEED {
+            if matches!(
+                r,
+                ROW_HP_AMP | ROW_DAC_EQ | ROW_VOL_CURVE | ROW_CROSSFEED | ROW_REPLAYGAIN
+            ) {
                 continue;
             }
             assert!(dimmed(&a, r), "row {r} should be dimmed while overridden");

@@ -50,10 +50,16 @@ pub enum Opt {
     DsdNative,
     /// Headphone crossfeed (Sound ▸ Advanced; libcinder_mono.so reads /tmp/cinder_crossfeed).
     Crossfeed,
+    /// ReplayGain from the tags (Sound ▸ Advanced; libcinder_mono.so reads /tmp/cinder_rg).
+    ReplayGain,
+    /// ReplayGain uses the album's gain, so an album keeps its own loud and quiet songs.
+    RgAlbum,
+    /// Now Playing's Lyrics chip (`settings::ROW_NP_LYRICS`).
+    NpLyrics,
 }
 
 impl Opt {
-    pub const ALL: [Opt; 19] = [
+    pub const ALL: [Opt; 22] = [
         Opt::Quick,
         Opt::FoldersTab,
         Opt::DeleteMusic,
@@ -73,6 +79,9 @@ impl Opt {
         Opt::NpTint,
         Opt::DsdNative,
         Opt::Crossfeed,
+        Opt::ReplayGain,
+        Opt::RgAlbum,
+        Opt::NpLyrics,
     ];
 
     /// The settings-file key.
@@ -97,6 +106,9 @@ impl Opt {
             Opt::NpTint => "np_tint",
             Opt::DsdNative => "dsd_native",
             Opt::Crossfeed => "crossfeed",
+            Opt::ReplayGain => "replaygain",
+            Opt::RgAlbum => "replaygain_album",
+            Opt::NpLyrics => "np_lyrics",
         }
     }
 
@@ -116,6 +128,7 @@ impl Opt {
             Opt::HoldButtons => Some(s::ROW_HOLD_BUTTONS),
             Opt::NpTint => Some(s::ROW_NP_TINT),
             Opt::DsdNative => Some(s::ROW_DSD_NATIVE),
+            Opt::NpLyrics => Some(s::ROW_NP_LYRICS),
             _ => None,
         }
     }
@@ -150,7 +163,7 @@ mod tests {
     fn every_switch_starts_off_and_has_its_own_key_and_row() {
         assert_eq!(
             Opt::ALL.len(),
-            Opt::Crossfeed as usize + 1,
+            Opt::NpLyrics as usize + 1,
             "ALL lists every variant"
         );
         let none = Opts::default();
