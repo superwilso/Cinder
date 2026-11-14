@@ -1,0 +1,127 @@
+# vendor/sony/lib/libBtCommonService.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir vendor/sony/lib
+elf 0x5000400 0
+soname libBtCommonService.so
+needed libcxxrt.so.1
+needed libpstcore.so
+needed libBtMw.so
+needed libBtCompIf.so
+needed libConfigurationService.so
+needed libLogupStub.so
+needed libc++.so.1
+needed libgcc_s.so.1
+needed libpthread.so.0
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 libBtCommonService.so
+verneed libgcc_s.so.1 2 0 GCC_3.5
+verneed libc.so.6 3 0 GLIBC_2.4
+verneed libc.so.6 4 0 GLIBC_2.7
+verneed ld-linux-armhf.so.3 5 0 GLIBC_2.4
+verneed libpthread.so.0 6 0 GLIBC_2.4
+sym 0x0 0 18 0 U 0x2 __aeabi_unwind_cpp_pr0
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 34 0 U 0x3 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x3 abort
+sym 0x0 0 18 0 U 0x3 __stack_chk_fail
+sym 0x0 0 18 0 U 0x3 memcmp
+sym 0x0 0 17 0 U 0x5 __stack_chk_guard
+sym 0x0 0 18 0 U 0x2 __aeabi_unwind_cpp_pr1
+sym 0x0 0 17 0 U 0x3 stderr
+sym 0x0 0 18 0 U 0x3 strlen
+sym 0x0 0 18 0 U 0x3 memcpy
+sym 0x0 0 18 0 U 0x4 __open_2
+sym 0x0 0 18 0 U 0x0 _ZdlPv
+sym 0x0 0 18 0 U 0x0 _Znwj
+sym 0x0 0 18 0 U 0x0 __cxa_pure_virtual
+sym 0x0 0 18 0 U 0x0 _ZN3pst3log5PrintENS0_11log_level_tEPKciS3_PKNS0_9LogModuleE
+sym 0x0 0 18 0 U 0x0 _ZN3pst3log5PrintENS0_11log_level_tEPKciS3_PKNS0_9LogModuleES3_z
+sym 0x0 0 18 0 U 0x0 _ZN3pst3log5TraceC1EPKNS0_9LogModuleEPKciS6_
+sym 0x0 0 18 0 U 0x0 _ZN3pst3log5TraceD1Ev
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder11ServiceBase10OnTransactEjRNS1_16TransactionParamEPS3_
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder11ServiceBase11NotifyDeathEPNS1_18RemoteBinderObjectE
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder11ServiceBaseD2Ev
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder16TransactionParam6PutObjEPKvb
+sym 0x0 0 18 0 U 0x0 _ZNKSt11logic_error4whatEv
+sym 0x0 0 18 0 U 0x0 _ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv
+sym 0x0 0 18 0 U 0x0 _ZNSt11logic_errorC2EPKc
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcj
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7reserveEj
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSERKS5_
+sym 0x0 0 17 0 U 0x0 _ZTVN2bt19BtCommonComponentIfE
+sym 0x0 0 17 0 U 0x0 _ZTVSt12length_error
+sym 0x0 0 18 0 U 0x3 usleep
+sym 0x0 0 18 0 U 0x3 __cxa_atexit
+sym 0x0 0 18 0 U 0x3 fprintf
+sym 0x0 0 18 0 U 0x3 memmove
+sym 0x0 0 18 0 U 0x0 _ZThn4_N3pst8services6binder11ServiceBase11NotifyDeathEPNS1_18RemoteBinderObjectE
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder11ServiceBase15NotifyListenersEjRNS1_16TransactionParamEbRKNSt3__112basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEEPFbSD_SD_E
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder14ServiceManager17TimeMeasureHolderC1ERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEEb
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder14ServiceManager17TimeMeasureHolderD1Ev
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder16TransactionParam3GetEj
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder16TransactionParam4InitEjj
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder16TransactionParam4SizeEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder16TransactionParam5AllocEj
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder16TransactionParam6GetStrERNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEE
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder16TransactionParam6PutStrEPKc
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_count16__release_sharedEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder12BinderDriver12GetLastErrorEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder12BinderDriver12GetReferenceEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder12BinderDriver12SetLastErrorEi
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder14ServiceManager12TwoStepReplyEiRNS1_16TransactionParamE
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder14ServiceManager20TwoStepReplyReceiver4WaitEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder14ServiceManager26CreateTwoStepReplyReceiverEPvRNS1_16TransactionParamE
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder14ServiceManager6AddLogERKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEE
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder16TransactionParam13ResetPositionEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder16TransactionParamaSERKS2_
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder17ServiceClientBase10GetServiceEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder17ServiceClientBase11AddListenerERNSt3__110shared_ptrINS1_13IBinderObjectEEES7_
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder17ServiceClientBase14RemoveListenerERNSt3__110shared_ptrINS1_13IBinderObjectEEEj
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder17ServiceClientBase24ServiceListenerProxyBase12AddNotifyJobENSt3__18functionIFvvEEEbb
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder17ServiceClientBase24ServiceListenerProxyBase7DisableEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder17ServiceClientBase24ServiceListenerProxyBaseC2Ev
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder17ServiceClientBase7ConnectEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder24TransactionParamAutoFreeD1Ev
+sym 0x0 0 18 0 U 0x0 _ZNKSt3__119__shared_weak_count13__get_deleterERKSt9type_info
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_countD2Ev
+sym 0x0 0 18 0 U 0x3 __vsnprintf_chk
+sym 0x0 0 18 0 U 0x0 _ZNSt3__15mutexD1Ev
+sym 0x0 0 18 0 U 0x0 _ZN5logup12logConnectBt10setAppNameERKNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE
+sym 0x0 0 18 0 U 0x0 _ZN5logup12logConnectBt10setProfileENS0_8profilekE
+sym 0x0 0 18 0 U 0x0 _ZN5logup12logConnectBt11setVendorIdERKNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE
+sym 0x0 0 18 0 U 0x0 _ZN5logup12logConnectBt12setProductIdERKNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE
+sym 0x0 0 18 0 U 0x0 _ZN5logup12logConnectBt13setVendorTypeENS0_11vendorTypekE
+sym 0x0 0 18 0 U 0x0 _ZN5logup12logConnectBt9setStatusENS0_7statuskE
+sym 0x0 0 18 0 U 0x0 _ZN5logup12logConnectBtC1Ev
+sym 0x0 0 18 0 U 0x0 _ZN5logup12logConnectBtD1Ev
+sym 0x0 0 18 0 U 0x0 _ZN5logup9logupStub11getInstanceEv
+sym 0x0 0 18 0 U 0x0 _ZN5logup9logupStub3logERNS_7logBaseE
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13Configuration5FlushEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13Configuration6GetIntENS1_7GroupIdENS1_5KeyIdERi
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13Configuration6SetIntENS1_7GroupIdENS1_5KeyIdEi
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13Configuration7GetBoolENS1_7GroupIdENS1_5KeyIdERb
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13Configuration7SetBoolENS1_7GroupIdENS1_5KeyIdEb
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13Configuration9GetBinaryENS1_7GroupIdENS1_5KeyIdEjPh
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13Configuration9GetStringENS1_7GroupIdENS1_5KeyIdERNSt3__112basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEE
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13Configuration9SetBinaryENS1_7GroupIdENS1_5KeyIdEjPKh
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13Configuration9SetStringENS1_7GroupIdENS1_5KeyIdERKNSt3__112basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEE
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services13configuration13ConfigurationC1Ev
+sym 0x0 0 18 0 U 0x0 BtMwCommonGetBtVersion
+sym 0x0 0 18 0 U 0x0 BtMwCommonGetMyCoD
+sym 0x0 0 18 0 U 0x0 BtMwCommonGetMyUuid
+sym 0x0 0 18 0 U 0x0 BtMwCommonGetProfileVersion
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9push_backEc
+sym 0x0 0 18 0 U 0x0 _ZNSt3__14stoiERKNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEPji
+sym 0x0 0 18 0 U 0x3 __read_chk
+sym 0x0 0 18 0 U 0x6 close
+sym 0x1c078 0 16 0 A 0x1 _end
+sym 0x1c004 0 16 0 A 0x1 _edata
+sym 0x1c004 0 16 0 A 0x1 __bss_start
+sym 0x3181 236 18 0 T 0x1 _ZN3pst8services22BtCommonServiceFactory14CreateInstanceEv
+sym 0xc28d 112 18 0 T 0x1 _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv

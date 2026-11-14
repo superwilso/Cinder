@@ -1,0 +1,75 @@
+name: payload
+
+# Builds the whole device payload (cinder-home, the helpers, the shims, the Wi-Fi option, both
+# channels, the .UPG packages) on GitHub, with no firmware, and checks it byte for byte against
+# cinder-home/dist/PAYLOAD.sha256 — the manifest tools/release.sh wrote from the maintainer's build.
+#
+# The device libraries the build links against are replaced by stand-ins made from their symbol
+# lists (cinder-home/tools/stubs.py, cinder-home/stubs/); everything else is a pinned public
+# download. See tools/ci_build_payload.sh.
+#
+# For now this CHECKS a release; release.yml still ships the payload release.sh uploaded. Once
+# runs here match a release, release.yml can take its payload from this job instead.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  payload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    # The payload carries absolute paths (Rust panic locations, the Wi-Fi build folders); the build
+    # must use the maintainer's to come out the same. See tools/ci_build_payload.sh.
+    env:
+      HOME: /home/sony
+      CARGO_HOME: /home/sony/.cargo
+      RUSTUP_HOME: /home/sony/.rustup
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Move the checkout to /home/sony/sony
+        run: |
+          sudo mkdir -p /home/sony
+          sudo chown "$(id -u):$(id -g)" /home/sony
+          cp -a "$GITHUB_WORKSPACE" /home/sony/sony
+
+      - name: Cache the toolchains and the prepared kernel
+        uses: actions/cache@v4
+        with:
+          path: |
+            /home/sony/toolchains
+            /home/sony/arm-linux-musleabihf-cross
+            /home/sony/arm-linux-musleabihf-cross.tgz
+            /home/sony/cinder-llusbdac
+          key: payload-toolchains-${{ hashFiles('tools/ci_build_payload.sh') }}
+
+      - name: Set up
+        working-directory: /home/sony/sony
+        run: bash tools/ci_build_payload.sh --setup
+
+      - name: Build and compare
+        id: build
+        working-directory: /home/sony/sony
+        run: bash tools/ci_build_payload.sh
+
+      - name: Keep the payload
+        if: always()
+        run: |
+          cd /home/sony/sony/cinder-home/dist
+          tar -czf /tmp/cinder-payload-ci.tar.gz stable dev 2>/dev/null || true
+          ( cd stable && sha256sum * ) > /tmp/stable.sha256 2>/dev/null || true
+          ( cd dev && sha256sum * ) > /tmp/dev.sha256 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cinder-payload-ci
+          path: |
+            /tmp/cinder-payload-ci.tar.gz
+            /tmp/stable.sha256
+            /tmp/dev.sha256

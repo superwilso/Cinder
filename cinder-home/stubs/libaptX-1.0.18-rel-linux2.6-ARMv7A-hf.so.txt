@@ -1,0 +1,43 @@
+# lib/libaptX-1.0.18-rel-linux2.6-ARMv7A-hf.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir lib
+elf 0x5000400 0
+soname libaptX-1.0.18-rel-linux2.6-ARMv7A-hf.so
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 libaptX-1.0.18-rel-linux2.6-ARMv7A-hf.so
+verneed libc.so.6 2 0 GLIBC_2.4
+verneed ld-linux-armhf.so.3 3 0 GLIBC_2.4
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 34 0 U 0x2 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x2 memset
+sym 0x0 0 18 0 U 0x2 __stack_chk_fail
+sym 0x0 0 17 0 U 0x3 __stack_chk_guard
+sym 0x2970 0 18 0 T 0x1 _fini
+sym 0xd61 436 18 0 T 0x1 aptxbtenc_init
+sym 0x914 0 18 0 T 0x1 _init
+sym 0xd45 28 18 0 T 0x1 clearmem
+sym 0xbd9 364 18 0 T 0x1 quantiseDifferenceHH
+sym 0x25f1 492 18 0 T 0x1 quantiseDifferenceLL
+sym 0x500c 0 16 0 A 0x1 __bss_start
+sym 0x24a9 328 18 0 T 0x1 AsmQmfConvI
+sym 0x61f8 0 16 0 A 0x1 _end
+sym 0x1a59 1256 18 0 T 0x1 processSubbandLL
+sym 0x1679 992 18 0 T 0x1 processSubband
+sym 0x1649 24 18 0 T 0x1 aptxbtenc_version
+sym 0xac5 276 18 0 T 0x1 quantiseDifferenceHL
+sym 0x500c 0 16 0 A 0x1 _edata
+sym 0x1f41 1052 18 0 T 0x1 processSubbandHL
+sym 0x2361 328 18 0 T 0x1 AsmQmfConvO
+sym 0x161d 28 18 0 T 0x1 NewAptxEnc
+sym 0x1639 16 18 0 T 0x1 SizeofAptxbtenc
+sym 0x1661 24 18 0 T 0x1 aptxbtenc_build
+sym 0xf15 1800 18 0 T 0x1 aptxbtenc_encodestereo
+sym 0x5010 4584 17 0 W 0x1 aptXStereoEncoder
+sym 0x2a38 64 17 0 R 0x1 Qmf_outerCoeffs
+sym 0x5008 4 17 0 W 0x1 swversion
+sym 0x29f8 64 17 0 R 0x1 Qmf_innerCoeffs
+sym 0x5004 4 17 0 W 0x1 swbuild
+sym 0x27dd 386 18 0 T 0x1 quantiseDifferenceLH

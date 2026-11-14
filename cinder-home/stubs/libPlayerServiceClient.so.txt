@@ -1,0 +1,108 @@
+# vendor/sony/lib/libPlayerServiceClient.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir vendor/sony/lib
+elf 0x5000400 0
+soname libPlayerServiceClient.so
+needed libcxxrt.so.1
+needed libpstcore.so
+needed libc++.so.1
+needed libgcc_s.so.1
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 libPlayerServiceClient.so
+verneed libgcc_s.so.1 2 0 GCC_3.5
+verneed libc.so.6 3 0 GLIBC_2.4
+verneed ld-linux-armhf.so.3 4 0 GLIBC_2.4
+sym 0x0 0 18 0 U 0x2 __aeabi_unwind_cpp_pr0
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 34 0 U 0x3 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x3 abort
+sym 0x0 0 18 0 U 0x3 __stack_chk_fail
+sym 0x0 0 17 0 U 0x4 __stack_chk_guard
+sym 0x0 0 18 0 U 0x2 __aeabi_unwind_cpp_pr1
+sym 0x0 0 17 0 U 0x3 stderr
+sym 0x0 0 18 0 U 0x3 strlen
+sym 0x0 0 18 0 U 0x0 _ZdlPv
+sym 0x0 0 18 0 U 0x0 _Znwj
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcj
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_count12__add_sharedEv
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_count16__release_sharedEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst4core9Framework12GetReferenceEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst4core9Framework16GetServiceClientERKNSt3__112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEE
+sym 0x0 0 18 0 U 0x0 _ZNKSt11logic_error4whatEv
+sym 0x0 0 18 0 U 0x0 _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEjjPKcj
+sym 0x0 0 18 0 U 0x0 _ZNKSt3__119__shared_weak_count13__get_deleterERKSt9type_info
+sym 0x0 0 18 0 U 0x0 _ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv
+sym 0x0 0 18 0 U 0x0 _ZNSt11logic_errorC2EPKc
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcj
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSERKS5_
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_count10__add_weakEv
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_count14__release_weakEv
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_count4lockEv
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_countD2Ev
+sym 0x0 0 18 0 U 0x0 _ZNSt3__19to_stringEi
+sym 0x0 0 17 0 U 0x0 _ZTVSt12length_error
+sym 0x0 0 18 0 U 0x3 fprintf
+sym 0x0 0 18 0 U 0x3 getpid
+sym 0x43c1 192 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService26PlayController_OnNextTrackERKN14IPlayerService44PlayController_TrackSequence_OnTrack_RequestERNS3_34PlayController_TrackSequence_ParamE
+sym 0x32b5 112 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController27SetTrackSequenceWithDpcModeERKNSt3__110shared_ptrINS_11playservice13TrackSequenceEEENS5_10dpc_mode_tE
+sym 0x2f09 84 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController7ConnectEPNS_11playservice17PlayEventListenerE
+sym 0x3b41 136 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerServiceD1Ev
+sym 0x2cf9 156 18 0 T 0x1 _ZN3pst8services13playerservice14PlayControllerD2Ev
+sym 0x3db1 128 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService11AddListenerEv
+sym 0x38c1 84 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController11OnNextTrackENS_11playservice19change_track_mode_tE
+sym 0x3325 72 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController12SetPlaySpeedERKNS_11playservice9PlaySpeedE
+sym 0x3245 112 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController16SetTrackSequenceERKNSt3__110shared_ptrINS_11playservice13TrackSequenceEEE
+sym 0x3035 76 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController15ChangePlayStateENS_11playservice11playstate_tE
+sym 0x3771 84 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController9AllocNextEv
+sym 0x30c1 72 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController9PrevTrackEPKNS_11playservice15PrevTrackOptionE
+sym 0x4249 188 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService24PlayController_AllocNextERKN14IPlayerService42PlayController_TrackSequence_Alloc_RequestERNS3_34PlayController_TrackSequence_ParamE
+sym 0x2e59 56 18 0 T 0x1 _ZN3pst8services13playerservice14PlayControllerD0Ev
+sym 0x418d 188 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService20PlayController_AllocERKN14IPlayerService42PlayController_TrackSequence_Alloc_RequestERNS3_34PlayController_TrackSequence_ParamE
+sym 0x3a5d 228 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerServiceC2Ev
+sym 0x336d 64 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController14ResetPlaySpeedEv
+sym 0x3431 64 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController7SuspendEv
+sym 0x2ff5 64 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController11ClosePlayerEv
+sym 0x3201 68 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController8SeekTimeENS_11playservice14media_origin_tEi
+sym 0x3081 64 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController9NextTrackEv
+sym 0x2c1d 220 18 0 T 0x1 _ZN3pst8services13playerservice14PlayControllerC2EPNS1_13PlayerServiceEP14IPlayerServicePKcS8_
+sym 0x3c45 80 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService11GetInstanceEv
+sym 0x3569 88 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController19OnPlayStatusUpdatedEjRKNS_11playservice10PlayStatusE
+sym 0x3e6d 348 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService13GetControllerEPKc
+sym 0x2f5d 72 18 0 T 0x1 _ZNK3pst8services13playerservice14PlayController11IsConnectedEv
+sym 0x4481 200 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService26PlayController_OnPrevTrackERKN14IPlayerService44PlayController_TrackSequence_OnTrack_RequestERNS3_34PlayController_TrackSequence_ParamE
+sym 0x3819 84 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController9AllocPrevEv
+sym 0x31b9 72 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController9PrevGroupEPKNS_11playservice15PrevGroupOptionE
+sym 0x3b41 136 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerServiceD2Ev
+sym 0x33ad 68 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController14SetPartialModeEii
+sym 0x3d59 88 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService15SetCertFilePathERKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEE
+sym 0x3539 48 18 0 T 0x1 _ZNK3pst8services13playerservice14PlayController7GetNameEv
+sym 0x3bc9 68 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService14RemoveListenerEv
+sym 0x3c95 196 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService17getPlayControllerEPKc
+sym 0x405d 212 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService34PlayController_OnPlayStatusUpdatedERKN14IPlayerService40PlayController_OnPlayStatusUpdated_ParamE
+sym 0x6004 0 16 0 A 0x1 __bss_start
+sym 0x2fa5 80 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController10HasSetListEPb
+sym 0x3619 88 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController17OnPlayTimeUpdatedEii
+sym 0x4131 92 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService32PlayController_OnPlayTimeUpdatedERKN14IPlayerService38PlayController_OnPlayTimeUpdated_ParamE
+sym 0x3c0d 56 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerServiceD0Ev
+sym 0x600c 0 16 0 A 0x1 _end
+sym 0x34f5 68 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController17SetSilenceEnabledEb
+sym 0x2cf9 156 18 0 T 0x1 _ZN3pst8services13playerservice14PlayControllerD1Ev
+sym 0x3969 96 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController11OnPrevTrackENS_11playservice19change_track_mode_tEb
+sym 0x2c1d 220 18 0 T 0x1 _ZN3pst8services13playerservice14PlayControllerC1EPNS1_13PlayerServiceEP14IPlayerServicePKcS8_
+sym 0x3e31 60 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService9TerminateEv
+sym 0x6004 0 16 0 A 0x1 _edata
+sym 0x3179 64 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController9NextGroupEv
+sym 0x3a5d 228 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerServiceC1Ev
+sym 0x4305 188 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService24PlayController_AllocPrevERKN14IPlayerService42PlayController_TrackSequence_Alloc_RequestERNS3_34PlayController_TrackSequence_ParamE
+sym 0x3fc9 148 18 0 T 0x1 _ZN3pst8services13playerservice13PlayerService16ConverPlayStatusERKN14IPlayerService10PlayStatusERNS_11playservice10PlayStatusE
+sym 0x3109 112 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController16GetCurrentStatusERNS_11playservice10PlayStatusE
+sym 0x36c9 84 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController5AllocEv
+sym 0x34b1 68 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController9SetDpcKeyEi
+sym 0x2d95 84 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController10DisconnectEv
+sym 0x3471 64 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController6ResumeEv
+sym 0x33f1 64 18 0 T 0x1 _ZN3pst8services13playerservice14PlayController16ResetPartialModeEv

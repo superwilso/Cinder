@@ -1,0 +1,90 @@
+# vendor/sony/lib/libeaselcui.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir vendor/sony/lib
+elf 0x5000400 0
+soname libeaselcui.so
+needed libcxxrt.so.1
+needed libpstcore.so
+needed libeaselcore.so
+needed libc++.so.1
+needed libgcc_s.so.1
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 libeaselcui.so
+verneed libgcc_s.so.1 2 0 GCC_3.5
+verneed libc.so.6 3 0 GLIBC_2.4
+verneed ld-linux-armhf.so.3 4 0 GLIBC_2.4
+sym 0x0 0 18 0 U 0x2 __aeabi_unwind_cpp_pr0
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 34 0 U 0x3 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x3 __stack_chk_fail
+sym 0x0 0 17 0 U 0x4 __stack_chk_guard
+sym 0x0 0 18 0 U 0x2 __aeabi_unwind_cpp_pr1
+sym 0x0 0 18 0 U 0x0 _ZdlPv
+sym 0x0 0 18 0 U 0x0 _Znwj
+sym 0x0 0 18 0 U 0x0 __cxa_pure_virtual
+sym 0x0 0 18 0 U 0x0 _ZN3pst4core9Framework12GetReferenceEv
+sym 0x0 0 18 0 U 0x0 _ZN3pst4core9Framework31UpdateCurrentContextHangTimeoutEy
+sym 0x0 0 18 0 U 0x0 _ZN3pst4core9Framework4PumpEb
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder14ServiceManager17TimeMeasureHolderC1ERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEEb
+sym 0x0 0 18 0 U 0x0 _ZN3pst8services6binder14ServiceManager17TimeMeasureHolderD1Ev
+sym 0x0 0 18 0 U 0x0 _ZN5easel15ApplicationBase21SetPumpTriggerHandlerENSt3__18functionIFvvEEE
+sym 0x0 0 18 0 U 0x0 _ZN5easel15ApplicationBase24GetPostInitializeTimeoutEv
+sym 0x0 0 18 0 U 0x0 _ZN5easel15ApplicationBase25GetChangeLifeCycleTimeoutEv
+sym 0x0 0 18 0 U 0x0 _ZNKSt3__119__shared_weak_count13__get_deleterERKSt9type_info
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcj
+sym 0x0 0 18 0 U 0x0 _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev
+sym 0x0 0 18 0 U 0x0 _ZNSt3__118condition_variable10notify_oneEv
+sym 0x0 0 18 0 U 0x0 _ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE
+sym 0x0 0 18 0 U 0x0 _ZNSt3__118condition_variableD1Ev
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_count16__release_sharedEv
+sym 0x0 0 18 0 U 0x0 _ZNSt3__119__shared_weak_countD2Ev
+sym 0x0 0 18 0 U 0x0 _ZNSt3__15mutex4lockEv
+sym 0x0 0 18 0 U 0x0 _ZNSt3__15mutex6unlockEv
+sym 0x0 0 18 0 U 0x0 _ZNSt3__15mutexD1Ev
+sym 0x2885 60 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEE10OnFinalizeEv
+sym 0x2c81 104 34 0 T 0x1 _ZN3pst4core7FuncJob6FinishEv
+sym 0x2c21 48 34 0 T 0x1 _ZN3pst4core3Job19OnCanceledBeforeRunEv
+sym 0x2695 128 18 0 T 0x1 _ZN5easel12CuiAppModule12OnBackgroundEv
+sym 0x2911 92 34 0 T 0x1 _ZN5easel12CuiAppModuleD2Ev
+sym 0x325c 0 18 0 T 0x1 _fini
+sym 0x2da5 240 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEED2Ev
+sym 0x4d20 52 33 0 W 0x1 _ZTVN5easel13AppModuleBaseINS_12CuiAppModuleEEE
+sym 0x1e61 548 18 0 T 0x1 _ZN5easel12CuiAppModuleC2ERNS_15ApplicationBaseEiPPcNSt3__18functionIFvvEEES8_S8_S8_S8_NS6_IFbvEEES8_
+sym 0x2625 56 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEE10OnActivateEv
+sym 0x280d 120 18 0 T 0x1 _ZN5easel12CuiAppModule10OnFinalizeEv
+sym 0x2d21 80 34 0 T 0x1 _ZNSt3__120__shared_ptr_pointerIPN3pst4core7FuncJobENS_14default_deleteIS3_EENS_9allocatorIS3_EEE16__on_zero_sharedEv
+sym 0x2ce9 56 34 0 T 0x1 _ZNSt3__120__shared_ptr_pointerIPN3pst4core7FuncJobENS_14default_deleteIS3_EENS_9allocatorIS3_EEED0Ev
+sym 0x34b6 1 33 0 R 0x1 _ZN3pst4base21static_type_id_detail18StaticTypeIdMarkerIN5easel12CuiAppModuleEE1cE
+sym 0x296d 96 34 0 T 0x1 _ZN5easel12CuiAppModuleD0Ev
+sym 0x2e95 56 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEED0Ev
+sym 0x4ce4 32 33 0 W 0x1 _ZTVN3pst4core7FuncJobE
+sym 0x27d1 60 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEE12OnInactivateEv
+sym 0x2365 308 34 0 T 0x1 _ZN3pst4core8JobQueue10AddJobFuncENSt3__18functionIFvvEEEPKvS5_S5_S7_
+sym 0x22b9 172 18 0 T 0x1 _ZN5easel12CuiAppModule16OnPostInitializeEv
+sym 0x274d 132 18 0 T 0x1 _ZN5easel12CuiAppModule12OnInactivateEv
+sym 0x4d04 28 33 0 W 0x1 _ZTVNSt3__120__shared_ptr_pointerIPN3pst4core7FuncJobENS_14default_deleteIS3_EENS_9allocatorIS3_EEEE
+sym 0x2499 176 18 0 T 0x1 _ZN5easel12CuiAppModule10OnActivateEv
+sym 0x1e61 548 18 0 T 0x1 _ZN5easel12CuiAppModuleC1ERNS_15ApplicationBaseEiPPcNSt3__18functionIFvvEEES8_S8_S8_S8_NS6_IFbvEEES8_
+sym 0x2be9 56 34 0 T 0x1 _ZN3pst4core7FuncJob3RunEv
+sym 0x265d 56 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEE12OnForegroundEv
+sym 0x2a05 200 34 0 T 0x1 _ZN3pst4core7FuncJobC2ENSt3__18functionIFvvEEEPKvS5_S5_S7_
+sym 0x2acd 140 34 0 T 0x1 _ZN3pst4core7FuncJobD2Ev
+sym 0x5004 0 16 0 A 0x1 __bss_start
+sym 0x2281 56 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEE12OnInitializeEv
+sym 0x5005 0 16 0 A 0x1 _end
+sym 0x28c1 80 18 0 T 0x1 _ZN5easel12CuiAppModule13OnPumpTriggerEv
+sym 0x2085 344 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEEC2ERNS_15ApplicationBaseEiPPcNSt3__18functionIFvvEEESA_SA_SA_SA_NS8_IFbvEEESA_
+sym 0x4cb0 52 17 0 W 0x1 _ZTVN5easel12CuiAppModuleE
+sym 0x2b59 144 34 0 T 0x1 _ZN3pst4core7FuncJobD0Ev
+sym 0x2549 220 18 0 T 0x1 _ZN5easel12CuiAppModule12OnForegroundEv
+sym 0x5004 0 16 0 A 0x1 _edata
+sym 0x21dd 164 18 0 T 0x1 _ZN5easel12CuiAppModule12OnInitializeEv
+sym 0x2d71 52 34 0 T 0x1 _ZNSt3__120__shared_ptr_pointerIPN3pst4core7FuncJobENS_14default_deleteIS3_EENS_9allocatorIS3_EEE21__on_zero_shared_weakEv
+sym 0x29cd 56 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEE10GetClassIdEv
+sym 0x1ab8 0 18 0 T 0x1 _init
+sym 0x2c51 48 34 0 T 0x1 _ZN3pst4core3Job10CancelImplEv
+sym 0x2715 56 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEE12OnBackgroundEv
+sym 0x2ecd 56 34 0 T 0x1 _ZN5easel13AppModuleBaseINS_12CuiAppModuleEE16OnPostInitializeEv

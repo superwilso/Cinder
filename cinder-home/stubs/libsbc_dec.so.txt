@@ -1,0 +1,48 @@
+# lib/libsbc_dec.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir lib
+elf 0x5000000 0
+needed libbtstd.so
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 /proj/mtk94094/Benten_OFN1/vendor/mediatek/c4a/blueangel/src/linux/bin/libsbc_dec.so
+verneed libc.so.6 2 0 GLIBC_2.4
+verneed ld-linux-armhf.so.3 3 0 GLIBC_2.4
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 34 0 U 0x2 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x2 __stack_chk_fail
+sym 0x0 0 17 0 U 0x3 __stack_chk_guard
+sym 0x0 0 18 0 U 0x2 memset
+sym 0x0 0 18 0 U 0x2 raise
+sym 0xbb5 336 18 0 T 0x1 SbcDec_Process
+sym 0x2954 80 17 0 R 0x1 sbc_proto_4_40m1
+sym 0x2834 0 18 0 T 0x1 _fini
+sym 0xd05 24 18 0 T 0x1 sbc_get_the_output_size
+sym 0x984 0 18 0 T 0x1 _init
+sym 0xaed 54 18 0 T 0x1 SbcDec_GetBufferSize
+sym 0x2b64 512 17 0 R 0x1 synmatrix8
+sym 0x2e94 256 17 0 R 0x1 cos_table_fixed_8
+sym 0x5004 0 16 0 A 0x1 __bss_start
+sym 0xb5d 86 18 0 T 0x1 SbcDec_ParseOneFrame
+sym 0x1c5d 502 18 0 T 0x1 sbcdec_decode
+sym 0x2d64 80 17 0 R 0x1 _sbc_proto_fixed4
+sym 0x3004 112 17 0 R 0x1 analysis_consts_fixed4_simd_odd
+sym 0x5005 0 16 0 A 0x1 _end
+sym 0x2844 64 17 0 R 0x1 sbc_offset4
+sym 0x3194 288 17 0 R 0x1 analysis_consts_fixed8_simd_odd
+sym 0x5004 0 16 0 A 0x1 _edata
+sym 0x29a4 160 17 0 R 0x1 sbc_proto_8_80m0
+sym 0x2df4 160 17 0 R 0x1 _sbc_proto_fixed8
+sym 0x3074 288 17 0 R 0x1 analysis_consts_fixed8_simd_even
+sym 0x2884 128 17 0 R 0x1 sbc_offset8
+sym 0x2a44 160 17 0 R 0x1 sbc_proto_8_80m1
+sym 0x32b4 256 17 0 R 0x1 sbc_crc_table
+sym 0x2f94 112 17 0 R 0x1 analysis_consts_fixed4_simd_even
+sym 0xb23 58 18 0 T 0x1 SbcDec_Init
+sym 0xd1d 1444 18 0 T 0x1 sbcdec_unpack_frame
+sym 0x201d 108 18 0 T 0x1 sbcdec_init
+sym 0x2904 80 17 0 R 0x1 sbc_proto_4_40m0
+sym 0x2ae4 128 17 0 R 0x1 synmatrix4
+sym 0x2db4 64 17 0 R 0x1 cos_table_fixed_4

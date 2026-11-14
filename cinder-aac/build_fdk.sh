@@ -4,6 +4,9 @@
 # older encoder: same C interface, and it can cap single frames (AACENC_PEAK_BITRATE).
 # The source is fetched on the first run.
 set -eu
+# No build date in the output (GCC's __DATE__, OpenSSL's "built on"): the same sources give the same
+# bytes, so a CI build can be checked against a release. 2025-01-01 00:00 UTC, a fixed point.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1735689600}"
 cd "$(dirname "$0")"
 : "${DEVSYS:=$HOME/toolchains/xenial-armhf-sysroot/sysroot}"
 : "${RAMLIB:=$PWD/../analysis/ramdisk/lib}"

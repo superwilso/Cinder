@@ -1,0 +1,15 @@
+cinder-wifi: no build date in the module. __DATE__/__TIME__ made every build differ, so a CI
+build could never be checked against a release byte for byte (GCC 4.9 predates SOURCE_DATE_EPOCH).
+
+diff -ruN a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/mgmt/swcr.c b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/mgmt/swcr.c
+--- a/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/mgmt/swcr.c	2026-11-14 18:07:09.895725459 +0000
++++ b/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/mgmt/swcr.c	2026-11-14 18:07:09.911725407 +0000
+@@ -566,7 +566,7 @@
+                 break;
+             case SWCTRL_MAGIC:
+                 g_au4SwCr[1] = _SWCTRL_MAGIC ;
+-                DBGLOG(SW4, INFO,("BUILD TIME: %s %s\n", __DATE__, __TIME__));
++                DBGLOG(SW4, INFO,("BUILD TIME: %s\n", "fixed for a reproducible build (cinder-wifi)"));
+                 break;
+             case SWCTRL_QM_INFO:
+                     {

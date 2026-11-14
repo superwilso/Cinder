@@ -183,9 +183,18 @@ other terms.
 
 ## Cutting a release
 
-The ARM binaries cannot be built in CI: `cinder-home` needs a glibc-2.23 + libc++-3.9.0 cross
-toolchain matched to the player's runtime. So a maintainer builds them and **commits** them under
-`cinder-home/dist/`, and CI builds only the installer. The one dangerous failure is tagging a
+The ARM binaries link against Sony's libraries, which cannot be published, and need a glibc-2.23 +
+libc++-3.9.0 cross toolchain matched to the player's runtime. A maintainer builds them with
+`tools/release.sh`, which records their checksums in `cinder-home/dist/PAYLOAD.sha256`, and the
+release workflow builds the installer around them.
+
+GitHub can rebuild them too. The `payload` workflow (`tools/ci_build_payload.sh`) links against
+stand-ins written from the libraries' symbol lists (`cinder-home/stubs/`, made by
+`cinder-home/tools/stubs.py gen`; no Sony code), fetches every other input pinned by hash, and checks
+each file byte for byte against the manifest. Without the firmware, `CINDER_STUBS=<dir>
+cinder-home/build.sh` does the same on your own machine after `python3 cinder-home/tools/stubs.py
+build <dir>`. When `build.sh` starts linking another Sony library, run `stubs.py gen` on a machine
+that has the firmware and commit `cinder-home/stubs/`. The one dangerous failure is tagging a
 commit whose `dist/` is stale, which ships last week's binaries with a green tick.
 `tools/release.sh` exists to make that impossible:
 
