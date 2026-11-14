@@ -664,6 +664,8 @@ struct Render {
     /// Up Next was edited and PlayerService has not been told yet. Flushed at a track
     /// boundary — see `Action::QueueChanged` for why it cannot be flushed immediately.
     queue_pending: bool,
+    /// The song the shell last started, and when: ReplayGain's "playing" until Sony reports it.
+    rg_started: Option<(String, std::time::Instant)>,
     /// A queue edit landed while a boot-time resume was still armed, so the sequence snapshot
     /// `cinder_resume_load` took no longer describes what the user wants. Rebuilt at the first ▶
     /// rather than at the edit, because rebuilding costs a library query and an edit made before
@@ -1012,6 +1014,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         viz_held_ms: Vec::new(),
         viz_at: std::time::Instant::now(),
         queue_pending: false,
+        rg_started: None,
         resume_stale: false,
         queue_flush: false,
         pending_play: Vec::new(),
@@ -5362,37 +5365,90 @@ fn tmp_flag(path: &str, body: Option<&[u8]>) -> std::io::Result<()> {
     }
 }
 
-/// Sound ▸ Advanced ▸ ReplayGain: the song's gain as a Q24 multiplier in /tmp/cinder_rg, which
-/// libcinder_mono.so applies on the jack and on Bluetooth. No file = unchanged (off, no tags, or
-/// no song). Called on every track change and once a second; the tags are read only when the song
-/// or the mode changed.
-fn replaygain_flag(r: &Render) {
-    static LAST: Mutex<Option<(String, usize)>> = Mutex::new(None);
+/// Sound ▸ Advanced ▸ ReplayGain: gains as Q24 multipliers in two files libcinder_mono.so and the
+/// shell share. `/tmp/cinder_rg` is the song playing, which the library applies on the jack and on
+/// Bluetooth; `/tmp/cinder_rg_next` is the song after it, which the shell renames over the first
+/// the moment Sony's player moves on (`on_sequence` in main.cpp). That signal comes about a second
+/// before the song is reported here, as its first samples pass the library; waiting for the report
+/// played the start of every song at the last one's level (measured 0.85 s, 2026-11-14).
+///
+/// No file = unchanged (off, or no song). Called on every track change, when the shell starts a
+/// song, and once a second; the tags are read only when a song or the mode changed.
+fn replaygain_flag(r: &mut Render) {
+    const FILES: [&str; 2] = ["/tmp/cinder_rg", "/tmp/cinder_rg_next"];
+    static LAST: Mutex<[Option<(String, usize)>; 2]> = Mutex::new([None, None]);
     let mode = r.app.replaygain_mode();
-    let path = r
-        .last_track
+    let reported = r.last_track.as_ref().map_or("", |t| t.filename.as_str());
+    // The started song stands in only until Sony reports it (or 3 s, if it never does).
+    if r.rg_started
         .as_ref()
-        .map_or(String::new(), |t| t.filename.clone());
+        .is_some_and(|(p, at)| p == reported || at.elapsed().as_secs() >= 3)
+    {
+        r.rg_started = None;
+    }
+    let started = r.rg_started.as_ref().map(|(p, _)| p.as_str());
+    let (cur, next) = rg_songs(reported, started, &r.pending_play);
     let mut last = LAST.lock().unwrap();
-    if last.as_ref().is_some_and(|(p, m)| *p == path && *m == mode) {
+    for (slot, path) in [cur, next].into_iter().enumerate() {
+        if last[slot]
+            .as_ref()
+            .is_some_and(|(p, m)| p == path && *m == mode)
+        {
+            continue;
+        }
+        last[slot] = Some((path.to_string(), mode));
+        // An untagged song is written as unity, so the rename still replaces the last song's gain.
+        let q = (mode != 0 && !path.is_empty())
+            .then(|| lyrics::replaygain(path).q24(mode == 2).unwrap_or(1 << 24));
+        match tmp_flag(
+            FILES[slot],
+            q.map(|q| format!("{q}\n")).as_deref().map(str::as_bytes),
+        ) {
+            Ok(()) => eprintln!(
+                "cinder-ffi: replaygain {} {}",
+                ["now", "next"][slot],
+                q.map_or("off".into(), |q| format!(
+                    "{:.2} dB",
+                    20.0 * (q as f32 / 16_777_216.0).log10()
+                ))
+            ),
+            Err(e) => eprintln!("cinder-ffi: replaygain flag: {e}"),
+        }
+    }
+}
+
+/// The songs ReplayGain's two files are for: the one playing, and the one after it in the
+/// sequence Sony's player holds. `started`: a song the shell has just started, which counts as
+/// playing until Sony reports it.
+/// ponytail: the first copy of a song that is in the list twice; the report corrects it.
+fn rg_songs<'a>(
+    reported: &'a str,
+    started: Option<&'a str>,
+    seq: &'a [String],
+) -> (&'a str, &'a str) {
+    let cur = started.unwrap_or(reported);
+    let next = seq
+        .iter()
+        .position(|u| u == cur)
+        .and_then(|i| seq.get(i + 1))
+        .map_or("", String::as_str);
+    (cur, next)
+}
+
+/// The shell has just handed Sony's player a sequence starting at `uri`: its gain goes in now,
+/// ahead of its first samples, not a second later when the song is reported.
+#[no_mangle]
+pub extern "C" fn cinder_replaygain_started(uri: *const c_char) {
+    if uri.is_null() {
         return;
     }
-    *last = Some((path.clone(), mode));
-    let q = (mode != 0 && !path.is_empty())
-        .then(|| lyrics::replaygain(&path).q24(mode == 2))
-        .flatten();
-    match tmp_flag(
-        "/tmp/cinder_rg",
-        q.map(|q| format!("{q}\n")).as_deref().map(str::as_bytes),
-    ) {
-        Ok(()) => eprintln!(
-            "cinder-ffi: replaygain {}",
-            q.map_or("unchanged".into(), |q| format!(
-                "{:.2} dB",
-                20.0 * (q as f32 / 16_777_216.0).log10()
-            ))
-        ),
-        Err(e) => eprintln!("cinder-ffi: replaygain flag: {e}"),
+    // SAFETY: the shell passes a NUL-terminated string it owns for the call.
+    let uri = unsafe { CStr::from_ptr(uri) }
+        .to_string_lossy()
+        .into_owned();
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.rg_started = Some((uri, std::time::Instant::now()));
+        replaygain_flag(r);
     }
 }
 
@@ -13344,6 +13400,25 @@ mod tests {
     }
 
     #[test]
+    fn replaygain_follows_the_song_playing_and_the_one_after_it() {
+        let seq: Vec<String> = ["/a", "/b", "/c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(rg_songs("/a", None, &seq), ("/a", "/b"));
+        assert_eq!(
+            rg_songs("/c", None, &seq),
+            ("/c", ""),
+            "the last song has no next"
+        );
+        assert_eq!(rg_songs("", None, &seq), ("", ""), "nothing playing");
+        assert_eq!(
+            rg_songs("/x", None, &seq),
+            ("/x", ""),
+            "a song the list does not hold"
+        );
+        // The shell has started /b; Sony still reports /a for a second.
+        assert_eq!(rg_songs("/a", Some("/b"), &seq), ("/b", "/c"));
+    }
+
+    #[test]
     fn the_play_order_never_repeats_a_file_back_to_back() {
         let u = |s: &str| Some(s.to_string());
         // The current track queued against itself collapses to one entry.
@@ -13890,6 +13965,7 @@ mod tests {
             viz_held_ms: Vec::new(),
             viz_at: std::time::Instant::now(),
             queue_pending: false,
+            rg_started: None,
             resume_stale: false,
             queue_flush: false,
             pending_play: Vec::new(),

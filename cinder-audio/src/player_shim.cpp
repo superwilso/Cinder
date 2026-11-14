@@ -82,6 +82,30 @@ std::atomic<unsigned> g_cb_state{0};
 std::atomic<unsigned> g_cb_events{0};   // total callbacks seen — 0 = listener never fired
 std::atomic<long long> g_cb_moved_at_ms{0};  // CLOCK_MONOTONIC ms when the position last changed
 
+// ── the sequence's own callback: the EARLY "moved to the next song" ──────────────────────────
+// Sony's player pulls each next track from our sequence, and the sequence tells the function it
+// was built with. Measured 2026-11-14 (two 15 s songs, jack recorded, every signal timed on the
+// monotonic clock): reason 2 arrives as the new song's first samples reach the sound service,
+// on an automatic change and on a Next press alike; onPlayTimeUpdated for the new song comes a
+// full second later (the jack's ALSA buffer is one second), and that is the first the shell's
+// poll can see. Reason 0 is an in-place edit, reason 5 the end of the list; the int was 0 each
+// time. Nothing arrives on a Previous press or a new sequence (the shell starts those itself).
+//
+// ReplayGain is what needs it early: cinder-ffi keeps the next song's gain in one file and the
+// playing song's in another, and the change of song is a rename of the first over the second.
+// Done HERE, on Sony's callback thread, with one syscall and no lock: the sequence's own mutex
+// is held, and the shell's loop may be asleep with the screen off.
+// The two names are cinder-ffi's (`replaygain_flag`); with ReplayGain off neither file exists.
+static void on_sequence(int reason, int arg) {
+    const bool next = reason == 2;
+    const int rc = next ? std::rename("/tmp/cinder_rg_next", "/tmp/cinder_rg") : -1;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    std::fprintf(stderr, "[cinder-audio] sequence(%d,%d) at %ld.%03ld%s\n", reason, arg,
+                 (long)ts.tv_sec, ts.tv_nsec / 1000000L,
+                 !next ? "" : rc == 0 ? ": next song's gain in" : ": no gain waiting");
+}
+
 class CinderPlayListener {
 public:
     virtual ~CinderPlayListener() {}                                         // slots 0,1
@@ -375,7 +399,9 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
 
     auto nts = std::make_shared<psu::NodeTrackSequence<psu::UriInfo>>(
         std::move(node), start,
-        std::function<void(psu::UpdateReason, int)>([](psu::UpdateReason, int) {}));
+        std::function<void(psu::UpdateReason, int)>([](psu::UpdateReason r, int i) {
+            on_sequence((int)r, i);
+        }));
     // Upcast to the TrackSequence base WITHOUT pointer adjustment: the C1 ctor disasm stores a
     // single primary vtable at object+0, so the base subobject is at offset 0. Aliasing
     // shared_ptr shares nts's control block (destruction still runs ~NodeTrackSequence).
@@ -534,7 +560,9 @@ int cinder_audio_reissue_sequence(int dup_after_current) {
     if (!node) return -2;
     auto nts = std::make_shared<psu::NodeTrackSequence<psu::UriInfo>>(
         std::move(node), g_last_start,
-        std::function<void(psu::UpdateReason, int)>([](psu::UpdateReason, int) {}));
+        std::function<void(psu::UpdateReason, int)>([](psu::UpdateReason r, int i) {
+            on_sequence((int)r, i);
+        }));
     std::shared_ptr<pl::TrackSequence> seq(nts, reinterpret_cast<pl::TrackSequence*>(nts.get()));
     g_seq = seq;
     g_nts = nts;

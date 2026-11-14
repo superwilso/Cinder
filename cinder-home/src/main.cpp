@@ -10618,6 +10618,7 @@ static bool play_pending_sequence(const char* label, PendingSequenceMode mode) {
         }
         std::strncpy(g_last_play_started_uri, ptrs[start], sizeof g_last_play_started_uri - 1);
         g_last_play_started_uri[sizeof g_last_play_started_uri - 1] = 0;
+        cinder_replaygain_started(ptrs[start]);   // its gain before its first samples
     } else {
         if (mode == PendingSequenceMode::RestoreIfSame) {
             // PlayerService keeps decoding the same track and consults the edited sequence at the
