@@ -38,8 +38,11 @@ jobs:
           sudo chown "$(id -u):$(id -g)" /home/sony
           cp -a "$GITHUB_WORKSPACE" /home/sony/sony
 
-      - name: Cache the toolchains and the prepared kernel
-        uses: actions/cache@v4
+      # Restored here and saved straight after setup, not at the end: a run whose build or comparison
+      # fails still leaves the toolchains for the next one.
+      - name: Restore the toolchains and the prepared kernel
+        id: cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             /home/sony/toolchains
@@ -51,6 +54,17 @@ jobs:
       - name: Set up
         working-directory: /home/sony/sony
         run: bash tools/ci_build_payload.sh --setup
+
+      - name: Save the toolchains and the prepared kernel
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /home/sony/toolchains
+            /home/sony/arm-linux-musleabihf-cross
+            /home/sony/arm-linux-musleabihf-cross.tgz
+            /home/sony/cinder-llusbdac
+          key: payload-toolchains-${{ hashFiles('tools/ci_build_payload.sh') }}
 
       - name: Build and compare
         id: build
