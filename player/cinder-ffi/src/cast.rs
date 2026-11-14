@@ -101,6 +101,14 @@ pub fn escape(s: &str) -> String {
 /// The raw contents of every element whose local name is `name` (any namespace prefix), in order.
 /// Elements of that name must not nest (true of everything read here: `service`, `controlURL`…).
 pub fn elements<'a>(xml: &'a str, name: &str) -> Vec<&'a str> {
+    elements_full(xml, name)
+        .into_iter()
+        .map(|(_, b)| b)
+        .collect()
+}
+
+/// [`elements`], each with its opening tag's inside (`res protocolInfo="…"`), for [`attr`].
+pub fn elements_full<'a>(xml: &'a str, name: &str) -> Vec<(&'a str, &'a str)> {
     let mut out = Vec::new();
     let mut at = 0;
     while let Some(i) = xml[at..].find('<') {
@@ -122,16 +130,37 @@ pub fn elements<'a>(xml: &'a str, name: &str) -> Vec<&'a str> {
         }
         let body = start + end + 1;
         if open.ends_with('/') {
-            out.push("");
+            out.push((open, ""));
             continue;
         }
         let close = format!("</{qname}>");
         if let Some(j) = xml[body..].find(&close) {
-            out.push(&xml[body..body + j]);
+            out.push((open, &xml[body..body + j]));
             at = body + j + close.len();
         }
     }
     out
+}
+
+/// An attribute of an opening tag from [`elements_full`], unescaped.
+pub fn attr(open: &str, name: &str) -> Option<String> {
+    let mut rest = open;
+    while let Some(i) = rest.find(name) {
+        let before = rest[..i].chars().last();
+        let after = rest[i + name.len()..].trim_start();
+        rest = &rest[i + name.len()..];
+        if !before.is_some_and(char::is_whitespace) {
+            continue;
+        }
+        let Some(v) = after.strip_prefix('=') else {
+            continue;
+        };
+        let v = v.trim_start();
+        let q = v.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let end = v[1..].find(q)?;
+        return Some(unescape(&v[1..1 + end]));
+    }
+    None
 }
 
 /// The first `name` element's text, unescaped and trimmed.
@@ -234,6 +263,17 @@ pub fn http(
     headers: &[(&str, &str)],
     body: &str,
 ) -> Result<(u32, String), String> {
+    http_bytes(method, url, headers, body)
+        .map(|(c, b)| (c, String::from_utf8_lossy(&b).into_owned()))
+}
+
+/// [`http`], the body as bytes (a picture).
+pub fn http_bytes(
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Result<(u32, Vec<u8>), String> {
     let rest = url.strip_prefix("http://").ok_or("not an http address")?;
     let (host, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
@@ -276,7 +316,7 @@ pub fn http(
     }) {
         payload = dechunk(&payload);
     }
-    Ok((code, String::from_utf8_lossy(&payload).into_owned()))
+    Ok((code, payload))
 }
 
 /// A UPnP action. Err carries the speaker's own error (`errorCode`/`errorDescription`).

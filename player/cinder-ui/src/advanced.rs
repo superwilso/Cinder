@@ -28,7 +28,7 @@ use crate::widgets::{fill_rect, hline, sty, toggle};
 use crate::Canvas;
 
 /// Row ids. IDENTITIES, not positions: the screen draws them in [`order`].
-pub const ROWS: usize = 15;
+pub const ROWS: usize = 16;
 pub const ROW_CLEAR_PHASE: usize = 0;
 pub const ROW_DSEE_AI: usize = 1;
 pub const ROW_DSEE_CUSTOM: usize = 2;
@@ -57,6 +57,9 @@ pub const ROW_VOL_CURVE: usize = 12;
 pub const ROW_CROSSFEED: usize = 13;
 /// ReplayGain, from the song's tags. Cinder's own like crossfeed, so never dimmed.
 pub const ROW_REPLAYGAIN: usize = 14;
+/// The headphone EQ (`hp_eq.rs`): a profile file from `cinder_eq`, played by libcinder_mono.so.
+/// Cinder's own like crossfeed, so never dimmed. A tap moves to the next profile, then off.
+pub const ROW_HP_EQ: usize = 15;
 /// The ReplayGain row's values, in tap order.
 pub const REPLAYGAIN: [&str; 3] = ["Off", "Per track", "Per album"];
 
@@ -68,7 +71,7 @@ pub const CLEAR_BASS: [&str; 6] = ["Off", "+2", "+4", "+6", "+8", "+10"];
 /// chain), then the tone stage, then the two hardware rows. The Clear Bass row exists only where
 /// the firmware can run it.
 pub fn order(clear_bass: bool) -> Vec<usize> {
-    let mut v = vec![ROW_VPT, ROW_CROSSFEED, ROW_REPLAYGAIN, ROW_DC];
+    let mut v = vec![ROW_VPT, ROW_CROSSFEED, ROW_REPLAYGAIN, ROW_HP_EQ, ROW_DC];
     if clear_bass {
         v.push(ROW_CLEAR_BASS);
     }
@@ -139,7 +142,7 @@ pub const VINYL_TYPES: [&str; 4] = ["Standard", "Turntable", "Arm Resonance", "S
 /// What the screen draws. Every field is Copy so a preview or a test can spin off a variant with
 /// struct-update syntax.
 #[derive(Clone, Copy)]
-pub struct Advanced {
+pub struct Advanced<'a> {
     pub source_direct: bool,
     pub clear_phase: bool,
     pub dsee_ai: bool,
@@ -175,6 +178,8 @@ pub struct Advanced {
     pub mono: bool,
     /// One of [`REPLAYGAIN`].
     pub replaygain: &'static str,
+    /// The headphone EQ profile playing, by name; empty when off.
+    pub hp_eq: &'a str,
     /// The DAC EQ has at least one band off zero.
     pub dac_eq_on: bool,
     /// The volume curve: None without the installer's volume-curve option, else whether the
@@ -196,7 +201,7 @@ fn dimmed(a: &Advanced, row: usize) -> bool {
     (a.overridden_by.is_some()
         && !matches!(
             row,
-            ROW_HP_AMP | ROW_DAC_EQ | ROW_VOL_CURVE | ROW_CROSSFEED | ROW_REPLAYGAIN
+            ROW_HP_AMP | ROW_DAC_EQ | ROW_VOL_CURVE | ROW_CROSSFEED | ROW_REPLAYGAIN | ROW_HP_EQ
         ))
         || not_here(a, row)
 }
@@ -427,6 +432,18 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             }),
             End::Pill(a.replaygain, a.replaygain != "Off"),
         ),
+        ROW_HP_EQ => (
+            "Headphone EQ",
+            if a.hp_eq.is_empty() {
+                s("A profile for your headphones, from cinder_eq")
+            } else {
+                s(a.hp_eq)
+            },
+            End::Pill(
+                if a.hp_eq.is_empty() { "Off" } else { "On" },
+                !a.hp_eq.is_empty(),
+            ),
+        ),
         ROW_VOL_CURVE => (
             "Volume curve",
             s(match a.vol_curve {
@@ -524,7 +541,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize, 
 mod tests {
     use super::*;
 
-    fn sample() -> Advanced {
+    fn sample() -> Advanced<'static> {
         Advanced {
             source_direct: false,
             clear_phase: false,
@@ -543,6 +560,7 @@ mod tests {
             crossfeed: false,
             mono: false,
             replaygain: "Off",
+            hp_eq: "",
             dac_eq_on: false,
             vol_curve: Some(false),
             clear_bass: None,
@@ -606,11 +624,18 @@ mod tests {
             overridden_by: Some("Direct mode"),
             ..sample()
         };
-        assert!(!dimmed(&a, ROW_CROSSFEED) && !dimmed(&a, ROW_REPLAYGAIN));
+        assert!(
+            !dimmed(&a, ROW_CROSSFEED) && !dimmed(&a, ROW_REPLAYGAIN) && !dimmed(&a, ROW_HP_EQ)
+        );
         for r in 0..ROWS {
             if matches!(
                 r,
-                ROW_HP_AMP | ROW_DAC_EQ | ROW_VOL_CURVE | ROW_CROSSFEED | ROW_REPLAYGAIN
+                ROW_HP_AMP
+                    | ROW_DAC_EQ
+                    | ROW_VOL_CURVE
+                    | ROW_CROSSFEED
+                    | ROW_REPLAYGAIN
+                    | ROW_HP_EQ
             ) {
                 continue;
             }

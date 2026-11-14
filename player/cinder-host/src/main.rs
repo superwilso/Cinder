@@ -4191,6 +4191,46 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         app.render(&mut c, &fonts, &np);
         save(&c, "wifi_speakers_casting");
         app.set_cast(None, String::new());
+        // Settings ▸ Wi-Fi ▸ Media servers: the search, the servers, then a folder with a song
+        // playing and one the player cannot decode.
+        use cinder_ui::media_server::Entry as MsEntry;
+        let folder = |t: &str, sub: &str| MsEntry {
+            title: t.into(),
+            sub: sub.into(),
+            folder: true,
+            unplayable: false,
+        };
+        app.go_for_preview(Screen::MediaServers);
+        app.media_set_servers(Vec::new());
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "media_servers_none");
+        app.media_set_servers(vec![folder("NAS: music", ""), folder("Jellyfin", "")]);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "media_servers");
+        let song = |t: &str, sub: &str, bad: bool| MsEntry {
+            title: t.into(),
+            sub: sub.into(),
+            folder: false,
+            unplayable: bad,
+        };
+        app.media_push(
+            1,
+            "Takk...",
+            vec![
+                folder("Bonus", "3 items"),
+                song("Glósóli", "Sigur Rós · Takk...", false),
+                song("Hoppípolla", "Sigur Rós · Takk...", false),
+                song("Með blóðnasir", "Sigur Rós · Takk...", true),
+            ],
+            true,
+        );
+        app.media_set_playing("Hoppípolla (2/3)");
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "media_servers_folder");
+        app.media_set_playing("");
         app.go_for_preview(Screen::WifiOptions);
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);

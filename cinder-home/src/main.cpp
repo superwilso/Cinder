@@ -11904,7 +11904,7 @@ static pid_t radio_spawn(const std::string& url, int* fd_out, bool live, bool wa
         // leave the page saying PLAYING over silence. A link a controller sent can be paused, which
         // stalls it on purpose: 5 minutes there, then Play starts it again from the beginning.
         // ponytail: a pause longer than that loses the place; resume by Range when anyone asks.
-        const char* stall = g_radio_station == -2 ? "300" : "20";
+        const char* stall = g_radio_station <= -2 ? "300" : "20";
         for (const char* s : { "--speed-limit", "1", "--speed-time", stall, "-H", "Icy-MetaData: 1", "-D", RADIO_HDR })
             a.push_back(s);
     } else {
@@ -12498,7 +12498,7 @@ static void* radio_thread(void*) {
         }
         if (flac || wav) {
             // A controller's link is one song: its end is the normal end, not a fault.
-            if (ended && note.empty() && g_radio_station != -2) note = "The station stopped sending";
+            if (ended && note.empty() && g_radio_station > -2) note = "The station stopped sending";
         } else if (!dec.open(aac)) { note = "This player has no AAC decoder"; g_radio_run = 0; }
         while (g_radio_run && !flac && !wav) {
             size_t used = 0;
@@ -12526,7 +12526,7 @@ static void* radio_thread(void*) {
             if (n == 0) ++g_radio_waits;  // a second with nothing from the network
             if (n < 0) {
                 // A controller's link is one song: its end is the normal end, not a fault.
-                note = g_radio_station == -2 ? "" : "The station stopped sending";
+                note = g_radio_station <= -2 ? "" : "The station stopped sending";
                 if (hls_job) {
                     pthread_mutex_lock(&g_radio_mu);
                     if (!hls_job->note.empty()) note = hls_job->note;
@@ -12580,7 +12580,8 @@ static void radio_yield(const char* why) {
 }
 
 // Play `url` as station `idx` (-2: a link a DLNA controller sent, Settings > Wi-Fi > Options >
-// Play to this player).
+// Play to this player; -3: a song from a media server, Settings > Wi-Fi > Media servers). Both are
+// songs, not stations: they end, and an end is not a failure.
 static void radio_start(int idx, const char* url);
 static void radio_play() {
     char url[600];
@@ -12666,6 +12667,18 @@ static void radio_tick() {
     if (ask == 1) {
         clog_("radio: a network controller asked to play");
         radio_start(-2, url);
+    } else if (ask == 5) {
+        clog_("radio: a song from a media server");
+        radio_start(-3, url);
+    } else if (ask == 6 && g_radio_station == -3 && g_radio_alive) {
+        g_radio_paused = 1;
+    } else if (ask == 7) {
+        if (g_radio_station == -3 && g_radio_alive && g_radio_paused) {
+            g_radio_paused = 0;
+        } else {
+            clog_("radio: the paused server song had ended; playing it again from the start");
+            radio_start(-3, url);
+        }
     } else if (ask == 2 && g_radio_station == -2 && g_radio_alive) {
         g_radio_paused = 0;
         radio_yield(nullptr);

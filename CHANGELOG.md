@@ -16,6 +16,25 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Headphone EQ (Sound ▸ Advanced, off by default).** Plays a parametric EQ profile for your
+  headphones: copy the `ParametricEQ.txt` files AutoEQ publishes (or any file in the same format, as
+  Equalizer APO reads) into a folder named `cinder_eq` on the player, and each tap of the row moves to
+  the next one, then off. Works on the headphone jack and over Bluetooth, after Sony's effects, at
+  every common sample rate from 32 to 384 kHz. Any boost is paid for by a cut in level, so it never
+  clips. A file it cannot read is refused whole, and the message names the line. *Host-tested,
+  including the sound service's library under the player's own C library; not yet heard on a player.*
+- **Media servers (Settings ▸ Wi-Fi).** Plays from a music server on your home network: a NAS with
+  MiniDLNA, Jellyfin, Plex, Emby, Serviio, Kodi, or a PC sharing its music over UPnP/DLNA. The page
+  finds the servers, opens their folders (Back goes up one), and a tap on a song plays it and then
+  the rest of the folder. MP3, AAC, FLAC and WAV play; a song in another format is listed and passed
+  over, unless the server also offers it as MP3 or WAV. Now Playing shows the song, its cover and
+  how far in it is; play/pause pauses it, and next and previous move through the folder. **Search
+  this server**, at the top of every folder, finds songs by title, artist or album (on servers that
+  answer searches). The strip at the top of the page shows what is playing; tap it to stop.
+  *Host-tested against a simulated server; not yet tried with a real one.*
+
 ## [0.4.2] — 2026-11-11
 
 ### Added

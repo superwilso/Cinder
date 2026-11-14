@@ -436,6 +436,32 @@ int main(int argc, char** argv)
         check(memcmp(fake_last(), left, 400) == 0, "jack: crossfeed off: untouched");
     }
 
+    /* the headphone EQ on the jack: a one-filter file that halves; another rate's line does nothing */
+    {
+        char ep[512];
+        snprintf(ep, sizeof ep, "%s/cinder_hpeq", dir);
+        unsigned char tone[400];
+        for (int i = 0; i < 200; i++) put16(tone + i * 2, i & 1 ? -12000 : 12000);
+        FILE* f = fopen(ep, "w");
+        if (f) { fputs("44100 0.5 0 0 0 0\n48000 0.5 0 0 0 0\n", f); fclose(f); }
+        nap(600);
+        snd_pcm_writei(pcmh, tone, 100);
+        if (expect_active)
+            check(get16(fake_last()) == 6000 && get16(fake_last() + 2) == -6000, "jack: headphone EQ plays the file (12000 -> 6000)");
+        else
+            check(memcmp(fake_last(), tone, 400) == 0, "jack: in any other process no headphone EQ");
+        check(get16(tone) == 12000, "jack: headphone EQ never writes the caller's buffer");
+        f = fopen(ep, "w");
+        if (f) { fputs("11025 0.5 0 0 0 0\n", f); fclose(f); }
+        nap(600);
+        snd_pcm_writei(pcmh, tone, 100);
+        check(memcmp(fake_last(), tone, 400) == 0, "jack: headphone EQ with no line for the rate: untouched");
+        unlink(ep);
+        nap(600);
+        snd_pcm_writei(pcmh, tone, 100);
+        check(memcmp(fake_last(), tone, 400) == 0, "jack: headphone EQ off: untouched");
+    }
+
     /* ReplayGain on the jack: -6 dB once the ramp is through; gone again when the file is */
     {
         char gp[512];
