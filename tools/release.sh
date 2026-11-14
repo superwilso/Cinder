@@ -222,8 +222,11 @@ fi
 # when it is missing, so the shipped copy was whatever an early build left: v0.4.2-rc2 carried one
 # from before the Wi-Fi, AAC and language options, and the payload workflow's clean build could
 # never match it (2026-11-14). The installer writes its own from the answers; this copy is the
-# defaults, so a release writes the defaults.
+# defaults, so a release writes the defaults. The old file goes first: --defaults only skips the
+# questions, and keeps whatever the file already chose (v0.4.2-rc3 shipped a dev copy with Library
+# search on, and the payload workflow's clean build, which has search off, did not match it).
 for ch in stable dev; do
+    rm -f "cinder-home/dist/$ch/cinder_components.conf"
     bash cinder-home/tools/configure.sh "$ch" --defaults >/dev/null \
         || die "configure.sh $ch --defaults failed"
 done
