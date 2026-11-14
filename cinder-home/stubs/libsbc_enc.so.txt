@@ -1,0 +1,42 @@
+# lib/libsbc_enc.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir lib
+elf 0x5000000 0
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 libsbc_enc.so
+verneed libc.so.6 2 0 GLIBC_2.4
+verneed ld-linux-armhf.so.3 3 0 GLIBC_2.4
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 34 0 U 0x2 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x2 __stack_chk_fail
+sym 0x0 0 17 0 U 0x3 __stack_chk_guard
+sym 0x0 0 18 0 U 0x2 free
+sym 0x0 0 18 0 U 0x2 malloc
+sym 0x0 0 18 0 U 0x2 memset
+sym 0x0 0 18 0 U 0x2 raise
+sym 0x0 0 18 0 U 0x2 memcpy
+sym 0x9e68 0 18 0 T 0x1 _fini
+sym 0x7f4 0 18 0 T 0x1 _init
+sym 0x1311 120 18 0 T 0x1 sbc_get_codesize
+sym 0x9b5 132 18 0 T 0x1 sbc_init
+sym 0x45d1 148 18 0 T 0x1 sbc_init_primitives
+sym 0xc090 0 16 0 A 0x1 __bss_start
+sym 0x2b35 182 18 0 T 0x1 sbc_get_frame_duration
+sym 0xc0a8 0 16 0 A 0x1 _end
+sym 0xa9f 530 18 0 T 0x1 sbc_decode
+sym 0x1715 248 18 0 T 0x1 sbc_get_frame_length
+sym 0x9449 60 18 0 T 0x1 sbc_init_mtk
+sym 0x9485 248 18 0 T 0x1 sbc_set
+sym 0xc090 0 16 0 A 0x1 _edata
+sym 0xa6d 50 18 0 T 0x1 sbc_parse
+sym 0x95b9 100 18 0 T 0x1 sbc_encode_mtk
+sym 0x2c23 96 18 0 T 0x1 sbc_reinit
+sym 0x80b9 1320 18 0 T 0x1 sbc_calc_scalefactors_j_neon
+sym 0x2b01 52 18 0 T 0x1 sbc_finish
+sym 0x85e1 140 18 0 T 0x1 sbc_init_primitives_neon
+sym 0x1459 700 18 0 T 0x1 sbc_encode
+sym 0x957d 60 18 0 T 0x1 sbc_finish_mtk
+sym 0x2beb 56 18 0 T 0x1 sbc_get_implementation_info

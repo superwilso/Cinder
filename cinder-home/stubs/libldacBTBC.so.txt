@@ -1,0 +1,136 @@
+# lib/libldacBTBC.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir lib
+elf 0x5000400 0
+soname libldacBTBC.so
+needed libpthread.so.0
+needed librt.so.1
+needed libstdc++.so.6
+needed libm.so.6
+needed libgcc_s.so.1
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 libldacBTBC.so
+verneed libc.so.6 2 0 GLIBC_2.4
+verneed libpthread.so.0 3 0 GLIBC_2.12
+verneed libpthread.so.0 4 0 GLIBC_2.4
+verneed libgcc_s.so.1 5 0 GCC_3.5
+verneed ld-linux-armhf.so.3 6 0 GLIBC_2.4
+verneed librt.so.1 7 0 GLIBC_2.4
+verneed libm.so.6 8 0 GLIBC_2.4
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 34 0 U 0x2 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x2 calloc
+sym 0x0 0 18 0 U 0x2 free
+sym 0x0 0 18 0 U 0x2 gettimeofday
+sym 0x0 0 18 0 U 0x2 memcpy
+sym 0x0 0 18 0 U 0x2 malloc
+sym 0x0 0 18 0 U 0x2 memset
+sym 0x0 0 18 0 U 0x3 pthread_setname_np
+sym 0x0 0 18 0 U 0x5 __aeabi_f2lz
+sym 0x0 0 18 0 U 0x4 pthread_create
+sym 0x0 0 18 0 U 0x4 pthread_mutex_unlock
+sym 0x0 0 18 0 U 0x4 pthread_join
+sym 0x0 0 18 0 U 0x5 __aeabi_ldivmod
+sym 0x0 0 18 0 U 0x5 __aeabi_d2lz
+sym 0x0 0 18 0 U 0x5 __aeabi_l2d
+sym 0x0 0 18 0 U 0x4 nanosleep
+sym 0x0 0 18 0 U 0x5 __aeabi_unwind_cpp_pr1
+sym 0x0 0 18 0 U 0x5 __aeabi_unwind_cpp_pr0
+sym 0x0 0 18 0 U 0x4 pthread_cond_signal
+sym 0x0 0 18 0 U 0x4 pthread_mutex_lock
+sym 0x0 0 18 0 U 0x4 pthread_cond_wait
+sym 0x0 0 18 0 U 0x4 pthread_mutex_destroy
+sym 0x0 0 18 0 U 0x4 pthread_cond_destroy
+sym 0x0 0 18 0 U 0x4 pthread_cond_init
+sym 0x0 0 18 0 U 0x2 __memcpy_chk
+sym 0x0 0 17 0 U 0x6 __stack_chk_guard
+sym 0x0 0 18 0 U 0x7 clock_gettime
+sym 0x0 0 18 0 U 0x2 setpriority
+sym 0x0 0 18 0 U 0x4 pthread_mutex_init
+sym 0x0 0 18 0 U 0x2 __printf_chk
+sym 0x0 0 18 0 U 0x2 puts
+sym 0x0 0 18 0 U 0x2 __stack_chk_fail
+sym 0x0 0 18 0 U 0x8 sincos
+sym 0x0 0 18 0 U 0x8 sin
+sym 0x0 0 18 0 U 0x8 floorf
+sym 0x8a79 18 18 0 T 0x1 at9_clear_internal_error_code
+sym 0x8615 22 18 0 T 0x1 at9_assert_channel
+sym 0x8a65 18 18 0 T 0x1 at9_clear_error_code
+sym 0x8691 22 18 0 T 0x1 at9_assert_nshift
+sym 0xe089 74 18 0 T 0x1 at9_get_config_data
+sym 0x8a3d 18 18 0 T 0x1 at9_get_error_code
+sym 0x935d 892 18 0 T 0x1 at9_init_encode
+sym 0x9281 220 18 0 T 0x1 at9_set_encode_info
+sym 0x8cc9 110 18 0 T 0x1 mdct_psuedo_spectrum
+sym 0x8869 44 18 0 T 0x1 at9_check_nshift
+sym 0x8a51 18 18 0 T 0x1 at9_get_internal_error_code
+sym 0x8811 44 18 0 T 0x1 at9_get_channel
+sym 0x9731 18676 18 0 T 0x1 at9_encode_frame
+sym 0x85d9 20 18 0 T 0x1 at9_assert_profile
+sym 0x862d 24 18 0 T 0x1 at9_assert_frame_length
+sym 0x4075 108 18 0 T 0x1 ldac_get_error_code
+sym 0x3e4d 20 18 0 T 0x1 ldac_get_version
+sym 0x90c9 258 18 0 T 0x1 at9_set_frame_header
+sym 0x3065 30 18 0 T 0x1 ldacsnk_get_bitrate
+sym 0x91cd 160 18 0 T 0x1 at9_set_encode_frame_length
+sym 0x9019 176 18 0 T 0x1 at9_set_config_data
+sym 0x11160 0 18 0 T 0x1 _fini
+sym 0x8a8d 508 18 0 T 0x1 spectral_centroid
+sym 0x926d 18 18 0 T 0x1 at9_get_encode_frame_length
+sym 0x86a9 16 18 0 T 0x1 at9_get_version
+sym 0x3139 732 18 0 T 0x1 ldacsnk_enqueue
+sym 0xe51d 86 18 0 T 0x1 at9_free_decode
+sym 0x87a5 56 18 0 T 0x1 at9_get_frame_samples
+sym 0x3651 214 18 0 T 0x1 ldacsnk_free_handle
+sym 0x1994 0 18 0 T 0x1 _init
+sym 0x86e9 132 18 0 T 0x1 at9_get_profile
+sym 0x876d 56 18 0 T 0x1 at9_get_sampling_freq
+sym 0x4869 628 18 0 T 0x1 ldac_alter_qmode_priority
+sym 0x867d 20 18 0 T 0x1 at9_assert_frame_status
+sym 0x8c89 62 18 0 T 0x1 zcross
+sym 0x5aa1 1204 18 0 T 0x1 ldac_decode
+sym 0x3729 40 18 0 T 0x1 ldac_ABR_free_handle
+sym 0x4109 80 18 0 T 0x1 ldac_get_channel_mode
+sym 0xe0d5 86 18 0 T 0x1 at9_get_frame_header
+sym 0x3751 120 18 0 T 0x1 ldac_ABR_get_handle
+sym 0x96d9 86 18 0 T 0x1 at9_free_encode
+sym 0x8999 32 18 0 T 0x1 at9_get_config_info
+sym 0x8645 54 18 0 T 0x1 at9_limit_frame_length
+sym 0x89b9 130 18 0 T 0x1 at9_check_frame_header
+sym 0x883d 44 18 0 T 0x1 at9_get_channel_config
+sym 0x596d 308 18 0 T 0x1 ldac_init_handle_decode
+sym 0x4add 40 18 0 T 0x1 ldac_get_bitrate
+sym 0x4b05 3644 18 0 T 0x1 ldac_encode
+sym 0x8539 160 18 0 T 0x1 make_reverse_permutation_matrix_at9
+sym 0x3e61 58 18 0 T 0x1 ldac_free_handle
+sym 0x8895 32 18 0 T 0x1 at9_get_handle
+sym 0x40e1 40 18 0 T 0x1 ldac_get_sample_freq
+sym 0x4625 540 18 0 T 0x1 ldac_set_qmode
+sym 0x4159 1228 18 0 T 0x1 ldac_init_handle_encode
+sym 0x86b9 14 18 0 T 0x1 at9_get_major_version
+sym 0x88b5 22 18 0 T 0x1 at9_free_handle
+sym 0x85ed 20 18 0 T 0x1 at9_limit_profile
+sym 0x150a4 0 16 0 A 0x1 _edata
+sym 0x2c41 1060 18 0 T 0x1 ldacsnk_get_handle
+sym 0x88cd 204 18 0 T 0x1 at9_set_config_info
+sym 0x86c9 14 18 0 T 0x1 at9_get_minor_version
+sym 0x86d9 14 18 0 T 0x1 at9_get_branch_version
+sym 0x87dd 52 18 0 T 0x1 at9_get_nlnn
+sym 0x37c9 628 18 0 T 0x1 ldac_ABR_Proc
+sym 0xe025 100 18 0 T 0x1 at9_flush_encode
+sym 0x188b0 0 16 0 A 0x1 _end
+sym 0x4841 40 18 0 T 0x1 ldac_get_qmode
+sym 0x8601 20 18 0 T 0x1 at9_assert_channel_config
+sym 0x3f81 244 18 0 T 0x1 ldac_close_handle
+sym 0x3415 248 18 0 T 0x1 ldacsnk_stop
+sym 0x3e9d 228 18 0 T 0x1 ldac_get_handle
+sym 0x3085 180 18 0 T 0x1 ldacsnk_start
+sym 0x350d 324 18 0 T 0x1 ldacsnk_notify_app_state
+sym 0xe575 11192 18 0 T 0x1 at9_decode_frame
+sym 0xe12d 1008 18 0 T 0x1 at9_init_decode
+sym 0x8f19 256 18 0 T 0x1 at9_get_encode_setting
+sym 0x5941 44 18 0 T 0x1 ldac_get_tx_size
+sym 0x150a4 0 16 0 A 0x1 __bss_start

@@ -1,0 +1,31 @@
+# lib/libbtcust_tab.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir lib
+elf 0x5000400 0
+soname libbtcust_tab.so
+needed libglibc_bridge.so
+needed libcxxrt.so.1
+needed libdl.so.2
+needed libc.so.6
+needed librt.so.1
+needed libpthread.so.0
+needed libc++.so.1
+needed libm.so.6
+needed libgcc_s.so.1
+verdef 1 1 libbtcust_tab.so
+verneed libc.so.6 2 0 GLIBC_2.4
+verneed libgcc_s.so.1 3 0 GCC_3.5
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 34 0 U 0x2 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x3 __aeabi_unwind_cpp_pr0
+sym 0x306d 0 16 0 A 0x1 _end
+sym 0x306c 0 16 0 A 0x1 _edata
+sym 0x8c0 0 18 0 T 0x1 _init
+sym 0x2b70 776 17 0 W 0x1 g_config_table
+sym 0x9d5 16 18 0 T 0x1 getCustTable
+sym 0x306c 0 16 0 A 0x1 __bss_start
+sym 0x9f4 0 18 0 T 0x1 _fini
+sym 0x3054 24 17 0 W 0x1 g_dev_config
+sym 0x9e5 16 18 0 T 0x1 getDevCustTable

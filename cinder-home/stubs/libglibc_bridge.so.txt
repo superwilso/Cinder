@@ -1,0 +1,75 @@
+# ramdisk/lib/libglibc_bridge.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir ramdisk/lib
+elf 0x5000400 0
+soname libglibc_bridge.so
+needed libcxxrt.so.1
+needed libdl.so.2
+needed libc.so.6
+needed ld-linux-armhf.so.3
+needed librt.so.1
+needed libpthread.so.0
+needed libc++.so.1
+needed libm.so.6
+needed libgcc_s.so.1
+verdef 1 1 libglibc_bridge.so
+verneed libc.so.6 2 0 GLIBC_2.4
+verneed libc.so.6 3 0 GLIBC_2.16
+verneed libgcc_s.so.1 4 0 GCC_3.5
+verneed ld-linux-armhf.so.3 5 0 GLIBC_2.4
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 18 0 U 0x2 strtol
+sym 0x0 0 18 0 U 0x2 strcpy
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 18 0 U 0x2 mmap
+sym 0x0 0 18 0 U 0x2 memcpy
+sym 0x0 0 34 0 U 0x2 __cxa_finalize
+sym 0x0 0 18 0 U 0x2 memcmp
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x2 getenv
+sym 0x0 0 18 0 U 0x2 strchr
+sym 0x0 0 18 0 U 0x4 __aeabi_unwind_cpp_pr0
+sym 0x0 0 18 0 U 0x2 socket
+sym 0x0 0 18 0 U 0x2 send
+sym 0x0 0 18 0 U 0x2 munmap
+sym 0x0 0 18 0 U 0x2 connect
+sym 0x0 0 18 0 U 0x2 close
+sym 0x0 0 18 0 U 0x2 syscall
+sym 0x0 0 18 0 U 0x2 __errno_location
+sym 0x0 0 18 0 U 0x2 __strtoull_internal
+sym 0x0 0 18 0 U 0x2 strlen
+sym 0x0 0 17 0 U 0x5 __stack_chk_guard
+sym 0x0 0 18 0 U 0x2 __stack_chk_fail
+sym 0x0 0 18 0 U 0x2 __ctype_b_loc
+sym 0x0 0 18 0 U 0x4 __aeabi_unwind_cpp_pr1
+sym 0x0 0 18 0 U 0x3 __poll_chk
+sym 0xffc 24 18 0 T 0x1 __atomic_swap
+sym 0x1068 504 18 0 T 0x1 __memcmp16
+sym 0x17e4 0 18 0 T 0x1 _fini
+sym 0x1325 16 18 0 T 0x1 ioprio_get
+sym 0x1335 188 18 0 T 0x1 strtotimeval
+sym 0xd70 0 18 0 T 0x1 _init
+sym 0x1283 66 18 0 T 0x1 strlcpy
+sym 0x3004 4 17 0 W 0x1 __system_property_area__
+sym 0x3008 0 16 0 A 0x1 __bss_start
+sym 0x1561 136 18 0 T 0x1 __system_property_get
+sym 0x3010 0 16 0 A 0x1 _end
+sym 0xfdc 32 18 0 T 0x1 __atomic_cmpxchg
+sym 0x126b 20 18 0 T 0x1 cacheflush
+sym 0x1791 68 18 0 T 0x1 __system_property_wait
+sym 0x150d 82 18 0 T 0x1 __system_property_read
+sym 0x3008 0 16 0 A 0x1 _edata
+sym 0x1495 36 18 0 T 0x1 __system_property_find_nth
+sym 0x14b9 84 18 0 T 0x1 __system_property_find
+sym 0xfc0 28 18 0 T 0x1 __atomic_inc
+sym 0x1028 32 18 0 T 0x1 __futex_wait
+sym 0x1048 28 18 0 T 0x1 __futex_wake
+sym 0x1014 20 18 0 T 0x1 __futex_syscall3
+sym 0x1064 4 18 0 T 0x1 __futex_syscall4
+sym 0x13f1 164 18 0 T 0x1 __system_properties_init
+sym 0x12c5 78 18 0 T 0x1 strlcat
+sym 0x1313 18 18 0 T 0x1 ioprio_set
+sym 0xfa4 28 18 0 T 0x1 __atomic_dec
+sym 0x1261 10 18 0 T 0x1 gettid
+sym 0x127f 4 18 0 T 0x1 glibc_bridge_init
+sym 0x15e9 424 18 0 T 0x1 __system_property_set

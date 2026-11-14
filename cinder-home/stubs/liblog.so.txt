@@ -1,0 +1,96 @@
+# ramdisk/lib/liblog.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir ramdisk/lib
+elf 0x5000400 0
+soname liblog.so
+needed libglibc_bridge.so
+needed libcxxrt.so.1
+needed libdl.so.2
+needed libc.so.6
+needed ld-linux-armhf.so.3
+needed librt.so.1
+needed libpthread.so.0
+needed libc++.so.1
+needed libm.so.6
+needed libgcc_s.so.1
+verdef 1 1 liblog.so
+verneed libc.so.6 2 0 GLIBC_2.4
+verneed libc.so.6 3 0 GLIBC_2.7
+verneed libgcc_s.so.1 4 0 GCC_3.5
+verneed ld-linux-armhf.so.3 5 0 GLIBC_2.4
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 18 0 U 0x2 strerror
+sym 0x0 0 18 0 U 0x2 strtoul
+sym 0x0 0 18 0 U 0x2 munmap
+sym 0x0 0 18 0 U 0x2 qsort
+sym 0x0 0 18 0 U 0x2 lseek
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 18 0 U 0x2 mmap
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 34 0 U 0x2 __cxa_finalize
+sym 0x0 0 18 0 U 0x2 strtol
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x2 write
+sym 0x0 0 18 0 U 0x4 __aeabi_unwind_cpp_pr0
+sym 0x0 0 18 0 U 0x2 strftime
+sym 0x0 0 18 0 U 0x4 __aeabi_unwind_cpp_pr1
+sym 0x0 0 18 0 U 0x2 strncasecmp
+sym 0x0 0 17 0 U 0x2 stderr
+sym 0x0 0 18 0 U 0x2 strcasestr
+sym 0x0 0 18 0 U 0x2 __errno_location
+sym 0x0 0 18 0 U 0x3 __open_2
+sym 0x0 0 18 0 U 0x2 __stack_chk_fail
+sym 0x0 0 17 0 U 0x5 __stack_chk_guard
+sym 0x0 0 18 0 U 0x2 __vsnprintf_chk
+sym 0x0 0 18 0 U 0x2 access
+sym 0x0 0 18 0 U 0x2 close
+sym 0x0 0 18 0 U 0x2 pthread_mutex_lock
+sym 0x0 0 18 0 U 0x2 pthread_mutex_unlock
+sym 0x0 0 18 0 U 0x2 strcmp
+sym 0x0 0 18 0 U 0x2 strlen
+sym 0x0 0 18 0 U 0x2 strncmp
+sym 0x0 0 18 0 U 0x2 writev
+sym 0x0 0 18 0 U 0x2 __ctype_b_loc
+sym 0x0 0 18 0 U 0x2 __ctype_tolower_loc
+sym 0x0 0 18 0 U 0x2 __strcat_chk
+sym 0x0 0 18 0 U 0x2 __strdup
+sym 0x0 0 18 0 U 0x2 __strncat_chk
+sym 0x0 0 18 0 U 0x2 calloc
+sym 0x0 0 18 0 U 0x2 fprintf
+sym 0x0 0 18 0 U 0x2 free
+sym 0x0 0 18 0 U 0x2 fwrite
+sym 0x0 0 18 0 U 0x2 getenv
+sym 0x0 0 18 0 U 0x2 localtime
+sym 0x0 0 18 0 U 0x2 malloc
+sym 0x0 0 18 0 U 0x2 memchr
+sym 0x0 0 18 0 U 0x2 memcpy
+sym 0x2335 1060 18 0 T 0x1 android_log_formatLogLine
+sym 0x2dc9 28 18 0 T 0x1 android_closeEventTagMap
+sym 0x2e5c 0 18 0 T 0x1 _fini
+sym 0x189d 112 18 0 T 0x1 __android_log_buf_vprint
+sym 0x1751 96 18 0 T 0x1 __android_log_vprint
+sym 0x2de5 80 18 0 T 0x1 android_lookupEventTag
+sym 0x11dc 0 18 0 T 0x1 _init
+sym 0x19d1 52 18 0 T 0x1 __android_log_btwrite
+sym 0x1cc5 308 18 0 T 0x1 android_log_addFilterRule
+sym 0x5018 0 16 0 A 0x1 __bss_start
+sym 0x27d1 444 18 0 T 0x1 logprint_run_tests
+sym 0x298d 1084 18 0 T 0x1 android_openEventTagMap
+sym 0x503c 0 16 0 A 0x1 _end
+sym 0x1b81 20 18 0 T 0x1 android_log_format_new
+sym 0x17b1 120 18 0 T 0x1 __android_log_print
+sym 0x19a9 40 18 0 T 0x1 __android_log_bwrite
+sym 0x5018 0 16 0 A 0x1 _edata
+sym 0x1bb9 268 18 0 T 0x1 android_log_formatFromString
+sym 0x2759 120 18 0 T 0x1 android_log_printLogLine
+sym 0x1bb3 4 18 0 T 0x1 android_log_setPrintFormat
+sym 0x1529 280 18 0 T 0x1 __android_log_write
+sym 0x2301 52 18 0 T 0x1 is_secure_build
+sym 0x1e59 288 18 0 T 0x1 android_log_processLogBuffer
+sym 0x14e9 64 18 0 T 0x1 __android_log_dev_available
+sym 0x1f79 260 18 0 T 0x1 android_log_processBinaryLogBuffer
+sym 0x1b4b 54 18 0 T 0x1 android_log_shouldPrintLine
+sym 0x1829 116 18 0 T 0x1 __android_log_buf_print
+sym 0x190d 108 18 0 T 0x1 __android_log_assert
+sym 0x1641 272 18 0 T 0x1 __android_log_buf_write
+sym 0x1df9 94 18 0 T 0x1 android_log_addFilterString
+sym 0x1b95 30 18 0 T 0x1 android_log_format_free

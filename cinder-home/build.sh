@@ -48,6 +48,16 @@ flock 9
 REPO="$HERE/.."
 RAMLIB="$REPO/analysis/ramdisk/lib"               # device glibc 2.23 + libc++/libcxxrt/libgcc_s
 SONYLIB="$REPO/artifacts/rootfs_mnt/vendor/sony/lib"  # easel + PlayerService
+FWROOT="$REPO/artifacts/rootfs_mnt"                   # the stock rootfs (libasound in lib/)
+# CINDER_STUBS=<dir>: link against stand-ins instead (tools/stubs_build.py <dir>, from the symbol
+# lists in stubs/), for a machine without the firmware: CI. They carry the real libraries' names,
+# versions, symbols and sizes and no code, so the link comes out the same; nothing that RUNS the
+# device libraries (the qemu preflight) can use them.
+if [ -n "${CINDER_STUBS:-}" ]; then
+    RAMLIB="$CINDER_STUBS/ramdisk/lib"; SONYLIB="$CINDER_STUBS/vendor/sony/lib"; FWROOT="$CINDER_STUBS"
+    SKIP_PREFLIGHT=1
+    echo "── linking against stub libraries in $CINDER_STUBS ──"
+fi
 RUSTLIB="$REPO/player/target/arm-unknown-linux-gnueabihf/release"
 AUDIO="$REPO/cinder-audio"
 OUT="$HERE/cinder-home"
@@ -219,7 +229,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -lDisplayService \
      -lUsbMgrServiceFw \
      -lConnMgrService -lUsbDeviceConnectionService -lFuncMgrService \
-     -lEffectCtrlDmp -lSoundServiceSettingsDmp -lMediaStoreServiceClient "$REPO/artifacts/rootfs_mnt/lib/libasound.so" \
+     -lEffectCtrlDmp -lSoundServiceSettingsDmp -lMediaStoreServiceClient "$FWROOT/lib/libasound.so" \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$PROBE"
 gate_glibc "$PROBE"
@@ -366,7 +376,7 @@ echo "built: $HERE/libcinder_fmrec.so ($(stat -c %s "$HERE/libcinder_fmrec.so") 
 # player. Its own build scripts, because the encoder (fdk-aac, fetched on first build) is C++.
 AAC_DIR="$REPO/cinder-aac"
 echo "[6k] build cinder-aac…"
-RAMLIB="$RAMLIB" DEVSYS="$DEVSYS" bash "$AAC_DIR/build.sh"
+FW="$FWROOT" RAMLIB="$RAMLIB" DEVSYS="$DEVSYS" bash "$AAC_DIR/build.sh"
 RAMLIB="$RAMLIB" DEVSYS="$DEVSYS" bash "$AAC_DIR/build_fdk.sh"
 
 mkdir -p "$DIST"

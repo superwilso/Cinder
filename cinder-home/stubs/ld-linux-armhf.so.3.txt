@@ -1,0 +1,35 @@
+# ramdisk/lib/ld-linux-armhf.so.3: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir ramdisk/lib
+elf 0x5000402 0
+soname ld-linux-armhf.so.3
+verdef 1 1 ld-linux-armhf.so.3
+verdef 2 0 GLIBC_2.4
+verdef 3 0 GLIBC_PRIVATE GLIBC_2.4
+sym 0x800 0 3 0 T 0x0 
+sym 0x20c40 0 3 0 W 0x0 
+sym 0xe101 64 18 0 T 0x2 __tls_get_addr
+sym 0x6c01 316 18 0 T 0x3 _dl_rtld_di_serinfo
+sym 0x21000 2096 17 0 W 0x3 _rtld_global
+sym 0xdeb5 120 18 0 T 0x3 _dl_deallocate_tls
+sym 0x21834 4 17 0 W 0x3 _dl_argv
+sym 0xd131 760 18 0 T 0x2 _dl_mcount
+sym 0x20eec 4 17 0 W 0x3 __libc_enable_secure
+sym 0x11455 36 34 0 T 0x2 free
+sym 0x115cd 88 34 0 T 0x2 realloc
+sym 0x11349 188 34 0 T 0x2 __libc_memalign
+sym 0x218f0 20 17 0 W 0x2 _r_debug
+sym 0xe3f5 112 18 0 T 0x3 _dl_make_stack_executable
+sym 0x20c44 4 17 0 W 0x3 __pointer_chk_guard
+sym 0xdb59 132 18 0 T 0x3 _dl_tls_setup
+sym 0x20ec0 4 17 0 W 0x2 __stack_chk_guard
+sym 0x20ee8 4 17 0 W 0x2 __libc_stack_end
+sym 0xdbdd 32 18 0 T 0x3 _dl_get_tls_static_info
+sym 0x0 0 17 0 A 0x3 GLIBC_PRIVATE
+sym 0x11419 58 34 0 T 0x2 calloc
+sym 0xe7a5 176 18 0 T 0x3 _dl_find_dso_for_object
+sym 0xde71 68 18 0 T 0x3 _dl_allocate_tls
+sym 0xc155 12 18 0 T 0x3 _dl_debug_state
+sym 0xdc75 508 18 0 T 0x3 _dl_allocate_tls_init
+sym 0x20c98 552 17 0 W 0x3 _rtld_global_ro
+sym 0x11405 18 34 0 T 0x2 malloc
+sym 0x0 0 17 0 A 0x2 GLIBC_2.4

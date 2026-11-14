@@ -1,0 +1,33 @@
+# lib/libbtcust.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir lib
+elf 0x5000000 0
+needed libbtcust_tab.so
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 /proj/mtk94094/Benten_New/vendor/mediatek/c4a/blueangel/src/linux/bin/libbtcust.so
+verneed libc.so.6 2 0 GLIBC_2.4
+verneed ld-linux-armhf.so.3 3 0 GLIBC_2.4
+sym 0x0 0 18 0 U 0x2 vsnprintf
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 34 0 U 0x2 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x2 __stack_chk_fail
+sym 0x0 0 17 0 U 0x3 __stack_chk_guard
+sym 0x0 0 18 0 U 0x2 strcmp
+sym 0x0 0 18 0 U 0x0 getCustTable
+sym 0x0 0 18 0 U 0x0 getDevCustTable
+sym 0x865 352 18 0 T 0x1 dumpCust
+sym 0x9c5 164 18 0 T 0x1 getCustID
+sym 0xa69 164 18 0 T 0x1 getDeviceID
+sym 0xc5d 300 18 0 T 0x1 initCust
+sym 0x3004 0 16 0 A 0x1 _edata
+sym 0x301c 0 16 0 A 0x1 _end
+sym 0x664 0 18 0 T 0x1 _init
+sym 0xb0d 128 18 0 T 0x1 getCustValue
+sym 0x3004 0 16 0 A 0x1 __bss_start
+sym 0xd88 0 18 0 T 0x1 _fini
+sym 0x7e5 12 18 0 T 0x1 cust_log
+sym 0x7f1 116 18 0 T 0x1 debug_log
+sym 0xb8d 208 18 0 T 0x1 getDevCustValue

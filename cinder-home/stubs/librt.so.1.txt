@@ -1,0 +1,127 @@
+# ramdisk/lib/librt.so.1: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir ramdisk/lib
+elf 0x5000402 3
+soname librt.so.1
+needed libpthread.so.0
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 librt.so.1
+verdef 2 0 GLIBC_2.4
+verdef 3 0 GLIBC_2.7 GLIBC_2.4
+verneed ld-linux-armhf.so.3 7 0 GLIBC_PRIVATE
+verneed libc.so.6 6 0 GLIBC_PRIVATE
+verneed libc.so.6 5 0 GLIBC_2.4
+verneed libpthread.so.0 8 0 GLIBC_PRIVATE
+verneed libpthread.so.0 4 0 GLIBC_2.4
+sym 0x1438 0 3 0 T 0x0 
+sym 0x10db8 0 3 0 W 0x0 
+sym 0x0 0 18 0 U 0x4 pthread_mutex_unlock
+sym 0x0 0 18 0 U 0x5 calloc
+sym 0x0 0 18 0 U 0x6 __recv
+sym 0x0 0 18 0 U 0x6 __libc_pwrite
+sym 0x0 0 18 0 U 0x4 fsync
+sym 0x0 0 34 0 U 0x5 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 18 0 U 0x5 __gettimeofday
+sym 0x0 0 18 0 U 0x4 pthread_attr_destroy
+sym 0x0 0 18 0 U 0x4 read
+sym 0x0 0 22 0 U 0x6 errno
+sym 0x0 0 18 0 U 0x5 getuid
+sym 0x0 0 18 0 U 0x6 __libc_fatal
+sym 0x0 0 18 0 U 0x5 free
+sym 0x0 0 18 0 U 0x4 pthread_mutex_lock
+sym 0x0 0 18 0 U 0x4 pthread_detach
+sym 0x0 0 18 0 U 0x4 pthread_self
+sym 0x0 0 18 0 U 0x5 memcpy
+sym 0x0 0 18 0 U 0x4 pthread_attr_setstacksize
+sym 0x0 0 18 0 U 0x5 __register_atfork
+sym 0x0 0 18 0 U 0x5 unlink
+sym 0x0 0 18 0 U 0x5 realloc
+sym 0x0 0 17 0 U 0x7 __pointer_chk_guard
+sym 0x0 0 18 0 U 0x6 __libc_pread
+sym 0x0 0 18 0 U 0x6 __clock_nanosleep
+sym 0x0 0 18 0 U 0x4 pthread_getschedparam
+sym 0x0 0 18 0 U 0x4 pthread_sigmask
+sym 0x0 0 18 0 U 0x4 pthread_create
+sym 0x0 0 18 0 U 0x8 __pthread_barrier_init
+sym 0x0 0 18 0 U 0x8 __pthread_unwind
+sym 0x0 0 18 0 U 0x4 __pwrite64
+sym 0x0 0 18 0 U 0x8 __pthread_get_minstack
+sym 0x0 0 18 0 U 0x5 malloc
+sym 0x0 0 18 0 U 0x4 pthread_once
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 18 0 U 0x4 open
+sym 0x0 0 18 0 U 0x5 getpid
+sym 0x0 0 18 0 U 0x6 __clock_getres
+sym 0x0 0 18 0 U 0x6 __clock_gettime
+sym 0x0 0 18 0 U 0x5 strlen
+sym 0x0 0 18 0 U 0x5 strchr
+sym 0x0 0 18 0 U 0x6 __libc_dlopen_mode
+sym 0x0 0 18 0 U 0x4 fcntl
+sym 0x0 0 18 0 U 0x4 pthread_attr_init
+sym 0x0 0 18 0 U 0x5 sigfillset
+sym 0x0 0 18 0 U 0x4 __pread64
+sym 0x0 0 18 0 U 0x4 __errno_location
+sym 0x0 0 18 0 U 0x8 __pthread_barrier_wait
+sym 0x0 0 18 0 U 0x5 memset
+sym 0x0 0 18 0 U 0x4 pthread_cancel
+sym 0x0 0 18 0 U 0x4 write
+sym 0x0 0 18 0 U 0x6 __libc_dlsym
+sym 0x0 0 18 0 U 0x4 pthread_exit
+sym 0x0 0 18 0 U 0x4 pthread_cond_timedwait
+sym 0x0 0 18 0 U 0x5 sigemptyset
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x6 __socket
+sym 0x0 0 18 0 U 0x4 pthread_setschedparam
+sym 0x0 0 18 0 U 0x8 __shm_directory
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 18 0 U 0x6 __fortify_fail
+sym 0x0 0 18 0 U 0x4 pthread_attr_setdetachstate
+sym 0x0 0 18 0 U 0x6 __clock_getcpuclockid
+sym 0x0 0 18 0 U 0x5 fdatasync
+sym 0x0 0 18 0 U 0x4 pthread_cond_signal
+sym 0x0 0 18 0 U 0x5 abort
+sym 0x0 0 18 0 U 0x5 __assert_fail
+sym 0x0 0 18 0 U 0x6 __clock_settime
+sym 0x3951 24 26 0 T 0x2 clock_getres
+sym 0x2441 20 18 0 T 0x2 aio_read64
+sym 0x277d 748 18 0 T 0x2 lio_listio
+sym 0x186d 368 18 0 T 0x2 aio_cancel
+sym 0x0 0 17 0 A 0x2 GLIBC_2.4
+sym 0x36e9 276 18 0 T 0x2 mq_notify
+sym 0x38e1 106 34 0 T 0x2 mq_timedreceive
+sym 0x0 0 17 0 A 0x3 GLIBC_2.7
+sym 0x3969 24 26 0 T 0x2 clock_gettime
+sym 0x2a69 752 18 0 T 0x2 lio_listio64
+sym 0x3205 228 18 0 T 0x2 shm_open
+sym 0x34f1 40 18 0 T 0x2 mq_setattr
+sym 0x242d 20 18 0 T 0x2 aio_read
+sym 0x2f1d 452 18 0 T 0x2 timer_create
+sym 0x2455 14 34 0 T 0x2 aio_return64
+sym 0x2755 20 18 0 T 0x2 aio_write
+sym 0x2455 14 18 0 T 0x2 aio_return
+sym 0x252d 552 18 0 T 0x2 aio_suspend
+sym 0x2769 20 18 0 T 0x2 aio_write64
+sym 0x186d 368 34 0 T 0x2 aio_cancel64
+sym 0x19dd 32 18 0 T 0x2 aio_error
+sym 0x3999 24 26 0 T 0x2 clock_getcpuclockid
+sym 0x19dd 32 34 0 T 0x2 aio_error64
+sym 0x33cd 116 18 0 T 0x2 mq_open
+sym 0x3851 106 34 0 T 0x2 mq_timedsend
+sym 0x39b1 24 26 0 T 0x2 clock_nanosleep
+sym 0x252d 552 34 0 T 0x2 aio_suspend64
+sym 0x19fd 108 34 0 T 0x2 aio_fsync64
+sym 0x34d9 18 18 0 T 0x2 mq_getattr
+sym 0x32e9 228 18 0 T 0x2 shm_unlink
+sym 0x3811 20 18 0 T 0x2 mq_receive
+sym 0x20c9 100 34 0 T 0x2 aio_init
+sym 0x19fd 108 18 0 T 0x2 aio_fsync
+sym 0x31a5 48 18 0 T 0x2 timer_gettime
+sym 0x30e1 148 18 0 T 0x2 timer_delete
+sym 0x3441 24 18 0 T 0x3 __mq_open_2
+sym 0x3981 24 26 0 T 0x2 clock_settime
+sym 0x3175 48 18 0 T 0x2 timer_getoverrun
+sym 0x3459 44 18 0 T 0x2 mq_close
+sym 0x3485 84 18 0 T 0x2 mq_unlink
+sym 0x37fd 20 18 0 T 0x2 mq_send
+sym 0x31d5 48 18 0 T 0x2 timer_settime

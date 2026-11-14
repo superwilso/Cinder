@@ -16,6 +16,9 @@
 # shairport-sync makes). The build machine needs autoconf, automake, libtool and xxd; plistutil is
 # built here from libplist itself. Every download is pinned by sha256.
 set -euo pipefail
+# No build date in the output (GCC's __DATE__, OpenSSL's "built on"): the same sources give the same
+# bytes, so a CI build can be checked against a release. 2025-01-01 00:00 UTC, a fixed point.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1735689600}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MUSL="${MUSL:-$HOME/arm-linux-musleabihf-cross}"
 export PATH="$MUSL/bin:$PATH"

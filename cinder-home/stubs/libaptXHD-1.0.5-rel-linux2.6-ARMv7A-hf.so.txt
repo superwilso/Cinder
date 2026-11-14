@@ -1,0 +1,44 @@
+# lib/libaptXHD-1.0.5-rel-linux2.6-ARMv7A-hf.so: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir lib
+elf 0x5000400 0
+soname libaptXHD-1.0.5-rel-linux2.6-ARMv7A-hf.so
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 libaptXHD-1.0.5-rel-linux2.6-ARMv7A-hf.so
+verneed libc.so.6 2 0 GLIBC_2.4
+verneed ld-linux-armhf.so.3 3 0 GLIBC_2.4
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 34 0 U 0x2 __cxa_finalize
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 18 0 U 0x2 memset
+sym 0x0 0 18 0 U 0x2 __stack_chk_fail
+sym 0x0 0 17 0 U 0x3 __stack_chk_guard
+sym 0x3194 0 18 0 T 0x1 _fini
+sym 0x2a81 566 18 0 T 0x1 AsmQmfConvI_HD
+sym 0x964 0 18 0 T 0x1 _init
+sym 0x10d1 1980 18 0 T 0x1 aptxhdbtenc_encodestereo
+sym 0x3015 366 18 0 T 0x1 quantiseDifference_HDLH
+sym 0x2341 1290 18 0 T 0x1 processSubband_HDHL
+sym 0x18a9 16 18 0 T 0x1 SizeofAptxhdbtenc
+sym 0x600c 0 16 0 A 0x1 __bss_start
+sym 0xf69 360 18 0 T 0x1 aptxhdbtenc_init
+sym 0x72f8 0 16 0 A 0x1 _end
+sym 0xd21 556 18 0 T 0x1 quantiseDifference_HDHH
+sym 0x2cb9 692 18 0 T 0x1 quantiseDifference_HDLL
+sym 0x188d 28 18 0 T 0x1 NewAptxhdEnc
+sym 0x18e9 1640 18 0 T 0x1 processSubband_HD
+sym 0x600c 0 16 0 A 0x1 _edata
+sym 0x2f6d 168 18 0 T 0x1 BsearchLH
+sym 0xb21 510 18 0 T 0x1 quantiseDifference_HDHL
+sym 0x18b9 24 18 0 T 0x1 aptxhdbtenc_version
+sym 0x18d1 24 18 0 T 0x1 aptxhdbtenc_build
+sym 0x284d 564 18 0 T 0x1 AsmQmfConvO_HD
+sym 0x3260 64 17 0 R 0x1 Qmf_outerCoeffs
+sym 0x6010 4840 17 0 W 0x1 aptXHDStereoEncoder
+sym 0x6008 4 17 0 W 0x1 swversion
+sym 0x3220 64 17 0 R 0x1 Qmf_innerCoeffs
+sym 0x1f51 1008 18 0 T 0x1 processSubband_HDLL
+sym 0x6004 4 17 0 W 0x1 swbuild
+sym 0xf4d 28 18 0 T 0x1 clearmem_HD

@@ -1,0 +1,52 @@
+# ramdisk/lib/libdl.so.2: dynamic tables only (cinder-home/tools/stubs.py gen)
+dir ramdisk/lib
+elf 0x5000402 0
+soname libdl.so.2
+needed libc.so.6
+needed ld-linux-armhf.so.3
+verdef 1 1 libdl.so.2
+verdef 2 0 GLIBC_2.4
+verdef 3 0 GLIBC_PRIVATE GLIBC_2.4
+verneed ld-linux-armhf.so.3 5 0 GLIBC_PRIVATE
+verneed libc.so.6 6 0 GLIBC_PRIVATE
+verneed libc.so.6 4 0 GLIBC_2.4
+sym 0x864 0 3 0 T 0x0 
+sym 0x10e68 0 3 0 W 0x0 
+sym 0x0 0 18 0 U 0x4 calloc
+sym 0x0 0 32 0 U 0x0 __pthread_key_create
+sym 0x0 0 18 0 U 0x4 strcmp
+sym 0x0 0 34 0 U 0x4 __cxa_finalize
+sym 0x0 0 17 0 U 0x4 __environ
+sym 0x0 0 32 0 U 0x0 _ITM_deregisterTMCloneTable
+sym 0x0 0 32 0 U 0x0 __pthread_getspecific
+sym 0x0 0 18 0 U 0x4 __dcgettext
+sym 0x0 0 18 0 U 0x4 free
+sym 0x0 0 18 0 U 0x4 strcpy
+sym 0x0 0 18 0 U 0x4 strerror
+sym 0x0 0 32 0 U 0x0 __gmon_start__
+sym 0x0 0 17 0 U 0x5 _rtld_global_ro
+sym 0x0 0 18 0 U 0x6 _dl_vsym
+sym 0x0 0 32 0 U 0x0 __pthread_once
+sym 0x0 0 18 0 U 0x4 __asprintf
+sym 0x0 0 18 0 U 0x6 _dl_addr
+sym 0x0 0 33 0 U 0x4 _environ
+sym 0x0 0 18 0 U 0x6 _dl_sym
+sym 0x0 0 32 0 U 0x0 _Jv_RegisterClasses
+sym 0x0 0 17 0 U 0x4 _libc_intl_domainname
+sym 0x0 0 18 0 U 0x5 _dl_rtld_di_serinfo
+sym 0x0 0 32 0 U 0x0 _ITM_registerTMCloneTable
+sym 0x0 0 33 0 U 0x4 environ
+sym 0x0 0 32 0 U 0x0 __pthread_setspecific
+sym 0x0 0 17 0 U 0x5 _rtld_global
+sym 0xbfd 96 18 0 T 0x2 dlsym
+sym 0x104d 40 18 0 T 0x2 dladdr
+sym 0x1075 72 18 0 T 0x2 dladdr1
+sym 0x0 0 17 0 A 0x2 GLIBC_2.4
+sym 0x12c1 76 18 0 T 0x2 dlmopen
+sym 0xc6d 100 34 0 T 0x2 dlvsym
+sym 0xdc9 400 18 0 T 0x2 dlerror
+sym 0x0 0 17 0 A 0x3 GLIBC_PRIVATE
+sym 0xbc1 44 18 0 T 0x2 dlclose
+sym 0x118d 72 18 0 T 0x2 dlinfo
+sym 0xb59 76 18 0 T 0x2 dlopen
+sym 0x11024 4 17 0 W 0x3 _dlfcn_hook
