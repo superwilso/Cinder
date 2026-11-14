@@ -41,7 +41,7 @@ if [ -z "${SKIP_APT:-}" ]; then
     sudo apt-get update -qq
     sudo apt-get install -y -qq --no-install-recommends \
         clang-18 lld-18 gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
-        qemu-user-static libcrypto++-dev autoconf automake libtool pkg-config bison flex bc cpio \
+        qemu-user-static libcrypto++-dev zlib1g-dev autoconf automake libtool pkg-config bison flex bc cpio \
         python3 g++ make patch xz-utils curl git >/dev/null
 fi
 # Versions, for the log: a difference here is the first suspect when a file does not match.
@@ -94,6 +94,15 @@ if [ ! -x "$REPO/artifacts/upgtool" ]; then
     cp "$RB/utils/nwztools/upgtools/upgtool" "$REPO/artifacts/upgtool"
 fi
 
+# The Walkman One package is sealed with the upgtool in unknown321/nw-installer (`-w`), as
+# tools/release.sh does on the maintainer's machine: run as a build tool, none of it is in Cinder.
+NWI="$REPO/artifacts/repos/nw-installer"
+if [ ! -x "$NWI/tools/upgtool/upgtools/upgtool" ]; then
+    [ -d "$NWI/.git" ] || git clone -q https://github.com/unknown321/nw-installer "$NWI"
+    git -C "$NWI" -c advice.detachedHead=false checkout -q 98d919ac985b6108e03f60a30bcec6b86a4858a0
+    make -C "$NWI/tools/upgtool/upgtools" >/dev/null
+fi
+
 # Sony's GPL kernel tree, prepared, for the Wi-Fi modules: cinder-llusbdac's build makes it.
 LL="$HOME/cinder-llusbdac"
 if [ ! -f "$LL/work/kernel/.prepared" ]; then
@@ -114,7 +123,7 @@ for ch in stable dev; do
     step "build $ch"
     bash cinder-home/build.sh "$ch"
     for model in nw-a50 nw-wm1a; do
-        bash cinder-home/tools/pack_upg.sh "$ch" "$model" >/dev/null
+        out="$(bash cinder-home/tools/pack_upg.sh "$ch" "$model" 2>&1)" || { echo "$out"; exit 1; }
     done
 done
 bash tools/check_arm_payload.sh cinder-home/dist/dev
