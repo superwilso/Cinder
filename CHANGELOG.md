@@ -16,14 +16,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Changed
-
-- **The player's files can be built on GitHub.** The build links against stand-ins made from the
-  device libraries' symbol lists instead of the firmware, and comes out byte for byte the same
-  (checked against v0.4.2-rc2: every file Cinder compiles matched). The Wi-Fi option and the AAC
-  encoder no longer carry a build date, so they repeat exactly too. The `payload` workflow does
-  this on every tag and checks it against the release's manifest.
-
 ## [0.4.2] — 2026-11-11
 
 ### Added
@@ -143,6 +135,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **The player's files can be built on GitHub.** The build links against stand-ins made from the
+  device libraries' symbol lists instead of the firmware, and comes out byte for byte the same
+  (checked against v0.4.2-rc2: every file Cinder compiles matched). The Wi-Fi option and the AAC
+  encoder no longer carry a build date, so they repeat exactly too. The `payload` workflow does
+  this on every tag and checks it against the release's manifest.
 - **Shuffling partway through a list plays the songs you have not heard first.** The songs
   before the one playing go to the end, still shuffled, instead of being dealt back in among the
   rest. By album, the playing album still comes round to its start first.
