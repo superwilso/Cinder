@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-11-11
+
 ### Added
 
 - **Play DSD natively (Settings ▸ Playback).** DSD files go to the headphone jack as 1-bit, the way
@@ -68,27 +70,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   at random, with each artist's songs spaced out through the list, so one artist does not come up
   three times running. Also a choice for a smart playlist. Songs stays the default. *Host-tested;
   not yet on a device.*
-
-### Changed
-
-- **Shuffling partway through a list plays the songs you have not heard first.** The songs
-  before the one playing go to the end, still shuffled, instead of being dealt back in among the
-  rest. By album, the playing album still comes round to its start first.
-- **"Random artist" picks the artist an album is filed under**, case-blind, like every other
-  grouping. A guest on one song is no longer an artist it can land on.
-- **Shuffling by album favours full albums.** An album is dealt early in proportion to its
-  songs, up to eight, so singles and EPs drift towards the end instead of turning up every few
-  albums (a fifth of the albums on the owner's player have one or two songs). Applies to the
-  Albums band, Settings ▸ Shuffle ▸ Albums and a playlist shuffled by album.
-- **The Library opens on the tab and sort orders you left it on**, after a restart too, whatever
-  Settings ▸ Start on says. Before, only Start on ▸ Last screen kept them; the list/grid choice for
-  each tab was already kept.
-- **Queue edits, shuffle and repeat no longer reread the whole library** each time; the file list
-  is read once when the library loads.
-- **Shuffle by album from the Library band** treats songs with no album as single songs, rather
-  than one big album of them.
-- Clear Bass's row now says *deep-bass boost*: it lifts the octaves under about 150 Hz (+8.4 dB at
-  63 Hz at +10, measured on the jack) and nothing above 250 Hz.
+- **Cover colours (Settings ▸ Now Playing).** Now Playing's background takes the colour of the album
+  art, mixed in only as far as the text keeps its contrast, so every palette stays as readable as
+  it was. Off by default; at night the background stays black. Asked for on Head-Fi.
+  *Device-verified 2026-11-11* (a yellow cover turned the band under the art dark olive; frames
+  still ~6 ms).
 
 ### Fixed
 
@@ -104,19 +90,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Bass "100 Hz" worked at about 400 Hz and Treble "10 kHz" at about 40 kHz, where nobody hears it.
   Found with the jack recorded on a PC: pink noise through each preset matched a 176.4 kHz model
   within 0.5 dB an octave. Settings people already saved now sound as their labels say.
-
-## [0.4.2] — 2026-11-11
-
-### Added
-
-- **Cover colours (Settings ▸ Now Playing).** Now Playing's background takes the colour of the album
-  art, mixed in only as far as the text keeps its contrast, so every palette stays as readable as
-  it was. Off by default; at night the background stays black. Asked for on Head-Fi.
-  *Device-verified 2026-11-11* (a yellow cover turned the band under the art dark olive; frames
-  still ~6 ms).
-
-### Fixed
-
 - **Now Playing follows a speaker properly while casting.** With the music on a speaker (Wi-Fi ▸
   Speakers), the progress bar and times jumped every second between the speaker's position and the
   paused player's own, and when the speaker moved on to the next song the title changed but the
@@ -159,6 +132,27 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Internet radio lists every station.** The list showed only the stations that fit on one screen
   (seven with Big view) and never scrolled, so the rest of `cinder_radio.txt` (up to 200) could not
   be played. It scrolls now, with FIND on its label moving with it.
+
+### Changed
+
+- **Shuffling partway through a list plays the songs you have not heard first.** The songs
+  before the one playing go to the end, still shuffled, instead of being dealt back in among the
+  rest. By album, the playing album still comes round to its start first.
+- **"Random artist" picks the artist an album is filed under**, case-blind, like every other
+  grouping. A guest on one song is no longer an artist it can land on.
+- **Shuffling by album favours full albums.** An album is dealt early in proportion to its
+  songs, up to eight, so singles and EPs drift towards the end instead of turning up every few
+  albums (a fifth of the albums on the owner's player have one or two songs). Applies to the
+  Albums band, Settings ▸ Shuffle ▸ Albums and a playlist shuffled by album.
+- **The Library opens on the tab and sort orders you left it on**, after a restart too, whatever
+  Settings ▸ Start on says. Before, only Start on ▸ Last screen kept them; the list/grid choice for
+  each tab was already kept.
+- **Queue edits, shuffle and repeat no longer reread the whole library** each time; the file list
+  is read once when the library loads.
+- **Shuffle by album from the Library band** treats songs with no album as single songs, rather
+  than one big album of them.
+- Clear Bass's row now says *deep-bass boost*: it lifts the octaves under about 150 Hz (+8.4 dB at
+  63 Hz at +10, measured on the jack) and nothing above 250 Hz.
 
 ## [0.4.1] — 2026-11-10
 
