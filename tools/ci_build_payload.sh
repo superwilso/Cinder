@@ -24,11 +24,15 @@ step() { echo; echo "── $* ──"; }
 [ "$REPO" = /home/sony/sony ] && [ "$HOME" = /home/sony ] \
     || echo "WARN: not at /home/sony/sony with HOME=/home/sony — the build will not match the manifest byte for byte"
 
-fetch() {  # fetch URL SHA256 FILE
-    if ! echo "$2  $3" | sha256sum -c --status 2>/dev/null; then
-        curl -fsSL --retry 3 -o "$3" "$1"
-        echo "$2  $3" | sha256sum -c
-    fi
+fetch() {  # fetch "URL [MIRROR...]" SHA256 FILE — the first that answers; the hash decides, not the host
+    echo "$2  $3" | sha256sum -c --status 2>/dev/null && return 0
+    local u
+    for u in $1; do
+        curl -fsSL --retry 2 --connect-timeout 30 -o "$3" "$u" && echo "$2  $3" | sha256sum -c && return 0
+        echo "  (not from $u)"
+    done
+    echo "ERR: no source gave $3 with sha256 $2" >&2
+    return 1
 }
 
 # ── 1. packages (the same Ubuntu 24.04 ones the maintainer's machine has) ─────────────────────
@@ -57,9 +61,11 @@ B=http://ports.ubuntu.com/ubuntu-ports/pool/main/g/glibc
   fetch https://releases.llvm.org/3.9.0/libcxx-3.9.0.src.tar.xz d0b38d51365c6322f5666a2a8105785f2e114430858de4c25a86b49f227f5b06 libcxx-3.9.0.src.tar.xz
   [ -f libcxx-3.9.0.src/include/functional ] || tar xf libcxx-3.9.0.src.tar.xz )
 # musl.cc's URL is not versioned, so the archive is pinned by hash: if it ever changes, this stops
-# rather than building the helpers with a different compiler.
+# rather than building the helpers with a different compiler. GitHub's runners cannot reach musl.cc
+# at all (2026-11-14, four 135 s timeouts), so the same file, same hash, is also a release asset.
+MUSL_MIRROR="${MUSL_MIRROR:-https://github.com/superwilso/Cinder/releases/download/toolchains/arm-linux-musleabihf-cross.tgz}"
 ( cd "$HOME"
-  fetch https://musl.cc/arm-linux-musleabihf-cross.tgz 11e155a090789c854afb5d91e57c81f441ccdb92f7f277789c3a6d5884a68e58 arm-linux-musleabihf-cross.tgz
+  fetch "https://musl.cc/arm-linux-musleabihf-cross.tgz $MUSL_MIRROR" 11e155a090789c854afb5d91e57c81f441ccdb92f7f277789c3a6d5884a68e58 arm-linux-musleabihf-cross.tgz
   [ -x arm-linux-musleabihf-cross/bin/arm-linux-musleabihf-gcc ] || tar xzf arm-linux-musleabihf-cross.tgz )
 export PATH="$HOME/arm-linux-musleabihf-cross/bin:$PATH"
 
