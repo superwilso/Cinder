@@ -1260,8 +1260,9 @@ pub struct App {
     /// "Shuffle all songs", and cloning 3600 rows would double several thousand heap strings to
     /// remember an ORDER. 8 bytes a track answers the same question for ~29 KB.
     pre_shuffle: Option<Vec<i64>>,
-    /// Seed for `queue_shuffle`; advanced on every use so repeated shuffles differ.
-    shuffle_seed: u64,
+    /// The generator for `queue_shuffle` and Random album. Starts from a constant so tests replay;
+    /// the shell reseeds it from the clock (`seed_shuffle`).
+    rng: crate::shuffle::Rng,
     /// Set by the "keep Up Next" answer: `set_play_context` keeps what was still to come and plays
     /// it AFTER the new sequence, rather than dropping it. Consumed on use.
     queue_keep: bool,
@@ -2061,7 +2062,7 @@ impl Default for App {
             context: Vec::new(),
             context_idx: 0,
             pre_shuffle: None,
-            shuffle_seed: 0x9E3779B97F4A7C15,
+            rng: crate::shuffle::Rng::new(0x9E3779B97F4A7C15),
             queue_keep: false,
             hand_added: false,
             shuffle_on: false,
@@ -3716,10 +3717,10 @@ impl App {
     /// Give MIX / the shuffle toggle a per-session starting seed. The shell calls this once at
     /// start-up with something clock-derived; cinder-ui has no clock of its own and must not grow
     /// one, because every one of its 300-odd host tests depends on this crate being deterministic.
-    /// Zero is ignored — the xorshift in `queue_shuffle` is stuck there.
+    /// Zero is ignored — xorshift is stuck there.
     pub fn seed_shuffle(&mut self, seed: u64) {
         if seed != 0 {
-            self.shuffle_seed = seed;
+            self.rng = crate::shuffle::Rng::new(seed);
         }
     }
 
@@ -6697,12 +6698,7 @@ impl App {
         if pick.is_empty() {
             return vec![];
         }
-        // The same xorshift step the shuffle button uses (seeded from the clock by the shell).
-        self.shuffle_seed = self
-            .shuffle_seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
-        let (title, ids) = pick[(self.shuffle_seed >> 33) as usize % pick.len()];
+        let (title, ids) = pick[self.rng.below(pick.len())];
         let (title, first) = (title.clone(), ids[0]);
         // Raw: already translated by `ui_format!`, and an album name is not a catalogue key.
         self.notify_raw(&crate::ui_format!("Random album · {}", title));
@@ -8244,6 +8240,35 @@ impl App {
             .join(",")
     }
 
+    /// The Library's tab, Songs sort and Albums order as the settings file stores them
+    /// (`lib_place=`), so the Library opens as it was left whatever Start on says.
+    pub fn lib_place_str(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            tab_token(self.lib_tab),
+            self.lib_sort,
+            self.album_sort
+        )
+    }
+
+    /// Read `lib_place_str`'s format. Out-of-range numbers are clamped; a short or garbled value
+    /// changes nothing.
+    pub fn set_lib_place_str(&mut self, s: &str) {
+        let f: Vec<&str> = s.split('|').collect();
+        let [tab, sort, album_sort] = f[..] else {
+            return;
+        };
+        let (Ok(sort), Ok(album_sort)) = (
+            sort.trim().parse::<usize>(),
+            album_sort.trim().parse::<usize>(),
+        ) else {
+            return;
+        };
+        self.lib_tab = tab_from_token(tab);
+        self.lib_sort = sort.min(library::SORTS.len() - 1);
+        self.album_sort = album_sort.min(library::ALBUM_SORTS.len() - 1);
+    }
+
     /// Read `lib_views_str`'s format. An unknown word leaves that tab as it was; a view the tab
     /// does not offer is kept but drawn as the list (`library::view_of`).
     pub fn set_lib_views_str(&mut self, s: &str) {
@@ -9754,9 +9779,21 @@ impl App {
         if i <= self.context_idx || i >= self.context.len() {
             return vec![];
         }
+        // Which copy of its song this row is: `unshuffle_context` pairs the k-th copy in the list
+        // with the k-th in the saved order, so that is the one to drop, not the first.
+        let k = self.context[..i]
+            .iter()
+            .filter(|r| r.object_id == self.context[i].object_id)
+            .count();
         let gone = self.context.remove(i);
         if let Some(pre) = self.pre_shuffle.as_mut() {
-            if let Some(j) = pre.iter().position(|p| *p == gone.object_id) {
+            let at = pre
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| **p == gone.object_id)
+                .nth(k)
+                .map(|(j, _)| j);
+            if let Some(j) = at {
                 pre.remove(j);
             }
         }
@@ -10054,68 +10091,35 @@ impl App {
         let playing = self.context.remove(cur);
         self.context.insert(0, playing);
         self.context_idx = 0;
-        // A small xorshift seeded from the shuffle count: self-contained (cinder-ui has no rng and
-        // should not gain a dependency for one button) and reproducible in tests.
-        //
-        // The starting seed is a CONSTANT here so the tests below are reproducible, and the shell
-        // replaces it once at start-up with a clock-derived one (`App::seed_shuffle`).
-        self.shuffle_seed = self
-            .shuffle_seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
-        let mut x = self.shuffle_seed | 1;
-        // BY ALBUM or BY ARTIST (Settings ▸ Shuffle): deal whole groups, each in its own order,
-        // with the playing track's own group carrying on first. `shuffle::deal` says how, and
-        // falls back to songs when there is only one group to deal.
-        if self.shuffle_by != crate::shuffle::ShuffleBy::Songs {
-            let rows: Vec<crate::shuffle::Row> = self
-                .context
-                .iter()
-                .map(|t| crate::shuffle::Row {
-                    album: crate::shuffle::album_key(t.album_id, t.object_id),
-                    artist: crate::shuffle::artist_key(t.group_artist()),
-                    disc: t.disc,
-                    track: t.track,
-                })
-                .collect();
-            let grouped = {
-                let key = |r: &crate::shuffle::Row| {
-                    if self.shuffle_by == crate::shuffle::ShuffleBy::Albums {
-                        r.album
-                    } else {
-                        r.artist
-                    }
-                };
-                rows.iter().any(|r| key(r) != key(&rows[0]))
-            };
-            let mut rnd = |n: usize| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                (x % n as u64) as usize
-            };
-            let order = crate::shuffle::deal(&rows, self.shuffle_by, Some(0), &mut rnd);
-            let mut old: Vec<Option<SongRow>> = std::mem::take(&mut self.context)
-                .into_iter()
-                .map(Some)
-                .collect();
-            self.context = order.into_iter().filter_map(|i| old[i].take()).collect();
-            let by = if grouped {
-                self.shuffle_by
-            } else {
-                crate::shuffle::ShuffleBy::Songs
-            };
-            self.notify(by.toast());
-            return vec![Action::QueueChanged];
-        }
-        let tail = &mut self.context[1..];
-        for i in (1..tail.len()).rev() {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            tail.swap(i, (x % (i as u64 + 1)) as usize);
-        }
-        self.notify(crate::i18n::text("Shuffled"));
+        // By songs, albums or artists (Settings ▸ Shuffle), the playing track first and, when
+        // grouped, its own group carrying on behind it. `shuffle::deal` says how.
+        let rows: Vec<crate::shuffle::Row> = self
+            .context
+            .iter()
+            .map(|t| crate::shuffle::Row {
+                album: crate::shuffle::album_key(t.album_id, t.object_id),
+                artist: crate::shuffle::artist_key(t.group_artist()),
+                disc: t.disc,
+                track: t.track,
+            })
+            .collect();
+        let (order, by) = crate::shuffle::deal(&rows, self.shuffle_by, Some(0), &mut self.rng);
+        // WHAT HAS PLAYED GOES LAST, still dealt, so nothing is cut and nothing heard comes
+        // straight back. Rows 1..=cur were before the playing one. The playing song's own album
+        // (or artist) is the exception in a grouped deal: it comes round to its start first, as
+        // `deal` put it. A stable split, so every group stays whole and in order.
+        let key = |r: &crate::shuffle::Row| match by {
+            crate::shuffle::ShuffleBy::Songs | crate::shuffle::ShuffleBy::Spread => None,
+            crate::shuffle::ShuffleBy::Albums => Some(r.album),
+            crate::shuffle::ShuffleBy::Artists => Some(r.artist),
+        };
+        let own = key(&rows[0]);
+        let (mut order, heard): (Vec<usize>, Vec<usize>) = order
+            .into_iter()
+            .partition(|&i| i == 0 || i > cur || (own.is_some() && key(&rows[i]) == own));
+        order.extend(heard);
+        self.context = crate::shuffle::apply(std::mem::take(&mut self.context), &order);
+        self.notify(by.toast());
         vec![Action::QueueChanged]
     }
 
@@ -17337,6 +17341,30 @@ mod tests {
 
     /// The header's view button steps the tab through its views, says which one it is now, keeps
     /// the item at the top of the screen at the top, and survives the settings file.
+    /// The Library's tab and sort orders survive a restart (`lib_place=`), and a bad value is
+    /// ignored rather than trusted.
+    #[test]
+    fn library_tab_and_sorts_round_trip() {
+        let mut a = App::unlocked();
+        a.lib_tab = Tab::Albums;
+        a.lib_sort = library::SORTS.len() - 1;
+        a.album_sort = library::ALBUM_SORTS.len() - 1;
+        let saved = a.lib_place_str();
+        let mut b = App::unlocked();
+        b.set_lib_place_str(&saved);
+        assert_eq!(
+            (b.lib_tab, b.lib_sort, b.album_sort),
+            (a.lib_tab, a.lib_sort, a.album_sort)
+        );
+        b.set_lib_place_str("songs|x|0");
+        b.set_lib_place_str("songs");
+        assert_eq!(b.lib_tab, Tab::Albums, "garbage changes nothing");
+        b.set_lib_place_str("artists|999|999");
+        assert_eq!(b.lib_tab, Tab::Artists);
+        assert_eq!(b.lib_sort, library::SORTS.len() - 1, "clamped");
+        assert_eq!(b.album_sort, library::ALBUM_SORTS.len() - 1, "clamped");
+    }
+
     #[test]
     fn the_view_button_switches_the_layout_and_remembers_it() {
         let mut a = long_songs();
@@ -17891,6 +17919,51 @@ mod tests {
         // Nothing to shuffle => no action, no crash.
         a.set_play_context(vec![SongRow::default(), SongRow::default()], 0);
         assert!(a.queue_shuffle().is_empty());
+    }
+
+    /// Removing the SECOND copy of a song from Up Next forgets that copy's place in the un-shuffle
+    /// order, not the first copy's: shuffle-off then puts the first copy back where it was.
+    #[test]
+    fn removing_a_repeated_song_keeps_the_other_copy_in_its_place() {
+        let row = |id: i64, title: &str| SongRow {
+            object_id: id,
+            title: title.into(),
+            ..Default::default()
+        };
+        let mut a = unlocked();
+        a.set_play_context(
+            vec![
+                row(2, "two"),
+                row(1, "first"),
+                row(3, "three"),
+                row(1, "second"),
+            ],
+            0,
+        );
+        a.note_pre_shuffle(vec![1, 2, 3, 1]);
+        a.remove_upcoming(3);
+        a.unshuffle_context();
+        let titles: Vec<&str> = a.context().iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, ["first", "two", "three"]);
+    }
+
+    /// Shuffling mid-list: the songs still to come are dealt first and the ones already played
+    /// after them, so a song just heard does not come straight back.
+    #[test]
+    fn queue_shuffle_puts_what_has_played_last() {
+        let mut a = unlocked();
+        let rows: Vec<SongRow> = (0..12)
+            .map(|i| SongRow {
+                object_id: 10 + i,
+                ..Default::default()
+            })
+            .collect();
+        a.set_play_context(rows, 5);
+        a.queue_shuffle();
+        let ids: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(ids[0], 15, "the playing song leads");
+        assert!(ids[1..7].iter().all(|&i| i > 15), "unheard next: {ids:?}");
+        assert!(ids[7..].iter().all(|&i| i < 15), "heard last: {ids:?}");
     }
 
     /// MIX turns shuffle ON when it is off — the same as the transport button, so the icon on Now

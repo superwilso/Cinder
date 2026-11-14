@@ -32,7 +32,7 @@
   "Five bands in the DAC chip — flat": "DAC 内五段均衡；平直",
   "DAC EQ": "DAC 均衡器",
   "Applies to Bluetooth and USB-DAC.": "适用于蓝牙和 USB-DAC。",
-  "Sony's bass boost — takes the place of the EQ": "Sony 低音增强；替代均衡器",
+  "Sony's deep-bass boost — takes the place of the EQ": "Sony 重低音增强；替代均衡器",
   "On — the EQ and Tone Control are out of the path": "开启时不经过均衡器和音调控制",
   "Clear Bass": "清晰重低音",
   "{who} is on": "{who} 已开启",
@@ -1208,5 +1208,8 @@
   "Each album at the same loudness, its own mix kept": "每张专辑同样的响度，保留其自身的混音",
   "Lyrics button": "歌词按钮",
   "Top left, when the song has lyrics": "有歌词时显示在左上角",
-  "ReplayGain": "响度均衡"
+  "ReplayGain": "响度均衡",
+  "SPREAD": "分开",
+  "Shuffled, artists spread out": "随机，歌手分开",
+  "Spread": "分开"
 }

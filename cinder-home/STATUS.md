@@ -876,7 +876,8 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   *(Playback path is shared with play-by-index, so it carries the same device-verify caveat.)*
 - **Library shuffle bands** (2026-07-26): the accent band at the top of each Library tab now
   works — **Shuffle all songs** (whole library, random), **Shuffle by album** (random album order,
-  each album's tracks kept in sequence), **Shuffle by artist** (one random artist, shuffled), and
+  each album's tracks kept in sequence), **Shuffle by artist** (one random artist by the album
+  artist it is filed under, shuffled), and
   **Shuffle a playlist**. The queue is pre-shuffled by Cinder itself, so the order is genuinely
   random regardless of what PlayerService's own shuffle does.
 - **EQ → real DSP**: 10-band edit + preset cycle → `EffectCtrlDmp` (guarded). Preset pills, band

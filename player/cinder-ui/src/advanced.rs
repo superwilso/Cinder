@@ -443,7 +443,7 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
             (
                 "Clear Bass",
                 s(if level == CLEAR_BASS[0] {
-                    "Sony's bass boost \u{2014} takes the place of the EQ"
+                    "Sony's deep-bass boost \u{2014} takes the place of the EQ"
                 } else {
                     "On \u{2014} the EQ and Tone Control are out of the path"
                 }),

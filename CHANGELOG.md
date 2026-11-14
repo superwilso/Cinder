@@ -64,7 +64,36 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   against 6.02 and 12.04 tagged; at a change of song the new level is there within 0.15 s. Not yet
   heard over Bluetooth.*
 
+- **Settings ▸ Shuffle ▸ Spread.** A fourth choice beside Songs, Albums and Artists: every song
+  at random, with each artist's songs spaced out through the list, so one artist does not come up
+  three times running. Also a choice for a smart playlist. Songs stays the default. *Host-tested;
+  not yet on a device.*
+
+### Changed
+
+- **Shuffling partway through a list plays the songs you have not heard first.** The songs
+  before the one playing go to the end, still shuffled, instead of being dealt back in among the
+  rest. By album, the playing album still comes round to its start first.
+- **"Random artist" picks the artist an album is filed under**, case-blind, like every other
+  grouping. A guest on one song is no longer an artist it can land on.
+- **Shuffling by album favours full albums.** An album is dealt early in proportion to its
+  songs, up to eight, so singles and EPs drift towards the end instead of turning up every few
+  albums (a fifth of the albums on the owner's player have one or two songs). Applies to the
+  Albums band, Settings ▸ Shuffle ▸ Albums and a playlist shuffled by album.
+- **The Library opens on the tab and sort orders you left it on**, after a restart too, whatever
+  Settings ▸ Start on says. Before, only Start on ▸ Last screen kept them; the list/grid choice for
+  each tab was already kept.
+- **Queue edits, shuffle and repeat no longer reread the whole library** each time; the file list
+  is read once when the library loads.
+- **Shuffle by album from the Library band** treats songs with no album as single songs, rather
+  than one big album of them.
+- Clear Bass's row now says *deep-bass boost*: it lifts the octaves under about 150 Hz (+8.4 dB at
+  63 Hz at +10, measured on the jack) and nothing above 250 Hz.
+
 ### Fixed
+
+- **Removing a song that is in Up Next twice could put the other copy back in the wrong place**
+  when shuffle was turned off. The copy removed is now the one forgotten.
 
 - **Cover colours with Night on turned Now Playing inside out.** With a bright cover (Boris,
   *Pink*), the background went near white behind Night's dim text: contrast is a ratio, and a

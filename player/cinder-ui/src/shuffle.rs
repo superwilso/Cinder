@@ -5,6 +5,8 @@
 //! each one album after another. It is a setting (Settings ▸ Shuffle), not a fourth state on the
 //! transport button: the button stays the on/off switch it has always been, and the setting says
 //! what "on" means. The default is Songs, so nothing changes until the owner picks otherwise.
+//! SPREAD is Songs with each artist's songs spaced out through the list, so one artist does not
+//! come up three times running (what a plain random deal does, and what people hear as "not random").
 //!
 //! Pure and allocation-light: the callers — `App::queue_shuffle` on `SongRow`s and the shell's
 //! library bands on DB tracks — describe their rows as [`Row`]s and get back a permutation, so one
@@ -17,10 +19,16 @@ pub enum ShuffleBy {
     Songs,
     Albums,
     Artists,
+    Spread,
 }
 
 impl ShuffleBy {
-    pub const ALL: [ShuffleBy; 3] = [ShuffleBy::Songs, ShuffleBy::Albums, ShuffleBy::Artists];
+    pub const ALL: [ShuffleBy; 4] = [
+        ShuffleBy::Songs,
+        ShuffleBy::Albums,
+        ShuffleBy::Artists,
+        ShuffleBy::Spread,
+    ];
 
     /// The settings-file word (`shuffle_by=`). A word, so a fourth mode cannot shift what an
     /// existing file means.
@@ -29,6 +37,7 @@ impl ShuffleBy {
             ShuffleBy::Songs => "songs",
             ShuffleBy::Albums => "albums",
             ShuffleBy::Artists => "artists",
+            ShuffleBy::Spread => "spread",
         }
     }
 
@@ -42,6 +51,7 @@ impl ShuffleBy {
             ShuffleBy::Songs => crate::i18n::text("SONGS"),
             ShuffleBy::Albums => crate::i18n::text("ALBUMS"),
             ShuffleBy::Artists => crate::i18n::text("ARTISTS"),
+            ShuffleBy::Spread => crate::i18n::text("SPREAD"),
         }
     }
 
@@ -51,6 +61,7 @@ impl ShuffleBy {
             ShuffleBy::Songs => crate::i18n::text("Shuffled"),
             ShuffleBy::Albums => crate::i18n::text("Shuffled by album"),
             ShuffleBy::Artists => crate::i18n::text("Shuffled by artist"),
+            ShuffleBy::Spread => crate::i18n::text("Shuffled, artists spread out"),
         }
     }
 
@@ -94,10 +105,83 @@ pub fn artist_key(name: &str) -> u64 {
     h
 }
 
+/// The one random generator for every shuffle and random pick (xorshift64*). Not cryptographic:
+/// a play order has nothing to protect, and a dependency for it would be the only one. The seed is
+/// the caller's, so cinder-ui stays clock-free and its tests replay exactly; the shell seeds it
+/// from the clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rng(u64);
+
+impl Rng {
+    /// Zero is moved off: xorshift never leaves it.
+    pub fn new(seed: u64) -> Rng {
+        Rng(if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        })
+    }
+
+    #[allow(clippy::should_implement_trait)] // an endless generator, not an iterator
+    pub fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// A number in `0..n` (`n` > 0).
+    pub fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    /// A number in `[0, 1)`.
+    pub fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Fisher-Yates.
+    pub fn shuffle<T>(&mut self, v: &mut [T]) {
+        for i in (1..v.len()).rev() {
+            v.swap(i, self.below(i + 1));
+        }
+    }
+}
+
+/// `0..w.len()` in a random order where a heavier item tends to come sooner: item `i` comes
+/// first with chance `w[i] / Σw` (exponential keys, Efraimidis–Spirakis).
+pub fn weighted_order(w: &[f64], rng: &mut Rng) -> Vec<usize> {
+    let mut keyed: Vec<(f64, usize)> = w
+        .iter()
+        .enumerate()
+        .map(|(i, &wi)| (-(1.0 - rng.unit()).ln() / wi.max(1e-9), i))
+        .collect();
+    keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    keyed.into_iter().map(|(_, i)| i).collect()
+}
+
+/// How strongly an album of `tracks` songs is drawn early in a by-album deal: its track count, up
+/// to 8. A full album comes up about eight times as often as a single, so singles and EPs (a fifth
+/// of the owner's library) drift towards the end instead of turning up every few albums.
+pub fn album_weight(tracks: usize) -> f64 {
+    tracks.clamp(1, 8) as f64
+}
+
+/// `v` in the order `deal` gave.
+pub fn apply<T>(v: Vec<T>, order: &[usize]) -> Vec<T> {
+    let mut old: Vec<Option<T>> = v.into_iter().map(Some).collect();
+    order.iter().filter_map(|&i| old[i].take()).collect()
+}
+
 /// Deal `rows` into a new order: a permutation of `0..rows.len()`.
 ///
 /// * **Songs** — Fisher-Yates over every row.
+/// * **Spread** — every row at random, each artist's rows spaced evenly through the list: an
+///   artist with n rows gets one in each n-th of it, at a random offset, in random order.
 /// * **Albums / Artists** — rows are grouped by album or by artist; the GROUPS are dealt at random
+///   (albums weighted by `album_weight`, so full albums tend to come before singles)
 ///   and each keeps its own order: an album in disc and track order, an artist album by album
 ///   (in the order the albums first appear) and each album in track order.
 ///
@@ -105,15 +189,14 @@ pub fn artist_key(name: &str) -> u64 {
 /// grouped deal the rest of ITS group follows it — the album carries on from the next track, then
 /// comes round to the tracks before it — so turning shuffle on mid-album does not cut the album
 /// off. A deal with fewer than two groups has nothing to permute, and falls back to Songs rather
-/// than handing back the order it was given.
-///
-/// `rnd(n)` returns a number in `0..n`; the caller owns the generator, so tests are reproducible.
+/// than handing back the order it was given. Returns the order and the mode it really dealt by
+/// (Songs after that fallback), which is what the toast should say.
 pub fn deal(
     rows: &[Row],
     by: ShuffleBy,
     lead: Option<usize>,
-    rnd: &mut dyn FnMut(usize) -> usize,
-) -> Vec<usize> {
+    rng: &mut Rng,
+) -> (Vec<usize>, ShuffleBy) {
     let n = rows.len();
     let lead = lead.filter(|&l| l < n);
     let key = |r: &Row| match by {
@@ -136,10 +219,29 @@ pub fn deal(
     if groups.len() < 2 {
         // Songs, or a grouped deal with nothing to group: every row but the lead, at random.
         let mut order: Vec<usize> = (0..n).filter(|&i| Some(i) != lead).collect();
-        for i in (1..order.len()).rev() {
-            order.swap(i, rnd(i + 1));
+        rng.shuffle(&mut order);
+        return (lead.into_iter().chain(order).collect(), ShuffleBy::Songs);
+    }
+    if by == ShuffleBy::Spread {
+        let mut placed: Vec<(f64, usize)> = Vec::with_capacity(n);
+        for (_, members) in &mut groups {
+            members.retain(|&i| Some(i) != lead);
+            rng.shuffle(members);
+            let (len, offset) = (members.len() as f64, rng.unit());
+            placed.extend(
+                members
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &i)| ((k as f64 + offset) / len, i)),
+            );
         }
-        return lead.into_iter().chain(order).collect();
+        placed.sort_by(|a, b| a.0.total_cmp(&b.0));
+        return (
+            lead.into_iter()
+                .chain(placed.into_iter().map(|(_, i)| i))
+                .collect(),
+            by,
+        );
     }
     // Inside a group: albums in order of first appearance, then disc and track. Stable, so rows
     // with no track numbers keep the order they came in.
@@ -161,28 +263,27 @@ pub fn deal(
         out.extend(m[p..].iter().chain(m[..p].iter()).copied());
         rest.retain(|&x| x != g);
     }
-    for i in (1..rest.len()).rev() {
-        rest.swap(i, rnd(i + 1));
+    if by == ShuffleBy::Albums {
+        let w: Vec<f64> = rest
+            .iter()
+            .map(|&g| album_weight(groups[g].1.len()))
+            .collect();
+        rest = weighted_order(&w, rng)
+            .into_iter()
+            .map(|i| rest[i])
+            .collect();
+    } else {
+        rng.shuffle(&mut rest);
     }
     for g in rest {
         out.extend(groups[g].1.iter().copied());
     }
-    out
+    (out, by)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn lcg(seed: u64) -> impl FnMut(usize) -> usize {
-        let mut x = seed;
-        move |n| {
-            x = x
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            ((x >> 33) as usize) % n
-        }
-    }
 
     /// Three albums of four tracks, by two artists, in album order.
     fn rows() -> Vec<Row> {
@@ -212,7 +313,7 @@ mod tests {
         let r = rows();
         for by in ShuffleBy::ALL {
             for lead in [None, Some(0), Some(6), Some(11)] {
-                let o = deal(&r, by, lead, &mut lcg(7));
+                let (o, _) = deal(&r, by, lead, &mut Rng::new(7));
                 assert!(is_permutation(&o, r.len()), "{by:?} lead {lead:?}: {o:?}");
                 if let Some(l) = lead {
                     assert_eq!(o[0], l, "{by:?}: the playing row stays first");
@@ -228,7 +329,7 @@ mod tests {
         let r = rows();
         let mut orders = std::collections::HashSet::new();
         for seed in 0..20 {
-            let o = deal(&r, ShuffleBy::Albums, None, &mut lcg(seed));
+            let (o, _) = deal(&r, ShuffleBy::Albums, None, &mut Rng::new(seed));
             for chunk in o.chunks(4) {
                 let album = r[chunk[0]].album;
                 assert!(
@@ -249,7 +350,7 @@ mod tests {
     #[test]
     fn artists_keep_their_albums_together() {
         let r = rows();
-        let o = deal(&r, ShuffleBy::Artists, None, &mut lcg(3));
+        let (o, _) = deal(&r, ShuffleBy::Artists, None, &mut Rng::new(3));
         let artists: Vec<u64> = o.iter().map(|&i| r[i].artist).collect();
         let changes = artists.windows(2).filter(|w| w[0] != w[1]).count();
         assert_eq!(
@@ -286,7 +387,7 @@ mod tests {
     #[test]
     fn the_playing_album_carries_on_after_the_playing_track() {
         let r = rows();
-        let o = deal(&r, ShuffleBy::Albums, Some(5), &mut lcg(11)); // album 2, track 2
+        let (o, _) = deal(&r, ShuffleBy::Albums, Some(5), &mut Rng::new(11)); // album 2, track 2
         assert_eq!(&o[..4], &[5, 6, 7, 4]);
         assert!(o[4..].iter().all(|&i| r[i].album != 2));
     }
@@ -303,9 +404,64 @@ mod tests {
                 track: t,
             })
             .collect();
-        let o = deal(&r, ShuffleBy::Albums, None, &mut lcg(5));
+        let (o, by) = deal(&r, ShuffleBy::Albums, None, &mut Rng::new(5));
+        assert_eq!(by, ShuffleBy::Songs, "and says so");
         assert!(is_permutation(&o, 10));
         assert_ne!(o, (0..10).collect::<Vec<_>>());
+    }
+
+    /// Spread: two artists with six songs each never play three of one artist running, and a
+    /// plain deal of the same rows does, for some seed.
+    #[test]
+    fn spread_spaces_each_artist_out() {
+        let r: Vec<Row> = (0..12)
+            .map(|i| Row {
+                album: i,
+                artist: i % 2 + 1,
+                disc: 1,
+                track: 1,
+            })
+            .collect();
+        let run = |o: &[usize]| {
+            o.windows(3)
+                .any(|w| w.iter().all(|&i| r[i].artist == r[w[0]].artist))
+        };
+        let mut plain_clumps = false;
+        for seed in 1..50 {
+            let (o, by) = deal(&r, ShuffleBy::Spread, Some(3), &mut Rng::new(seed));
+            assert_eq!(by, ShuffleBy::Spread);
+            assert!(is_permutation(&o, 12) && o[0] == 3);
+            assert!(!run(&o[1..]), "seed {seed}: {o:?}");
+            plain_clumps |= run(&deal(&r, ShuffleBy::Songs, None, &mut Rng::new(seed)).0);
+        }
+        assert!(plain_clumps, "the test rows can clump at all");
+    }
+
+    /// By albums, a ten-song album leads far more often than a single: over 400 deals of one
+    /// album and nine singles the album is first well over a third of the time (uniform: a tenth).
+    #[test]
+    fn full_albums_tend_to_come_before_singles() {
+        let mut r: Vec<Row> = (1..=10)
+            .map(|t| Row {
+                album: 1,
+                artist: 1,
+                disc: 1,
+                track: t,
+            })
+            .collect();
+        r.extend((2..=10).map(|a| Row {
+            album: a,
+            artist: a,
+            disc: 1,
+            track: 1,
+        }));
+        let mut rng = Rng::new(42);
+        let first = (0..400)
+            .filter(|_| r[deal(&r, ShuffleBy::Albums, None, &mut rng).0[0]].album == 1)
+            .count();
+        assert!(first > 140, "the album led {first} of 400");
+        let w = weighted_order(&[1.0, 1.0, 1.0], &mut rng);
+        assert!(is_permutation(&w, 3));
     }
 
     #[test]
