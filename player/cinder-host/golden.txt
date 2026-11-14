@@ -61,8 +61,8 @@ cb15b3756938b24c artist_songs_open_day
 352813f87d59fdd8 playlist_page_smart_day
 91a4aa174e41ddee playlist_edit_day
 7c414d2bf3f3c719 playlist_edit_drag_day
-896028c7195d6952 view_edit_day
-c11c8481832d83d8 view_edit_new_day
+304af480949fd8cf view_edit_day
+030cc7d558feed2f view_edit_new_day
 f98435b1ace39bf7 eq_day
 02c5fd8b9e0b589e eq_off_day
 b2a1116fe8238b5d sound_day
@@ -176,8 +176,8 @@ e202d16538d71916 library_playlists_smart_night
 4333bcd4bc203da8 playlist_page_smart_night
 04192043cff5b659 playlist_edit_night
 ecc3ae7a50e243a9 playlist_edit_drag_night
-9ffa3584790be5df view_edit_night
-3a35d4309c162ead view_edit_new_night
+c1085cd022144919 view_edit_night
+29145f3f94eee7e7 view_edit_new_night
 e4911976c094a2c8 eq_night
 4487b0c843e0fe7c eq_off_night
 13b9dfc92471e178 sound_night

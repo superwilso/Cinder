@@ -683,6 +683,9 @@ struct Render {
     /// same path `pending_play` carries. The shell asks `cinder_uri_undecodable` and leaves them out
     /// of every sequence: handing one over stalls PlayerService and costs the boot its audio.
     undecodable: std::collections::HashSet<String>,
+    /// `object_id → file path` for the open database, built on first use (`uri_index`). Reset
+    /// wherever `db` is replaced: ids belong to one database.
+    paths: std::cell::OnceCell<std::collections::HashMap<i64, String>>,
     /// Row index carried by the last CINDER_ACT_BT_CONNECT_DEVICE / _BT_FORGET_DEVICE action. The
     /// shell drains it with `cinder_pending_bt_device()`; -1 there means "no request", so a stale
     /// index can never be mistaken for row 0.
@@ -966,7 +969,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
             // host tests depend on it having none). Hand it a per-session seed here, or the same
             // album shuffles into the same order after every boot.
             let mut a = cinder_ui::nav::App::unlocked();
-            a.seed_shuffle(Rng::new().next());
+            a.seed_shuffle(rng().next());
             a
         },
         scrob: None,
@@ -1019,6 +1022,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         queue_flush: false,
         pending_play: Vec::new(),
         undecodable: std::collections::HashSet::new(),
+        paths: Default::default(),
         pending_bt_device: None,
         duration_checked: false,
         last_tick: std::time::Instant::now(),
@@ -1629,6 +1633,7 @@ fn settings_body(r: &Render) -> String {
     ));
     // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
     body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
+    body.push_str(&format!("lib_place={}\n", r.app.lib_place_str()));
     body.push_str(&format!(
         "sensme_follow_time={}\n",
         r.app.sensme_follow() as u8
@@ -3632,55 +3637,15 @@ pub extern "C" fn cinder_input(button: libc::c_int) -> libc::c_int {
     0
 }
 
-/// Cheap non-cryptographic RNG (xorshift64*) seeded from the clock. Shuffling a play queue has
-/// no security requirement, and this avoids pulling a `rand` dependency into a binary that has to
-/// stay glibc-2.23-clean.
-struct Rng(u64);
-
-impl Rng {
-    fn new() -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64 ^ d.as_secs())
-            .unwrap_or(0x9e37_79b9_7f4a_7c15);
-        Rng(nanos | 1) // never seed 0: xorshift is stuck there
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    /// Fisher-Yates, unbiased enough for a shuffle queue.
-    fn shuffle<T>(&mut self, v: &mut [T]) {
-        for i in (1..v.len()).rev() {
-            v.swap(i, (self.next() % (i as u64 + 1)) as usize);
-        }
-    }
+/// The shared shuffle generator (`cinder_ui::shuffle::Rng`), seeded from the clock.
+fn rng() -> cinder_ui::shuffle::Rng {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 ^ d.as_secs())
+        .unwrap_or(0);
+    cinder_ui::shuffle::Rng::new(seed)
 }
 
-/// Apply the Now Playing SHUFFLE toggle to a queue that is about to be handed to PlayerService.
-///
-/// This is what made the toggle real. It set a flag and lit an icon, and nothing ever read it: with
-/// shuffle showing ON you could tap a track and get its album in strict order — the control was
-/// telling you something about the next hour of listening that simply was not true.
-///
-/// The chosen track stays FIRST and everything else is shuffled behind it. You tapped that track;
-/// shuffling it away from you would be obeying the toggle and disobeying the tap, and the tap is
-/// the more specific instruction. (The Library's own "Shuffle …" bands are different — nothing was
-/// chosen there, so those shuffle the whole scope and start at the top. They already worked.)
-///
-/// Shuffling here rather than asking PlayerService to do it is deliberate: Cinder builds the URI
-/// list itself, so the order it hands over IS the play order. Sony's own shuffle lives in a
-/// permutation over the sequence's children (`SetupPermutation`), which would mean more ABI surface
-/// for a result we can produce exactly by reordering a `Vec`.
-/// Returns the reordered sequence, the new start index, and — when it actually shuffled — the
-/// object_ids in their ORIGINAL order, which the caller hands to `App::note_pre_shuffle` so that
-/// turning shuffle back off restores this album's real running order.
 /// STARTING SOMETHING IN ORDER TURNS SHUFFLE OFF. The mirror of the Shuffle bands, which turn it
 /// on (see `Action::Shuffle`).
 ///
@@ -4045,12 +4010,15 @@ fn play_order_uris(r: &Render, lead: Option<&str>) -> Vec<String> {
     )
 }
 
-/// `object_id → file path` for the whole library, in ONE query — see `play_order_uris`.
-fn uri_index(r: &Render) -> std::collections::HashMap<i64, String> {
-    r.db.as_ref()
-        .and_then(|db| db.tracks(cinder_db::Sort::Artist).ok())
-        .map(|v| v.into_iter().map(|t| (t.object_id, t.filename)).collect())
-        .unwrap_or_default()
+/// `object_id → file path` for the whole library: ONE query per opened database (see
+/// `play_order_uris`), kept for every later queue edit, shuffle and lap.
+fn uri_index(r: &Render) -> &std::collections::HashMap<i64, String> {
+    r.paths.get_or_init(|| {
+        r.db.as_ref()
+            .and_then(|db| db.tracks(cinder_db::Sort::Artist).ok())
+            .map(|v| v.into_iter().map(|t| (t.object_id, t.filename)).collect())
+            .unwrap_or_default()
+    })
 }
 
 /// The list from row `from` to the end, as file paths. For the two places that start playback at a
@@ -4185,31 +4153,32 @@ fn artist_tracks(
 /// with each kept in its own order (`cinder_ui::shuffle::deal`, the same rule the transport's
 /// shuffle button uses). A list with one album or one artist in it falls back to songs there.
 fn deal_tracks(
-    mut seq: Vec<cinder_db::Track>,
+    seq: Vec<cinder_db::Track>,
     by: cinder_ui::shuffle::ShuffleBy,
-    rng: &mut Rng,
+    rng: &mut cinder_ui::shuffle::Rng,
 ) -> Vec<cinder_db::Track> {
-    use cinder_ui::shuffle::{self, ShuffleBy};
-    if by == ShuffleBy::Songs {
-        rng.shuffle(&mut seq);
-        return seq;
-    }
+    use cinder_ui::shuffle;
     let rows: Vec<shuffle::Row> = seq
         .iter()
         .map(|t| shuffle::Row {
             album: shuffle::album_key(t.album_id.unwrap_or(0), t.object_id),
-            artist: shuffle::artist_key(if t.album_artist.trim().is_empty() {
-                &t.artist
-            } else {
-                &t.album_artist
-            }),
+            artist: shuffle::artist_key(filed_artist(t)),
             disc: t.disc_no as i32,
             track: t.track_no as i32,
         })
         .collect();
-    let order = shuffle::deal(&rows, by, None, &mut |n| (rng.next() % n as u64) as usize);
-    let mut old: Vec<Option<cinder_db::Track>> = seq.into_iter().map(Some).collect();
-    order.into_iter().filter_map(|i| old[i].take()).collect()
+    let (order, _) = shuffle::deal(&rows, by, None, rng);
+    shuffle::apply(seq, &order)
+}
+
+/// The artist a track is filed under: its album artist, or its own artist when it has none
+/// (`SongRow::group_artist` for DB rows).
+fn filed_artist(t: &cinder_db::Track) -> &str {
+    if t.album_artist.trim().is_empty() {
+        &t.artist
+    } else {
+        &t.album_artist
+    }
 }
 
 fn shuffle_tracks(
@@ -4220,7 +4189,7 @@ fn shuffle_tracks(
 ) -> Option<(Vec<cinder_db::Track>, Vec<i64>)> {
     use cinder_ui::nav::ShuffleScope as S;
     let db = db?;
-    let mut rng = Rng::new();
+    let mut rng = rng();
     // A shuffle of "everything", of albums or of artists is a shuffle of the MUSIC: a book's
     // chapters dealt among songs would be unlistenable. (A playlist is the user's own choice.)
     let keep_music =
@@ -4254,35 +4223,28 @@ fn shuffle_tracks(
                 .filter(|t| keep_music(t))
                 .collect();
             let pre: Vec<i64> = tracks.iter().map(|t| t.object_id).collect();
-            let mut albums: Vec<Vec<cinder_db::Track>> = Vec::new();
-            let mut cur_id: Option<i64> = None;
-            for t in tracks {
-                if Some(t.album_id.unwrap_or(0)) != cur_id {
-                    cur_id = Some(t.album_id.unwrap_or(0));
-                    albums.push(Vec::new());
-                }
-                albums.last_mut().expect("pushed above").push(t);
-            }
-            rng.shuffle(&mut albums);
-            let v: Vec<cinder_db::Track> = albums.into_iter().flatten().collect();
+            let v = deal_tracks(tracks, cinder_ui::shuffle::ShuffleBy::Albums, &mut rng);
             (!v.is_empty()).then_some((v, pre))
         }
-        // "RANDOM ARTIST · SONGS SHUFFLED" — one artist, their tracks shuffled.
+        // "RANDOM ARTIST · SONGS SHUFFLED" — one artist, their tracks shuffled. The artist a
+        // track is FILED under, case-blind, as every other grouping does: a guest on one song is
+        // not an artist to land on, and "The Cure" and "the cure" are one.
         S::ByArtist => {
             let tracks = db.tracks(cinder_db::Sort::Artist).ok()?;
-            let mut by_artist: std::collections::BTreeMap<String, Vec<cinder_db::Track>> =
+            let mut by_artist: std::collections::BTreeMap<u64, Vec<cinder_db::Track>> =
                 Default::default();
             for t in tracks {
-                if !t.artist.is_empty() && keep_music(&t) {
-                    by_artist.entry(t.artist.clone()).or_default().push(t);
+                if !filed_artist(&t).trim().is_empty() && keep_music(&t) {
+                    let k = cinder_ui::shuffle::artist_key(filed_artist(&t));
+                    by_artist.entry(k).or_default().push(t);
                 }
             }
-            let names: Vec<String> = by_artist.keys().cloned().collect();
-            if names.is_empty() {
+            let keys: Vec<u64> = by_artist.keys().copied().collect();
+            if keys.is_empty() {
                 return None;
             }
-            let pick = &names[(rng.next() % names.len() as u64) as usize];
-            let mut v = by_artist.remove(pick).unwrap_or_default();
+            let pick = keys[rng.below(keys.len())];
+            let mut v = by_artist.remove(&pick).unwrap_or_default();
             let pre = v.iter().map(|t| t.object_id).collect();
             rng.shuffle(&mut v);
             (!v.is_empty()).then_some((v, pre))
@@ -4293,7 +4255,7 @@ fn shuffle_tracks(
             if pls.is_empty() {
                 return None;
             }
-            let pick = &pls[(rng.next() % pls.len() as u64) as usize];
+            let pick = &pls[rng.below(pls.len())];
             let mut v: Vec<cinder_db::Track> = playlist_tracks(Some(db), pick.id)?
                 .into_iter()
                 .filter(|t| keep(t))
@@ -4315,7 +4277,7 @@ fn shuffle_a_playlist(
     r: &Render,
     keep: &dyn Fn(&cinder_db::Track) -> bool,
 ) -> Option<(Vec<cinder_db::Track>, Vec<i64>)> {
-    let mut rng = Rng::new();
+    let mut rng = rng();
     let mut ids: Vec<i64> = r.app.library().playlists.iter().map(|p| p.id).collect();
     rng.shuffle(&mut ids);
     let mut v = ids.into_iter().find_map(|id| {
@@ -5934,7 +5896,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                         // every other shuffle entry point here follows.
                         let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
                         let mut seq = seq;
-                        Rng::new().shuffle(&mut seq);
+                        rng().shuffle(&mut seq);
                         r.np.shuffle = true;
                         set_pending(r, seq, 0);
                         r.app.note_pre_shuffle(pre);
@@ -6030,7 +5992,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                     // transport's shuffle and a saved view's band are. This band shuffled songs
                     // whatever the setting said (#53, plaquette, 2026-11-05).
                     let by = cinder_ui::shuffle::ShuffleBy::from_token(r.app.shuffle_by());
-                    seq = deal_tracks(seq, by, &mut Rng::new());
+                    seq = deal_tracks(seq, by, &mut rng());
                     // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
                     // the shuffle band on Albums / All Songs started a shuffled sequence but left
                     // the transport's shuffle indicator OFF, so the control said one thing and the
@@ -6117,13 +6079,9 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
             return None;
         }
         Action::DeleteMusic => {
+            let ids = r.app.take_delete();
             let index = uri_index(r);
-            let paths: Vec<String> = r
-                .app
-                .take_delete()
-                .iter()
-                .filter_map(|id| index.get(id).cloned())
-                .collect();
+            let paths: Vec<String> = ids.iter().filter_map(|id| index.get(id).cloned()).collect();
             let (ok, failed) = delete::delete(&paths, &delete::ROOTS);
             eprintln!("cinder-ffi: delete music — {ok} deleted, {failed} kept");
             if ok > 0 {
@@ -6198,7 +6156,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                 return None;
             }
             let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
-            let seq = deal_tracks(seq, r.app.list_shuffle_by(), &mut Rng::new());
+            let seq = deal_tracks(seq, r.app.list_shuffle_by(), &mut rng());
             r.np.shuffle = true;
             set_pending(r, seq, 0);
             r.app.note_pre_shuffle(pre);
@@ -6266,7 +6224,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                 Some(mut seq) => {
                     // Same as the playlist band: remember the catalogue order before permuting it.
                     let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
-                    Rng::new().shuffle(&mut seq);
+                    rng().shuffle(&mut seq);
                     // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
                     // the shuffle band on Albums / All Songs started a shuffled sequence but left
                     // the transport's shuffle indicator OFF, so the control said one thing and the
@@ -9574,6 +9532,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         r.app.set_np_swipes(up, down);
                     }
                     "lib_views" => r.app.set_lib_views_str(v),
+                    "lib_place" => r.app.set_lib_place_str(v),
                     "style" => r.app.set_style_token(v),
                     "wsz" => r.skin_pref = v.to_string(),
                     "tape" => r.tape_pref = v.to_string(),
@@ -10870,6 +10829,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     }
     let ms_undec = t_sub.elapsed().as_millis();
     r.db = Some(db);
+    r.paths = Default::default();
     r.plists = plists;
     // Keep the memory if the flush above could not write it: it is newer than the file.
     if !r.stats.is_dirty() {
@@ -13280,7 +13240,7 @@ mod tests {
         let n = all.len();
         for by in ShuffleBy::ALL {
             for _ in 0..25 {
-                let uris = uris_of(deal_tracks(all.clone(), by, &mut Rng::new()));
+                let uris = uris_of(deal_tracks(all.clone(), by, &mut rng()));
                 let mut sorted = uris.clone();
                 sorted.sort();
                 sorted.dedup();
@@ -13970,6 +13930,7 @@ mod tests {
             queue_flush: false,
             pending_play: Vec::new(),
             undecodable: std::collections::HashSet::new(),
+            paths: Default::default(),
             pending_bt_device: None,
             duration_checked: false,
             last_tick: std::time::Instant::now(),
@@ -14054,6 +14015,8 @@ mod tests {
              UPDATE object_body SET filename='harvest.flac' WHERE object_id=3;",
             )
             .unwrap();
+        // New paths in the same database: drop the cached map, as reopening it does.
+        r.paths = Default::default();
         // Leave the first pass before re-reading the track, or the restart below would restore
         // the pre-rename origin (B1: a held pass always hands its origin back first).
         zappin_release_hold(&mut r);

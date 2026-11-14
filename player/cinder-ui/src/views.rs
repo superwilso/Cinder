@@ -188,7 +188,8 @@ pub struct SavedView {
 }
 
 /// The editor's SHUFFLE chips: "Settings" (follow the setting), then [`ShuffleBy::ALL`].
-pub const SHUFFLE_LABELS: [&str; 4] = ["Settings", "Songs", "Albums", "Artists"];
+pub const SHUFFLE_LABELS: [&str; 1 + crate::shuffle::ShuffleBy::ALL.len()] =
+    ["Settings", "Songs", "Albums", "Artists", "Spread"];
 
 /// `shuffle=` in `cinder_views.conf`.
 fn shuffle_token(s: Option<crate::shuffle::ShuffleBy>) -> &'static str {

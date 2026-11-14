@@ -146,6 +146,7 @@ drifted apart.
 | Add an on/off opt-in setting (off by default) | a variant in `Opt`; its save key, Settings row, default and Reset come with it | `player/cinder-ui/src/opt.rs` |
 | Step a Settings row through a choice enum, or parse its saved word | `crate::next_in(&ALL, x)`, `crate::from_token(&ALL, token, s)` | `player/cinder-ui/src/lib.rs` |
 | Draw a new screen | the kit's rows, strips (`strip`, `strip_ink`) and headers | `player/cinder-ui/src/kit.rs` |
+| Shuffle, or pick something at random | `shuffle::Rng` (`below`, `shuffle`); deal rows by song/album/artist/spread with `shuffle::deal`, reorder with `shuffle::apply`; in the FFI `rng()` seeds one from the clock; `uri_index(r)` maps object id → path (cached per database) | `player/cinder-ui/src/shuffle.rs`, `player/cinder-ffi/src/lib.rs` |
 | Turn object ids into tracks in their order | `tracks_in_order(r, &ids, n)` (one query; counts survivors before row `n`) | `player/cinder-ffi/src/lib.rs` |
 | Write a file the player must never see half-written | `write_atomic` | `player/cinder-ffi/src/lib.rs` |
 | Plain HTTP to the LAN | `cast::http` (`resolve` adds port 80) | `player/cinder-ffi/src/cast.rs` |

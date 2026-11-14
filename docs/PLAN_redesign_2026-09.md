@@ -317,7 +317,7 @@ owner's schedule, from [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md).
 | 5c Rules | Rating, last played, format, "+ add" | The three rules as chip rows, no "+ add" | Those are the rules there is data for. A fourth (genre) is easy to add later; an open-ended rule builder is not worth a keyboard on this screen |
 | 5c Show as, Pin | Chips and a switch | Not drawn yet | Both act on the Library view bar, which is R3. A switch that pins to a bar that does not exist is a row that does nothing |
 | 5b Remove | × | × removes at once in the editor; the page keeps its two-tap × | In the editor UNDO is one tap away and nothing is written until DONE. On the page a removal is written immediately, so it still asks twice |
-| Shuffle modes | (queue plan: a four-way mode) | A setting, Settings ▸ Shuffle: Songs · Albums · Artists | The button stays the on/off switch it is; four states would make turning shuffle off three taps. Songs is the default, so nothing changes unasked |
+| Shuffle modes | (queue plan: a four-way mode) | A setting, Settings ▸ Shuffle: Songs · Albums · Artists · Spread (11-14) | The button stays the on/off switch it is; four states would make turning shuffle off three taps. Songs is the default, so nothing changes unasked |
 
 ## New settings keys
 

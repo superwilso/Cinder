@@ -391,7 +391,7 @@ pub struct SettingsView<'a> {
     pub swipe_down: SwipeTo,
     /// Now Playing's third toolbar button (`ROW_NP_BUTTON`).
     pub np_button: crate::now_playing::NpButton,
-    /// What shuffle deals (`ROW_SHUFFLE`): "SONGS", "ALBUMS" or "ARTISTS".
+    /// What shuffle deals (`ROW_SHUFFLE`): "SONGS", "ALBUMS", "ARTISTS" or "SPREAD".
     pub shuffle_by: &'a str,
     /// The page on screen: `None` for home, else a [`GROUPS`] index.
     pub page: Option<usize>,
