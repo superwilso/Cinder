@@ -218,6 +218,15 @@ fi
 # This is the whole point of the script. If the build comes out different from what the manifest
 # records, the manifest is rewritten in step 5 and joins the single commit at the end — rather than
 # stopping to demand a commit of its own.
+# THE COMPONENT DEFAULTS, WRITTEN FRESH. build.sh only creates dist/<channel>/cinder_components.conf
+# when it is missing, so the shipped copy was whatever an early build left: v0.4.2-rc2 carried one
+# from before the Wi-Fi, AAC and language options, and the payload workflow's clean build could
+# never match it (2026-11-14). The installer writes its own from the answers; this copy is the
+# defaults, so a release writes the defaults.
+for ch in stable dev; do
+    bash cinder-home/tools/configure.sh "$ch" --defaults >/dev/null \
+        || die "configure.sh $ch --defaults failed"
+done
 note "rebuilding the stable channel …"
 bash cinder-home/build.sh stable >/tmp/cinder-release-build.log 2>&1 \
     || { tail -20 /tmp/cinder-release-build.log; die "build failed — see /tmp/cinder-release-build.log"; }
