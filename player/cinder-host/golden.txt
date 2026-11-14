@@ -391,7 +391,7 @@ cb073ae283ed61bb viz_11_meters
 b591ec6a78e98255 now_playing_repeat_album
 d6f4d2f16a0e327b help_top
 623de72b8608b85d help_end
-65e3d7b40fa287e9 advanced
+b8215ed3fb09dc31 advanced
 9a6d5eae9ff75826 dac_eq
 3d631a442ab14c42 dac_eq_source_direct
 14e367b53f604767 advanced_end
@@ -453,9 +453,9 @@ c6bf06fd52c636a1 usb_storage
 5bd059d8d8a7fda6 usb_storage_big
 20bfb8b3a769e2f7 usb_storage_140
 6c9a639823d64a46 wifi_off
-cde80b4d762cfebf wifi_connected
-02ac5683fb2668f5 wifi_update
-a11ebb3df4254069 wifi_update_busy
+351914c6ec1957f4 wifi_connected
+146325b7ca73430e wifi_update
+0de247c337874fc2 wifi_update_busy
 90370e43a7388ae7 quick_wifi
 1b6d94eefe3a9abb quick_wifi_icons
 6cb4365611259a10 menu_wifi
@@ -464,6 +464,9 @@ c36dab556d7186e7 netradio_playing
 adccbaa6999bad73 netradio_find
 0e41bd769c666880 wifi_remote_on
 88de3ff2e98d0746 wifi_speakers_casting
+eb408b34b30a8707 media_servers_none
+0116b00aa4f0b0f5 media_servers
+125744f510ab958c media_servers_folder
 e9522e26abc6be0f wifi_options
-b1db06b4656d8c35 wifi_failed
+cfefe6d19e1f54ae wifi_failed
 1aad37d87fe5677d keyboard_more_symbols

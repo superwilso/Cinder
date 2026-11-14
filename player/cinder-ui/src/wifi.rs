@@ -262,6 +262,7 @@ struct Layout {
     net_y: Option<i32>,
     radio_y: Option<i32>,
     speakers_y: Option<i32>,
+    media_y: Option<i32>,
     remote_y: Option<i32>,
     airplay_y: i32,
     options_y: i32,
@@ -278,6 +279,7 @@ fn layout(on: bool) -> Layout {
     let net_y = on.then(&mut next);
     let radio_y = on.then(&mut next);
     let speakers_y = on.then(&mut next);
+    let media_y = on.then(&mut next);
     let remote_y = on.then(&mut next);
     let airplay_y = next();
     let options_y = next();
@@ -287,6 +289,7 @@ fn layout(on: bool) -> Layout {
         net_y,
         radio_y,
         speakers_y,
+        media_y,
         remote_y,
         airplay_y,
         options_y,
@@ -302,6 +305,8 @@ pub enum Hit {
     Radio,
     /// "Speakers ›": play on a speaker on the network.
     Speakers,
+    /// "Media servers ›": play from a music server on the network.
+    Media,
     /// "Phone remote ›".
     Remote,
     /// The AirPlay receiver's switch.
@@ -338,6 +343,7 @@ pub fn hit(_x: i32, y: i32, on: bool, update: bool) -> Hit {
         (l.net_y, Hit::Networks),
         (l.radio_y, Hit::Radio),
         (l.speakers_y, Hit::Speakers),
+        (l.media_y, Hit::Media),
         (l.remote_y, Hit::Remote),
     ] {
         if row.is_some_and(within) {
@@ -412,7 +418,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
     }
     let joined = matches!(v.status.state, State::Connected | State::Connecting);
     let name = String::from_utf8_lossy(&v.status.ssid).into_owned();
-    let open_rows: [(Option<i32>, &str, &str); 4] = [
+    let open_rows: [(Option<i32>, &str, &str); 5] = [
         (
             l.net_y,
             crate::i18n::text("Network"),
@@ -431,6 +437,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &View) {
             } else {
                 v.speakers_note
             },
+        ),
+        (
+            l.media_y,
+            crate::i18n::text("Media servers"),
+            crate::i18n::text("Play from a music server on this Wi-Fi"),
         ),
         (l.remote_y, crate::i18n::text("Phone remote"), v.remote_note),
     ];

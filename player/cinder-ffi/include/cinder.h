@@ -505,7 +505,9 @@ void cinder_set_radio_status(const char *text);
 int cinder_take_radio(char *buf, int cap);
 /* Play to this player (the DLNA renderer), polled once a second: 1 = play the URL now in buf as
  * station -2 (report it with cinder_set_radio_status as usual), 2 = stop it, 3 = pause it, 4 = go
- * on from the pause (or play the URL in buf from the start if the stream died), 0 = nothing. */
+ * on from the pause (or play the URL in buf from the start if the stream died), 5 = play the URL in
+ * buf as station -3 (the next song from a media server, Settings > Wi-Fi > Media servers), 6 = pause
+ * station -3, 7 = go on with it (or play the URL in buf as -3 if it died), 0 = nothing. */
 int cinder_renderer_take(char *buf, int cap);
 /* Phone remote (Settings > Wi-Fi > Phone remote; the server is cinder-ffi's own). Every frame:
  * a button the page pressed (cinder_button_t; 0 = none — the page never sends UP) to feed through

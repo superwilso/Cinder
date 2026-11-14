@@ -1,5 +1,19 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-11-14 — Headphone EQ
+>
+> - **Sound ▸ Advanced ▸ Headphone EQ** (opt-in, off): AutoEQ / Equalizer APO parametric profiles
+>   from `cinder_eq` on the drive, designed in cinder-ui (`hp_eq.rs`) and played in
+>   `libcinder_mono.so` (`hp_eq.h`) on the jack and Bluetooth. *Host-tested both halves against one
+>   fixture, and the library under qemu with the player's libc; not yet run on a player.* Checklist §48.
+> - **Settings ▸ Wi-Fi ▸ Media servers**: SSDP search for MediaServer:1, ContentDirectory `Browse`
+>   (`cinder-ffi/src/media.rs`), songs played as radio station −3 through the radio's decoders, the
+>   next one sent when one ends (`cinder_renderer_take` code 5; 6/7 pause and resume). Now Playing
+>   shows the song and its `albumArtURI` cover; the transport keys pause and skip; Search this
+>   server sends ContentDirectory `Search`. *Host-tested (DIDL from MiniDLNA, paging against a local
+>   server, the queue, the keys' queue moves); not yet run against a real server or on a player.*
+>   Checklist §49.
+
 > ## 2026-11-13 — Native DSD, DAC EQ starting points, Walkman One settings carried over
 >
 > - **Settings ▸ Playback ▸ Play DSD natively** (opt-in, off): the shell sets Sony's two DSD keys

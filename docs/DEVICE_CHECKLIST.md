@@ -1112,3 +1112,34 @@ own floor (at 56 it sat only ~25 dB over, and those readings wandered by ±2 dB)
 | 47.1 | Sound ▸ Advanced ▸ **Clear Bass** at +10, Dynamic Normalizer off | **PASS**: 31.5 Hz +6.4/+6.9 dB, 63 Hz +8.3/+8.5 dB, 125 Hz +4.2/+4.2 dB, 250 Hz and up within 0.6 dB. Read-back: selector 1, six-band band 0 = 10. Off returns to within 0.3 dB in every octave |
 | 47.2 | The same with the Dynamic Normalizer on | **PASS**, smaller: 31.5 Hz +4.5/+5.0, 63 Hz +5.9/+5.9, 125 Hz +2.5/+3.1. The normalizer takes back about 2.5 dB of the boost |
 | 47.3 | VPT, Vinyl, Clear Phase, DSEE AI | Open. Rough readings at volume 56 (03:40, near the floor): VPT Club/Hall/Matrix +1.3 to +2.2 dB overall, DSEE AI +2.6 to +3.9 dB, Studio, Vinyl and Clear Phase no change seen. Re-run at volume 116 |
+
+## 48 — 2026-11-14 — Headphone EQ
+
+Test profile `cinder_eq/Test ParametricEQ.txt`: `Preamp: -6 dB`, `Filter 1: ON PK Fc 1000 Hz Gain 6
+dB Q 1`, `Filter 2: ON LSC Fc 100 Hz Gain -6 dB Q 0.7` — expected: 1 kHz at 0 dB, 10 kHz at −6 dB,
+30 Hz at −12 dB, against the same pink noise with the row off. Recorded from the jack on a PC.
+
+| # | Test | Result |
+|---|---|---|
+| 48.1 | No `cinder_eq` folder: tap Sound ▸ Advanced ▸ Headphone EQ | Open. Pass = toast "No profiles: copy AutoEQ ParametricEQ files to cinder_eq", row stays OFF |
+| 48.2 | The test profile, tap the row; pink noise on the jack | Open. Pass = toast "Test (1/1)", row ON with "Test" under it, log `headphone EQ ON` then `jack: headphone EQ playing (fmt …, 44100 Hz)`; per octave within 0.5 dB of the expected |
+| 48.3 | The same file at 96 kHz (a 24/96 FLAC) | Open. Pass = the same curve; log names 96000 Hz |
+| 48.4 | Over Bluetooth headphones | Open. Pass = log `bt: headphone EQ playing`; by ear, the bass cut is plain |
+| 48.5 | Power off and on with the profile chosen | Open. Pass = the row still reads Test, and the EQ plays from the first song |
+| 48.6 | A real AutoEQ profile for the owner's headphones, by ear | Open |
+
+## 49 — 2026-11-14 — Media servers
+
+Needs a UPnP/DLNA media server on the same Wi-Fi: MiniDLNA, Jellyfin, Plex, or Windows Media
+Player's "Stream media" sharing on a PC, with a folder holding FLAC, MP3 and one M4A.
+
+| # | Test | Result |
+|---|---|---|
+| 49.1 | Wi-Fi on and connected; Settings ▸ Wi-Fi ▸ Media servers | Open. Pass = the server is listed within ~4 s; with none on the network, "No media servers found" |
+| 49.2 | Open the server, then folders down to an album; Back up again | Open. Pass = each level lists the server's folders and songs (artist · album under each), Back goes up one level, then leaves |
+| 49.3 | Tap the first FLAC song, on the jack | Open. Pass = it plays (log `radio: a song from a media server`), strip `PLAYING · <title> (1/n) · TAP TO STOP` |
+| 49.4 | Let it reach the end of the song | Open. Pass = the next song starts by itself and the strip counts on; an M4A in the folder is passed over |
+| 49.5 | Tap the strip; then play a song from the library | Open. Pass = the strip stops it; library play also stops it |
+| 49.6 | The same over Bluetooth headphones | Open |
+| 49.7 | While a server song plays: open Now Playing; press play/pause twice, then next, then previous | Open. Pass = title, artist and the server's cover; the bar moves; pause holds and play goes on (log has no new `radio: a song from a media server` for the resume); next/previous change song |
+| 49.8 | In a folder, Search this server ▸ a word from an artist's name | Open. Pass = a level of matching songs (or the server's own error in the strip, if it has no search); a result plays |

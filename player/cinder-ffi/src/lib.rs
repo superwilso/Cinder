@@ -22,6 +22,7 @@ mod drive;
 mod likes;
 mod lyrics;
 mod mdns;
+mod media;
 mod net;
 mod pcm_tap;
 mod playlists;
@@ -724,6 +725,13 @@ struct Render {
     /// index into it), the object ids of the songs a cast was given (its `Status::index` indexes
     /// into them), the song last shown for it, and whether a cast was on at the last tick.
     speakers: Vec<cast::Speaker>,
+    /// Settings ▸ Wi-Fi ▸ Media servers: the servers found, the one being browsed, and the levels
+    /// opened in it (the app's levels after its first, the server list).
+    media_servers: Vec<media::Server>,
+    media_server: Option<media::Server>,
+    media_levels: Vec<Vec<media::Entry>>,
+    /// Now Playing shows a server's song: which one (its place and cover address).
+    media_np: Option<(usize, String)>,
     cast_ids: Vec<i64>,
     cast_shown: Option<usize>,
     cast_was_on: bool,
@@ -742,6 +750,10 @@ struct Render {
     tape_pref: String,
     /// The skin chosen with the Winamp chip (`wsz=`), by file name; empty is the first by name.
     skin_pref: String,
+    /// Sound ▸ Advanced ▸ Headphone EQ: the profile chosen (its file name without `.txt`), and
+    /// the folder the profiles are in (`cinder_eq` beside the settings file).
+    hpeq_pref: String,
+    hpeq_dir: Option<std::path::PathBuf>,
     /// The chapter (path, position ms, when) a `PlayBook` just started. Until playback reaches that
     /// position, a saved position EARLIER than it is the chapter's first moments before the seek
     /// lands, not the listener going back, and must not overwrite the place being resumed.
@@ -1037,6 +1049,10 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         books_changed: std::time::Instant::now(),
         book_seek_ms: 0,
         speakers: Vec::new(),
+        media_servers: Vec::new(),
+        media_server: None,
+        media_levels: Vec::new(),
+        media_np: None,
         cast_ids: Vec::new(),
         cast_shown: None,
         cast_was_on: false,
@@ -1048,6 +1064,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         tape_tried: false,
         tape_pref: String::new(),
         skin_pref: String::new(),
+        hpeq_pref: String::new(),
+        hpeq_dir: None,
         book_hold: None,
         stats_changed: std::time::Instant::now(),
         views_path: None,
@@ -1675,6 +1693,9 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("style={}\n", r.app.style_token()));
     if !r.skin_pref.is_empty() {
         body.push_str(&format!("wsz={}\n", r.skin_pref));
+    }
+    if !r.hpeq_pref.is_empty() {
+        body.push_str(&format!("hpeq={}\n", r.hpeq_pref));
     }
     body.push_str(&format!("wa={}\n", r.app.winamp_prefs()));
     if !r.tape_pref.is_empty() {
@@ -2744,7 +2765,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 57] = [
+const SCREEN_NAMES: [&str; 58] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2804,6 +2825,7 @@ const SCREEN_NAMES: [&str; 57] = [
     "WifiOptions",
     "WifiSpeakers",
     "RadioFind",
+    "MediaServers",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2867,6 +2889,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::WifiOptions => 54,
         S::WifiSpeakers => 55,
         S::RadioFind => 56,
+        S::MediaServers => 57,
     }
 }
 
@@ -5178,6 +5201,260 @@ fn speakers_scan() {
     }
 }
 
+// ── Settings ▸ Wi-Fi ▸ Media servers (media.rs) ─────────────────────────────────────────────────
+// The search and each folder run on a thread (the network can take seconds); the frame loop's
+// `media_tick` hands the result to the page. One at a time: the page ignores taps while it waits.
+
+enum MediaJob {
+    Search,
+    /// Browse folder `id` of the server, to be the page's level `depth`, titled `title`.
+    Browse {
+        server: media::Server,
+        id: String,
+        depth: usize,
+        title: String,
+    },
+    /// Search the server for `query`, the results to be level `depth`.
+    Find {
+        server: media::Server,
+        query: String,
+        depth: usize,
+    },
+}
+
+enum MediaDone {
+    Servers(Result<Vec<media::Server>, String>),
+    Folder {
+        depth: usize,
+        title: String,
+        got: Result<Vec<media::Entry>, String>,
+        /// A folder (the page offers a search in it), not a search's results.
+        searchable: bool,
+    },
+}
+
+static MEDIA_DONE: Mutex<Option<MediaDone>> = Mutex::new(None);
+
+fn media_job(job: MediaJob) {
+    let spawned = std::thread::Builder::new()
+        .name("cinder-media".into())
+        .stack_size(192 * 1024)
+        .spawn(move || {
+            let done = match job {
+                MediaJob::Search => {
+                    MediaDone::Servers(media::discover(std::time::Duration::from_millis(3000)))
+                }
+                MediaJob::Browse {
+                    server,
+                    id,
+                    depth,
+                    title,
+                } => MediaDone::Folder {
+                    depth,
+                    title,
+                    got: media::browse(&server, &id),
+                    searchable: true,
+                },
+                MediaJob::Find {
+                    server,
+                    query,
+                    depth,
+                } => MediaDone::Folder {
+                    depth,
+                    got: media::search(&server, &query),
+                    title: query,
+                    searchable: false,
+                },
+            };
+            *MEDIA_DONE.lock().unwrap() = Some(done);
+        });
+    if spawned.is_err() {
+        *MEDIA_DONE.lock().unwrap() =
+            Some(MediaDone::Servers(Err("could not start the search".into())));
+    }
+}
+
+/// A server's or folder's entries as the page's rows.
+fn media_rows(v: &[media::Entry]) -> Vec<cinder_ui::media_server::Entry> {
+    v.iter()
+        .map(|e| match e {
+            media::Entry::Folder { title, count, .. } => cinder_ui::media_server::Entry {
+                title: title.clone(),
+                sub: count
+                    .map(|n| cinder_ui::ui_format!("{n} items", n = n))
+                    .unwrap_or_default(),
+                folder: true,
+                unplayable: false,
+            },
+            media::Entry::Song(s) => cinder_ui::media_server::Entry {
+                title: s.title.clone(),
+                sub: [s.artist.as_str(), s.album.as_str()]
+                    .iter()
+                    .filter(|x| !x.is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+                folder: false,
+                unplayable: s.url.is_empty(),
+            },
+        })
+        .collect()
+}
+
+/// Row `index` of the page's level `depth` was tapped: open the server or folder, or play the song
+/// and the rest of its folder.
+fn media_open(r: &mut Render, depth: usize, index: usize) {
+    if depth == 0 {
+        let Some(sv) = r.media_servers.get(index).cloned() else {
+            return;
+        };
+        r.media_levels.clear();
+        r.media_server = Some(sv.clone());
+        media_job(MediaJob::Browse {
+            id: "0".into(),
+            depth: 1,
+            title: sv.name.clone(),
+            server: sv,
+        });
+        return;
+    }
+    r.media_levels.truncate(depth);
+    let (Some(sv), Some(level)) = (r.media_server.clone(), r.media_levels.get(depth - 1)) else {
+        return;
+    };
+    match level.get(index) {
+        Some(media::Entry::Folder { id, title, .. }) => media_job(MediaJob::Browse {
+            server: sv,
+            id: id.clone(),
+            depth: depth + 1,
+            title: title.clone(),
+        }),
+        Some(media::Entry::Song(_)) => {
+            let songs: Vec<media::Song> = level
+                .iter()
+                .filter_map(|e| match e {
+                    media::Entry::Song(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+            let start = level[..index]
+                .iter()
+                .filter(|e| matches!(e, media::Entry::Song(_)))
+                .count();
+            if media::play(songs, start) {
+                media_show_now(r);
+            } else {
+                r.app.notify("Not a format the player plays");
+            }
+        }
+        None => {}
+    }
+    r.dirty = true;
+}
+
+static MEDIA_ART: Mutex<Option<(String, cinder_ui::art::Image)>> = Mutex::new(None);
+
+/// Now Playing while a server's song plays: its title, artist, progress and cover. When the songs
+/// end, the library's song goes back.
+fn media_np(r: &mut Render) {
+    let Some((song, i, _)) = media::now() else {
+        if r.media_np.take().is_some() {
+            r.np.playing = false;
+            if let Some(t) = r.last_track.clone() {
+                apply_track(&mut r.np, &t);
+                r.art_key = None;
+                show_cover(r, t.object_id);
+            }
+            r.dirty = true;
+        }
+        return;
+    };
+    if r.media_np.as_ref().map(|m| m.0) != Some(i) {
+        r.media_np = Some((i, song.art.clone()));
+        r.np.title = song.title.clone();
+        r.np.artist = song.artist.clone();
+        r.np.liked = false;
+        r.art_full = None;
+        r.art_thumb = None;
+        bake_gradient_art(r);
+        // Not a library song: no library cover may claim the slot.
+        r.art_key = Some(-1);
+        if !song.art.is_empty() {
+            let url = song.art.clone();
+            let _ = std::thread::Builder::new()
+                .name("cinder-media-art".into())
+                .stack_size(256 * 1024)
+                .spawn(move || {
+                    if let Ok((200, b)) = cast::http_bytes("GET", &url, &[], "") {
+                        if let Some(img) = art_load::decode(&b) {
+                            *MEDIA_ART.lock().unwrap() = Some((url, img));
+                        }
+                    }
+                });
+        }
+    }
+    if let Some((url, img)) = MEDIA_ART.lock().unwrap().take() {
+        if r.media_np.as_ref().is_some_and(|m| m.1 == url) {
+            r.art_full = Some(img.scaled_to(480, 480));
+            r.art_thumb = Some(img.scaled_to(92, 92));
+        }
+    }
+    let (pos, paused) = media::position().unwrap_or((0, false));
+    r.np.playing = !paused;
+    if r.scrub_ms.is_none() {
+        set_progress(&mut r.np, pos, song.dur_ms);
+    }
+    r.dirty = true;
+}
+
+/// The page's strip: the song playing from a server and its place in the folder.
+fn media_show_now(r: &mut Render) {
+    let line = media::now()
+        .map(|(s, i, n)| format!("{} ({i}/{n})", s.title))
+        .unwrap_or_default();
+    r.app.media_set_playing(&line);
+    media_np(r);
+    r.dirty = true;
+}
+
+fn media_tick(r: &mut Render) {
+    if media::active() || r.media_np.is_some() {
+        media_np(r);
+    }
+    let Some(done) = MEDIA_DONE.lock().unwrap().take() else {
+        return;
+    };
+    match done {
+        MediaDone::Servers(Ok(v)) => {
+            let rows = v
+                .iter()
+                .map(|s| cinder_ui::media_server::Entry {
+                    title: s.name.clone(),
+                    folder: true,
+                    ..Default::default()
+                })
+                .collect();
+            r.media_servers = v;
+            r.app.media_set_servers(rows);
+        }
+        MediaDone::Folder {
+            depth,
+            title,
+            got: Ok(v),
+            searchable,
+        } => {
+            r.media_levels.truncate(depth - 1);
+            r.app.media_push(depth, &title, media_rows(&v), searchable);
+            r.media_levels.push(v);
+        }
+        MediaDone::Servers(Err(e)) | MediaDone::Folder { got: Err(e), .. } => {
+            eprintln!("cinder-ffi: media servers: {e}");
+            r.app.media_fail(&e);
+        }
+    }
+    r.dirty = true;
+}
+
 /// How long the song on Now Playing is, for a drag on its bar: the speaker's during a cast.
 fn seek_length(r: &Render) -> i64 {
     if casting(r) {
@@ -5308,6 +5585,61 @@ fn crossfeed_flag(on: bool) {
         Ok(()) => eprintln!("cinder-ffi: crossfeed {}", if on { "on" } else { "off" }),
         Err(e) => eprintln!("cinder-ffi: crossfeed flag: {e}"),
     }
+}
+
+/// Where libcinder_mono.so reads the headphone EQ's filters (`cinder-home/src/hp_eq.h`).
+const HPEQ_FILE: &str = "/tmp/cinder_hpeq";
+
+/// The headphone EQ profiles on the drive, by file name without `.txt`.
+fn hpeq_names(r: &Render) -> Vec<String> {
+    let names = r
+        .hpeq_dir
+        .as_ref()
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .map(|d| {
+            d.filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    cinder_ui::hp_eq::profile_names(names)
+}
+
+/// Play the profile `stem` ("" = none): write the control file the sound service reads (whole, by
+/// rename, so it never reads half a file) and show the name on the Advanced row. A profile that
+/// cannot be read or understood plays nothing, and the error says why.
+fn hpeq_play(r: &mut Render, stem: &str) -> Result<(), String> {
+    let profile = if stem.is_empty() {
+        Ok(None)
+    } else {
+        r.hpeq_dir
+            .as_ref()
+            .ok_or_else(|| "no drive".to_string())
+            .and_then(|d| {
+                std::fs::read_to_string(d.join(format!("{stem}.txt"))).map_err(|e| e.to_string())
+            })
+            .and_then(|t| cinder_ui::hp_eq::parse(&t))
+            .map(Some)
+    };
+    let playing = profile.as_ref().ok().and_then(|p| p.as_ref());
+    let written = match playing {
+        Some(p) => {
+            let tmp = format!("{HPEQ_FILE}.new");
+            tmp_flag(&tmp, Some(cinder_ui::hp_eq::control(p).as_bytes()))
+                .and_then(|_| std::fs::rename(&tmp, HPEQ_FILE))
+        }
+        None => tmp_flag(HPEQ_FILE, None),
+    };
+    if let Err(e) = written {
+        eprintln!("cinder-ffi: headphone EQ file: {e}");
+    }
+    let label = if playing.is_some() {
+        cinder_ui::hp_eq::label(stem)
+    } else {
+        ""
+    };
+    r.app.set_hp_eq(label);
+    r.dirty = true;
+    profile.map(|_| ())
 }
 
 /// A control file for libcinder_mono.so (it runs in the sound service, another uid): `Some` writes
@@ -5447,6 +5779,7 @@ fn cast_tick(r: &mut Render) {
         }
         r.dirty = true;
     }
+    media_tick(r);
     if let Some(found) = SPEAKERS_FOUND.lock().unwrap().take() {
         let list = found.unwrap_or_default();
         r.app.set_speakers(
@@ -5564,6 +5897,32 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             speakers_scan();
             return None;
         }
+        Action::MediaSearch => {
+            media_job(MediaJob::Search);
+            return None;
+        }
+        Action::MediaOpen { depth, index } => {
+            media_open(r, *depth, *index);
+            return None;
+        }
+        Action::MediaFind { depth } => {
+            if let Some(server) = r.media_server.clone().filter(|_| *depth >= 1) {
+                r.media_levels.truncate(*depth);
+                media_job(MediaJob::Find {
+                    server,
+                    query: r.app.media_query().to_string(),
+                    depth: depth + 1,
+                });
+            } else {
+                r.app.media_fail("Open a server first");
+            }
+            return None;
+        }
+        // The radio's own play or stop ends a server's song list (the shell stops the stream).
+        Action::RadioStop | Action::RadioPlay => {
+            media::stop();
+            r.app.media_set_playing("");
+        }
         Action::SpeakerPlay(i) => {
             let sp = r.speakers.get(*i)?.clone();
             let st = cast::status();
@@ -5611,6 +5970,22 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             cast::stop();
             r.cast_was_on = false;
             r.app.set_cast(None, String::new());
+        }
+    }
+    // A server's songs (Settings ▸ Wi-Fi ▸ Media servers): the transport keys are theirs.
+    if media::active() {
+        let done = match a {
+            Action::PlayPause => {
+                media::toggle();
+                true
+            }
+            Action::Next => media::skip(1) || true,
+            Action::Prev => media::skip(-1) || true,
+            _ => false,
+        };
+        if done {
+            media_np(r);
+            return None;
         }
     }
     let was_casting = casting(r);
@@ -6314,6 +6689,32 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
         Action::DacEqChanged => 48,
         Action::VolCurveChanged => 60,
         Action::Stop => 61,
+        Action::NextHpEq => {
+            let names = hpeq_names(r);
+            let Some(next) = cinder_ui::hp_eq::next(&names, &r.hpeq_pref).cloned() else {
+                let _ = hpeq_play(r, "");
+                r.hpeq_pref.clear();
+                if names.is_empty() {
+                    r.app
+                        .notify("No profiles: copy AutoEQ ParametricEQ files to cinder_eq");
+                } else {
+                    r.app.notify("Headphone EQ off");
+                }
+                save_settings(r);
+                return None;
+            };
+            r.hpeq_pref = next.clone();
+            let label = cinder_ui::hp_eq::label(&next).to_string();
+            match hpeq_play(r, &next) {
+                Ok(()) => {
+                    let i = names.iter().position(|n| *n == next).unwrap_or(0) + 1;
+                    r.app.notify_raw(&format!("{label} ({i}/{})", names.len()));
+                }
+                Err(e) => r.app.notify_raw(&format!("{label}: {e}")),
+            }
+            save_settings(r);
+            return None;
+        }
         Action::NextSkin => {
             // The one after the skin on screen, so the first tap moves even with no choice saved.
             let (names, cur) = skin_names_now(r);
@@ -6354,6 +6755,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
         Action::WifiUpdateInstall => 74,
         // Handled by `carry_action` before this point.
         Action::SpeakersScan | Action::SpeakerPlay(_) | Action::SpeakerStop => return None,
+        Action::MediaSearch | Action::MediaOpen { .. } | Action::MediaFind { .. } => return None,
         Action::RadioFind | Action::RadioAdd(_) => return None,
         // The phone remote is cinder-ffi's own. On: the frame loop starts it whenever Wi-Fi is
         // connected (`remote_tick`). Off: stop it now.
@@ -8004,12 +8406,21 @@ pub unsafe extern "C" fn cinder_set_radio_stations(text: *const c_char) {
 pub unsafe extern "C" fn cinder_set_radio_status(text: *const c_char) {
     let text = cstr(text);
     renderer::radio_status(&text);
-    write(|r| r.app.set_radio_status(&text));
+    let failed = media::on_status(&text);
+    write(|r| {
+        r.app.set_radio_status(&text);
+        if let Some(why) = failed {
+            r.app.media_fail(&why);
+        }
+        media_show_now(r);
+    });
 }
 
 /// Play to this player (the DLNA renderer), polled by the shell once a second: 1 = play the URL
 /// now in `buf` (NUL-terminated) as radio station -2, 2 = stop it, 3 = pause it, 4 = go on from the
 /// pause (or play the URL in `buf` from the start, when the stream died meanwhile), 0 = nothing.
+/// 5 = play the URL in `buf` as station -3: the next song from a media server (`media.rs`); 6 =
+/// pause station -3; 7 = go on with it (or play the URL in `buf` as -3, when it died meanwhile).
 ///
 /// # Safety
 /// `buf` must be valid for `cap` bytes.
@@ -8030,7 +8441,21 @@ pub unsafe extern "C" fn cinder_renderer_take(buf: *mut c_char, cap: libc::c_int
             *buf.add(url.len()) = 0;
             4
         }
-        _ => 0,
+        Some(_) => 0,
+        None => {
+            let (code, url) = match media::take() {
+                Some(media::Ask::Play(u)) => (5, u),
+                Some(media::Ask::Pause) => (6, String::new()),
+                Some(media::Ask::Resume(u)) => (7, u),
+                None => return 0,
+            };
+            if buf.is_null() || cap <= 0 || url.len() >= cap as usize {
+                return 0;
+            }
+            std::ptr::copy_nonoverlapping(url.as_ptr() as *const c_char, buf, url.len());
+            *buf.add(url.len()) = 0;
+            code
+        }
     }
 }
 
@@ -9535,6 +9960,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "lib_place" => r.app.set_lib_place_str(v),
                     "style" => r.app.set_style_token(v),
                     "wsz" => r.skin_pref = v.to_string(),
+                    "hpeq" => r.hpeq_pref = v.to_string(),
                     "tape" => r.tape_pref = v.to_string(),
                     "wa" => r.app.set_winamp_prefs(v),
                     "sensme_follow_time" => r.app.set_sensme_follow(v == "1"),
@@ -9895,6 +10321,14 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
             .parent()
             .map(|d| d.join(cinder_ui::palette::DIR_NAME));
         scan_palettes(r);
+        r.hpeq_dir = std::path::Path::new(&p)
+            .parent()
+            .map(|d| d.join(cinder_ui::hp_eq::DIR));
+        // Also clears a control file a crash left behind when no profile is chosen.
+        let pref = r.hpeq_pref.clone();
+        if let Err(e) = hpeq_play(r, &pref) {
+            eprintln!("cinder-ffi: headphone EQ {pref}: {e}");
+        }
         r.settings_path = Some(p);
         r.last_saved_body = settings_body(r);
         // First run (intro not completed / no settings file yet) → show onboarding before anything.
@@ -11998,6 +12432,7 @@ mod tests {
             S::WifiOptions,
             S::WifiSpeakers,
             S::RadioFind,
+            S::MediaServers,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
         const RESERVED: usize = 1;
@@ -13861,6 +14296,45 @@ mod tests {
         );
     }
 
+    /// Sound ▸ Advanced ▸ Headphone EQ: each tap plays the next profile on the drive and then off;
+    /// a file it cannot read plays nothing, and the next tap still moves on.
+    #[test]
+    fn the_headphone_eq_row_cycles_the_profiles_and_writes_the_filters() {
+        let dir = std::env::temp_dir().join(format!("cinder-hpeq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("A ParametricEQ.txt"),
+            "Preamp: -3 dB\nFilter 1: ON PK Fc 1000 Hz Gain 3 dB Q 1\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("b.txt"), "GraphicEQ: 20 -1").unwrap();
+        let mut r = zappin_render();
+        r.hpeq_dir = Some(dir.clone());
+        let tap = |r: &mut Render| carry_action_now(r, &cinder_ui::nav::Action::NextHpEq);
+
+        tap(&mut r);
+        assert_eq!(r.hpeq_pref, "A ParametricEQ");
+        let body = std::fs::read_to_string(HPEQ_FILE).unwrap();
+        assert!(body.lines().any(|l| l.starts_with("44100 ")), "{body}");
+
+        tap(&mut r);
+        assert_eq!(r.hpeq_pref, "b", "the broken file is where the row stands");
+        assert!(
+            !std::path::Path::new(HPEQ_FILE).exists(),
+            "and it plays nothing"
+        );
+
+        tap(&mut r);
+        assert_eq!(r.hpeq_pref, "", "after the last: off");
+        tap(&mut r);
+        assert_eq!(r.hpeq_pref, "A ParametricEQ", "and round again");
+        tap(&mut r);
+        tap(&mut r);
+        assert!(!std::path::Path::new(HPEQ_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn zappin_render() -> Render {
         let present =
             Sink::Threaded(present::PresentThread::start(|| Ok(ZappinNullPresent)).unwrap());
@@ -13945,6 +14419,10 @@ mod tests {
             books_changed: std::time::Instant::now(),
             book_seek_ms: 0,
             speakers: Vec::new(),
+            media_servers: Vec::new(),
+            media_server: None,
+            media_levels: Vec::new(),
+            media_np: None,
             cast_ids: Vec::new(),
             cast_shown: None,
             cast_was_on: false,
@@ -13956,6 +14434,8 @@ mod tests {
             tape_tried: false,
             tape_pref: String::new(),
             skin_pref: String::new(),
+            hpeq_pref: String::new(),
+            hpeq_dir: None,
             book_hold: None,
             stats_changed: std::time::Instant::now(),
             views_path: None,

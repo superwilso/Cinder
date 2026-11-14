@@ -94,6 +94,12 @@ ones. Read its safety rules first. Grouped by what each needs:
   Options) is a UPnP/DLNA media renderer that plays what a controller sends through the internet
   radio's decoders (MP3, AAC, FLAC, WAV). Open: pause that holds the place, seeking, and the
   controller's volume slider.
+- **Playing from a music server.** Built: **Settings ▸ Wi-Fi ▸ Media servers** finds UPnP/DLNA
+  media servers (MiniDLNA on a NAS, Jellyfin, Plex, Emby, Serviio, Kodi), browses their folders and
+  plays a song and the rest of its folder through the internet radio's decoders, with Now Playing,
+  the transport keys and search. Open: ALAC and AAC in MP4 (listed, not played, unless the server
+  also offers MP3 or WAV), the folder in Up Next, seeking, and a pause that keeps its place past five
+  minutes. Reports from real servers are wanted.
 - **USB audio out to an external DAC.** Sony's player app has USB-host audio output code
   (`UsbHostDevice`, DSD output mode); nobody has tried it with a host cable and a DAC.
 - **`cinder-rescue` on Linux and macOS.** It builds for both (libusb) but has only run on Windows.

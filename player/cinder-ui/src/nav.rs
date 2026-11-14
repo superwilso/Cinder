@@ -136,6 +136,8 @@ pub enum Screen {
     NetRadio,
     /// Settings ▸ Wi-Fi ▸ Speakers: speakers on the network (UPnP/DLNA); tap one to play there.
     WifiSpeakers,
+    /// Settings ▸ Wi-Fi ▸ Media servers: servers, then their folders (`media_server.rs`).
+    MediaServers,
     /// Internet radio ▸ FIND: the stations a search found; tap one to add it and play it.
     RadioFind,
     /// Settings ▸ Wi-Fi ▸ Phone remote: the switch, the address and the code.
@@ -215,6 +217,8 @@ pub enum KbPurpose {
     WifiPassword,
     /// Internet radio ▸ FIND: a station name or genre to search radio-browser.info for.
     RadioFind,
+    /// Settings ▸ Wi-Fi ▸ Media servers ▸ Search this server: a title, artist or album.
+    MediaSearch,
 }
 
 /// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
@@ -588,6 +592,9 @@ pub enum Action {
     /// Display ▸ Style: the Winamp chip tapped while Winamp is already the style. The shell loads
     /// the next `.wsz` at the top of the drive, says which, and remembers it (`wsz=`).
     NextSkin,
+    /// Sound ▸ Advanced ▸ Headphone EQ tapped: the shell plays the next profile in `cinder_eq`
+    /// (off after the last), says which, remembers it (`hpeq=`) and calls `set_hp_eq`.
+    NextHpEq,
     /// The Skins screen opened: the shell lists the skins (or tapes) with `set_skin_list`.
     ListSkins,
     /// Load the skin (or tape) at this index of `skin_names`.
@@ -649,6 +656,21 @@ pub enum Action {
     /// Settings ▸ Wi-Fi ▸ Speakers opened or SCAN tapped: cinder-ffi searches the network and hands
     /// the list back with `set_speakers`.
     SpeakersScan,
+    /// Settings ▸ Wi-Fi ▸ Media servers opened, or its strip tapped: search for servers. The
+    /// shell answers with `media_set_servers` (or `media_fail`).
+    MediaSearch,
+    /// A row of the Media servers page: `index` of the level `depth` deep (0 = the server list).
+    /// A server or folder is browsed (`media_push`); a song plays, and the rest of its folder after
+    /// it (`media_set_playing`).
+    MediaOpen {
+        depth: usize,
+        index: usize,
+    },
+    /// Search this server ▸ Done: the shell searches the server open at level `depth` for
+    /// `media_query()` and answers with `media_push` (a level of results, one deeper).
+    MediaFind {
+        depth: usize,
+    },
     /// Speaker `i` of the list tapped: cinder-ffi plays Up Next there from the song playing.
     SpeakerPlay(usize),
     /// "Play here": the cast ends and the song carries on on the player.
@@ -1187,6 +1209,8 @@ pub struct App {
     language_scroll_px: i32,
     /// The Skins screen: the names on the drive, the one in use, and the scroll.
     skin_names: Vec<String>,
+    /// The headphone EQ profile playing, by name; empty when off (the shell's `set_hp_eq`).
+    hp_eq: String,
     skin_cur: String,
     skins_scroll_px: i32,
     /// Help & controls' scroll offset; reset each time it is opened from the Menu.
@@ -1741,6 +1765,13 @@ pub struct App {
     /// speaker a cast is playing on, and the page's strip.
     speakers: Vec<(String, String)>,
     speakers_scanning: bool,
+    /// Settings ▸ Wi-Fi ▸ Media servers: the levels walked so far (the server list first), whether
+    /// the shell is loading one, what went wrong last, and the song playing from a server.
+    media_levels: Vec<crate::media_server::Level>,
+    media_busy: bool,
+    media_note: String,
+    media_playing: String,
+    media_query: String,
     /// Internet radio ▸ FIND: the words searched for, what came back, a search running, and why
     /// nothing came back.
     radio_query: String,
@@ -2031,6 +2062,7 @@ impl Default for App {
             palette_scroll_px: 0,
             language_scroll_px: 0,
             skin_names: Vec::new(),
+            hp_eq: String::new(),
             skin_cur: String::new(),
             skins_scroll_px: 0,
             help_scroll_px: 0,
@@ -2284,6 +2316,11 @@ impl Default for App {
             remote_dropped: false,
             speakers: Vec::new(),
             speakers_scanning: false,
+            media_levels: Vec::new(),
+            media_busy: false,
+            media_note: String::new(),
+            media_playing: String::new(),
+            media_query: String::new(),
             radio_query: String::new(),
             radio_found: Vec::new(),
             radio_finding: false,
@@ -4137,6 +4174,13 @@ impl App {
             self.fling_v = 0.0;
             return;
         }
+        // Media servers: up one level (a folder, then the server's top, then the server list).
+        if self.current() == Screen::MediaServers && self.media_levels.len() > 1 {
+            self.media_levels.pop();
+            self.media_busy = false;
+            self.fling_v = 0.0;
+            return;
+        }
         if self.current() == Screen::Folders && !self.folder_stack.is_empty() {
             // …EXCEPT BACK OUT OF THE LEVEL `open_folders` SKIPPED ON THE WAY IN. With one storage
             // volume the root list is a single row you would always have to tap through, so
@@ -4982,6 +5026,8 @@ impl App {
                 self.set_opt(Opt::RgAlbum, on && !album);
                 return vec![];
             }
+            // The shell's: it lists the profiles on the drive and plays the next one.
+            adv::ROW_HP_EQ => return vec![Action::NextHpEq],
             // A ROUTE, not a setting — same rule as the Sound screen's "Advanced ›" row: pushing a
             // screen changes nothing about the sound, and emitting SoundChanged here would
             // re-apply the whole chain on a navigation.
@@ -5810,6 +5856,7 @@ impl App {
             Screen::WifiNetworks => self.tap_wifi_list(x, y),
             Screen::NetRadio => self.tap_radio(x, y),
             Screen::WifiSpeakers => self.tap_speakers(x, y),
+            Screen::MediaServers => self.tap_media(y),
             Screen::RadioFind => match crate::netradio::hit_found(x, y, self.radio_found.len()) {
                 Some(i) if !self.radio_finding => vec![Action::RadioAdd(i)],
                 _ => vec![],
@@ -7017,6 +7064,7 @@ impl App {
             KbPurpose::PresetName(Some(i)) => crate::presets::name(&self.preset_names, i),
             // A new search starts from the last one: the usual change is a word.
             KbPurpose::RadioFind => self.radio_query.clone(),
+            KbPurpose::MediaSearch => self.media_query.clone(),
             // Renaming starts from the current name: the common edit is a word, not a retype.
             KbPurpose::Rename(id) => self
                 .lib
@@ -7395,6 +7443,18 @@ impl App {
                 vec![]
             }
             KbPurpose::PresetName(at) => self.preset_named(at),
+            KbPurpose::MediaSearch => {
+                let q = self.kb_text.trim().to_string();
+                if q.is_empty() || self.media_levels.is_empty() {
+                    return vec![];
+                }
+                self.media_query = q;
+                self.media_busy = true;
+                self.media_note.clear();
+                vec![Action::MediaFind {
+                    depth: self.media_levels.len() - 1,
+                }]
+            }
             KbPurpose::RadioFind => {
                 let q = self.kb_text.trim().to_string();
                 if q.is_empty() {
@@ -7477,6 +7537,13 @@ impl App {
                 }
                 self.speakers_scanning = true;
                 vec![Action::SpeakersScan]
+            }
+            Hit::Media => {
+                self.push(Screen::MediaServers);
+                self.media_levels.clear();
+                self.media_note.clear();
+                self.media_busy = true;
+                vec![Action::MediaSearch]
             }
             Hit::Remote => {
                 self.push(Screen::WifiRemote);
@@ -8371,6 +8438,12 @@ impl App {
             Screen::Skins => {
                 let max = crate::language::max_scroll(self.skin_names.len());
                 self.skins_scroll_px = (self.skins_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::MediaServers => {
+                if let Some(l) = self.media_levels.last_mut() {
+                    let max = crate::media_server::max_scroll(l.entries.len());
+                    l.scroll = (l.scroll + dy_px).clamp(0, max);
+                }
             }
             Screen::Palette => {
                 let max = crate::palette_list::max_scroll(
@@ -11849,6 +11922,7 @@ impl App {
                     crossfeed: self.opt(Opt::Crossfeed),
                     mono: self.mono,
                     replaygain: crate::advanced::REPLAYGAIN[self.replaygain_mode()],
+                    hp_eq: &self.hp_eq,
                     dac_eq_on: self.dac_eq != [0; crate::dac_eq::BANDS],
                     vol_curve: self.vol_curve_ok.then_some(self.vol_curve_on),
                     clear_bass: self
@@ -12152,6 +12226,17 @@ impl App {
                     line: &self.cast_line,
                 },
             ),
+            Screen::MediaServers => crate::media_server::render(
+                c,
+                &theme,
+                fonts,
+                &crate::media_server::View {
+                    level: self.media_levels.last(),
+                    busy: self.media_busy,
+                    note: &self.media_note,
+                    playing: &self.media_playing,
+                },
+            ),
             Screen::WifiRemote => crate::wifi::render_remote(
                 c,
                 &theme,
@@ -12279,6 +12364,10 @@ impl App {
                     KbPurpose::RadioFind => (
                         crate::i18n::text("Find a station").to_string(),
                         crate::i18n::text("Name or genre"),
+                    ),
+                    KbPurpose::MediaSearch => (
+                        crate::i18n::text("Search this server").to_string(),
+                        crate::i18n::text("Title, artist or album"),
                     ),
                     KbPurpose::PresetName(Some(_)) => (
                         crate::i18n::text("Rename preset").to_string(),
@@ -14671,10 +14760,115 @@ impl App {
         self.route_changed();
     }
 
+    /// A tap on the Media servers page.
+    fn tap_media(&mut self, y: i32) -> Vec<Action> {
+        if crate::media_server::hit_strip(y) {
+            if !self.media_playing.is_empty() {
+                self.media_playing.clear();
+                return vec![Action::RadioStop];
+            }
+            // On the server list, the strip searches again.
+            if self.media_levels.len() <= 1 && !self.media_busy {
+                self.media_busy = true;
+                self.media_note.clear();
+                return vec![Action::MediaSearch];
+            }
+            return vec![];
+        }
+        if self.media_busy {
+            return vec![];
+        }
+        let Some(l) = self.media_levels.last() else {
+            return vec![];
+        };
+        let Some(i) = crate::media_server::row_at(y, l.scroll, l.entries.len()) else {
+            return vec![];
+        };
+        if l.searchable && i == 0 {
+            self.open_keyboard(KbPurpose::MediaSearch);
+            return vec![];
+        }
+        if l.entries[i].unplayable {
+            self.notify("Not a format the player plays");
+            return vec![];
+        }
+        self.media_busy = l.entries[i].folder;
+        self.media_note.clear();
+        // The shell's rows do not have the search row.
+        let index = i - usize::from(l.searchable);
+        vec![Action::MediaOpen {
+            depth: self.media_levels.len() - 1,
+            index,
+        }]
+    }
+
+    /// The servers the shell found (the first level).
+    pub fn media_set_servers(&mut self, servers: Vec<crate::media_server::Entry>) {
+        self.media_levels = vec![crate::media_server::Level {
+            entries: servers,
+            ..Default::default()
+        }];
+        self.media_busy = false;
+    }
+
+    /// A server's or folder's rows, opened from the level `depth - 1` deep. Dropped when Back has
+    /// left that level meanwhile. A folder (`searchable`) gets "Search this server" first; a
+    /// search's results do not.
+    pub fn media_push(
+        &mut self,
+        depth: usize,
+        title: &str,
+        mut entries: Vec<crate::media_server::Entry>,
+        searchable: bool,
+    ) {
+        if self.media_levels.len() != depth {
+            return;
+        }
+        if searchable {
+            entries.insert(
+                0,
+                crate::media_server::Entry {
+                    title: "Search this server".into(),
+                    sub: "Title, artist or album".into(),
+                    folder: true,
+                    unplayable: false,
+                },
+            );
+        }
+        self.media_levels.push(crate::media_server::Level {
+            title: title.to_string(),
+            entries,
+            scroll: 0,
+            searchable,
+        });
+        self.media_busy = false;
+    }
+
+    /// What Search this server looks for (the shell reads it for `MediaFind`).
+    pub fn media_query(&self) -> &str {
+        &self.media_query
+    }
+
+    /// A search or a folder failed, or a song stopped with a reason: say so in the strip.
+    pub fn media_fail(&mut self, why: &str) {
+        self.media_note = why.to_string();
+        self.media_busy = false;
+    }
+
+    /// The song playing from a server ("" = none), for the strip.
+    pub fn media_set_playing(&mut self, what: &str) {
+        self.media_playing = what.to_string();
+    }
+
     /// The Skins screen's list, from the shell: the names on the drive and the one in use.
     pub fn set_skin_list(&mut self, names: Vec<String>, current: &str) {
         self.skin_names = names;
         self.skin_cur = current.to_string();
+    }
+
+    /// The headphone EQ profile playing, by name ("" = off), for the Advanced row.
+    pub fn set_hp_eq(&mut self, name: &str) {
+        self.hp_eq = name.to_string();
     }
 
     /// The name at `i` of the Skins list, for the shell to load.
@@ -14951,6 +15145,7 @@ fn screen_title(s: Screen) -> &'static str {
         Screen::Palette => crate::i18n::text("Palette"),
         Screen::Language => crate::i18n::text("Language"),
         Screen::Skins => crate::i18n::text("Skins"),
+        Screen::MediaServers => crate::i18n::text("Media servers"),
         Screen::Eq => crate::i18n::text("Equalizer"),
         Screen::NetRadio => crate::i18n::text("Internet radio"),
         s => MENU
@@ -15643,6 +15838,16 @@ mod tests {
         app.mono = false;
         app.advanced_toggle_row();
         assert!(!app.opt(Opt::Crossfeed));
+    }
+
+    /// The headphone EQ row asks the shell for the next profile; the row shows what the shell says.
+    #[test]
+    fn the_headphone_eq_row_asks_the_shell() {
+        let mut app = unlocked();
+        app.adv_sel = crate::advanced::ROW_HP_EQ;
+        assert!(matches!(app.advanced_toggle_row()[..], [Action::NextHpEq]));
+        app.set_hp_eq("HD 650");
+        assert_eq!(app.hp_eq, "HD 650");
     }
 
     /// ReplayGain ships off, and its row cycles Off → Track → Album → Off.
@@ -19212,6 +19417,7 @@ mod tests {
             Screen::WifiNetworks,
             Screen::NetRadio,
             Screen::WifiSpeakers,
+            Screen::MediaServers,
             Screen::RadioFind,
             Screen::WifiRemote,
             Screen::WifiOptions,
@@ -19567,6 +19773,7 @@ mod tests {
             WifiNetworks,
             NetRadio,
             WifiSpeakers,
+            MediaServers,
             RadioFind,
             WifiRemote,
             WifiOptions,
@@ -27394,6 +27601,90 @@ mod r4_tests {
         );
         a.set_wifi_status("state=off\n", "");
         assert!(a.wifi_networks.is_empty(), "off forgets the list");
+    }
+
+    /// Media servers: opening searches; a server, then a folder, open a level each (taps wait while
+    /// one loads); a song plays; Back goes up a level and a late answer for the level left is
+    /// dropped; the strip stops the song, or on the server list searches again.
+    #[test]
+    fn media_servers_browse_play_and_back() {
+        use crate::media_server::{hit_strip, Entry};
+        use crate::wifi::Hit;
+        let row_y = |i: i32| {
+            (0..crate::canvas::H as i32)
+                .find(|&y| crate::media_server::row_at(y, 0, 10) == Some(i as usize))
+                .unwrap()
+        };
+        let strip_y = (0..crate::canvas::H as i32)
+            .find(|&y| hit_strip(y))
+            .unwrap();
+        let e = |t: &str, folder: bool, unplayable: bool| Entry {
+            title: t.into(),
+            folder,
+            unplayable,
+            ..Default::default()
+        };
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::Wifi);
+        a.set_wifi_status("state=connected\nssid=6162\n", "");
+        assert_eq!(
+            a.tap(240, wifi_y(true, Hit::Media)),
+            vec![Action::MediaSearch]
+        );
+        assert_eq!(a.current(), Screen::MediaServers);
+        assert!(
+            a.tap(240, row_y(0)).is_empty(),
+            "nothing to tap while it searches"
+        );
+        a.media_set_servers(vec![e("NAS", true, false)]);
+        assert_eq!(
+            a.tap(240, row_y(0)),
+            vec![Action::MediaOpen { depth: 0, index: 0 }]
+        );
+        // A folder: "Search this server" first, so the server's rows are one further down.
+        a.media_push(1, "NAS", vec![e("Albums", true, false)], true);
+        assert!(a.tap(240, row_y(0)).is_empty());
+        assert_eq!(a.current(), Screen::Keyboard);
+        a.kb_text = "sigur".into();
+        assert_eq!(kb_done(&mut a), vec![Action::MediaFind { depth: 1 }]);
+        assert_eq!(
+            (a.current(), a.media_query()),
+            (Screen::MediaServers, "sigur")
+        );
+        a.media_push(2, "sigur", vec![], false);
+        a.pop();
+        assert_eq!(
+            a.tap(240, row_y(1)),
+            vec![Action::MediaOpen { depth: 1, index: 0 }]
+        );
+        a.media_push(
+            2,
+            "Albums",
+            vec![e("a", false, false), e("b.m4a", false, true)],
+            false,
+        );
+        assert!(
+            a.tap(240, row_y(1)).is_empty(),
+            "a format it cannot play: nothing"
+        );
+        assert_eq!(
+            a.tap(240, row_y(0)),
+            vec![Action::MediaOpen { depth: 2, index: 0 }]
+        );
+        a.media_set_playing("a (1/2)");
+        assert_eq!(a.tap(240, strip_y), vec![Action::RadioStop]);
+        // Back: Albums → NAS; an answer still on its way for a deeper level is dropped.
+        a.pop();
+        assert_eq!(a.media_levels.len(), 2);
+        a.media_push(3, "late", vec![], false);
+        assert_eq!(a.media_levels.len(), 2);
+        a.pop();
+        assert_eq!(a.media_levels.len(), 1);
+        assert_eq!(a.current(), Screen::MediaServers, "the server list, still");
+        assert_eq!(a.tap(240, strip_y), vec![Action::MediaSearch]);
+        a.media_fail("no network");
+        a.pop();
+        assert_eq!(a.current(), Screen::Wifi);
     }
 
     /// Phone remote: only while connected; on and off reach cinder-ffi; the link going takes it down.
