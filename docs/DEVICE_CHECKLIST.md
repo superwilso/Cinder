@@ -1121,11 +1121,11 @@ dB Q 1`, `Filter 2: ON LSC Fc 100 Hz Gain -6 dB Q 0.7` — expected: 1 kHz at 0 
 
 | # | Test | Result |
 |---|---|---|
-| 48.1 | No `cinder_eq` folder: tap Sound ▸ Advanced ▸ Headphone EQ | Open. Pass = toast "No profiles: copy AutoEQ ParametricEQ files to cinder_eq", row stays OFF |
-| 48.2 | The test profile, tap the row; pink noise on the jack | Open. Pass = toast "Test (1/1)", row ON with "Test" under it, log `headphone EQ ON` then `jack: headphone EQ playing (fmt …, 44100 Hz)`; per octave within 0.5 dB of the expected |
-| 48.3 | The same file at 96 kHz (a 24/96 FLAC) | Open. Pass = the same curve; log names 96000 Hz |
+| 48.1 | No `cinder_eq` folder: tap Sound ▸ Advanced ▸ Headphone EQ | **Pass 11-15** — toast "Copy AutoEQ profiles to cinder_eq", row OFF, control file removed |
+| 48.2 | The test profile, tap the row; pink noise on the jack | **Pass 11-15** — toast "Test (1/1)", row ON "Test", log `jack: headphone EQ playing (fmt 2, 44100 Hz)`. Music, same 12 s segment off/on, PC noise power subtracted (vol 86): 63 Hz −10.6 (want −11.1), 100 −8.7 (−8.9), 250 −5.6 (−5.8), 1 k −0.3 (−0.1), 2 k −4.1 (−4.1), 10 k −5.7 (−6.0); 31.5 Hz −9.4 (−11.9) is the rig (11 dB over its floor) |
+| 48.3 | The same file at 96 kHz (a 24/96 FLAC) | Open — no FLAC over 48 kHz in the library (internal; SD search stopped part-way) |
 | 48.4 | Over Bluetooth headphones | Open. Pass = log `bt: headphone EQ playing`; by ear, the bass cut is plain |
-| 48.5 | Power off and on with the profile chosen | Open. Pass = the row still reads Test, and the EQ plays from the first song |
+| 48.5 | Power off and on with the profile chosen | **Pass 11-15** — after the update reboot: same control file (md5), `headphone EQ playing` on the first song |
 | 48.6 | A real AutoEQ profile for the owner's headphones, by ear | Open |
 
 ## 49 — 2026-11-14 — Media servers
@@ -1143,3 +1143,17 @@ Player's "Stream media" sharing on a PC, with a folder holding FLAC, MP3 and one
 | 49.6 | The same over Bluetooth headphones | Open |
 | 49.7 | While a server song plays: open Now Playing; press play/pause twice, then next, then previous | Open. Pass = title, artist and the server's cover; the bar moves; pause holds and play goes on (log has no new `radio: a song from a media server` for the resume); next/previous change song |
 | 49.8 | In a folder, Search this server ▸ a word from an artist's name | Open. Pass = a level of matching songs (or the server's own error in the strip, if it has no search); a result plays |
+
+## 50 — 2026-11-15 — Sony's DSD converter settings (`dsd_conv_gain_mode`, `dsd_conv_filter_type`)
+
+Test file `tools/mkdsf.c` (DSD64, tones 1–21 kHz at −24 dBFS each), converted output (native off
+in the service only), volume 96, jack recorded on a PC (48 kHz, so the filter is seen up to 21 kHz).
+Keys set with `cinder-probe --dsdnative KEY=VALUE`; each takes effect at the next track start.
+Sony's own values read back gain 2, filter 1.
+
+| # | Test | Result |
+|---|---|---|
+| 50.1 | gain 2, filter 1 (Sony's), three times | **Measured**: S32_LE 176400 (`pcm4p`); repeat runs agree within 0.07 dB at every tone |
+| 50.2 | gain 1 | **+1.33 dB at every tone** (1–21 kHz, within 0.08 dB of each other): a plain level step |
+| 50.3 | gain 0, or filter 0 | **Not a setting**: the service skips the converter and opens its native DSD output (`fmt 48`, DSD_U8) with `se_hp_dsd_native_enabled` at 0 — silence and a low thump (peak −15.8 dBFS at volume 96, above the music). Never offer 0 |
+| 50.4 | filter 2, gain 3 | Not tried: the converter library asserts below 2 and 3 (an abort in the sound service) |

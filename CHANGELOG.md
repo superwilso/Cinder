@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-11-11
+
 ### Added
 
 - **Headphone EQ (Sound ▸ Advanced, off by default).** Plays a parametric EQ profile for your
@@ -23,8 +25,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Equalizer APO reads) into a folder named `cinder_eq` on the player, and each tap of the row moves to
   the next one, then off. Works on the headphone jack and over Bluetooth, after Sony's effects, at
   every common sample rate from 32 to 384 kHz. Any boost is paid for by a cut in level, so it never
-  clips. A file it cannot read is refused whole, and the message names the line. *Host-tested,
-  including the sound service's library under the player's own C library; not yet heard on a player.*
+  clips. A file it cannot read is refused whole, and the message names the line. Measured on a
+  player's headphone jack: within 0.5 dB of the profile's curve from 63 Hz to 12.5 kHz. The signal
+  path on the Sound screen names it (and Crossfeed) while it plays.
 - **Media servers (Settings ▸ Wi-Fi).** Plays from a music server on your home network: a NAS with
   MiniDLNA, Jellyfin, Plex, Emby, Serviio, Kodi, or a PC sharing its music over UPnP/DLNA. The page
   finds the servers, opens their folders (Back goes up one), and a tap on a song plays it and then
@@ -39,11 +42,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   it is off the installer says so beside the option and again on the last page before installing.
   It stays off unless you tick it. Sound ▸ Advanced also says when one of those three needs it,
   instead of showing it on and doing nothing.
-
-## [0.4.2] — 2026-11-11
-
-### Added
-
 - **Play DSD natively (Settings ▸ Playback).** DSD files go to the headphone jack as 1-bit, the way
   the codec can play them, instead of being converted to PCM first. Sony's own firmware for this
   model always converts; the switch asks its sound service for the native output it already

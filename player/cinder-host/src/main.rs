@@ -338,6 +338,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         source_direct: false,
         tone_control: false,
         presets_saved: 2,
+        hp_eq: false,
+        crossfeed: false,
         eq_on_dac: false,
         clearaudio_ok: true,
         dc_gone: false,

@@ -419,6 +419,10 @@ pub struct Sound {
     pub tone_control: bool,
     /// How many presets are saved — the Presets row's subtitle.
     pub presets_saved: usize,
+    /// Cinder's own stages in Sony's sound service (the installer's Mono and soundscapes option):
+    /// they act on what Sony's chain hands the output, before the DAC, whatever bypass is on.
+    pub hp_eq: bool,
+    pub crossfeed: bool,
     /// The jack's curve is in the DAC right now, so the Equalizer row opens the DAC EQ.
     pub eq_on_dac: bool,
     /// Sony NC earphones are in the jack: the Noise cancelling row, valued with the mode's name.
@@ -778,10 +782,18 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: 
 /// it is the OUTER bypass and therefore what you would have to turn off first), so the two screens
 /// cannot tell the user different stories about the same state.
 pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
-    let out = match s.bt_codec {
+    let amp = match s.bt_codec {
         Some(codec) => format!("BT·{codec}"),
         None => crate::i18n::text("AMP → 3.5MM").to_string(),
     };
+    // Cinder's stages run on what Sony's chain hands the output (whatever bypass is on), before
+    // the DAC: so before `amp`, or before `DAC EQ` when the curve is in the DAC.
+    let late: Vec<&str> = [(s.hp_eq, "HP EQ"), (s.crossfeed, "CROSSFEED")]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, name)| crate::i18n::text(name))
+        .collect();
+    let out = late.iter().map(|l| format!("{l} → ")).collect::<String>() + &amp;
     // Both setups are real chains — B is not "bypassed", it is the other one — so the path reads
     // the same way for either and just names which is live.
     let ab = if setup == 1 { "B" } else { "A" };
@@ -848,11 +860,15 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
         parts.join(" → ")
     };
     let path = if tone_stage.is_empty() {
+        let mid = std::iter::once(mid.as_str())
+            .chain(late.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" → ");
         crate::ui_format!(
             "SIGNAL PATH ({ab}): SOURCE → {mid} → DAC EQ → {out}",
             ab = ab,
             mid = mid,
-            out = out
+            out = amp
         )
     } else {
         crate::ui_format!(
@@ -1284,6 +1300,51 @@ mod tests {
         }
     }
 
+    /// Cinder's stages come after Sony's chain and before the DAC, under every bypass.
+    #[test]
+    fn the_path_names_cinders_stages_before_the_dac() {
+        let both = Sound {
+            hp_eq: true,
+            crossfeed: true,
+            ..loud()
+        };
+        let (p, _) = signal_path(&both, 0);
+        assert!(
+            p.ends_with("NORMALIZER → HP EQ → CROSSFEED → AMP → 3.5MM"),
+            "{p}"
+        );
+        let (p, _) = signal_path(
+            &Sound {
+                eq_on_dac: true,
+                ..both
+            },
+            0,
+        );
+        assert!(
+            p.ends_with("NORMALIZER → HP EQ → CROSSFEED → DAC EQ → AMP → 3.5MM"),
+            "{p}"
+        );
+        let (p, _) = signal_path(
+            &Sound {
+                source_direct: true,
+                ..both
+            },
+            0,
+        );
+        assert!(
+            p.ends_with("SOURCE → HP EQ → CROSSFEED → AMP → 3.5MM"),
+            "{p}"
+        );
+        let (p, _) = signal_path(
+            &Sound {
+                crossfeed: false,
+                ..both
+            },
+            0,
+        );
+        assert!(p.ends_with("NORMALIZER → HP EQ → AMP → 3.5MM"), "{p}");
+    }
+
     /// A live chain with everything on, so each test can switch off the one thing it is about.
     fn loud() -> Sound {
         Sound {
@@ -1306,6 +1367,8 @@ mod tests {
             mono: false,
             mono_live: false,
             presets_saved: 0,
+            hp_eq: false,
+            crossfeed: false,
             eq_on_dac: false,
             clearaudio_ok: true,
             dc_gone: false,
