@@ -11798,6 +11798,8 @@ impl App {
                     source_direct: self.adv_source_direct,
                     tone_control: self.adv_tone,
                     presets_saved: self.presets.len(),
+                    hp_eq: self.mono_shim && !self.hp_eq.is_empty(),
+                    crossfeed: self.mono_shim && self.opt(Opt::Crossfeed),
                     eq_on_dac: self.eq_on_dac(),
                     eq_preset: data::EQ_PRESETS[self.eq_preset].0,
                     // The signal path shows what is REALLY carrying the audio: it ends at

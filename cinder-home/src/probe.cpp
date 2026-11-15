@@ -4895,7 +4895,7 @@ static int soundsettings_probe() {
     _exit(0);   // not return — see --fx
 }
 
-// --dsdnative read|on|off : Sony's native-DSD switches for the built-in output, through the sound
+// --dsdnative read|on|off|KEY=VALUE : Sony's native-DSD switches for the built-in output, through the sound
 // settings channel. The stock A50 library fixes `builtin_dsd_process_mode` at 2 (convert) when the
 // service starts, because DmpFeature says the model has no native DSD; its runtime setter takes
 // the key with no such check (FilterInConfig::Set). On the single-ended jack (output device 2)
@@ -4917,7 +4917,17 @@ static int dsdnative_probe(const char* what) {
             clog_(m);
         }
     }
-    for (const char* k : { "builtin_dsd_process_mode", "se_hp_dsd_native_enabled" }) {
+    // `KEY=VALUE`: any one setting, then read back with the two above and the converter's pair
+    // (dsd_conv_gain_mode / dsd_conv_filter_type, checklist §50).
+    if (std::strchr(what, '=')) {
+        wd_arm(8);
+        const int r = cinder_sound_settings_set_param(what);
+        wd_disarm();
+        std::snprintf(m, sizeof m, "dsdnative: set %s -> %d", what, r);
+        clog_(m);
+    }
+    for (const char* k : { "builtin_dsd_process_mode", "se_hp_dsd_native_enabled", "dsd_conv_gain_mode",
+                           "dsd_conv_filter_type" }) {
         wd_arm(8);
         const int r = cinder_sound_settings_get_param(k, v, sizeof v);
         wd_disarm();

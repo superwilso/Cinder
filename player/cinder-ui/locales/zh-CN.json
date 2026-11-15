@@ -1216,5 +1216,7 @@
   "A profile for your headphones, from cinder_eq": "来自 cinder_eq 的耳机配置文件",
   "Headphone EQ off": "耳机均衡器已关闭",
   "Copy AutoEQ profiles to cinder_eq": "请将 AutoEQ 配置文件复制到 cinder_eq",
-  "Needs the installer's Mono and soundscapes option": "需要安装时选择单声道和环境声景选项"
+  "Needs the installer's Mono and soundscapes option": "需要安装时选择单声道和环境声景选项",
+  "HP EQ": "耳机均衡",
+  "CROSSFEED": "声道混合"
 }
