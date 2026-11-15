@@ -70,6 +70,8 @@ while IFS= read -r line; do
         :   # a starting point: the PC installer's, not this picker's
     elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+\&[[:space:]] ]]; then
         NEEDS[$cur]+="${NEEDS[$cur]:+ }${line#*& }"
+    elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+\*[[:space:]] ]]; then
+        MORE[$cur]+="Recommended: ${line#*\* }"$'\n'
     elif [ -n "$cur" ] && [[ "$line" =~ ^[[:space:]]+![[:space:]] ]]; then
         text="${line#*! }"
         RISK[$cur]+="${RISK[$cur]:+ }$text"

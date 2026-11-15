@@ -638,7 +638,7 @@ fn comps_json(comps: &[Comp]) -> String {
             };
             format!(
                 "{{\"id\":{},\"var\":{},\"kind\":{},\"title\":{},\"desc\":{},\"risk\":{},\"group\":{},\
-                 \"start\":{},\"default\":{},\"value\":{},\"choices\":[{}],\"needs\":[{}],\"language\":{},\
+                 \"start\":{},\"default\":{},\"value\":{},\"choices\":[{}],\"needs\":[{}],\"recommend\":{},\"language\":{},\
                  \"lang_name\":{},\"lang_native\":{}}}",
                 esc(&c.id),
                 esc(&c.var),
@@ -652,6 +652,7 @@ fn comps_json(comps: &[Comp]) -> String {
                 esc(&c.value),
                 choices,
                 c.needs.iter().map(|n| esc(n)).collect::<Vec<_>>().join(","),
+                esc(&c.recommend),
                 c.is_language(),
                 esc(if c.is_language() { c.language_name() } else { "" }),
                 esc(if c.is_language() { c.language_native() } else { "" }),
