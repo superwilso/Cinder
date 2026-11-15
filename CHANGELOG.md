@@ -16,6 +16,44 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Alarm (Settings ▸ Power ▸ Alarm, off by default).** Wakes the player and plays what was playing
+  at a time of day, by the clock in the top bar; hour and minute buttons, then "Turn the alarm on".
+  It sets the player's clock chip to wake it from sleep, so it works with the screen off. An alarm
+  missed by more than ten minutes (the player was switched off) does not play late. *Host-tested;
+  the clock chip's alarm was set and cleared on a player; waking from sleep and from power off not
+  yet tried, which needs the USB cable out.*
+- **Line out (Settings ▸ Playback, off by default).** Fixes the volume for an amplifier or a car's
+  aux input: the volume keys and the skin's slider stop changing it. Pulling the plug, or plugging
+  anything in, turns it off and brings the volume down to 30 if it was louder, because the next
+  thing in the jack may be earphones. It is off again after every restart for the same reason. The
+  codec's own line outputs were measured first: they do not reach the 3.5 mm jack (it went silent).
+  *Host-tested; not yet tried on a player.*
+
+### Changed
+
+- **The Headphone EQ refuses a filter that would run away.** The sound service now checks every
+  filter it is handed is stable and in range, and plays without EQ otherwise, so a damaged control
+  file can never turn into full-scale noise. AutoEQ files and media-server answers were also
+  fuzzed (200,000 mangled inputs each): no crash, and every accepted profile designs stable filters
+  at every rate from 32 to 384 kHz.
+- **Internet radio and "Play to this player" decode AAC with a current decoder.** They used the
+  firmware's own AAC decoder from 2019, which lacks the fixes made to it since, on streams from any
+  station or anyone on the network. The Wi-Fi option now carries fdk-aac 2.0.3's decoder, built from
+  source, and falls back to the firmware's only if it is missing. On a player the two decoders'
+  output differs by at most 1 bit on AAC-LC (HE-AAC: a difference 91 dB down). *Not yet heard on a
+  station: the player's saved Wi-Fi network was cleared.*
+- **Wi-Fi option rebuilt on OpenSSL 3.5.9 and wpa_supplicant 2.12.** OpenSSL 3.0 left support on
+  2026-09-07; 3.5 is the long-term series (to 2030). wpa_supplicant 2.12 carries the fixes since 2.10,
+  among them CVE-2023-52160 (an enterprise network saved without a server name to check). curl and
+  both AirPlay receivers use the new OpenSSL too. *Scanning checked on a player; joining a network
+  not yet.*
+- **Releases ship the player files GitHub builds from the public source.** Each release now builds
+  the device payload on GitHub and publishes only if every file is byte-identical to the
+  maintainer's own build (v0.4.2-rc4 was the first to match, 83 of 83 files). Anyone can rebuild a
+  release's player files from this repository and check them against `cinder-home/dist/PAYLOAD.sha256`.
+
 ## [0.4.2] — 2026-11-11
 
 ### Added

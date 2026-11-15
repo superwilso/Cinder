@@ -10,6 +10,7 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
 pub mod advanced;
+pub mod alarm;
 pub mod art;
 pub mod audiobooks;
 pub mod bluetooth;

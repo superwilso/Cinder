@@ -21,6 +21,9 @@ mkdir -p build
 $CC -O2 -Wall -Wextra "${SYS[@]}" -o build/enc_test test/enc_test.c src/aac_enc.c \
     "$L/crt1.o" "$L/crti.o" "${LIBS[@]}" "$L/crtn.o" -Wl,-dynamic-linker,/lib/ld-linux-armhf.so.3
 
+$CC -O2 -Wall -Wextra "${SYS[@]}" -o build/dec_test test/dec_test.c \
+    "$L/crt1.o" "$L/crti.o" "${LIBS[@]}" "$L/crtn.o" -Wl,-dynamic-linker,/lib/ld-linux-armhf.so.3
+
 if [ -f src/cinder_aac.c ]; then
     $CC -O2 -Wall -Wextra -shared -fPIC -fvisibility=hidden "${SYS[@]}" -Wl,-soname,libcinder_aac.so \
         -o build/libcinder_aac.so src/cinder_aac.c src/aac_enc.c "${LIBS[@]}"

@@ -29,6 +29,7 @@
  */
 #include <sys/time.h>
 #include <sys/ioctl.h>
+#include <string.h>
 #include <linux/rtc.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -54,9 +55,14 @@ int main(int argc, char **argv)
     long long secs = 0;
     int digits = 0, fd, rtc_ok;
 
-    /* One verb, one argument. A setuid-root binary takes nothing else. */
+    /* One verb, one argument. A setuid-root binary takes nothing else.
+     *   set SECS     the system clock and the RTC
+     *   alarm SECS   the RTC's wake alarm (Settings ▸ Power ▸ Alarm, 2026-11-15); 0 clears it. The
+     *                alarm interrupt reaches the SoC through the PMIC (EINT 150), an armed wake
+     *                source, so it wakes the player from suspend to RAM. */
     if (argc != 3) return 2;
-    if (argv[1][0] != 's' || argv[1][1] != 'e' || argv[1][2] != 't' || argv[1][3] != 0) return 2;
+    const int alarm = strcmp(argv[1], "alarm") == 0;
+    if (!alarm && strcmp(argv[1], "set") != 0) return 2;
 
     /* Parse by hand rather than with strtol: this is the ONLY caller-supplied value in the
      * program, so it is worth being explicit that nothing but ASCII digits is accepted — no sign,
@@ -68,6 +74,32 @@ int main(int argc, char **argv)
         if (secs > EPOCH_MAX) return 2;       /* safe now: secs is 64-bit and cannot have wrapped */
     }
     if (digits == 0) return 2;                /* empty string */
+    if (alarm) {
+        if (geteuid() != 0) return 3;
+        struct rtc_wkalrm wk;
+        memset(&wk, 0, sizeof wk);
+        if (secs != 0) {
+            if (secs < EPOCH_MIN) return 2;
+            const time_t at = (time_t)secs;
+            if (!gmtime_r(&at, &utc)) return 2;
+            wk.enabled = 1;
+            wk.time.tm_sec = utc.tm_sec;
+            wk.time.tm_min = utc.tm_min;
+            wk.time.tm_hour = utc.tm_hour;
+            wk.time.tm_mday = utc.tm_mday;
+            wk.time.tm_mon = utc.tm_mon;
+            wk.time.tm_year = utc.tm_year;
+        }
+        fd = open("/dev/rtc0", O_WRONLY);
+        if (fd < 0) return 4;
+        /* Disabled (0) still carries a valid time: the driver checks the fields either way. */
+        if (secs == 0) {
+            if (ioctl(fd, RTC_RD_TIME, &wk.time) != 0) { close(fd); return 4; }
+        }
+        rtc_ok = ioctl(fd, RTC_WKALM_SET, &wk) == 0;
+        close(fd);
+        return rtc_ok ? 0 : 4;
+    }
     if (secs < EPOCH_MIN) return 2;
 
     /* Check before touching anything — the realistic failure is the setuid bit not surviving

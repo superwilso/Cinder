@@ -1,6 +1,7 @@
 // Host self-test for src/hp_eq.h (run by tools/selftests.sh, from build.sh). Plays the control
 // file cinder-ui writes (hpeq_fixture.txt: preamp -6 dB, +6 dB peak at 1 kHz, -6 dB low shelf at
 // 100 Hz) and measures what comes out.
+#include <cstring>
 #include "../src/hp_eq.h"
 
 #include <cmath>
@@ -63,6 +64,14 @@ int main()
     check(hpeq_parse(g_file.data(), g_file.size(), 384000, c) == 2, "384000 line: two filters");
     check(hpeq_parse(g_file.data(), g_file.size(), 11025, c) == 0, "no line for 11025");
     check(hpeq_parse("44100 1 0 0 0\n", 14, 44100, c) == 0, "a line short of five numbers is refused");
+    {
+        const char* runaway = "44100 1 0 0 2.1 -1.2\n";   // poles outside the unit circle
+        check(hpeq_parse(runaway, std::strlen(runaway), 44100, c) == 0, "an unstable filter is refused");
+        const char* huge = "44100 1e300 0 0 0 0\n";
+        check(hpeq_parse(huge, std::strlen(huge), 44100, c) == 0, "an absurd coefficient is refused");
+        const char* fine = "44100 0.5 0 0 0 0\n";
+        check(hpeq_parse(fine, std::strlen(fine), 44100, c) == 1, "a plain -6 dB gain is kept");
+    }
 
     for (unsigned rate : { 44100u, 48000u, 96000u, 192000u }) {
         char what[96];

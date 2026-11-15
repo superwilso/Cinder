@@ -238,6 +238,82 @@ mod tests {
     use super::*;
 
     // From AutoEQ's results for a well-known open-back (oratory1990 measurement), first lines.
+    /// A profile is any file someone copied to the drive. Seeded mutation of a real one: parse
+    /// never panics, and whatever it accepts designs finite filters at every rate the shim plays.
+    /// `CINDER_FUZZ_N=200000 cargo test --release` for a long run.
+    #[test]
+    fn mangled_profiles_never_panic_or_design_a_non_finite_filter() {
+        let n: usize = std::env::var("CINDER_FUZZ_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3000);
+        let bits = [
+            "-",
+            ".",
+            "e",
+            "9",
+            "0",
+            "1e308",
+            "NaN",
+            "inf",
+            " ",
+            "\n",
+            "\r\n",
+            "Hz",
+            "dB",
+            "Q",
+            "Fc",
+            "Gain",
+            "ON",
+            "OFF",
+            "PK",
+            "LSC",
+            "HSC",
+            "LS",
+            "HS",
+            "Filter 17:",
+            "Preamp:",
+            "é",
+            "𝄞",
+        ];
+        let mut r: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut rnd = |m: usize| {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            (r % m.max(1) as u64) as usize
+        };
+        for _ in 0..n {
+            let mut v: Vec<char> = SAMPLE.chars().collect();
+            for _ in 0..1 + rnd(6) {
+                let at = rnd(v.len() + 1);
+                if rnd(3) == 0 && at < v.len() {
+                    let end = (at + 1 + rnd(12)).min(v.len());
+                    v.drain(at..end);
+                } else {
+                    let ins: Vec<char> = bits[rnd(bits.len())].chars().collect();
+                    v.splice(at..at, ins);
+                }
+            }
+            let text: String = v.into_iter().collect();
+            if let Ok(p) = parse(&text) {
+                for fs in [32_000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0, 384_000.0] {
+                    for c in design(&p, fs) {
+                        assert!(c.iter().all(|x| x.is_finite()), "{text:?} at {fs}: {c:?}");
+                        // Poles inside the unit circle (stored a1, a2 are negated): an unstable
+                        // filter would run to full scale in the listener's ears.
+                        let (c1, c2) = (-c[3], -c[4]);
+                        assert!(
+                            c2.abs() < 1.0 && c1.abs() < 1.0 + c2,
+                            "unstable: {text:?} at {fs}: {c:?}"
+                        );
+                    }
+                }
+                let _ = control(&p);
+            }
+        }
+    }
+
     const SAMPLE: &str = "Preamp: -6.4 dB\r\n\
         Filter 1: ON LSC Fc 105 Hz Gain 6.6 dB Q 0.70\r\n\
         Filter 2: ON PK Fc 2734 Hz Gain 4.3 dB Q 1.94\r\n\

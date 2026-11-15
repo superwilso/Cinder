@@ -1,116 +1,29 @@
 <!--
-  The part of every GitHub release body that does not change: installing and verifying.
-  .github/workflows/release.yml puts the version's own page above it (.github/release-notes/vX.Y.Z.md,
-  shared by that version's -rcN tags), or a pointer to the CHANGELOG when there is none. GitHub's
-  generated commit list is appended below.
+  The part of every GitHub release body that does not change. Keep it short: the detail lives in
+  install.md and RECOVERY.md, and is not repeated per release. .github/workflows/release.yml puts
+  the version's own page above this (.github/release-notes/vX.Y.Z.md) or a pointer to the
+  CHANGELOG, and GitHub's commit list below.
 -->
-## Installing
+## Downloads
 
-Download **cinder-installer-windows-x64.exe**, connect the Walkman in USB mass-storage
-mode, and run it. Double-clicking opens a window; running it from a terminal gives the
-same thing as text.
-
-It does three things:
-
-| | |
+| File | What it is |
 |---|---|
-| **Install** | Choose the optional components, stage them, flash. |
-| **Update** | Reads the choices already on the player and keeps them, so a new build never silently resets a customised install. |
-| **Uninstall** | Restores Sony's launch config from the backup the install made and removes Cinder's binaries. Your music, playlists and settings are untouched. |
+| `cinder-installer-windows-x64.exe` | Install, update or uninstall. Connect the Walkman in USB mass-storage mode and run it. |
+| `cinder-installer-linux-x64` | The same, run with `sudo`. |
+| `cinder-installer-macos` | The same, run with `sudo`. Experimental: not yet run on a real Mac. |
+| `cinder-rescue-*` | Experimental. Backs up the player's memory, and restores it after a boot loop. [RECOVERY.md](../blob/main/RECOVERY.md), step 3. |
+| `cinder-extras.zip` | The `.UPG` packages for flashing by hand, and libusb's licence. |
+| `cinder-payload.tar.gz` | The player-side files every installer carries, built on GitHub from this tag. |
 
-**Stable is for almost everyone.** On the Device page, **Build** offers a Developer build too: the
-same player with a USB command line (adb) and test tools, for helping find a bug when someone asks
-you for it. Keep Stable otherwise.
+An update keeps the options already chosen on the player. Steps, the command line and the options:
+[install.md](../blob/main/install.md). **Read [RECOVERY.md](../blob/main/RECOVERY.md) first.**
 
-It reads what is on the player out of the device's own install log before offering
-anything — whether Cinder is there, which version put it there, and whether the last
-attempt succeeded, was reverted by the device's sanity gate, or never finished.
+## Checking a download
 
-Everything the installer needs is inside the one file: the device binaries, both `.UPG`
-packages and the component catalogue. **No separate download, no WSL, no usbipd, no driver
-setup, and no network connection.** It sends the player's own upgrade command itself — SCSI
-pass-through on Windows (so it asks for administrator), `SG_IO` on Linux (so it asks for
-`sudo`). Sony's updater is no longer embedded in it.
+`sha256sum -c --ignore-missing SHA256SUMS`, and `gh attestation verify <file> -R superwilso/Cinder`
+for where it was built. Windows and the details: [install.md, Checking a download](../blob/main/install.md#checking-a-download).
+The `.exe` is unsigned, so SmartScreen warns about it.
 
-Command line, if you prefer it:
-
-```
-cinder-installer --install | --update | --uninstall
-cinder-installer --clean       # delete staged payload files left in the drive root
-cinder-installer --check       # ask GitHub whether a newer release exists
-cinder-installer -y            # no questions
-```
-
-### Linux
-
-`cinder-installer-linux-x64` does the whole job — **run it with `sudo`**. It stages the
-files and then sends the upgrade command itself: the same 12-byte vendor SCSI command
-Sony's tool ends with. Root is needed because that is a raw SCSI passthrough. Without
-it, the files are still staged correctly and the installer says what did not happen.
-
-### macOS (experimental)
-
-`cinder-installer-macos` runs on Apple Silicon and Intel Macs, and must be **run with `sudo`**.
-It stages the files, ejects the player's volume, and sends the upgrade command as raw USB,
-because macOS gives no SCSI passthrough for a mounted disk. It has not yet been run on a real
-Mac. If it fails, finish from Linux or Windows; see [install.md](../blob/main/install.md).
-
-### cinder-rescue (experimental): back up, and get a looping player back
-
-`cinder-rescue-windows-x64.exe`, `cinder-rescue-linux-x64` and `cinder-rescue-macos` back up the
-player's eMMC over MediaTek's download mode, which works even when the player will not start,
-and later restore only the partitions a boot loop breaks, only to the player the backup came from.
-Take the backup while the player still works. Steps, and the two things it needs that are not
-in this release (MediaTek's Download Agent file, and on Windows a WinUSB driver): RECOVERY.md,
-Step 3. Run on Windows with an NW-A55; not yet run on Linux or a Mac. `cinder-rescue licences`
-prints the notices it carries.
-
-The Mac installer and all three cinder-rescue builds contain [libusb](https://libusb.info)
-1.0.27, linked statically. libusb is licensed under the GNU LGPL 2.1; its licence is
-`LICENSE-libusb.txt` in `cinder-extras.zip`. Its source is at <https://github.com/libusb/libusb/tree/v1.0.27>. To
-relink either program against a different libusb, build it from this release's tagged source
-(`installer/` or `rescue/`, `cargo build --release`) with your own libusb.
-
-> **The player has no update option in its own menus.** This generation never had one —
-> the upgrade is always triggered by the host over USB.
-
-`cinder-payload.tar.gz` is the device side every installer above embeds (both builds), for building
-an installer from this release's source; `PAYLOAD.sha256` in the tagged source lists its checksums.
-
-`cinder-extras.zip` holds the install and uninstall `.UPG` packages for that route and for
-advanced recovery use (`.nw-wm1a.upg` for a player running Walkman One; its README says which). On Windows, the one-click executable is the recommended
-path — it does the handoff for you.
-
-**Read [RECOVERY.md](../blob/main/RECOVERY.md) first.** This device has no public
-DFU/EDL recovery path.
-
-## Verifying the download
-
-GitHub shows a `sha256:` digest beside each file in the assets list above, computed when the file
-was uploaded. `SHA256SUMS`, attached, holds the same sums as the build runner computed them before
-upload; they should agree. On Linux or macOS, next to the downloads:
-
-```bash
-sha256sum -c --ignore-missing SHA256SUMS
-```
-
-On Windows:
-
-```powershell
-Get-FileHash .\cinder-installer-windows-x64.exe -Algorithm SHA256
-```
-
-Every file above also has a GitHub build attestation. With the [GitHub CLI](https://cli.github.com)
-2.49 or later (older versions, including the 2.45 Ubuntu packages, do not have this command):
-
-```
-gh attestation verify cinder-installer-windows-x64.exe -R superwilso/Cinder
-```
-
-A pass means the file was built by this repository's release workflow from the tagged commit, and
-is signed in a way an uploaded replacement cannot fake. The checksums say the file is intact; the
-attestation says where it came from.
-
-The installer is unsigned, so SmartScreen will warn about an unknown publisher — that
-is expected for an unsigned binary and is not itself evidence of anything. Check the
-hash if you want more than my word for it.
+The Mac installer and cinder-rescue link [libusb](https://libusb.info) 1.0.27 statically (LGPL 2.1;
+licence in `cinder-extras.zip`, source at <https://github.com/libusb/libusb/tree/v1.0.27>). To use
+another libusb, build `installer/` or `rescue/` from this tag's source.

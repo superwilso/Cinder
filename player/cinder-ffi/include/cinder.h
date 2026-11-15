@@ -680,6 +680,11 @@ int  cinder_get_volume(void);
 /* Seed the UI volume from the device's real level (raw 0..120 steps), no HUD pop. Call at boot
  * after restoring the saved level (or reading the mixer), so Vol± nudges from the actual level. */
 void cinder_set_volume(int level);
+/* The headphone jack changed: line out (Settings ▸ Playback) ends. 1 = the UI lowered its level;
+ * write it to the codec (apply_volume). */
+int cinder_line_out_jack_change(void);
+/* Settings ▸ Power ▸ Alarm: minutes after local midnight when on, -1 when off. */
+int cinder_alarm_minutes(void);
 /* Bottom-edge swipe UP opens the Shelf. Returns 1 if the UI took it, 0 if it declined (locked,
  * onboarding, or already open) — on 0 the shell should let the contact scroll as usual. */
 int  cinder_shelf_swipe(void);

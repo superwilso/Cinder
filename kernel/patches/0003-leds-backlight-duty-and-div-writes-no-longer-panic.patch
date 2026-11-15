@@ -1,0 +1,115 @@
+leds: lcd-backlight duty/div no longer oops; pwm_register removed
+
+store_duty and store_div passed kstrtoul an uninitialised pointer to write the number through:
+every write oopsed, then a nested panic rebooted the player (seen 2026-08-30). They now parse with
+kstrtouint and reject bad input with -EINVAL. pwm_register wrote any value to any register
+address its caller named, through the same broken parser; nothing in Sony's userspace (stock or
+Walkman One, system or ramdisk) opens it, so the node is gone.
+
+diff --git a/drivers/misc/mediatek/leds/leds_drv.c b/drivers/misc/mediatek/leds/leds_drv.c
+index 8d9569ec..55e45cbd 100644
+--- a/drivers/misc/mediatek/leds/leds_drv.c
++++ b/drivers/misc/mediatek/leds/leds_drv.c
+@@ -301,17 +301,15 @@ static ssize_t show_duty(struct device *dev, struct device_attribute *attr, char
+ static ssize_t store_duty(struct device *dev, struct device_attribute *attr, const char *buf,
+ 			  size_t size)
+ {
+-	char *pvalue ;
++	/* Cinder: Sony's version handed kstrtoul an uninitialised pointer to write the number
++	 * through, so any write here oopsed (a NULL dereference, then a nested panic and a reboot). */
+ 	unsigned int level = 0;
+-	size_t count = 0;
+ 	bl_div = mt_get_bl_div();
+ 	LEDS_DRV_DEBUG("set backlight duty start\n");
+-	level = kstrtoul(buf, 10, (unsigned long *)pvalue);
+-	count = pvalue - buf;
+-	if (*pvalue && isspace(*pvalue))
+-		count++;
++	if (kstrtouint(buf, 10, &level))
++		return -EINVAL;
+ 
+-	if (count == size) {
++	{
+ 
+ 		if (bl_setting->mode == MT65XX_LED_MODE_PMIC) {
+ 			/* duty:0-16 */
+@@ -354,22 +352,17 @@ static ssize_t show_div(struct device *dev, struct device_attribute *attr, char
+ static ssize_t store_div(struct device *dev, struct device_attribute *attr, const char *buf,
+ 			 size_t size)
+ {
+-	char *pvalue ;
+-	unsigned int div = 0;
+-	size_t count = 0;
++	unsigned int div = 0;   /* Cinder: the same uninitialised-pointer parse as store_duty */
+ 
+ 	bl_duty = mt_get_bl_duty();
+ 	LEDS_DRV_DEBUG("set backlight div start\n");
+-	div = kstrtoul(buf, 10, (unsigned long *)pvalue);
+-	count = pvalue - buf;
++	if (kstrtouint(buf, 10, &div))
++		return -EINVAL;
+ 
+-	if (*pvalue && isspace(*pvalue))
+-		count++;
+-
+-	if (count == size) {
+-		if (div < 0 || (div > 7)) {
++	{
++		if (div > 7) {
+ 			LEDS_DRV_DEBUG("set backlight div parameter error: %d[div:0~7]\n", div);
+-			return 0;
++			return -EINVAL;
+ 		}
+ 
+ 		if (bl_setting->mode == MT65XX_LED_MODE_PWM) {
+@@ -415,37 +408,9 @@ static DEVICE_ATTR(frequency, 0444, show_frequency, NULL);
+ 
+ 
+ 
+-static ssize_t store_pwm_register(struct device *dev, struct device_attribute *attr,
+-				  const char *buf, size_t size)
+-{
+-	char *pvalue = NULL;
+-	unsigned int reg_value = 0;
+-	unsigned int reg_address = 0;
+-	if (buf != NULL && size != 0) {
+-		LEDS_DRV_DEBUG("store_pwm_register: size:%d,address:0x%s\n", size, buf);
+-		reg_address = kstrtoul(buf, 16, (unsigned long *)pvalue);
+-
+-		if (*pvalue && (*pvalue == '#')) {
+-			reg_value = kstrtoul((pvalue + 1), 16, NULL);
+-			LEDS_DRV_DEBUG("set pwm register:[0x%x]= 0x%x\n", reg_address, reg_value);
+-			/* OUTREG32(reg_address,reg_value); */
+-			mt_store_pwm_register(reg_address, reg_value);
+-
+-		} else if (*pvalue && (*pvalue == '@')) {
+-			LEDS_DRV_DEBUG("get pwm register:[0x%x]=0x%x\n", reg_address,
+-				       mt_show_pwm_register(reg_address));
+-		}
+-	}
+-
+-	return size;
+-}
+-
+-static ssize_t show_pwm_register(struct device *dev, struct device_attribute *attr, char *buf)
+-{
+-	return 0;
+-}
+-
+-static DEVICE_ATTR(pwm_register, 0664, show_pwm_register, store_pwm_register);
++/* Cinder: pwm_register removed. It wrote any value to any register address its caller named, and
++ * its parser had the same uninitialised pointer as store_duty, so every write oopsed. Nothing in
++ * Sony's userspace opens it. */
+ 
+ 
+ /****************************************************************************
+@@ -528,9 +493,6 @@ static int mt65xx_leds_probe(struct platform_device *pdev)
+ 			if (rc)
+ 				LEDS_DRV_DEBUG("[LED]device_create_file duty fail!\n");
+ 			rc = device_create_file(g_leds_data[i]->cdev.dev, &dev_attr_frequency);
+-			if (rc)
+-				LEDS_DRV_DEBUG("[LED]device_create_file duty fail!\n");
+-			rc = device_create_file(g_leds_data[i]->cdev.dev, &dev_attr_pwm_register);
+ 			if (rc)
+ 				LEDS_DRV_DEBUG("[LED]device_create_file duty fail!\n");
+ 

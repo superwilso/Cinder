@@ -439,6 +439,79 @@ mod tests {
     const BROWSE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><Result>&lt;DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"&gt;&lt;container id="1$4" parentID="1" restricted="1" searchable="1" childCount="12"&gt;&lt;dc:title&gt;Albums&lt;/dc:title&gt;&lt;upnp:class&gt;object.container.storageFolder&lt;/upnp:class&gt;&lt;/container&gt;&lt;item id="64$1" parentID="64" restricted="1"&gt;&lt;dc:title&gt;Hoppípolla&lt;/dc:title&gt;&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;&lt;dc:creator&gt;Sigur Rós&lt;/dc:creator&gt;&lt;upnp:artist&gt;Sigur Rós&lt;/upnp:artist&gt;&lt;upnp:album&gt;Takk...&lt;/upnp:album&gt;&lt;res size="35102213" duration="0:04:28.000" protocolInfo="http-get:*:audio/x-flac:*"&gt;http://192.168.1.20:8200/MediaItems/22.flac&lt;/res&gt;&lt;/item&gt;&lt;item id="64$2" parentID="64" restricted="1"&gt;&lt;dc:title&gt;Glósóli&lt;/dc:title&gt;&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;&lt;dc:creator&gt;Sigur Rós&lt;/dc:creator&gt;&lt;res duration="0:06:15.000" protocolInfo="http-get:*:audio/mp4:*"&gt;http://192.168.1.20:8200/MediaItems/23.m4a&lt;/res&gt;&lt;res protocolInfo="http-get:*:audio/mpeg:DLNA.ORG_PN=MP3"&gt;http://192.168.1.20:8200/Transcode/23.mp3?a=1&amp;amp;b=2&lt;/res&gt;&lt;/item&gt;&lt;item id="99" parentID="64"&gt;&lt;dc:title&gt;clip&lt;/dc:title&gt;&lt;upnp:class&gt;object.item.videoItem&lt;/upnp:class&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</Result><NumberReturned>4</NumberReturned><TotalMatches>4</TotalMatches><UpdateID>7</UpdateID></u:BrowseResponse></s:Body></s:Envelope>"#;
 
+    /// Bytes from the network reach these parsers inside the Home app, where a panic ends it.
+    /// Seeded mutation of real answers; `CINDER_FUZZ_N=200000 cargo test --release` for a long run.
+    #[test]
+    fn the_parsers_survive_mangled_answers() {
+        let n: usize = std::env::var("CINDER_FUZZ_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3000);
+        let didl = tag(BROWSE, "Result").unwrap();
+        let seeds = [
+            didl.as_str(),
+            BROWSE,
+            "<item><res duration=\"9:99:99.9\">x</res></item>",
+        ];
+        let bits = [
+            "<",
+            ">",
+            "\"",
+            "&",
+            "&amp;",
+            "&lt;",
+            "=",
+            ":",
+            ".",
+            "0",
+            "é",
+            "€",
+            "𝄞",
+            " ",
+            "/",
+            "<item>",
+            "</item>",
+            "<container id=\"",
+            "<res ",
+            "protocolInfo=\"",
+            "duration=\"",
+            "object.item.audioItem",
+            "http://",
+            "<dc:title>",
+            "</res>",
+            "\u{0}",
+        ];
+        let mut r: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut rnd = |m: usize| {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            (r % m.max(1) as u64) as usize
+        };
+        for _ in 0..n {
+            let mut v: Vec<char> = seeds[rnd(seeds.len())].chars().collect();
+            for _ in 0..1 + rnd(8) {
+                let at = rnd(v.len() + 1);
+                match rnd(3) {
+                    0 if at < v.len() => {
+                        let end = (at + 1 + rnd(40)).min(v.len());
+                        v.drain(at..end);
+                    }
+                    _ => {
+                        let ins: Vec<char> = bits[rnd(bits.len())].chars().collect();
+                        v.splice(at..at, ins);
+                    }
+                }
+            }
+            let s: String = v.into_iter().collect();
+            let _ = parse_didl(&s);
+            let _ = parse_server(&s, "http://192.168.1.20:8200/rootDesc.xml");
+            let _ = on_status(&s);
+            let _ = criteria(&s);
+            let _ = crate::cast::hms_ms(&s);
+        }
+    }
+
     #[test]
     fn reads_folders_and_songs_in_order_and_picks_a_playable_res() {
         let v = parse_didl(&tag(BROWSE, "Result").unwrap());

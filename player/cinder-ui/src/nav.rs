@@ -128,6 +128,8 @@ pub enum Screen {
     /// fields is too much for a row, and setting a clock is a deliberate act that deserves an
     /// explicit Set rather than applying live under the finger.
     ClockSet,
+    /// Settings ▸ Power ▸ Alarm (`alarm.rs`): wake and play at a time of day.
+    Alarm,
     /// Settings ▸ Wi-Fi (`wifi.rs`). Reached only when the Wi-Fi install option is on the player.
     Wifi,
     /// Settings ▸ Wi-Fi ▸ Network: the networks in range; tap one to join, the joined one to forget.
@@ -1721,6 +1723,10 @@ pub struct App {
     /// out from under your finger.
     clock_fields: crate::clockset::Fields,
     clock_sel: usize,
+    /// Settings ▸ Power ▸ Alarm: on, its time (minutes after midnight) and the selected row.
+    alarm_on: bool,
+    alarm_min: u16,
+    alarm_sel: usize,
     /// Settings ▸ Wi-Fi: the last status and scan the shell reported, and whether a scan is out.
     wifi_status: crate::wifi::Status,
     wifi_networks: Vec<crate::wifi::Network>,
@@ -2290,6 +2296,9 @@ impl Default for App {
             clock_epoch: 0,
             clock_fields: [2026, 1, 1, 0, 0],
             clock_sel: 0,
+            alarm_on: false,
+            alarm_min: crate::alarm::DEFAULT_MIN,
+            alarm_sel: 0,
             wifi_status: crate::wifi::Status::default(),
             wifi_networks: Vec::new(),
             wifi_scanning: false,
@@ -3028,6 +3037,48 @@ impl App {
             (true, false) => 1,
             (true, true) => 2,
         }
+    }
+
+    /// Settings ▸ Power ▸ Alarm: its time in minutes after midnight when on, for the shell.
+    pub fn alarm(&self) -> Option<u16> {
+        self.alarm_on.then_some(self.alarm_min)
+    }
+
+    /// On or off, and the time, as the settings file keeps them.
+    pub fn alarm_saved(&self) -> (bool, u16) {
+        (self.alarm_on, self.alarm_min)
+    }
+
+    /// From the settings file: on or off, and the time.
+    pub fn set_alarm(&mut self, on: bool, min: u16) {
+        self.alarm_on = on;
+        self.alarm_min = min % (24 * 60);
+    }
+
+    /// Line out holds the headphone level: say so instead of moving it.
+    fn line_out_holds(&mut self) -> bool {
+        if !self.opt(Opt::LineOut) {
+            return false;
+        }
+        self.notify(crate::i18n::text("Line out: the volume is fixed"));
+        true
+    }
+
+    /// The level line out drops to when the plug is pulled: quiet in earphones on any curve.
+    pub const LINE_OUT_SAFE: u8 = 30;
+
+    /// The headphone jack changed (in or out). With line out on, it ends: the next thing in the
+    /// jack may be earphones. The level drops to [`Self::LINE_OUT_SAFE`] if it was above. True when
+    /// the level changed, so the shell writes it to the codec.
+    pub fn line_out_jack_change(&mut self) -> bool {
+        if !self.opt(Opt::LineOut) {
+            return false;
+        }
+        self.set_opt(Opt::LineOut, false);
+        self.notify(crate::i18n::text("Line out off: the plug was pulled"));
+        let was = self.volume;
+        self.volume = self.volume.min(Self::LINE_OUT_SAFE);
+        self.volume != was
     }
 
     /// Flip switch `o`. Returns its new state.
@@ -4720,6 +4771,11 @@ impl App {
                 self.push(Screen::Wifi);
                 vec![]
             }
+            crate::settings::ROW_ALARM => {
+                self.alarm_sel = 0;
+                self.push(Screen::Alarm);
+                vec![]
+            }
             crate::settings::ROW_VOLUME_LIMIT => {
                 // Toggle only. There is deliberately no number to cycle: the cap is Sony's AVLS
                 // threshold for whatever output is live (`adapt=1`), read by the shell at the
@@ -5863,6 +5919,20 @@ impl App {
             },
             Screen::WifiRemote => self.tap_remote(x, y),
             Screen::WifiOptions => self.tap_wifi_options(x, y),
+            Screen::Alarm => {
+                if crate::alarm::hit_button(x, y) {
+                    self.alarm_on = !self.alarm_on;
+                    self.notify(if self.alarm_on {
+                        crate::i18n::text("Alarm on")
+                    } else {
+                        crate::i18n::text("Alarm off")
+                    });
+                } else if let Some((row, delta)) = crate::alarm::hit_btn(x, y) {
+                    self.alarm_sel = row;
+                    self.alarm_min = crate::alarm::step(self.alarm_min, row, delta);
+                }
+                vec![]
+            }
             Screen::ClockSet => {
                 if crate::clockset::hit_set(x, y) {
                     self.notify(crate::i18n::text("Clock set"));
@@ -8690,7 +8760,7 @@ impl App {
             return vec![if up { Action::VolUp } else { Action::VolDown }];
         }
         let want = crate::winamp::volume_at(lx, crate::overlay::VOL_MAX);
-        if want == self.volume {
+        if want == self.volume || self.line_out_holds() {
             return vec![];
         }
         self.volume = want;
@@ -11137,6 +11207,26 @@ impl App {
                 }
                 _ => vec![],
             },
+            Screen::Alarm => match b {
+                Button::Up | Button::Down => {
+                    self.alarm_sel ^= 1;
+                    vec![]
+                }
+                Button::Left | Button::Right => {
+                    let d = if matches!(b, Button::Left) { -1 } else { 1 };
+                    self.alarm_min = crate::alarm::step(self.alarm_min, self.alarm_sel, d);
+                    vec![]
+                }
+                Button::Select => {
+                    self.alarm_on = !self.alarm_on;
+                    vec![]
+                }
+                Button::Back => {
+                    self.pop();
+                    vec![]
+                }
+                _ => vec![],
+            },
             Screen::ClockSet => match b {
                 Button::Up => {
                     self.clock_sel = self.clock_sel.saturating_sub(1);
@@ -12014,6 +12104,11 @@ impl App {
             }
             Screen::Settings => {
                 let sleep_lbl = self.sleep_label();
+                let alarm_lbl = if self.alarm_on {
+                    crate::alarm::hhmm(self.alarm_min)
+                } else {
+                    crate::i18n::text("OFF").to_string()
+                };
                 let brightness_lbl = if self.brightness == 0 {
                     crate::i18n::text("BACKLIGHT OFF").to_string()
                 } else {
@@ -12047,6 +12142,7 @@ impl App {
                     database: &db_label,
                     storage: self.storage_label(),
                     sleep: &sleep_lbl,
+                    alarm: &alarm_lbl,
                     brightness: &brightness_lbl,
                     screen_off: &screen_off_lbl,
                     auto_off: &auto_off_lbl,
@@ -12153,6 +12249,14 @@ impl App {
             Screen::ClockSet => {
                 crate::clockset::render(c, &theme, fonts, &self.clock_fields, self.clock_sel)
             }
+            Screen::Alarm => crate::alarm::render(
+                c,
+                &theme,
+                fonts,
+                self.alarm_min,
+                self.alarm_on,
+                self.alarm_sel,
+            ),
             Screen::Wifi => crate::wifi::render(
                 c,
                 &theme,
@@ -12937,6 +13041,9 @@ impl App {
     /// source-side trim instead of being sent to the sink. The shell then has nothing to do but
     /// re-apply the EQ, which it picks up from `bt_trim_half_db` on its next tick.
     fn vol_step(&mut self, up: bool) -> bool {
+        if !self.bt_route && self.line_out_holds() {
+            return false;
+        }
         if !self.bt_route {
             self.volume = if up {
                 (self.volume + 1).min(crate::overlay::VOL_MAX)
@@ -19772,6 +19879,7 @@ mod tests {
             UsbStorage,
             VizSet,
             ClockSet,
+            Alarm,
             Wifi,
             WifiNetworks,
             NetRadio,
@@ -21432,6 +21540,56 @@ mod tests {
         a.press(Button::Select); // Library
         a.press(Button::Home);
         assert_eq!(a.current(), Screen::NowPlaying);
+    }
+
+    /// Settings ▸ Power ▸ Alarm: the big button turns it on and off, the ± buttons move the time,
+    /// and the shell only sees a time while it is on.
+    #[test]
+    fn the_alarm_screen_sets_a_time_and_turns_it_on() {
+        let mut a = unlocked();
+        a.push(Screen::Alarm);
+        assert_eq!(a.alarm(), None, "off until asked");
+        let (sx, sy, _, _) = crate::clockset::set_rect();
+        a.tap(sx + 5, sy + 5);
+        assert_eq!(a.alarm(), Some(crate::alarm::DEFAULT_MIN));
+        let (px, py, _, _) = crate::clockset::btn_rect(0, 1); // hour +
+        a.tap(px + 5, py + 5);
+        let (mx, my, _, _) = crate::clockset::btn_rect(1, 0); // minute −
+        a.tap(mx + 5, my + 5);
+        assert_eq!(a.alarm(), Some(8 * 60 - 5));
+        a.tap(sx + 5, sy + 5);
+        assert_eq!(a.alarm(), None);
+        assert_eq!(
+            a.alarm_saved(),
+            (false, 8 * 60 - 5),
+            "the time is kept while off"
+        );
+    }
+
+    /// Line out holds the headphone level, ends at the jack's next edge with the level brought
+    /// down, and is never read back from the settings file.
+    #[test]
+    fn line_out_fixes_the_volume_until_the_plug_changes() {
+        let mut a = unlocked();
+        a.volume = 100;
+        a.set_opt(Opt::LineOut, true);
+        a.press(Button::VolUp);
+        a.press(Button::VolDown);
+        assert_eq!(a.volume, 100, "the keys do not move it");
+        assert!(a.wa_volume_to(0).is_empty(), "nor the skin's slider");
+        assert!(a.line_out_jack_change(), "the level is lowered");
+        assert!(!a.opt(Opt::LineOut));
+        assert_eq!(a.volume, App::LINE_OUT_SAFE);
+        assert!(!a.line_out_jack_change(), "off: an edge does nothing");
+        a.press(Button::VolUp);
+        assert_eq!(a.volume, App::LINE_OUT_SAFE + 1);
+        // Already quiet: off, and left where it was.
+        a.volume = 10;
+        a.set_opt(Opt::LineOut, true);
+        assert!(!a.line_out_jack_change());
+        assert_eq!(a.volume, 10);
+        assert!(!a.opt(Opt::LineOut));
+        assert_eq!(Opt::from_key("line_out"), None, "never loaded at start");
     }
 
     #[test]

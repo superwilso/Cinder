@@ -55,6 +55,8 @@ fresh; stage; for f in shairport-sync-ap2 nqptp; do echo "$f body" > "$R/content
 check "both AirPlay 2 files are in" "$(find "$(W)" -type f | wc -l | tr -d ' ')" 16
 check "nqptp is 755" "$(stat -c %a "$(W)/nqptp")" 755
 check "shairport-sync-ap2 is 755" "$(stat -c %a "$(W)/shairport-sync-ap2")" 755
+fresh; stage; echo "decoder body" > "$R/contents/cinder-wifi-libfdk-aac-dec.so"; run 1
+check "the radio's AAC decoder is in beside the Wi-Fi files" "$(cat "$(W)/libfdk-aac-dec.so")" "decoder body"
 fresh; stage; : > "$R/contents/cinder-wifi-nqptp"; run 1
 check "an empty optional file is skipped, the rest installs" "$([ -e "$(W)/nqptp" ] && echo there || echo absent) $(grep -c 'wifi: installed' "$R/out")" "absent 1"
 

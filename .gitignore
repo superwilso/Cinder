@@ -114,3 +114,9 @@ design/
 wifi/work/
 wifi/out/
 cinder-home/.build.lock
+
+# === Kernel (kernel/): Sony's tree, build logs and built images ===
+# kernel/build.sh extracts Sony's GPL tarball into work/ and builds into out/; only the scripts and
+# patches/ are tracked.
+kernel/work/
+kernel/out/
