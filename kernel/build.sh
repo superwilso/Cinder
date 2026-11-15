@@ -47,6 +47,8 @@ done
 echo "== build"
 MK=(make -C "$K" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf-
     MTK_TB_WIFI_3G_MODE=WIFI_ONLY LOCALVERSION=   # set but empty: in a git tree the kernel would call itself 3.10.26+ and refuse Sony's modules
+    MTK_CM4_SUPPORT=yes   # without it the low-power playback PCM fails to open and Sony's hang checker restarts the player
+    KBUILD_BUILD_USER=cinder KBUILD_BUILD_HOST=cinder   # not the builder's own account and PC name
     "KCFLAGS=-I$K/drivers/staging/android/ion -I$K/drivers/misc/mediatek/lcm")
 "${MK[@]}" BBDMP5_linux_debug_defconfig >/dev/null
 "${MK[@]}" -j"$(nproc)" zImage modules >"$W/build.log" 2>&1 || { grep -E "error|Error" "$W/build.log" | tail -20; exit 1; }

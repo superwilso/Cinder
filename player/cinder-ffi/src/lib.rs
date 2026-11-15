@@ -3137,17 +3137,18 @@ fn load_grid_covers(r: &mut Render) {
         if r.app.has_grid_cover(*id) || r.grid_miss.contains(id) {
             continue;
         }
+        // No key is not a miss. The keys arrive at post_up, seconds after the library: a player
+        // that starts on the album grid asked for every cover before then, filed each one as a
+        // miss, and never asked again, so the whole grid stayed gradients (2026-11-15).
+        let Some(key) = r.art_cache_keys.get(id).copied() else {
+            continue;
+        };
         if loaded == GRID_LOADS_PER_FRAME {
             r.grid_more = true;
             break;
         }
         loaded += 1;
-        match r
-            .art_cache_keys
-            .get(id)
-            .copied()
-            .and_then(art_cache::load_cover)
-        {
+        match art_cache::load_cover(key) {
             Some(img) => r.app.put_grid_cover(*id, img),
             None => {
                 r.grid_miss.insert(*id);
@@ -10700,6 +10701,8 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
         }
     }
     r.art_cache_keys = sources.iter().map(|(aid, _, k)| (*aid, *k)).collect();
+    // A cover that missed before these keys existed gets its chance now.
+    r.grid_miss.clear();
     art_cache::set_live_keys(sources.iter().map(|(_, _, k)| *k));
     let cached = art_cache::load_all(sources.iter().map(|(aid, _, k)| (*aid, *k)));
     let have = cached.len();
@@ -14372,6 +14375,45 @@ mod tests {
         tap(&mut r);
         tap(&mut r);
         assert!(!std::path::Path::new(HPEQ_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_grid_drawn_before_the_cover_keys_arrive_still_gets_its_covers() {
+        // 2026-11-15: a player that started on the album grid asked for every cover before
+        // post_up loaded the keys, filed each as a miss, and showed gradients until a rescan.
+        let dir = std::env::temp_dir().join(format!("cinder_grid_keys_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("CINDER_ART_CACHE", &dir);
+        let mut r = zappin_render();
+        let mut lib = cinder_ui::Library::sample();
+        for (n, a) in lib
+            .album_groups
+            .iter_mut()
+            .flat_map(|g| g.albums.iter_mut())
+            .enumerate()
+        {
+            a.album_id = n as i64 + 1; // the sample's are all 0, which the grid skips
+        }
+        r.app.set_library(lib);
+        r.app.set_lib_views_str("list,grid,list,list");
+        r.app.open_library_for_test(cinder_ui::library::Tab::Albums);
+        let id = *r
+            .app
+            .grid_cover_wants()
+            .first()
+            .expect("the grid wants covers");
+
+        load_grid_covers(&mut r); // no keys yet
+        assert!(!r.grid_miss.contains(&id), "no key yet is not a miss");
+
+        let key = art_cache::key_of("/contents/MUSIC/a/01.flac");
+        std::fs::write(dir.join(format!("{key:016x}.t96")), vec![7u8; 96 * 96 * 3]).unwrap();
+        r.art_cache_keys.insert(id, key);
+        load_grid_covers(&mut r);
+        assert!(r.app.has_grid_cover(id));
+        std::env::remove_var("CINDER_ART_CACHE");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

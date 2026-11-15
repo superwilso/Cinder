@@ -17,10 +17,16 @@ SONY_MODULES=DIR ./build.sh      # also check that Sony's binary modules (DIR/*.
 It needs Sony's `linux-kernel-3.10.26.tar.gz` (NW-A57) and GCC 4.9 for ARM, both fetched and pinned
 by hash by `cinder-llusbdac/build.sh`; point `KWORK` at that checkout's `work/` folder.
 
+Two settings come from Sony's internal project configuration, not the kernel configuration, so
+`build.sh` passes them to `make`: `MTK_TB_WIFI_3G_MODE=WIFI_ONLY`, and `MTK_CM4_SUPPORT=yes`. Without
+the second, the low-power playback path does not open, Sony's sound service stalls, and Sony's hang
+checker restarts the player about 10 s into playback.
+
 How close the result is to the player's own kernel: the configuration is identical to the player's
 `/proc/config.gz`; the build has 47,715 symbols to the shipped kernel's 47,719, the difference being
-small functions GCC 4.9 inlines where Sony's GCC 4.8 did not; and every symbol Sony's 12 binary
-modules import resolves.
+small functions GCC 4.9 inlines where Sony's GCC 4.8 did not; every symbol Sony's 12 binary
+modules import resolves; and every message string in the shipped kernel is in this one, apart from
+the ones the patches remove and two the compilers handle differently.
 
 ## Patches
 
@@ -58,6 +64,26 @@ logo; images 1–3 are the battery screens). Untouched images keep their origina
 
 ## Testing
 
-The bootloader (LK) has fastboot, and its `boot` command runs a kernel from RAM without checking a
-signature. `fastboot boot out/boot.img` therefore starts the new kernel once; the next restart is
-back on the kernel in flash. Enter fastboot with `adb shell reboot bootloader`.
+The bootloader has fastboot, and its `boot` command runs a kernel from RAM without checking a
+signature, so a test writes nothing to the player and the next restart is back on the kernel in
+flash:
+
+```sh
+python3 bootimg.py pack out/zImage STOCK_RAMDISK out/boot-fastboot.img fastboot
+adb shell reboot bootloader
+fastboot boot out/boot-fastboot.img
+```
+
+The `fastboot` form matters. On this path the bootloader copies the kernel, ramdisk and boot
+parameters to the addresses written in the image header, while a normal boot rewrites Sony's
+header addresses (0x10008000, which is the register space, not memory). It also passes only the
+header's command line plus its own common tail. The `fastboot` form writes memory addresses
+(kernel 0x80008000, ramdisk 0x84000000, parameters 0x80000100, all below the download buffer at
+0x85000000) and the base command line a normal boot builds. Never flash an image made this way.
+
+Tested 2026-11-15 on an NW-A55: Sony's own kernel and the patched one both boot to Cinder this
+way in about 30 s, with all of Sony's modules loaded. On the patched kernel, partial reads of the
+codec tables no longer block it, writing the backlight's `duty` no longer crashes, and swap on
+the built-in zram0 read back 34,036 pages with no kernel error. With `MTK_CM4_SUPPORT=yes` set, music played
+for 15 minutes through the low-power playback path with no stall and no kernel error, and the
+kernel printed no error a normal boot does not also print.

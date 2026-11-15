@@ -78,7 +78,13 @@ pub fn delete(paths: &[String], roots: &[&str]) -> (u32, u32) {
             failed += 1;
             continue;
         };
-        match std::fs::remove_file(path) {
+        // Already gone counts as deleted: the file was removed another way (over USB, say) and
+        // only the library still lists it. Calling that a failure left an album nobody could
+        // remove until a rescan, and kept the rescan that would fix it from starting (2026-11-15).
+        match std::fs::remove_file(path).or_else(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(e),
+        }) {
             Ok(()) => {
                 ok += 1;
                 let _ = std::fs::remove_file(path.with_extension("lrc"));
@@ -104,6 +110,21 @@ pub fn delete(paths: &[String], roots: &[&str]) -> (u32, u32) {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_song_already_gone_counts_as_deleted_and_its_folder_is_tidied() {
+        let base = std::env::temp_dir().join(format!("cinder_delete_gone_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let root = format!("{}/", base.display());
+        let album = base.join("MUSIC/Cinder test");
+        fs::create_dir_all(&album).unwrap();
+        fs::write(album.join("cover.jpg"), b"x").unwrap();
+        let gone = album.join("tones.dsf").to_str().unwrap().to_string();
+        assert_eq!(delete(&[gone], &[&root]), (1, 0));
+        assert!(!album.exists(), "the leftover folder goes too");
+        assert!(base.join("MUSIC").exists());
+        let _ = fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn deletes_songs_tidies_the_album_folder_and_keeps_the_rest() {
@@ -154,8 +175,8 @@ mod tests {
         let sneaky = format!("{root}MUSIC/../../cinder_delete_outside.flac");
         assert_eq!(delete(&[sneaky], &[&root]), (0, 1));
         assert!(outside.exists());
-        // Already gone: counted as a failure, nothing else happens.
-        assert_eq!(delete(&[s(&album.join("02.flac"))], &[&root]), (0, 1));
+        // Already gone: counted as deleted, so the library rescans and stops listing it.
+        assert_eq!(delete(&[s(&album.join("02.flac"))], &[&root]), (1, 0));
 
         let _ = fs::remove_file(&outside);
         let _ = fs::remove_dir_all(&base);

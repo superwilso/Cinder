@@ -2622,6 +2622,13 @@ impl App {
         self.open_shelf();
     }
 
+    /// The Library on `tab`, as a player that starts where it was left would open it.
+    #[doc(hidden)]
+    pub fn open_library_for_test(&mut self, tab: library::Tab) {
+        self.stack = vec![Screen::Library];
+        self.lib_tab = tab;
+    }
+
     #[doc(hidden)]
     /// Type into the keyboard from a test, as a user would key by key.
     #[doc(hidden)]
