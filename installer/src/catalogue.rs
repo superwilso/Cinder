@@ -42,6 +42,9 @@ pub struct Comp {
     pub start: String,
     /// Options this one does not work without (`& id` lines). [`apply_needs`] switches them on.
     pub needs: Vec<String>,
+    /// Why the installer recommends it (`* ` lines): what else on the player needs it. Shown
+    /// while it is off. Empty for most options.
+    pub recommend: String,
 }
 
 /// Where a guided install begins, before any page is changed. `Cinder` is the defaults; the other
@@ -273,6 +276,7 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
                 risk: String::new(),
                 start: String::new(),
                 needs: Vec::new(),
+                recommend: String::new(),
             });
             para = false;
         } else if indented {
@@ -290,6 +294,13 @@ pub fn parse_catalogue(text: &str) -> Result<Vec<Comp>, String> {
             }
             if let Some(rest) = t.strip_prefix("& ") {
                 last.needs.push(rest.trim().to_string());
+                continue;
+            }
+            if let Some(rest) = t.strip_prefix("* ") {
+                if !last.recommend.is_empty() {
+                    last.recommend.push(' ');
+                }
+                last.recommend.push_str(rest.trim());
                 continue;
             }
             if let Some(rest) = t.strip_prefix('=') {
@@ -516,6 +527,7 @@ preload | CINDER_PRELOAD | bool | 0 | Preload
     ! Edits a start-up script.
     ! Undo: untick it.
     + sound
+    * Crossfeed needs it.
 ";
 
     #[test]
@@ -526,8 +538,10 @@ preload | CINDER_PRELOAD | bool | 0 | Preload
             ("Library", "Sound")
         );
         assert_eq!(c[2].risk, "Edits a start-up script. Undo: untick it.");
+        assert_eq!(c[2].recommend, "Crossfeed needs it.");
+        assert!(c[0].recommend.is_empty());
         assert!(
-            !c[0].desc.contains('!') && !c[2].desc.contains('+'),
+            !c[0].desc.contains('!') && !c[2].desc.contains('+') && !c[2].desc.contains('*'),
             "not description text"
         );
         apply_start(&mut c, Start::Sound);

@@ -446,6 +446,7 @@ function optRow(c) {
         onchange: e => setBool(c, e.target.checked)}),
       el("label", {for: id}, c.title),
       el("div", {class: "desc", id: id + "-d"}, prose(c.desc),
+        c.recommend && c.value !== "1" ? el("p", {class: "need"}, "Recommended: " + c.recommend) : null,
         needNote[c.id] ? el("p", {class: "need", role: "status"}, needNote[c.id] + ".") : null), risk);
   }
   return el("fieldset", {class: "opt"},
@@ -471,11 +472,13 @@ function review() {
     on.map(c => el("div", {}, el("dt", {}, c.title),
       el("dd", {}, c.kind === "bool" ? "On" : (c.choices.find(x => x.value === c.value) || {label: c.value}).label))),
     el("div", {}, el("dt", {}, "Languages"), el("dd", {}, langs.join(", ") || "English")));
+  const missed = comps.filter(c => c.recommend && c.kind === "bool" && c.value !== "1")
+    .map(c => el("p", {class: "need"}, "Recommended, but off: " + c.title + ". " + c.recommend));
   const planLine = el("p", {class: "dim"}, "Working out the files…");
   api("/plan", action + "\n" + answers()).then(p => {
     planLine.textContent = p.files + " files (" + Math.max(1, Math.round(p.kb / 1024)) + " MB) will be copied to the player. Your music is not touched.";
   }).catch(e => { planLine.textContent = "This installer cannot do that: " + e.message; });
-  out.push(sum, planLine,
+  out.push(sum, ...missed, planLine,
     el("h2", {}, "What happens next"),
     el("ol", {class: "howto"},
       el("li", {}, "This installer copies the files onto the player. It takes a few seconds."),

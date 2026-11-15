@@ -34,6 +34,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   this server**, at the top of every folder, finds songs by title, artist or album (on servers that
   answer searches). The strip at the top of the page shows what is playing; tap it to stop.
   *Host-tested against a simulated server; not yet tried with a real one.*
+- **The installer recommends "Mono and soundscapes over music".** Crossfeed, ReplayGain, the
+  Headphone EQ, Mono on the jack and Bluetooth, and soundscapes over music all run in it, so while
+  it is off the installer says so beside the option and again on the last page before installing.
+  It stays off unless you tick it. Sound ▸ Advanced also says when one of those three needs it,
+  instead of showing it on and doing nothing.
 
 ## [0.4.2] — 2026-11-11
 

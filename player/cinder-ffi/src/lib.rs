@@ -6695,8 +6695,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                 let _ = hpeq_play(r, "");
                 r.hpeq_pref.clear();
                 if names.is_empty() {
-                    r.app
-                        .notify("No profiles: copy AutoEQ ParametricEQ files to cinder_eq");
+                    r.app.notify("Copy AutoEQ profiles to cinder_eq");
                 } else {
                     r.app.notify("Headphone EQ off");
                 }

@@ -36,10 +36,15 @@ fn show(comps: &[Comp], target: &Path, action: Action) {
         }
         match c.kind {
             Kind::Bool => println!(
-                "   {:>2}  [{}]  {}",
+                "   {:>2}  [{}]  {}{}",
                 i + 1,
                 if c.is_on() { 'x' } else { ' ' },
-                c.title
+                c.title,
+                if !c.recommend.is_empty() && !c.is_on() {
+                    "  (recommended)"
+                } else {
+                    ""
+                }
             ),
             Kind::Enum(_) => println!("   {:>2}       {}: {}", i + 1, c.title, c.shown()),
         }
@@ -57,6 +62,12 @@ fn show(comps: &[Comp], target: &Path, action: Action) {
 fn describe(c: &Comp, n: usize) {
     println!("\n   {n}. {}", c.title);
     print!("{}", wrap(&c.explain("(*)", "( )"), 72, "      "));
+    if !c.recommend.is_empty() {
+        print!(
+            "{}",
+            wrap(&format!("Recommended: {}", c.recommend), 72, "      ")
+        );
+    }
 }
 
 /// Wrap to `width` columns, every line indented by `indent`. Blank lines are kept, and the
@@ -213,6 +224,15 @@ pub fn run(
             };
             if on {
                 print!("{}", wrap(&c.risk, 68, "        "));
+            } else if !c.recommend.is_empty() {
+                print!(
+                    "{}",
+                    wrap(
+                        &format!("Recommended, but off. {}", c.recommend),
+                        68,
+                        "        "
+                    )
+                );
             }
         }
         println!(

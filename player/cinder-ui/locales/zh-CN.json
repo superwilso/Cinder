@@ -1214,6 +1214,7 @@
   "Spread": "分开",
   "Headphone EQ": "耳机均衡器",
   "A profile for your headphones, from cinder_eq": "来自 cinder_eq 的耳机配置文件",
-  "No profiles: copy AutoEQ ParametricEQ files to cinder_eq": "没有配置文件：请将 AutoEQ 的 ParametricEQ 文件复制到 cinder_eq",
-  "Headphone EQ off": "耳机均衡器已关闭"
+  "Headphone EQ off": "耳机均衡器已关闭",
+  "Copy AutoEQ profiles to cinder_eq": "请将 AutoEQ 配置文件复制到 cinder_eq",
+  "Needs the installer's Mono and soundscapes option": "需要安装时选择单声道和环境声景选项"
 }

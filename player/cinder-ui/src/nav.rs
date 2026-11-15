@@ -11923,6 +11923,7 @@ impl App {
                     mono: self.mono,
                     replaygain: crate::advanced::REPLAYGAIN[self.replaygain_mode()],
                     hp_eq: &self.hp_eq,
+                    hook: self.mono_shim,
                     dac_eq_on: self.dac_eq != [0; crate::dac_eq::BANDS],
                     vol_curve: self.vol_curve_ok.then_some(self.vol_curve_on),
                     clear_bass: self

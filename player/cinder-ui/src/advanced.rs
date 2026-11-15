@@ -180,6 +180,10 @@ pub struct Advanced<'a> {
     pub replaygain: &'static str,
     /// The headphone EQ profile playing, by name; empty when off.
     pub hp_eq: &'a str,
+    /// Cinder's sound library is loaded in the sound service (the installer's "Mono and
+    /// soundscapes" option). Crossfeed, ReplayGain and the headphone EQ run in it, and without it
+    /// do nothing, so their rows say so.
+    pub hook: bool,
     /// The DAC EQ has at least one band off zero.
     pub dac_eq_on: bool,
     /// The volume curve: None without the installer's volume-curve option, else whether the
@@ -213,6 +217,8 @@ pub fn not_here(a: &Advanced, row: usize) -> bool {
 }
 
 const NOT_HERE: &str = "Not in Walkman One's sound library";
+/// Crossfeed, ReplayGain and the headphone EQ without Cinder's sound library.
+const NEEDS_HOOK: &str = "Needs the installer's Mono and soundscapes option";
 
 /// A row drawn dim, for when something upstream has taken it out of the path. Same geometry as
 /// `sound::row` — it just draws the label in the faint ink so the screen reads as "these are not
@@ -416,7 +422,9 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
         ),
         ROW_CROSSFEED => (
             "Crossfeed",
-            s(if a.mono {
+            s(if !a.hook {
+                NEEDS_HOOK
+            } else if a.mono {
                 "Off while Mono is on"
             } else {
                 "Lets each ear hear a little of the other side"
@@ -426,6 +434,7 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
         ROW_REPLAYGAIN => (
             "ReplayGain",
             s(match a.replaygain {
+                _ if !a.hook => NEEDS_HOOK,
                 "Per album" => "Each album at the same loudness, its own mix kept",
                 "Per track" => "Every song at the same loudness",
                 _ => "Evens out loudness from the songs' tags",
@@ -434,7 +443,9 @@ fn spec(a: &Advanced, r: usize) -> (&'static str, String, End) {
         ),
         ROW_HP_EQ => (
             "Headphone EQ",
-            if a.hp_eq.is_empty() {
+            if !a.hook {
+                s(NEEDS_HOOK)
+            } else if a.hp_eq.is_empty() {
                 s("A profile for your headphones, from cinder_eq")
             } else {
                 s(a.hp_eq)
@@ -561,6 +572,7 @@ mod tests {
             mono: false,
             replaygain: "Off",
             hp_eq: "",
+            hook: true,
             dac_eq_on: false,
             vol_curve: Some(false),
             clear_bass: None,
