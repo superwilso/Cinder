@@ -54,6 +54,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   maintainer's own build (v0.4.2-rc4 was the first to match, 83 of 83 files). Anyone can rebuild a
   release's player files from this repository and check them against `cinder-home/dist/PAYLOAD.sha256`.
 
+### Fixed
+
+- **Album grid covers:** a player that started on the album grid showed gradients instead of
+  covers until the library was rebuilt. The grid now waits for the covers to be ready instead of
+  giving up on them.
+- **Deleting an album whose files are already gone:** Cinder said it could not delete it, and the
+  album stayed listed. A file that is already gone now counts as deleted, and the library updates.
+
 ## [0.4.2] — 2026-11-11
 
 ### Added
