@@ -1194,7 +1194,7 @@
   "Treble +": "高音 +",
   "Treble −": "高音 −",
   "Voice": "中频 +",
-  "Shuffle · volume limit · DSD": "随机 · 音量限制 · DSD",
+  "Shuffle · volume limit · line out · DSD": "随机 · 音量限制 · 线路输出 · DSD",
   "Play DSD natively": "以原生格式播放 DSD",
   "To the headphone jack as 1-bit": "耳机插孔 · 原生 1-bit 输出",
   "or cinder.local:{}": "或 cinder.local:{}",
@@ -1218,5 +1218,17 @@
   "Copy AutoEQ profiles to cinder_eq": "请将 AutoEQ 配置文件复制到 cinder_eq",
   "Needs the installer's Mono and soundscapes option": "需要安装时选择单声道和环境声景选项",
   "HP EQ": "耳机均衡",
-  "CROSSFEED": "声道混合"
+  "CROSSFEED": "声道混合",
+  "Line out": "线路输出",
+  "Fixed volume for an amplifier; pulling the plug ends it": "音量固定，用于功放；拔出插头即关闭",
+  "Line out: the volume is fixed": "线路输出：音量已固定",
+  "Line out off: the plug was pulled": "线路输出已关闭：插头已拔出",
+  "Alarm": "定时播放",
+  "Wakes the player and plays at a time of day": "在设定时间启动播放器并播放",
+  "ON · PLAYS AT {time}": "开 · {time} 播放",
+  "BY THE CLOCK IN THE TOP BAR": "按顶栏的时钟",
+  "Turn the alarm off": "关闭定时播放",
+  "Turn the alarm on": "开启定时播放",
+  "Alarm on": "定时播放已开启",
+  "Alarm off": "定时播放已关闭"
 }

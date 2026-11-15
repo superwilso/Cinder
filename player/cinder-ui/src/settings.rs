@@ -17,15 +17,15 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of real rows. The home page's topic links are row ids after them ([`group_row`]).
-pub const ROWS: usize = 38;
+pub const ROWS: usize = 40;
 
 /// The topic pages: title, the home row's second line (what is inside), and the rows, in order.
 /// Every row is on exactly one page: here, or [`HOME_ROWS`].
 pub const GROUPS: [(&str, &str, &[usize]); 7] = [
     (
         "Playback",
-        "Shuffle · volume limit · DSD",
-        &[ROW_SHUFFLE, ROW_VOLUME_LIMIT, ROW_DSD_NATIVE],
+        "Shuffle · volume limit · line out · DSD",
+        &[ROW_SHUFFLE, ROW_VOLUME_LIMIT, ROW_LINE_OUT, ROW_DSD_NATIVE],
     ),
     (
         "Now Playing",
@@ -56,6 +56,7 @@ pub const GROUPS: [(&str, &str, &[usize]); 7] = [
         &[
             ROW_SCREEN_OFF,
             ROW_AUTO_OFF,
+            ROW_ALARM,
             ROW_BT_IDLE_OFF,
             ROW_RESTART,
             ROW_POWER_OFF,
@@ -196,6 +197,12 @@ pub const ROW_SHUFFLE: usize = 7;
 /// (`builtin_dsd_process_mode`, `se_hp_dsd_native_enabled`; both are needed, measured) when it
 /// starts and when this flips.
 pub const ROW_DSD_NATIVE: usize = 34;
+/// Line out: a fixed volume on the headphone jack (`Opt::LineOut`). The codec's own `line` and
+/// `fixedline` outputs do not reach the 3.5 mm jack — measured 2026-11-15, the jack went silent
+/// on both — so this keeps the headphone output and locks its level instead.
+pub const ROW_LINE_OUT: usize = 36;
+/// Power ▸ Alarm: wake and play at a time of day (`alarm.rs`).
+pub const ROW_ALARM: usize = 37;
 /// Ignore "The" in artists — sort "The Beatles" among the B's in the Artists tab, the Albums tab's
 /// artist groups and Songs by artist (and file it under B on the rail). OFF by default: artists
 /// sort as written. Titles and album names keep their "The" either way. See `collate`.
@@ -245,8 +252,8 @@ pub const ROW_POWER_OFF: usize = 11;
 pub const ROW_RESET: usize = 28;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
 pub const ROW_LANGUAGE: usize = 29;
-pub const ROW_FIRMWARE: usize = 36;
-pub const ROW_MODEL: usize = 37;
+pub const ROW_FIRMWARE: usize = 38;
+pub const ROW_MODEL: usize = 39;
 /// Wi-Fi (`wifi.rs`): shown only when the Wi-Fi install option is on the player.
 pub const ROW_WIFI: usize = 30;
 
@@ -361,6 +368,8 @@ pub struct SettingsView<'a> {
     /// Settings ▸ Database value: "N tracks", "Empty", or "Rescanning…" while a scan is out.
     pub database: &'a str,
     pub sleep: &'a str,
+    /// Power ▸ Alarm: "07:00" or "OFF".
+    pub alarm: &'a str,
     /// Brightness label, e.g. "3 / 5" (nav formats it from its 1..5 level).
     pub brightness: &'a str,
     /// Idle screen-off label, e.g. "OFF" / "30 SEC" / "2 MIN".
@@ -483,6 +492,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         // the music tree. The value carries the library size, so the row also answers "did it work".
         ROW_DATABASE => Trail::Open(v.database),
         ROW_AUTO_OFF => Trail::Value(v.auto_off),
+        ROW_ALARM => Trail::Value(v.alarm),
         ROW_BT_IDLE_OFF => Trail::Switch(v.bt_idle_off),
         // Storage: chevron into the Storage screen. The value keeps the statvfs reading and the
         // card's half goes on the sub line (`storage_parts`), so the row still answers at a glance.
@@ -533,9 +543,11 @@ fn title(r: usize) -> &'static str {
         ROW_SLEEP => crate::i18n::text("Sleep timer"),
         ROW_SHUFFLE => crate::i18n::text("Shuffle"),
         ROW_DSD_NATIVE => crate::i18n::text("Play DSD natively"),
+        ROW_LINE_OUT => crate::i18n::text("Line out"),
         ROW_IGNORE_THE => crate::i18n::text("Ignore \"The\" in artists"),
         ROW_DATABASE => crate::i18n::text("Database"),
         ROW_AUTO_OFF => crate::i18n::text("Auto power off"),
+        ROW_ALARM => crate::i18n::text("Alarm"),
         ROW_BT_IDLE_OFF => crate::i18n::text("Bluetooth auto off"),
         ROW_STORAGE => crate::i18n::text("Storage"),
         ROW_BATTERY => crate::i18n::text("Device"),
@@ -591,7 +603,11 @@ fn sub_line<'a>(r: usize, v: &'a SettingsView) -> &'a str {
         ROW_MENU_ICONS => crate::i18n::text("In the Menu and the pull-down panel"),
         ROW_SHUFFLE => crate::i18n::text(SHUFFLE_SUB),
         ROW_DSD_NATIVE => crate::i18n::text("To the headphone jack as 1-bit"),
+        ROW_LINE_OUT => {
+            crate::i18n::text("Fixed volume for an amplifier; pulling the plug ends it")
+        }
         ROW_BT_IDLE_OFF => crate::i18n::text(BT_IDLE_OFF_SUB),
+        ROW_ALARM => crate::i18n::text("Wakes the player and plays at a time of day"),
         ROW_STORAGE => storage_parts(v.storage).1,
         _ => "",
     }
@@ -650,6 +666,7 @@ mod tests {
             brightness: "4 / 5",
             screen_off: "OFF",
             auto_off: "OFF",
+            alarm: "OFF",
             bt_idle_off: false,
             boot_stock: "SONY",
             clock: "17 Aug · 09:01",

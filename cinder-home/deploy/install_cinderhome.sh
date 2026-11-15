@@ -815,7 +815,7 @@ fi
 # >>> wifi
 WIFI_DIR=$VENDOR/wifi
 WIFI_FILES="compat.ko cfg80211.ko mtk_wmt_wifi_soc.ko wlan_mt.ko wpa_supplicant wpa_cli iw curl cacert.pem shairport-sync openssl wifi-up.sh wifi-down.sh dhcp.sh"
-WIFI_OPTIONAL="shairport-sync-ap2 nqptp"
+WIFI_OPTIONAL="shairport-sync-ap2 nqptp libfdk-aac-dec.so"
 WIFI_IN=0
 if [ "$WANT_WIFI" = 1 ]; then
     wifi_staged=1

@@ -1,0 +1,117 @@
+Bound three user copies into fixed buffers; copy the misc-sd ioctl structure in
+
+- thermal/mtk_cooler_shutdown.c: clsd_rst, clsd_pid, clsd_dbt (root:chrome 0664) copied the whole
+  write into a 256-byte stack buffer.
+- mmc-host/mt8590/mt_sd_misc.c: MSDC_ERASE_PARTITION copied total_size bytes into a 25-byte stack
+  buffer, and the ioctl used the caller's pointer as a kernel pointer, reading and writing the
+  structure in place. It is now copied in and back out (the handlers set result and driving).
+- evdo_support: the reset node copied the whole write into a 10-byte buffer.
+
+diff --git a/drivers/misc/mediatek/evdo_support/mtk_evdo_host_interface.c b/drivers/misc/mediatek/evdo_support/mtk_evdo_host_interface.c
+index 975cb974..e4a16fe8 100644
+--- a/drivers/misc/mediatek/evdo_support/mtk_evdo_host_interface.c
++++ b/drivers/misc/mediatek/evdo_support/mtk_evdo_host_interface.c
+@@ -50,7 +50,11 @@ ssize_t evdo_host_reset_proc_read(struct file *file_ptr, char __user *user_buffe
+ ssize_t evdo_host_reset_proc_write(struct file *file_ptr, char __user *user_buffer, size_t count,
+ 				   loff_t *position)
+ {
+-	int ret = copy_from_user((char *)myCmdBuf, user_buffer, count);
++	int ret;
++
++	if (count >= CMD_LEN)   /* Cinder: was copied whole into the 10-byte buffer */
++		return -EINVAL;
++	ret = copy_from_user((char *)myCmdBuf, user_buffer, count);
+ 
+ 	myCmdBuf[count] = '\0';
+ 	pr_warn("%s(), myCmdBuf : %s\n", __func__, myCmdBuf);
+diff --git a/drivers/misc/mediatek/mmc-host/mt8590/mt_sd_misc.c b/drivers/misc/mediatek/mmc-host/mt8590/mt_sd_misc.c
+index 55f1c442..97bac978 100644
+--- a/drivers/misc/mediatek/mmc-host/mt8590/mt_sd_misc.c
++++ b/drivers/misc/mediatek/mmc-host/mt8590/mt_sd_misc.c
+@@ -1047,30 +1047,39 @@ static int simple_mmc_erase_partition_wrap(struct msdc_ioctl* msdc_ctl)
+ {
+     unsigned char name[25];
+ 
++    /* Cinder: total_size came straight from the caller into a 25-byte stack buffer */
++    if (msdc_ctl->total_size >= sizeof(name))
++        return -EINVAL;
++    memset(name, 0, sizeof(name));
+     if (copy_from_user(name, (unsigned char*)msdc_ctl->buffer, msdc_ctl->total_size))
+         return -EFAULT;
+ 
+     return simple_mmc_erase_partition(name);
+ }
+ #endif
++static long simple_sd_ioctl_one(struct msdc_ioctl *msdc_ctl);
++
++/* Cinder: Sony's version used the caller's pointer as a kernel pointer and read and wrote the
++ * structure in place. It is copied in, handled, and copied back (handlers set result and the
++ * driving fields). */
+ static long simple_sd_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ {
+-    struct msdc_ioctl *msdc_ctl = (struct msdc_ioctl *)arg;
+-	int ret;
+-	if(msdc_ctl == NULL){
+-		switch(cmd){
+-			//#ifdef MTK_SD_REINIT_SUPPORT
+-			case MSDC_REINIT_SDCARD:
+-				ret = sd_ioctl_reinit(msdc_ctl);
+-				break;
+-			//#endif
+-        	default:
+-            MSDC_TRC_PRINT(MSDC_MISCDRV,"mt_sd_ioctl:this opcode value is illegal!!\n");
+-            return -EINVAL;
+-			}
+-		return ret;		
+-	}
+-	else{
++	struct msdc_ioctl ctl;
++	long ret;
++
++	if (arg == 0)
++		return cmd == MSDC_REINIT_SDCARD ? sd_ioctl_reinit(NULL) : -EINVAL;
++	if (copy_from_user(&ctl, (void __user *)arg, sizeof(ctl)))
++		return -EFAULT;
++	ret = simple_sd_ioctl_one(&ctl);
++	if (copy_to_user((void __user *)arg, &ctl, sizeof(ctl)))
++		return -EFAULT;
++	return ret;
++}
++
++static long simple_sd_ioctl_one(struct msdc_ioctl *msdc_ctl)
++{
++	{
+     switch (msdc_ctl->opcode){
+ #ifdef CONFIG_MTK_EMMC_SUPPORT
+         case MSDC_SINGLE_READ_WRITE:
+diff --git a/drivers/misc/mediatek/thermal/mtk_cooler_shutdown.c b/drivers/misc/mediatek/thermal/mtk_cooler_shutdown.c
+index f4118ade..e0c7a823 100644
+--- a/drivers/misc/mediatek/thermal/mtk_cooler_shutdown.c
++++ b/drivers/misc/mediatek/thermal/mtk_cooler_shutdown.c
+@@ -78,6 +78,8 @@ static ssize_t _mtk_cl_sd_rst_write(struct file *filp, const char __user *buf, s
+ 	char tmp[MAX_LEN] = { 0 };
+ 
+ 	/* write data to the buffer */
++	if (len >= MAX_LEN)   /* Cinder: was copied whole into the 256-byte stack buffer */
++		return -EINVAL;
+ 	if (copy_from_user(tmp, buf, len)) {
+ 		return -EFAULT;
+ 	}
+@@ -132,6 +134,8 @@ static ssize_t _mtk_cl_sd_pid_write(struct file *filp, const char __user *buf, s
+ 	char tmp[MAX_LEN] = { 0 };
+ 
+ 	/* write data to the buffer */
++	if (len >= MAX_LEN)   /* Cinder: was copied whole into the 256-byte stack buffer */
++		return -EINVAL;
+ 	if (copy_from_user(tmp, buf, len)) {
+ 		return -EFAULT;
+ 	}
+@@ -177,6 +181,8 @@ static ssize_t _mtk_cl_sd_debouncet_write(struct file *filp, const char __user *
+ 	int tmp_dbt = -1;
+ 
+ 	/* write data to the buffer */
++	if (len >= MAX_LEN)   /* Cinder: was copied whole into the 256-byte stack buffer */
++		return -EINVAL;
+ 	if (copy_from_user(desc, buf, len)) {
+ 		return -EFAULT;
+ 	}

@@ -56,10 +56,15 @@ pub enum Opt {
     RgAlbum,
     /// Now Playing's Lyrics chip (`settings::ROW_NP_LYRICS`).
     NpLyrics,
+    /// Settings ▸ Playback ▸ Line out: the volume keys stop changing the volume, for an amplifier
+    /// or a car's aux input. NEVER LOADED (see `from_key`): it starts off at every boot, because a
+    /// player started later with earphones in would otherwise come up at line level, and pulling
+    /// the plug (which turns it off) is only seen while the player runs.
+    LineOut,
 }
 
 impl Opt {
-    pub const ALL: [Opt; 22] = [
+    pub const ALL: [Opt; 23] = [
         Opt::Quick,
         Opt::FoldersTab,
         Opt::DeleteMusic,
@@ -82,6 +87,7 @@ impl Opt {
         Opt::ReplayGain,
         Opt::RgAlbum,
         Opt::NpLyrics,
+        Opt::LineOut,
     ];
 
     /// The settings-file key.
@@ -109,11 +115,14 @@ impl Opt {
             Opt::ReplayGain => "replaygain",
             Opt::RgAlbum => "replaygain_album",
             Opt::NpLyrics => "np_lyrics",
+            Opt::LineOut => "line_out",
         }
     }
 
     pub fn from_key(k: &str) -> Option<Opt> {
-        Self::ALL.into_iter().find(|o| o.key() == k)
+        Self::ALL
+            .into_iter()
+            .find(|o| o.key() == k && *o != Opt::LineOut)
     }
 
     /// The Settings row that is this switch, if it has one there.
@@ -129,6 +138,7 @@ impl Opt {
             Opt::NpTint => Some(s::ROW_NP_TINT),
             Opt::DsdNative => Some(s::ROW_DSD_NATIVE),
             Opt::NpLyrics => Some(s::ROW_NP_LYRICS),
+            Opt::LineOut => Some(s::ROW_LINE_OUT),
             _ => None,
         }
     }
@@ -163,13 +173,15 @@ mod tests {
     fn every_switch_starts_off_and_has_its_own_key_and_row() {
         assert_eq!(
             Opt::ALL.len(),
-            Opt::NpLyrics as usize + 1,
+            Opt::LineOut as usize + 1,
             "ALL lists every variant"
         );
         let none = Opts::default();
         for (i, o) in Opt::ALL.into_iter().enumerate() {
             assert!(!none.on(o), "{o:?} ships off");
-            assert_eq!(Opt::from_key(o.key()), Some(o), "{o:?}'s key is its own");
+            // Line out is never loaded (it starts off at every boot); every other key loads.
+            let want = (o != Opt::LineOut).then_some(o);
+            assert_eq!(Opt::from_key(o.key()), want, "{o:?}'s key is its own");
             if let Some(r) = o.row() {
                 assert_eq!(Opt::of_row(r), Some(o), "{o:?}'s row is its own");
             }

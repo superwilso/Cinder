@@ -147,6 +147,9 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Adjust bands" => Some("调整频段"),
         "Adjusts to the signal as you move" => Some("随信号自动调整"),
         "Advanced" => Some("高级设置"),
+        "Alarm" => Some("定时播放"),
+        "Alarm off" => Some("定时播放已关闭"),
+        "Alarm on" => Some("定时播放已开启"),
         "Album" => Some("专辑"),
         "Album added to Up Next — {}" => Some("专辑已加入待播队列：{}"),
         "Album artist" => Some("专辑歌手"),
@@ -191,6 +194,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "BUFFER : {:.1} MS" => Some("缓冲：{:.1} 毫秒"),
         "BUTTONS" => Some("实体按键"),
         "BY RULES" => Some("按规则筛选"),
+        "BY THE CLOCK IN THE TOP BAR" => Some("按顶栏的时钟"),
         "BY {}" => Some("歌手：{}"),
         "Back" => Some("返回"),
         "Back arrow" => Some("返回箭头"),
@@ -404,6 +408,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Five bands in the DAC chip — flat in Direct mode" => Some("DAC 内五段均衡；直通模式保持平直"),
         "Five bands in the DAC chip — on" => Some("DAC 内五段均衡；已开启"),
         "Fixed position" => Some("固定位置"),
+        "Fixed volume for an amplifier; pulling the plug ends it" => Some("音量固定，用于功放；拔出插头即关闭"),
         "Folders" => Some("文件夹"),
         "Folders tab" => Some("文件夹标签"),
         "Folders tab · \"The\" · database" => Some("文件夹标签 · \"The\" · 数据库"),
@@ -506,6 +511,9 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Library restored from backup" => Some("已从备份恢复曲库"),
         "Library · Now Playing · gestures · system" => Some("曲库 · 正在播放 · 手势 · 系统"),
         "Line" => Some("线条"),
+        "Line out" => Some("线路输出"),
+        "Line out off: the plug was pulled" => Some("线路输出已关闭：插头已拔出"),
+        "Line out: the volume is fixed" => Some("线路输出：音量已固定"),
         "Linear amp" => Some("线性放大器"),
         "Linear headphone amp" => Some("线性耳机放大器"),
         "Link state unavailable on this firmware" => Some("此固件无法读取连接状态"),
@@ -649,6 +657,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "ON ITS OWN · BLUETOOTH" => Some("独立播放 · 蓝牙"),
         "ON ITS OWN · HEADPHONES" => Some("独立播放 · 有线耳机"),
         "ON THE SIDE" => Some("机身侧面"),
+        "ON · PLAYS AT {time}" => Some("开 · {time} 播放"),
         "OR TAP THE DEVICE TO THE REAR PANEL (NFC)" => Some("也可将设备贴近背面进行 NFC 配对"),
         "ORDER · {short}" => Some("顺序 · {short}"),
         "OUTPUT : 3.5MM UNBALANCED" => Some("输出：3.5MM 非平衡"),
@@ -959,7 +968,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Shuffle the list" => Some("打乱列表"),
         "Shuffle the whole list" => Some("打乱整个列表"),
         "Shuffle {g}" => Some("随机播放 {g}"),
-        "Shuffle · volume limit · DSD" => Some("随机 · 音量限制 · DSD"),
+        "Shuffle · volume limit · line out · DSD" => Some("随机 · 音量限制 · 线路输出 · DSD"),
         "Shuffled" => Some("随机播放"),
         "Shuffled by album" => Some("按专辑随机"),
         "Shuffled by artist" => Some("按歌手随机"),
@@ -1104,6 +1113,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Turn Bluetooth on to see your devices" => Some("开启蓝牙以查看设备"),
         "Turn it on, then pair from your phone or PC:" => Some("开启后，在手机或电脑上进行配对："),
         "Turn on to use the Walkman as a USB sound card." => Some("开启后，将 Walkman 用作 USB 声卡。"),
+        "Turn the alarm off" => Some("关闭定时播放"),
+        "Turn the alarm on" => Some("开启定时播放"),
         "Turntable" => Some("唱盘"),
         "Type A High" => Some("A 型 高"),
         "Type A Low" => Some("A 型 低"),
@@ -1176,6 +1187,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "WAVE" => Some("波形"),
         "Waiting for a device." => Some("正在等待设备。"),
         "Waiting for the clock" => Some("等待时钟"),
+        "Wakes the player and plays at a time of day" => Some("在设定时间启动播放器并播放"),
         "Wave" => Some("波形"),
         "Wednesday" => Some("星期三"),
         "What the shuffle button deals" => Some("随机播放按钮的分组方式"),
@@ -1481,6 +1493,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("当前：{name}，尚无曲目" $(, $($args)*)?),
             _ => format!("Now: {name} — nothing in it yet" $(, $($args)*)?),
+        }
+    };
+    ("ON · PLAYS AT {time}" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("开 · {time} 播放" $(, $($args)*)?),
+            _ => format!("ON · PLAYS AT {time}" $(, $($args)*)?),
         }
     };
     ("ORDER · {short}" $(, $($args:tt)*)?) => {

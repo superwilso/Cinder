@@ -66,6 +66,15 @@ static inline int hpeq_parse(const char* b, size_t len, unsigned rate, double c[
                     q = e;
                 }
                 if (k == 0 || k % 5 != 0) return 0;
+                /* Every section finite and stable (poles inside the unit circle; a1, a2 are stored
+                 * negated), or no EQ at all: a filter that runs away does so at full scale, in
+                 * someone's ears. cinder-home only writes stable ones; this is the last guard. */
+                for (int i = 0; i < k; i += 5) {
+                    for (int j = 0; j < 5; j++)
+                        if (!(v[i + j] > -1e6 && v[i + j] < 1e6)) return 0;
+                    const double c1 = -v[i + 3], c2 = -v[i + 4];
+                    if (!(c2 > -1.0 && c2 < 1.0 && c1 < 1.0 + c2 && -c1 < 1.0 + c2)) return 0;
+                }
                 memcpy(c, v, sizeof(double) * (size_t)k);
                 return k / 5;
             }

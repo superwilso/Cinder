@@ -3,14 +3,12 @@ name: release
 # Builds the end-user installer and cinder-rescue (rescue/, eMMC backup and restore over MediaTek's
 # download mode) and attaches both to a GitHub release.
 #
-# Only the INSTALLER is built here. The device binaries it embeds (cinder-home, the
-# setuid helpers, the .UPG) need a glibc-2.23 + libc++-3.9.0 cross toolchain matched to the
-# player's own runtime — see cinder-home/build.sh — so tools/release.sh builds them on a
-# maintainer's machine. They are NOT committed: only their checksums are (PAYLOAD.sha256). The
-# files go up to the draft release payload-<tag> before the tag is pushed, every job here fetches
-# them with tools/fetch_payload.sh, which refuses anything the manifest does not describe, and the
-# release job attaches the same cinder-payload.tar.gz to the published release, where ci.yml and
-# fresh clones fetch it until the next release.
+# On a tag it first builds the device payload (cinder-home, the helpers, the shims, the .UPGs) with
+# payload.yml, from the public source against stand-ins for Sony's libraries, and stops unless every
+# file matches cinder-home/dist/PAYLOAD.sha256 — the manifest tools/release.sh wrote from the
+# maintainer's own build, committed with the release. The installers embed that CI-built payload,
+# and the release attaches it as cinder-payload.tar.gz, where ci.yml and fresh clones fetch it until
+# the next release. A manual run (no tag) takes the last release's payload instead.
 
 on:
   push:
@@ -31,7 +29,18 @@ env:
   CINDER_CHANNEL: ${{ github.event.inputs.channel || 'stable' }}
 
 jobs:
+  # On a tag the payload is BUILT HERE, by the same workflow anyone can run (payload.yml), and it
+  # fails unless every file matches the manifest tools/release.sh wrote from the maintainer's build
+  # (cinder-home/dist/PAYLOAD.sha256). So the release ships what the public source makes, and the
+  # maintainer's build is the cross-check. First matched in full by v0.4.2-rc4 (83/83).
+  payload:
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/payload.yml
+
   build:
+    needs: payload
+    # A manual run skips the payload job and takes the last release's payload, as before.
+    if: ${{ !cancelled() && (needs.payload.result == 'success' || needs.payload.result == 'skipped') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -57,13 +66,20 @@ jobs:
       # cutting a release. With no argument the script still verifies every payload hash; it only
       # skips the "verified for THIS tag" assertion, which is meaningless off a tag.
       #
-      # The payload is not committed (see the top of this file). On a tag it comes from the draft
-      # release.sh uploaded, checked against the manifest AND the tag; a manual run fetches the last
+      # The payload is not committed (see the top of this file). On a tag it is the one the payload
+      # job built, checked again here against the manifest AND the tag; a manual run fetches the last
       # release's, so its installer is that release's payload around this commit's installer code.
-      - name: Fetch the payload the manifest describes
+      - name: Take the payload built and checked above
+        if: github.ref_type == 'tag'
+        uses: actions/download-artifact@v8
+        with:
+          name: cinder-payload-ci
+          path: ${{ runner.temp }}/payload
+      - name: Check the payload against the manifest
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          CINDER_PAYLOAD_TAR: ${{ github.ref_type == 'tag' && format('{0}/payload/cinder-payload.tar.gz', runner.temp) || '' }}
         run: bash tools/fetch_payload.sh ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
       - name: Install Rust
@@ -112,13 +128,22 @@ jobs:
   # testing it on every push the whole time — the only things ever missing were publishing it and
   # an honest exit code.
   build-linux:
+    needs: payload
+    if: ${{ !cancelled() && (needs.payload.result == 'success' || needs.payload.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       # The payload, checked against the manifest (see the Windows job).
-      - name: Fetch the payload the manifest describes
+      - name: Take the payload built and checked above
+        if: github.ref_type == 'tag'
+        uses: actions/download-artifact@v8
+        with:
+          name: cinder-payload-ci
+          path: ${{ runner.temp }}/payload
+      - name: Check the payload against the manifest
         env:
           GH_TOKEN: ${{ github.token }}
+          CINDER_PAYLOAD_TAR: ${{ github.ref_type == 'tag' && format('{0}/payload/cinder-payload.tar.gz', runner.temp) || '' }}
         run: bash tools/fetch_payload.sh ${{ github.ref_type == 'tag' && github.ref_name || '' }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
@@ -152,13 +177,22 @@ jobs:
   # macOS: EXPERIMENTAL until a real Mac has installed and uninstalled with it (docs/ROADMAP.md,
   # "Testers with a Mac"). One universal binary, Apple silicon and Intel, unsigned.
   build-macos:
+    needs: payload
+    if: ${{ !cancelled() && (needs.payload.result == 'success' || needs.payload.result == 'skipped') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       # The payload, checked against the manifest (see the Windows job).
-      - name: Fetch the payload the manifest describes
+      - name: Take the payload built and checked above
+        if: github.ref_type == 'tag'
+        uses: actions/download-artifact@v8
+        with:
+          name: cinder-payload-ci
+          path: ${{ runner.temp }}/payload
+      - name: Check the payload against the manifest
         env:
           GH_TOKEN: ${{ github.token }}
+          CINDER_PAYLOAD_TAR: ${{ github.ref_type == 'tag' && format('{0}/payload/cinder-payload.tar.gz', runner.temp) || '' }}
         run: bash tools/fetch_payload.sh ${{ github.ref_type == 'tag' && github.ref_name || '' }}
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -207,7 +241,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [build, build-linux, build-macos]
+    needs: [payload, build, build-linux, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     # Job-level permissions REPLACE the workflow's, so contents: write is restated. id-token lets
@@ -222,17 +256,23 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
+          pattern: cinder-[ir]*
           merge-multiple: true
           path: dist
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: cinder-payload-ci
+          path: ${{ runner.temp }}/payload
+
       # The payload the installers embed: needed below for the .UPGs, and attached to the release
       # as cinder-payload.tar.gz, which is where ci.yml and fresh clones fetch it from.
-      - name: Fetch the payload, and attach it
+      - name: Check the payload, and attach it
         env:
-          GH_TOKEN: ${{ github.token }}
+          CINDER_PAYLOAD_TAR: ${{ runner.temp }}/payload/cinder-payload.tar.gz
         run: |
           bash tools/fetch_payload.sh "$GITHUB_REF_NAME"
-          gh release download "payload-$GITHUB_REF_NAME" -p cinder-payload.tar.gz -D dist
+          cp "$CINDER_PAYLOAD_TAR" dist/
 
       # Beside the programs, ONE more download: the .UPG packages (already inside every installer;
       # these are for flashing by hand) and libusb's licence, so the release page lists the
@@ -298,10 +338,3 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           body_path: release-body.md
-
-      # The payload's draft has done its job: every installer above embeds it, and the release
-      # itself now carries cinder-payload.tar.gz.
-      - name: Remove the payload draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release delete "payload-${GITHUB_REF_NAME}" -y || echo "no payload draft to remove"

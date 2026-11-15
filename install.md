@@ -41,14 +41,26 @@ If it stages the files but cannot send the last command, finish on Linux or Wind
 [the platform note](#a1-what-actually-triggers-the-update) below.
 
 The installer carries everything it needs inside the one file: the device binaries, the component
-catalogue, both `.UPG` packages, and Sony's own Windows updater. **No separate download, no WSL,
-no usbipd, no driver install, and no network connection.**
+catalogue and both `.UPG` packages. **No separate download, no WSL, no usbipd, no driver install,
+and no network connection.**
 
-The Windows `.exe` is **unsigned**, so SmartScreen warns about an unknown publisher. That warning is
-what an unsigned binary gets, not evidence either way: check the file against the release's
-`SHA256SUMS` before running it — `Get-FileHash .\cinder-installer-windows-x64.exe -Algorithm SHA256`
-in PowerShell, or `sha256sum -c SHA256SUMS` on Linux — and compare it with the value in the release
-notes.
+#### Checking a download
+
+Every release has `SHA256SUMS` and a GitHub build attestation for each file. Next to the downloads:
+
+```bash
+sha256sum -c --ignore-missing SHA256SUMS                          # Linux, macOS
+gh attestation verify cinder-installer-windows-x64.exe -R superwilso/Cinder
+```
+
+On Windows, `Get-FileHash .\cinder-installer-windows-x64.exe -Algorithm SHA256` and compare it
+with the line in `SHA256SUMS`. The checksums say the file is intact; the attestation (GitHub CLI
+2.49 or later) says it was built by this repository's release workflow from the tagged commit, and
+an uploaded replacement cannot fake it. The player files inside (`cinder-payload.tar.gz`) are built
+on GitHub from the same tag and checked byte for byte against `cinder-home/dist/PAYLOAD.sha256`.
+
+The Windows `.exe` is **unsigned**, so SmartScreen warns about an unknown publisher. That is what
+any unsigned program gets, not evidence either way; the checks above are the evidence.
 
 ### A.0 Install, update, uninstall
 

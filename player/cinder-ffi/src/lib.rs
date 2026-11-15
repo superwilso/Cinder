@@ -1623,8 +1623,17 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("bt_idle_off={}\n", r.app.bt_idle_off() as u8));
     body.push_str(&format!("volume_limit={}\n", r.app.volume_limit() as u8));
     body.push_str(&format!("ignore_the={}\n", r.app.ignore_the() as u8));
+    let (on, min) = r.app.alarm_saved();
+    body.push_str(&format!(
+        "alarm={}\nalarm_at={}\n",
+        on as u8,
+        cinder_ui::alarm::hhmm(min)
+    ));
     // The opt-in switches (pull-down panel, Folders tab, the Wi-Fi options, …), OFF unless on.
     for o in Opt::ALL {
+        if o == Opt::LineOut {
+            continue; // never kept across a restart (opt.rs)
+        }
         body.push_str(&format!("{}={}\n", o.key(), r.app.opt(o) as u8));
     }
     body.push_str(&format!("wifi_drive_code={}\n", r.app.drive_code()));
@@ -2765,7 +2774,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 58] = [
+const SCREEN_NAMES: [&str; 59] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2826,6 +2835,7 @@ const SCREEN_NAMES: [&str; 58] = [
     "WifiSpeakers",
     "RadioFind",
     "MediaServers",
+    "Alarm",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2890,6 +2900,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::WifiSpeakers => 55,
         S::RadioFind => 56,
         S::MediaServers => 57,
+        S::Alarm => 58,
     }
 }
 
@@ -8129,6 +8140,25 @@ pub extern "C" fn cinder_set_volume(level: libc::c_int) {
     write(|r| r.app.set_volume(level as u8));
 }
 
+/// Settings ▸ Power ▸ Alarm: minutes after midnight (local, the top bar's clock) when it is on,
+/// -1 when off. Polled by the shell's 1 Hz tick, which arms the clock chip and plays at the time.
+#[no_mangle]
+pub extern "C" fn cinder_alarm_minutes() -> libc::c_int {
+    read(|r| r.app.alarm().map_or(-1, |m| m as libc::c_int))
+}
+
+/// The headphone jack changed (the shell's 1 Hz watch saw an edge). Line out, when on, ends there;
+/// 1 if that lowered the level, which the shell then writes to the codec (`apply_volume`).
+#[no_mangle]
+pub extern "C" fn cinder_line_out_jack_change() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let was_on = r.app.opt(Opt::LineOut);
+    let lowered = r.app.line_out_jack_change();
+    r.dirty |= was_on; // its row and the toast
+    lowered as libc::c_int
+}
+
 /// Does a vertical drag that STARTED at `(x, y)` belong to the pull-down panel? Asked once per
 /// contact, on the start point, before the list is given the drag. 0 unless the panel is switched
 /// on in Settings and the drag began in the status bar — so with it off (the default) the contact
@@ -9930,6 +9960,16 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // Settings ▸ Ignore "The" in artists. Read before the library arrives, and
                     // `set_library` applies it to whatever library comes next.
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
+                    "alarm" => {
+                        let (_, min) = r.app.alarm_saved();
+                        r.app.set_alarm(v == "1", min);
+                    }
+                    "alarm_at" => {
+                        if let Some(min) = cinder_ui::alarm::parse_hhmm(v) {
+                            let (on, _) = r.app.alarm_saved();
+                            r.app.set_alarm(on, min);
+                        }
+                    }
                     "wifi_drive_code" => r.app.set_drive_code(v),
                     "big_bar" => cinder_ui::scale::set_big_bar(v == "1"),
                     "big_icons" => cinder_ui::scale::set_big_icons(v == "1"),
@@ -12432,6 +12472,7 @@ mod tests {
             S::WifiSpeakers,
             S::RadioFind,
             S::MediaServers,
+            S::Alarm,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
         const RESERVED: usize = 1;

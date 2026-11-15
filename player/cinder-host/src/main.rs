@@ -87,6 +87,7 @@ fn sample_settings(page: Option<usize>) -> settings::SettingsView<'static> {
         brightness: "4 / 5",
         screen_off: "OFF",
         auto_off: "OFF",
+        alarm: "OFF",
         bt_idle_off: false,
         boot_stock: "SONY",
         clock: "17 Aug · 09:01",
@@ -1463,6 +1464,12 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // never shows, and the ones where the knob can drift off its hit band.
             ("clockset", &|c: &mut Canvas| {
                 clockset::render(c, &theme, &fonts, &[2026, 8, 17, 9, 1], clockset::F_MONTH)
+            }),
+            ("alarm_on", &|c: &mut Canvas| {
+                cinder_ui::alarm::render(c, &theme, &fonts, 6 * 60 + 45, true, 1)
+            }),
+            ("alarm_off", &|c: &mut Canvas| {
+                cinder_ui::alarm::render(c, &theme, &fonts, cinder_ui::alarm::DEFAULT_MIN, false, 0)
             }),
             ("sound_balance", &|c: &mut Canvas| {
                 let s = Sound {

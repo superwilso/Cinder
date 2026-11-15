@@ -174,6 +174,12 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     ),
     ("dist/{ch}/wifi-nqptp", "cinder-wifi-nqptp", "wifi", false),
     (
+        "dist/{ch}/wifi-libfdk-aac-dec.so",
+        "cinder-wifi-libfdk-aac-dec.so",
+        "wifi",
+        false,
+    ),
+    (
         "dist/{ch}/wifi-cacert.pem",
         "cinder-wifi-cacert.pem",
         "wifi",

@@ -8,13 +8,13 @@ name: payload
 # lists (cinder-home/tools/stubs.py, cinder-home/stubs/); everything else is a pinned public
 # download. See tools/ci_build_payload.sh.
 #
-# For now this CHECKS a release; release.yml still ships the payload release.sh uploaded. Once
-# runs here match a release, release.yml can take its payload from this job instead.
+# release.yml calls this on every tag and ships what it builds (cinder-payload.tar.gz in the
+# artifact `cinder-payload-ci`); the run fails, and so does the release, unless all of it matches.
+# Run it by hand to check a tree before cutting a release.
 
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
+  workflow_call:
 
 permissions:
   contents: read
@@ -75,7 +75,7 @@ jobs:
         if: always()
         run: |
           cd /home/sony/sony/cinder-home/dist
-          tar -czf /tmp/cinder-payload-ci.tar.gz stable dev 2>/dev/null || true
+          tar -czf /tmp/cinder-payload.tar.gz stable dev 2>/dev/null || true
           ( cd stable && sha256sum * ) > /tmp/stable.sha256 2>/dev/null || true
           ( cd dev && sha256sum * ) > /tmp/dev.sha256 2>/dev/null || true
 
@@ -84,6 +84,6 @@ jobs:
         with:
           name: cinder-payload-ci
           path: |
-            /tmp/cinder-payload-ci.tar.gz
+            /tmp/cinder-payload.tar.gz
             /tmp/stable.sha256
             /tmp/dev.sha256

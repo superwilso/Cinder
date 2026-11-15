@@ -379,6 +379,7 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/wifi-openssl
     cinder-home/dist/stable/wifi-shairport-sync-ap2
     cinder-home/dist/stable/wifi-nqptp
+    cinder-home/dist/stable/wifi-libfdk-aac-dec.so
     cinder-home/dist/stable/wifi-wifi-up.sh
     cinder-home/dist/stable/wifi-wifi-down.sh
     cinder-home/dist/stable/wifi-dhcp.sh
@@ -507,20 +508,8 @@ if [ -n "$STALE_TAG" ]; then
     git tag -d "$TAG" >/dev/null
     note "removed the unpushed $TAG left by an earlier run"
 fi
-# The payload goes up BEFORE the tag: pushing the tag starts release.yml, which downloads it from
-# this draft release, refuses it unless every file matches the committed manifest, and attaches it
-# to the published release (where ci.yml fetches it from until the next one). A draft is visible
-# to maintainers only and creates no tag of its own.
-PAYLOAD="$(mktemp -d)/cinder-payload.tar.gz"
-tar -czf "$PAYLOAD" -C cinder-home/dist stable dev
-if ! gh release view "payload-$TAG" >/dev/null 2>&1; then
-    gh release create "payload-$TAG" --draft --title "payload for $TAG (for release.yml, not for download)" \
-        --notes "The device payload for $TAG, uploaded by tools/release.sh and read by release.yml. Deleted once $TAG is published." >/dev/null \
-        || die "could not create the draft release payload-$TAG for the payload"
-fi
-gh release upload "payload-$TAG" "$PAYLOAD" --clobber \
-    || die "could not upload the payload to payload-$TAG"
-ok "uploaded the payload to the draft release payload-$TAG"
+# No upload: pushing the tag starts release.yml, which builds the payload itself (payload.yml) and
+# ships it only if every file matches the manifest committed above — this machine's build.
 
 git tag -a "$TAG" -m "Cinder $TAG"
 ok "tagged $TAG"

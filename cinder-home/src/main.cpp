@@ -11192,6 +11192,12 @@ void jack_watch_tick() {
     // between two samples and `prev == now`. That is a limit of the polling, not of the resync —
     // the levels are still reconciled on the next screen wake, and a real unplug lasts longer than
     // a second.
+    // Line out ends at any edge of the jack: the next thing plugged in may be earphones. The UI
+    // lowers its level to a safe one and this writes it, before the resync below reads the mixer.
+    if (prev != now && cinder_line_out_jack_change()) {
+        clog_("jack: line out off (the plug changed), volume lowered");
+        run_guarded("jack: line out off", 4, apply_volume);
+    }
     if (prev != now) {
         run_guarded("jack: resync the 3.5 mm level", 8,
                     []() { bt_resync_volume("jack change"); });
@@ -12119,11 +12125,14 @@ static std::shared_ptr<HlsJob> radio_hls_start(const std::string& url, int* fd_o
     return j;
 }
 
-// ── Decoders: MP3 by minimp3; AAC (LC, HE-AAC, HE-AAC v2) by the firmware's own Fraunhofer FDK ────
-// library, libFraunhoferAAC.so — the same library cinder-aac takes its encoder from — reached by
-// dlopen, so Cinder ships none of it. Checked 2026-11-05 under qemu on the firmware's library
-// against ffmpeg: AAC-LC (FIP, Radio Paradise) and HE-AAC v2 (BBC World Service) decode
-// sample-identical (correlation 1.0000 / 0.9999); output is interleaved 16-bit.
+// ── Decoders: MP3 by minimp3; AAC (LC, HE-AAC, HE-AAC v2) by Fraunhofer's FDK, reached by dlopen ──
+// Cinder's own build of the current upstream (fdk-aac 2.0.3, cinder-aac/build_fdk.sh), shipped with
+// the Wi-Fi option, comes first: the streams come from any station, or from anyone on the network
+// with "Play to this player" on, and the firmware's libFraunhoferAAC.so is a 2016-compiler build
+// shipped in 2019, without the decoder's fixes since (docs/AUDIT_2026-11-11.md row 8). The firmware's
+// is the fallback. Same C interface. Checked 2026-11-15 under qemu (cinder-aac/test/dec_test.c): the
+// two agree to 1 LSB on AAC-LC and to -91 dBFS on BBC World Service's HE-AAC; 2026-11-05 the
+// firmware's matched ffmpeg on AAC-LC (FIP, Radio Paradise) and HE-AAC v2. Output: interleaved 16-bit.
 struct Fdk {
     void* (*open)(int transport, unsigned layers);
     int (*fill)(void*, unsigned char** buf, const unsigned* size, unsigned* valid);
@@ -12136,7 +12145,9 @@ static const Fdk* fdk_get() {
     static Fdk f;
     static int state = 0;  // 0 untried, 1 loaded, -1 absent
     if (state == 0) {
-        void* l = ::dlopen("libFraunhoferAAC.so", RTLD_NOW | RTLD_LOCAL);
+        const char* name = "/system/vendor/cinder/wifi/libfdk-aac-dec.so";
+        void* l = ::dlopen(name, RTLD_NOW | RTLD_LOCAL);
+        if (!l) l = ::dlopen(name = "libFraunhoferAAC.so", RTLD_NOW | RTLD_LOCAL);
         if (l) {
             f.open = (void* (*)(int, unsigned))::dlsym(l, "aacDecoder_Open");
             f.fill = (int (*)(void*, unsigned char**, const unsigned*, unsigned*))::dlsym(l, "aacDecoder_Fill");
@@ -12145,7 +12156,9 @@ static const Fdk* fdk_get() {
             f.close = (void (*)(void*))::dlsym(l, "aacDecoder_Close");
         }
         state = l && f.open && f.fill && f.decode && f.info && f.close ? 1 : -1;
-        clog_(state == 1 ? "radio: AAC decoder = the firmware's libFraunhoferAAC.so" : "radio: no AAC decoder");
+        char m[128];
+        std::snprintf(m, sizeof m, state == 1 ? "radio: AAC decoder = %s" : "radio: no AAC decoder", name);
+        clog_(m);
     }
     return state == 1 ? &f : nullptr;
 }
@@ -15197,6 +15210,51 @@ static int sound_service_setting(const char* kv) {
     return f(dummy, std::string(kv));
 }
 
+// ── ALARM (Settings ▸ Power ▸ Alarm, 2026-11-15) ────────────────────────────────────────────────
+// Keeps the clock chip's wake alarm on the next time the alarm is due (`cinder-clock alarm`, setuid:
+// /dev/rtc0 is root's), so a player asleep in suspend to RAM wakes for it — the alarm interrupt
+// comes in through the PMIC, EINT 150, an armed wake source (memory: SPM wake sources). At the
+// time it plays what was playing. Runs in the 1 Hz housekeeping BEFORE the idle-suspend decision,
+// so the tick a wake lands in starts the music before the player could sleep again. The time is
+// the top bar's (local, mktime). An alarm missed by more than ten minutes (the player was off,
+// say) does not play late.
+static void alarm_tick() {
+    static long long armed = -1;      // what the chip holds: epoch, 0 = nothing, -1 = not yet set
+    static long long fired_for = 0;
+    const int m = cinder_alarm_minutes();
+    const time_t now = time(nullptr);
+    if (armed > 0 && now >= armed && now - armed < 600 && fired_for != armed) {
+        fired_for = armed;
+        clog_("alarm: it is time — playing");
+        screen_auto_wake();
+        if (!g_playing) carry_out(CINDER_ACT_PLAYPAUSE);
+    }
+    long long next = 0;
+    if (m >= 0) {
+        struct tm lt;
+        localtime_r(&now, &lt);
+        lt.tm_hour = m / 60;
+        lt.tm_min = m % 60;
+        lt.tm_sec = 0;
+        time_t t = mktime(&lt);
+        if (t <= now) {
+            lt.tm_mday += 1;
+            t = mktime(&lt);
+        }
+        next = (long long)t;
+    }
+    if (next == armed) return;
+    char cmd[96];
+    std::snprintf(cmd, sizeof cmd, "/system/vendor/cinder/bin/cinder-clock alarm %lld", next);
+    const int rc = std::system(cmd);
+    char msg[128];
+    if (next) std::snprintf(msg, sizeof msg, "alarm: set for %02d:%02d (in %lld min) -> rc=%d",
+                            m / 60, m % 60, (next - (long long)now) / 60, rc);
+    else std::snprintf(msg, sizeof msg, "alarm: off -> rc=%d", rc);
+    clog_(msg);
+    armed = next;   // also on failure: a helper that fails keeps failing, logged once, not each second
+}
+
 static void dsd_native_tick(long long now) {
     static long long next_ms = 0;
     static int sent = -1;   // -1 nothing sent this boot
@@ -16293,6 +16351,7 @@ void* render_driver(void*) {
                 // direction: cinder_audio_is_playing() is derived from the position having moved
                 // recently, so it only reads 0 once playback has genuinely stopped, and a one-tick
                 // flicker costs a single increment that the next tick resets.
+                alarm_tick();   // before anything decides the player is idle: an alarm wake must not sleep again
                 const Audible src = audible_now();   // every source, one definition (see Audible)
                 hago_tick(src.library);   // the wrapper's trial: five of these in a row is the proof
 #ifdef CINDER_DEV

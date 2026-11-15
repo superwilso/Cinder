@@ -1,0 +1,130 @@
+zram: don't take zram->lock in swap_slot_free_notify (backport)
+
+Backport of upstream "zram: don't grab mutex in zram_slot_free_notify" (Minchan Kim, 2013,
+Linux 3.12). swap_entry_free() calls the notifier with swap_lock held; this tree's notifier took
+zram->lock (an rw_semaphore) and slept. On 2026-11-15, swap on zram0 gave "BUG: scheduling
+while atomic" the first time a swapped page came back, then a hung cinder-home and a watchdog
+reboot. The notifier now queues the slot (GFP_ATOMIC) and a work item, or the next write, frees
+it under zram->lock. Reset drains the queue first.
+
+diff --git a/drivers/staging/zram/zram_drv.c b/drivers/staging/zram/zram_drv.c
+index 66eb7fc9..c464f8cf 100644
+--- a/drivers/staging/zram/zram_drv.c
++++ b/drivers/staging/zram/zram_drv.c
+@@ -337,6 +337,41 @@ out:
+ 	return ret;
+ }
+ 
++/*
++ * Cinder: backport of upstream "zram: don't grab mutex in zram_slot_free_notify" (Minchan Kim,
++ * 2013, Linux 3.12). swap_entry_free() calls the notifier with swap_lock, a spinlock, held; this
++ * tree's notifier then took zram->lock (an rw_semaphore) and slept: "BUG: scheduling while
++ * atomic", a hung task and a watchdog reboot the first time a swapped page came back (2026-11-15).
++ * The notifier now only queues the slot; the free happens under zram->lock from a work item or
++ * the next write, whichever comes first. A write always applies the queue before it stores, so a
++ * slot is never freed after it has been reused.
++ */
++static void handle_pending_slot_free(struct zram *zram)   /* zram->lock held for write */
++{
++	struct zram_slot_free *rq, *next;
++
++	spin_lock(&zram->slot_free_lock);
++	rq = zram->slot_free_rq;
++	zram->slot_free_rq = NULL;
++	spin_unlock(&zram->slot_free_lock);
++
++	for (; rq; rq = next) {
++		next = rq->next;
++		if (zram->meta)
++			zram_free_page(zram, rq->index);
++		kfree(rq);
++	}
++}
++
++static void zram_slot_free(struct work_struct *work)
++{
++	struct zram *zram = container_of(work, struct zram, free_work);
++
++	down_write(&zram->lock);
++	handle_pending_slot_free(zram);
++	up_write(&zram->lock);
++}
++
+ static int zram_bvec_rw(struct zram *zram, struct bio_vec *bvec, u32 index,
+ 			int offset, struct bio *bio, int rw)
+ {
+@@ -348,6 +383,7 @@ static int zram_bvec_rw(struct zram *zram, struct bio_vec *bvec, u32 index,
+ 		up_read(&zram->lock);
+ 	} else {
+ 		down_write(&zram->lock);
++		handle_pending_slot_free(zram);
+ 		ret = zram_bvec_write(zram, bvec, index, offset);
+ 		up_write(&zram->lock);
+ 	}
+@@ -475,6 +511,11 @@ static void __zram_reset_device(struct zram *zram)
+ 	if (!zram->init_done)
+ 		return;
+ 
++	flush_work(&zram->free_work);
++	down_write(&zram->lock);
++	handle_pending_slot_free(zram);
++	up_write(&zram->lock);
++
+ 	meta = zram->meta;
+ 	zram->init_done = 0;
+ 
+@@ -588,10 +629,19 @@ static void zram_slot_free_notify(struct block_device *bdev,
+ {
+ 	struct zram *zram;
+ 
++	struct zram_slot_free *rq;
++
+ 	zram = bdev->bd_disk->private_data;
+-	down_write(&zram->lock);
+-	zram_free_page(zram, index);
+-	up_write(&zram->lock);
++	rq = kmalloc(sizeof(*rq), GFP_ATOMIC);
++	if (!rq)
++		return;   /* the slot's page stays allocated until it is rewritten or the device reset */
++
++	rq->index = index;
++	spin_lock(&zram->slot_free_lock);
++	rq->next = zram->slot_free_rq;
++	zram->slot_free_rq = rq;
++	spin_unlock(&zram->slot_free_lock);
++	schedule_work(&zram->free_work);
+ 	zram_stat64_inc(zram, &zram->stats.notify_free);
+ }
+ 
+@@ -607,6 +657,9 @@ static int create_device(struct zram *zram, int device_id)
+ 	init_rwsem(&zram->lock);
+ 	init_rwsem(&zram->init_lock);
+ 	spin_lock_init(&zram->stat64_lock);
++	spin_lock_init(&zram->slot_free_lock);
++	zram->slot_free_rq = NULL;
++	INIT_WORK(&zram->free_work, zram_slot_free);
+ 
+ 	zram->queue = blk_alloc_queue(GFP_KERNEL);
+ 	if (!zram->queue) {
+diff --git a/drivers/staging/zram/zram_drv.h b/drivers/staging/zram/zram_drv.h
+index d542eee8..9f94aba3 100644
+--- a/drivers/staging/zram/zram_drv.h
++++ b/drivers/staging/zram/zram_drv.h
+@@ -90,8 +90,17 @@ struct zram_meta {
+ 	struct zs_pool *mem_pool;
+ };
+ 
++/* A swap slot freed while swap_lock (a spinlock) is held, applied later under zram->lock. */
++struct zram_slot_free {
++	unsigned long index;
++	struct zram_slot_free *next;
++};
++
+ struct zram {
+ 	struct zram_meta *meta;
++	spinlock_t slot_free_lock;	/* protects slot_free_rq */
++	struct zram_slot_free *slot_free_rq;
++	struct work_struct free_work;
+ 	spinlock_t stat64_lock;	/* protect 64-bit stats */
+ 	struct rw_semaphore lock; /* protect compression buffers, table,
+ 				   * 32bit stat counters against concurrent

@@ -433,6 +433,9 @@ if [ "$wifi_ok" = 1 ]; then
     for f in $WIFI_OPT; do
         if [ -s "$WIFI_DIR/out/$f" ]; then cp -f "$WIFI_DIR/out/$f" "$DIST/wifi-$f"; else rm -f "$DIST/wifi-$f"; fi
     done
+    # The radio's AAC decoder (cinder-aac/build_fdk.sh: fdk-aac 2.0.3) rides with the Wi-Fi option,
+    # whose features are its only users; without it the radio falls back to the firmware's.
+    cp -f "$AAC_DIR/build/libfdk-aac-dec.so" "$DIST/wifi-libfdk-aac-dec.so"
     echo "staged wifi -> $DIST/wifi-*"
 else
     rm -f "$DIST"/wifi-*

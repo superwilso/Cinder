@@ -105,14 +105,16 @@ if [ ! -d "$W/shairport-sync-5.5.2" ]; then
     tar xf "$SRC/shairport-sync-5.5.2.tar.gz" -C "$W"
     ( cd "$W/shairport-sync-5.5.2" && patch -p1 < "$HERE/airplay/tinysvcmdns-airplay2.patch" )
 fi
-if [ ! -f "$W/shairport-sync-5.5.2/shairport-sync" ]; then
-    ( cd "$W/shairport-sync-5.5.2" && autoreconf -fi \
+# Linked against build-userland.sh's OpenSSL: built again whenever that changes version.
+if [ ! -f "$W/shairport-sync-5.5.2/shairport-sync" ] || ! cmp -s "$UP/.openssl" "$W/.openssl"; then
+    ( cd "$W/shairport-sync-5.5.2" && { [ ! -f Makefile ] || make distclean; } && autoreconf -fi \
           && PATH="$HP/bin:$PATH" PKG_CONFIG_LIBDIR="$P/lib/pkgconfig:$UP/lib/pkgconfig" ./configure --host=$HOST \
                --with-airplay-2 --with-ssl=openssl --with-tinysvcmdns --with-stdout --with-pipe \
                --without-alsa --without-soxr --without-avahi --without-dbus-interface --without-mpris-interface \
                CC=$CC CFLAGS="-Os -I$P/include -I$UP/include" LDFLAGS="-static -L$P/lib -L$UP/lib" \
                LIBS="-luuid -lcrypto -lgcrypt -lgpg-error -lsodium -lm -lpthread" \
           && PATH="$HP/bin:$PATH" make -j"$NPROC" ) >"$W/shairport.log" 2>&1 || { tail -40 "$W/shairport.log"; exit 1; }
+    cp "$UP/.openssl" "$W/.openssl"
 fi
 
 $HOST-strip -o "$OUT/shairport-sync-ap2" "$W/shairport-sync-5.5.2/shairport-sync"
