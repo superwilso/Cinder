@@ -177,7 +177,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
     line(
         46,
         crate::i18n::text("Wired headphones only. A boost lowers everything else."),
-        sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+        sty(
+            Family::Sans,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.faint,
+            0.0,
+        ),
     );
     let jsub = if d.jack {
         "Jack EQ \u{b7} Bluetooth keeps the 10-band"
@@ -265,7 +271,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, d: &DacEq, sel: usize) {
         (W / 2) as f32,
         (by + 52) as f32,
         crate::i18n::text("Bass 100 Hz · treble 10 kHz · +6 to −12 dB"),
-        &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+        &sty(
+            Family::Sans,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.faint,
+            0.0,
+        ),
     );
 
     let labels: Vec<&str> = PRESETS.iter().map(|(l, _)| *l).collect();

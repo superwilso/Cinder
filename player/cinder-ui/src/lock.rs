@@ -1,7 +1,7 @@
 //! Lock screen — ported from cinder-proto-screens1.jsx `CLock`.
 //! Big mono clock, track title/artist, a thin centred progress bar, and a lock-glyph hint. The
 //! prototype woke on a double-tap, but the NW-A55 lock is the physical Hold switch (touch is fully
-//! disabled while locked), so the hint reads "HOLD LOCK · SIDE KEYS ACTIVE · SLIDE HOLD OFF".
+//! disabled while locked), so the hint reads "Hold lock · side keys active · slide Hold off".
 
 use crate::canvas::Canvas;
 use crate::icons;
@@ -77,11 +77,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, l: &Lock) {
     // bottom hint: lock glyph + caption. The Hold switch unlocks (touch is disabled); the side
     // transport keys stay live; Power just wakes the screen.
     let hint = crate::i18n::text(if l.keys_locked {
-        "HOLD LOCK · SIDE KEYS LOCKED · SLIDE HOLD OFF"
+        "Hold lock · side keys locked · slide Hold off"
     } else {
-        "HOLD LOCK · SIDE KEYS ACTIVE · SLIDE HOLD OFF"
+        "Hold lock · side keys active · slide Hold off"
     });
-    let hs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16);
+    let hs = crate::kit::hint_style(t);
     // Too wide for the glass (at 130 % it ran 57 px past both edges): two lines, split at the
     // last separator, the glyph on the first.
     match hint.rsplit_once(" · ") {

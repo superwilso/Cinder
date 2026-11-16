@@ -1865,7 +1865,7 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
                 y,
                 &scope,
                 &crate::ui_format!(
-                    "{} TRACKS · RANDOM ORDER",
+                    "{} tracks · random order",
                     group_thousands(lib.visible_songs())
                 ),
             );
@@ -1877,7 +1877,7 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
                 f,
                 y,
                 crate::i18n::text("Shuffle by album"),
-                crate::i18n::text("RANDOM ALBUMS · TRACKS IN ORDER"),
+                crate::i18n::text("Random albums · tracks in order"),
             );
         }
         Tab::Artists => {
@@ -1887,7 +1887,7 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
                 f,
                 y,
                 crate::i18n::text("Shuffle by artist"),
-                crate::i18n::text("RANDOM ARTIST · SONGS SHUFFLED"),
+                crate::i18n::text("Random artist · songs shuffled"),
             );
         }
         Tab::Playlists => {
@@ -1897,7 +1897,7 @@ fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, y
                 f,
                 y,
                 crate::i18n::text("Shuffle a playlist"),
-                crate::i18n::text("RANDOM PLAYLIST · SHUFFLED"),
+                crate::i18n::text("Random playlist · shuffled"),
             );
             new_playlist_row(c, t, f, hide);
         }
@@ -1931,7 +1931,13 @@ fn band_in(
     // it.
     let room = (bw - 72) as f32;
     let lst = sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0);
-    let sst = sty(Family::Mono, Weight::Regular, 12.0, t.acc_ink, 0.06);
+    let sst = sty(
+        Family::Sans,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.acc_ink,
+        0.0,
+    );
     text::draw(
         c,
         f,
@@ -2912,7 +2918,7 @@ pub fn album_view(
         album_play_band(),
         icons::note, // not shuffle: the Shuffle button is right beside it
         crate::i18n::text("Play album"),
-        crate::i18n::text("IN ORDER · THEN SHUFFLE"),
+        crate::i18n::text("In order · then shuffle"),
     );
     side_button(c, t, album_shuffle_button(), icons::shuffle);
     let top = album_tracks_top();
@@ -3304,7 +3310,7 @@ pub fn artist_view(
         artist_band(page.albums.len()).0,
         icons::shuffle,
         crate::i18n::text("Shuffle artist"),
-        &crate::ui_format!("ALL {} TRACKS · RANDOM ORDER", page.tracks.len()),
+        &crate::ui_format!("All {} tracks · random order", page.tracks.len()),
     );
     if let Some(r) = artist_band(page.albums.len()).1 {
         side_button(c, t, r, icons::dice);
@@ -3715,7 +3721,7 @@ fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet, hide: i32) {
     fill_rect(c, 44, cy - 1, 22, 2, t.acc);
     fill_rect(c, 54, cy - 11, 2, 22, t.acc);
     let lst = sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc, 0.04);
-    let sst = sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14);
+    let sst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.14);
     let lw = (NEW_SPLIT_X - 92) as f32;
     text::draw(
         c,
@@ -4029,7 +4035,7 @@ pub fn playlist_view(
                 let word = crate::i18n::text("REMOVE?");
                 let mut st = sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.08);
                 if text::measure(f, word, &st) > 60.0 {
-                    st = sty(Family::Mono, Weight::Bold, 9.0, t.acc, 0.0);
+                    st = sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.0);
                 }
                 crate::widgets::center(c, f, 428.0, (cy + 4) as f32, word, &st);
             } else {

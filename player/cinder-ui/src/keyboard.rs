@@ -155,10 +155,21 @@ pub fn key_at(page: u8, row: usize, col: usize) -> Option<Key> {
 /// Which key a tap lands on. None for the gaps and everything above the block, so a stray tap on
 /// the text field does nothing rather than typing whatever key is nearest.
 pub fn hit(page: u8, x: i32, y: i32) -> Option<Key> {
+    // The ZONE, not the drawn key. The 4 px gaps and the 22 px gutters answered nothing, so a tap
+    // just off Q or P, or between two keys, was lost (UI audit, 2026-11-16). Each gap is split down
+    // the middle, and the first and last key of a row run to the edges of the glass.
+    let half = GAP / 2;
     for row in 0..ROWS {
-        for col in 0..row_len(page, row) {
+        let n = row_len(page, row);
+        for col in 0..n {
             let (kx, ky, kw, kh) = key_rect(page, row, col)?;
-            if (kx..kx + kw).contains(&x) && (ky..ky + kh).contains(&y) {
+            let x0 = if col == 0 { 0 } else { kx - half };
+            let x1 = if col + 1 == n {
+                W as i32
+            } else {
+                kx + kw + GAP - half
+            };
+            if (x0..x1).contains(&x) && (ky - half..ky + kh + GAP - half).contains(&y) {
                 return key_at(page, row, col);
             }
         }
@@ -251,14 +262,14 @@ pub fn render(
         240.0,
         (TEXT_Y + TEXT_H + 26) as f32,
         if shift {
-            crate::i18n::text("CAPS — NEXT LETTER IS A CAPITAL")
+            crate::i18n::text("Caps: the next letter is a capital")
         } else if searching {
             // A search filters as you type and Back keeps it: there is nothing to save or cancel.
-            crate::i18n::text("TAP DONE OR BACK TO SEE THE RESULTS")
+            crate::i18n::text("Tap Done or Back to see the results")
         } else {
-            crate::i18n::text("TAP DONE TO SAVE · BACK TO CANCEL")
+            crate::i18n::text("Tap Done to save, or Back to cancel")
         },
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16),
+        &crate::kit::hint_style(t),
     );
 
     // ── the keys ─────────────────────────────────────────────────────────────────
@@ -337,6 +348,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_gaps_and_the_edges_answer_the_nearest_key() {
+        for row in 0..ROWS {
+            let n = row_len(0, row);
+            let (kx, ky, kw, kh) = key_rect(0, row, 0).unwrap();
+            let mid = ky + kh / 2;
+            assert_eq!(
+                hit(0, 0, mid),
+                key_at(0, row, 0),
+                "row {row}: the left edge"
+            );
+            assert_eq!(
+                hit(0, W as i32 - 1, mid),
+                key_at(0, row, n - 1),
+                "row {row}: the right edge"
+            );
+            if n > 1 {
+                assert_eq!(
+                    hit(0, kx + kw + 1, mid),
+                    key_at(0, row, 0),
+                    "row {row}: left half of a gap"
+                );
+                assert_eq!(
+                    hit(0, kx + kw + GAP - 1, mid),
+                    key_at(0, row, 1),
+                    "row {row}: right half"
+                );
+            }
+            assert_eq!(
+                hit(0, kx + 2, ky - 1),
+                key_at(0, row, 0),
+                "row {row}: just above the key"
+            );
+        }
+    }
+
+    #[test]
     fn spacebar_label_uses_the_keyboard_meaning() {
         for (language, expected) in [
             (crate::i18n::Language::English, "SPACE"),
@@ -393,11 +440,9 @@ mod tests {
     }
 
     #[test]
-    fn gaps_between_keys_are_not_typing() {
-        // 2 px into the gap between two keys on the top row must hit nothing.
-        let (x, y, w, h) = key_rect(0, 0, 0).unwrap();
-        assert_eq!(hit(0, x + w + GAP / 2, y + h / 2), None);
-        // and neither does the text field
+    fn the_text_field_is_not_typing() {
+        // The gaps between keys now belong to the nearer key (the_gaps_and_the_edges_answer_the_
+        // nearest_key); the text field above the keys still answers nothing.
         assert_eq!(hit(0, 240, TEXT_Y + 10), None);
     }
 

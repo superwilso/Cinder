@@ -279,8 +279,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
             f,
             240.0,
             (TOP + 54) as f32,
-            crate::i18n::text("UTC — THE DEVICE KEEPS NO TIME ZONE"),
-            &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16),
+            crate::i18n::text("UTC: the player keeps no time zone"),
+            &crate::kit::hint_style(t),
         );
     }
 

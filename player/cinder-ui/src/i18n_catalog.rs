@@ -120,7 +120,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "ALBUMS" => Some("专辑"),
         "ALBUMS · {}" => Some("专辑 · {}"),
         "ALL" => Some("全部"),
-        "ALL {} TRACKS · RANDOM ORDER" => Some("全部 {} 首曲目 · 随机顺序"),
         "ALSO PER PROFILE" => Some("也按配置分别保存"),
         "ALSO SAVED" => Some("一并保存"),
         "AMP → 3.5MM" => Some("放大器 → 3.5MM"),
@@ -158,6 +157,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "All four are in use: delete one first" => Some("四个预设均已占用，请先删除一个"),
         "All {} are in use · delete one to save another" => Some("{} 个预设已全部用完 · 删除一个后可再保存"),
         "All {} are in use: delete one first" => Some("{} 个预设已全部用完：请先删除一个"),
+        "All {} tracks · random order" => Some("全部 {} 首曲目 · 随机顺序"),
         "Already in this playlist" => Some("此曲目已在列表中"),
         "Analog block" => Some("模拟电路"),
         "Analog-amp low-frequency phase" => Some("模拟放大器的低频相位"),
@@ -177,7 +177,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "August" => Some("八月"),
         "Auto" => Some("自动"),
         "Auto power off" => Some("自动关机"),
-        "BACK WHEN YOU ARE DONE" => Some("完成后返回"),
         "BACKLIGHT OFF" => Some("背光已关闭"),
         "BARS" => Some("柱状"),
         "BASIC" => Some("基础"),
@@ -194,11 +193,11 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "BUFFER : {:.1} MS" => Some("缓冲：{:.1} 毫秒"),
         "BUTTONS" => Some("实体按键"),
         "BY RULES" => Some("按规则筛选"),
-        "BY THE CLOCK IN THE TOP BAR" => Some("按顶栏的时钟"),
         "BY {}" => Some("歌手：{}"),
         "Back" => Some("返回"),
         "Back arrow" => Some("返回箭头"),
         "Back to Now Playing" => Some("返回正在播放"),
+        "Back when you are done" => Some("完成后返回"),
         "Background from the album art" => Some("背景取自专辑封面"),
         "Balance" => Some("声道平衡"),
         "Bands" => Some("频段数"),
@@ -229,16 +228,15 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Buttons" => Some("实体按键"),
         "Buttons & gestures" => Some("按键与手势"),
         "Buttons, swipes, the way back" => Some("按键、手势与返回原厂的方法"),
+        "By the clock in the top bar" => Some("按顶栏的时钟"),
         "CANCEL" => Some("取消"),
         "CAPS" => Some("大写"),
-        "CAPS — NEXT LETTER IS A CAPITAL" => Some("大写：下一字母为大写"),
         "CARE ON: 100% HERE IS ~4.09 V, NOT 4.2 V." => Some("保养模式：此处 100% 约为 4.09 V。"),
         "CENTRE" => Some("居中"),
         "CHANNELS" => Some("频道"),
         "CHARGE DONE" => Some("充电完成"),
         "CHARGER" => Some("充电"),
         "CHARGING" => Some("充电中"),
-        "CHARGING WHILE IN DAC MODE: ON" => Some("DAC 模式下充电：开启"),
         "CHOOSE A TRACK FROM YOUR LIBRARY" => Some("请从曲库选择曲目"),
         "CHOOSE LENGTH" => Some("选择时长"),
         "CLEAR" => Some("清空"),
@@ -257,14 +255,17 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "CUSTOM {}" => Some("自定义 {}"),
         "Can't play a 32-bit FLAC: this player's decoder stops at 24-bit" => Some("无法播放 32 位 FLAC：此设备最高支持 24 位"),
         "Cancel" => Some("取消"),
+        "Caps: the next letter is a capital" => Some("大写：下一字母为大写"),
         "Car audio" => Some("车载音响"),
         "Centre" => Some("居中"),
         "Changes not saved" => Some("更改未保存"),
         "Character of the vinyl emulation" => Some("黑胶模拟的音色特征"),
         "Charger" => Some("充电状态"),
         "Charging" => Some("充电中"),
+        "Charging while in DAC mode: on" => Some("DAC 模式下充电：开启"),
         "Choose a name" => Some("选择名称"),
         "Choose a preview length" => Some("选择试听时长"),
+        "Choose a track from your library" => Some("请从曲库选择曲目"),
         "Chorus start" => Some("副歌起点"),
         "Cinder hands over by itself" => Some("Cinder 会自动交回 Sony 播放器"),
         "Cinder will close and the player will start again." => Some("Cinder 将关闭，播放器将重新启动。"),
@@ -356,7 +357,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "ENHANCE" => Some("音质增强"),
         "ENTER THIS CODE ON THE OTHER DEVICE" => Some("请在另一台设备上输入此码"),
         "EXPERIMENTAL" => Some("实验功能"),
-        "EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE" => Some("实验功能 · 已在 WINDOWS 和 IPHONE 上测试"),
         "Each album at the same loudness, its own mix kept" => Some("每张专辑同样的响度，保留其自身的混音"),
         "Each profile has its own mono switch" => Some("每个声音配置各自保存单声道开关"),
         "Edit playlist" => Some("编辑播放列表"),
@@ -377,6 +377,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Every song at the same loudness" => Some("每首歌同样的响度"),
         "Every track after the one playing is removed. The song playing now finishes, then playback stops." => Some("移除当前歌曲之后的全部曲目。当前歌曲播完后停止播放。"),
         "Every track removed. DONE saves it empty." => Some("已移除全部曲目，点按完成将保存空列表。"),
+        "Experimental · tested with Windows and iPhone" => Some("实验功能 · 已在 WINDOWS 和 IPHONE 上测试"),
         "Experimental — about 3 dB louder, may cost battery" => Some("实验功能：约提高 3 dB，可能增加耗电"),
         "Experimental — off uses Sony's S-Master amp" => Some("实验功能：关闭时使用 Sony S-Master"),
         "Experimental: not yet measured at the jack." => Some("实验功能：尚未测量耳机口的实际输出。"),
@@ -438,8 +439,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "HIDE" => Some("收起"),
         "HIGH" => Some("高"),
         "HOLD" => Some("长按"),
-        "HOLD LOCK · SIDE KEYS ACTIVE · SLIDE HOLD OFF" => Some("HOLD 已锁定 · 侧键可用 · 滑动 HOLD 解锁"),
-        "HOLD LOCK · SIDE KEYS LOCKED · SLIDE HOLD OFF" => Some("HOLD 已锁定 · 侧键已锁定 · 滑动 HOLD 解锁"),
         "HOLD POWER" => Some("长按电源键"),
         "HOLD SWITCH" => Some("HOLD 锁定开关"),
         "HOLD switch" => Some("HOLD 开关"),
@@ -460,10 +459,11 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "High quality, if they have it" => Some("高音质，耳机支持时可用"),
         "History cleared" => Some("播放历史已清空"),
         "Hold a row" => Some("长按列表行"),
+        "Hold lock · side keys active · slide Hold off" => Some("HOLD 已锁定 · 侧键可用 · 滑动 HOLD 解锁"),
+        "Hold lock · side keys locked · slide Hold off" => Some("HOLD 已锁定 · 侧键已锁定 · 滑动 HOLD 解锁"),
         "Hold locks the buttons" => Some("锁定时也锁按键"),
         "Hour" => Some("时"),
         "IDLE" => Some("空闲"),
-        "IN ORDER · THEN SHUFFLE" => Some("顺序播放，随后随机"),
         "IN UP NEXT" => Some("待播队列中"),
         "INPUT  : PCM {:.1} KHZ" => Some("输入：PCM {:.1} kHz"),
         "INPUT  : PCM {}BIT / {:.1} KHZ" => Some("输入：PCM {} 位／{:.1} kHz"),
@@ -473,6 +473,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "In DAC mode · effects on PC audio unverified" => Some("DAC 模式 · 电脑音频的音效尚未验证"),
         "In Settings — pauses playback; caps charging at 90%." => Some("在设置中启用睡眠定时和电池保养。"),
         "In from the left edge" => Some("从左边缘向内滑动"),
+        "In order · then shuffle" => Some("顺序播放，随后随机"),
         "In the DAC chip, after every other effect" => Some("在 DAC 内处理，位于其他音效之后"),
         "In the path, in place of the Equalizer" => Some("音调控制正在替代均衡器"),
         "Its place in what's playing" => Some("在播放列表中的位置"),
@@ -578,7 +579,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "NEXT FROM {}" => Some("接下来来自 {}"),
         "NEXT PREVIEW" => Some("下一段"),
         "NEXT UP" => Some("接下来播放"),
-        "NFC · TOUCH THE REAR PANEL" => Some("NFC · 将设备贴近背面"),
+        "NFC: touch the rear panel" => Some("NFC · 将设备贴近背面"),
         "NIGHT" => Some("夜间"),
         "NO AERIAL — PLUG IN WIRED HEADPHONES" => Some("未检测到天线，请插入有线耳机"),
         "NO EFFECTS" => Some("无音效"),
@@ -658,7 +659,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "ON ITS OWN · HEADPHONES" => Some("独立播放 · 有线耳机"),
         "ON THE SIDE" => Some("机身侧面"),
         "ON · PLAYS AT {time}" => Some("开 · {time} 播放"),
-        "OR TAP THE DEVICE TO THE REAR PANEL (NFC)" => Some("也可将设备贴近背面进行 NFC 配对"),
         "ORDER · {short}" => Some("顺序 · {short}"),
         "OUTPUT : 3.5MM UNBALANCED" => Some("输出：3.5MM 非平衡"),
         "OUTPUT : {}" => Some("输出：{}"),
@@ -687,6 +687,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "One list in play order — add, move, remove anything." => Some("按播放顺序列出曲目，可添加、移动或移除。"),
         "Only one album in this playlist" => Some("此列表仅有一张专辑"),
         "Opens the screen you pick" => Some("打开你选的页面"),
+        "Or tap the device to the rear panel (NFC)" => Some("也可将设备贴近背面进行 NFC 配对"),
         "Over music it reaches the jack and Bluetooth, after the EQ and before the volume." => Some("音乐混合可经耳机口和蓝牙输出，位于均衡器之后、音量之前。"),
         "Over music needs Wampy installed (install.md, \"mono\"). On its own, and over USB-DAC or the radio, it always plays." => Some("音乐混合需要安装混音组件；独立播放、USB-DAC 和收音机不受此限制。"),
         "Over voltage" => Some("电压过高"),
@@ -702,7 +703,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "PASSKEY" => Some("配对码"),
         "PAUSE" => Some("暂停"),
         "PEAK" => Some("峰值"),
-        "PIN AND CONFIRM PROMPTS APPEAR HERE" => Some("配对码请求会在此显示"),
+        "PIN and confirm prompts appear here" => Some("配对码请求会在此显示"),
         "PINNED · {}/{}" => Some("已保存书签 · {}/{}"),
         "PLAY" => Some("播放"),
         "PLAY NEXT" => Some("下一首"),
@@ -710,7 +711,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "PLAY THIS SONG IN FULL" => Some("就听这首 · 完整播放"),
         "PLAYLIST" => Some("播放列表"),
         "PLAYLISTS" => Some("播放列表"),
-        "PLAYLISTS YOU MAKE ARE SAVED ON THE DEVICE" => Some("你创建的列表会保存在设备上"),
         "POWER" => Some("电源键"),
         "POWER AND HOLD" => Some("电源与 HOLD"),
         "POWER SAVING" => Some("节能"),
@@ -770,6 +770,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Playlist name" => Some("播放列表名称"),
         "Playlist saved" => Some("播放列表已保存"),
         "Playlists" => Some("播放列表"),
+        "Playlists you make are saved on the player" => Some("你创建的列表会保存在设备上"),
         "Plays" => Some("播放次数"),
         "Plays out of the 3.5 mm jack, or over Bluetooth" => Some("声音从 3.5 mm 耳机口输出，"),
         "Portable audio" => Some("便携音响"),
@@ -805,9 +806,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "RADIAL" => Some("放射"),
         "RAM" => Some("运行内存"),
         "RANDOM" => Some("随机"),
-        "RANDOM ALBUMS · TRACKS IN ORDER" => Some("专辑顺序随机，专辑内顺序播放"),
-        "RANDOM ARTIST · SONGS SHUFFLED" => Some("歌手顺序随机，歌手内随机播放"),
-        "RANDOM PLAYLIST · SHUFFLED" => Some("列表随机选择，列表内随机播放"),
         "RATING" => Some("评分"),
         "RAW" => Some("原始"),
         "READY" => Some("就绪"),
@@ -823,6 +821,9 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Radial" => Some("放射"),
         "Rain" => Some("雨声"),
         "Random album · {}" => Some("随机专辑 · {}"),
+        "Random albums · tracks in order" => Some("专辑顺序随机，专辑内顺序播放"),
+        "Random artist · songs shuffled" => Some("歌手顺序随机，歌手内随机播放"),
+        "Random playlist · shuffled" => Some("列表随机选择，列表内随机播放"),
         "Range" => Some("范围"),
         "Rating" => Some("评分"),
         "Receiver mode" => Some("接收模式"),
@@ -1043,8 +1044,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "System" => Some("系统"),
         "TAP" => Some("点按"),
         "TAP AGAIN" => Some("再次点按"),
-        "TAP DONE OR BACK TO SEE THE RESULTS" => Some("点按完成或返回以查看结果"),
-        "TAP DONE TO SAVE · BACK TO CANCEL" => Some("点按完成以保存，返回以取消"),
         "TAP REPEAT" => Some("点按循环按钮"),
         "TAP THE BOOKMARK" => Some("点按书签图标"),
         "TAP THE CLOCK" => Some("点按时钟"),
@@ -1070,6 +1069,8 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "TREBLE" => Some("高音"),
         "TURN OFF" => Some("退出 USB 存储"),
         "Tap" => Some("点按"),
+        "Tap Done or Back to see the results" => Some("点按完成或返回以查看结果"),
+        "Tap Done to save, or Back to cancel" => Some("点按完成以保存，返回以取消"),
         "Tap above and start typing." => Some("点按上方开始输入。"),
         "Tap an output to switch its letter." => Some("点按输出可切换配置字母。"),
         "Tap the filter row above to change it." => Some("点按上方筛选栏进行修改。"),
@@ -1134,7 +1135,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "USB mode" => Some("USB 模式"),
         "USB-DAC active" => Some("USB-DAC 已开启"),
         "USB-DAC is off" => Some("USB-DAC 已关闭"),
-        "UTC — THE DEVICE KEEPS NO TIME ZONE" => Some("UTC · 设备不保存时区"),
+        "UTC: the player keeps no time zone" => Some("UTC · 设备不保存时区"),
         "Universal · always works" => Some("通用兼容"),
         "Unknown" => Some("未知"),
         "Unknown duration" => Some("时长未知"),
@@ -1249,7 +1250,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "{other} is now a copy of {live}" => Some("已将 {live} 复制到 {other}"),
         "{other} starts as {}, to change one thing and compare" => Some("使 {other} 与 {} 相同，再调整一项以便对比"),
         "{plays} PLAYS" => Some("播放 {plays} 次"),
-        "{sony_count} SONY PLAYLIST(S) CANNOT BE EDITED HERE" => Some("{sony_count} 个 SONY 列表无法在此编辑"),
+        "{sony_count} Sony playlist(s) cannot be edited here" => Some("{sony_count} 个 SONY 列表无法在此编辑"),
         "{s} SEC" => Some("{s} 秒"),
         "{total} SONGS" => Some("共 {total} 首歌曲"),
         "{want} requested · {l} in use" => Some("请求 {want} · 正在使用 {l}"),
@@ -1269,7 +1270,6 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "{} TRACK · IN ORDER" => Some("{} 首曲目 · 顺序播放"),
         "{} TRACKS" => Some("{} 首曲目"),
         "{} TRACKS · IN ORDER" => Some("{} 首曲目 · 顺序播放"),
-        "{} TRACKS · RANDOM ORDER" => Some("{} 首曲目 · 随机顺序"),
         "{} album" => Some("{} 张专辑"),
         "{} albums" => Some("{} 张专辑"),
         "{} albums · {} tracks" => Some("{} 张专辑 · {} 首曲目"),
@@ -1278,6 +1278,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "{} on {}" => Some("{} 已应用到 {}"),
         "{} track" => Some("{} 首曲目"),
         "{} tracks" => Some("{} 首曲目"),
+        "{} tracks · random order" => Some("{} 首曲目 · 随机顺序"),
         "{} tracks · {}" => Some("{} 首曲目 · {}"),
         "{} uses {}" => Some("{} 使用 {}"),
         "{} · TAP TO CONNECT" => Some("{} · 点按连接"),
@@ -1313,12 +1314,6 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("专辑 · {}" $(, $($args)*)?),
             _ => format!("ALBUMS · {}" $(, $($args)*)?),
-        }
-    };
-    ("ALL {} TRACKS · RANDOM ORDER" $(, $($args:tt)*)?) => {
-        match $crate::i18n::current() {
-            $crate::i18n::Language::SimplifiedChinese => format!("全部 {} 首曲目 · 随机顺序" $(, $($args)*)?),
-            _ => format!("ALL {} TRACKS · RANDOM ORDER" $(, $($args)*)?),
         }
     };
     ("Added to Up Next — {}" $(, $($args:tt)*)?) => {
@@ -1361,6 +1356,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("{} 个预设已全部用完：请先删除一个" $(, $($args)*)?),
             _ => format!("All {} are in use: delete one first" $(, $($args)*)?),
+        }
+    };
+    ("All {} tracks · random order" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("全部 {} 首曲目 · 随机顺序" $(, $($args)*)?),
+            _ => format!("All {} tracks · random order" $(, $($args)*)?),
         }
     };
     ("Audiobook · {}" $(, $($args:tt)*)?) => {
@@ -1873,10 +1874,10 @@ macro_rules! ui_format {
             _ => format!("{plays} PLAYS" $(, $($args)*)?),
         }
     };
-    ("{sony_count} SONY PLAYLIST(S) CANNOT BE EDITED HERE" $(, $($args:tt)*)?) => {
+    ("{sony_count} Sony playlist(s) cannot be edited here" $(, $($args:tt)*)?) => {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("{sony_count} 个 SONY 列表无法在此编辑" $(, $($args)*)?),
-            _ => format!("{sony_count} SONY PLAYLIST(S) CANNOT BE EDITED HERE" $(, $($args)*)?),
+            _ => format!("{sony_count} Sony playlist(s) cannot be edited here" $(, $($args)*)?),
         }
     };
     ("{s} SEC" $(, $($args:tt)*)?) => {
@@ -1993,12 +1994,6 @@ macro_rules! ui_format {
             _ => format!("{} TRACKS · IN ORDER" $(, $($args)*)?),
         }
     };
-    ("{} TRACKS · RANDOM ORDER" $(, $($args:tt)*)?) => {
-        match $crate::i18n::current() {
-            $crate::i18n::Language::SimplifiedChinese => format!("{} 首曲目 · 随机顺序" $(, $($args)*)?),
-            _ => format!("{} TRACKS · RANDOM ORDER" $(, $($args)*)?),
-        }
-    };
     ("{} album" $(, $($args:tt)*)?) => {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("{} 张专辑" $(, $($args)*)?),
@@ -2045,6 +2040,12 @@ macro_rules! ui_format {
         match $crate::i18n::current() {
             $crate::i18n::Language::SimplifiedChinese => format!("{} 首曲目" $(, $($args)*)?),
             _ => format!("{} tracks" $(, $($args)*)?),
+        }
+    };
+    ("{} tracks · random order" $(, $($args:tt)*)?) => {
+        match $crate::i18n::current() {
+            $crate::i18n::Language::SimplifiedChinese => format!("{} 首曲目 · 随机顺序" $(, $($args)*)?),
+            _ => format!("{} tracks · random order" $(, $($args)*)?),
         }
     };
     ("{} tracks · {}" $(, $($args:tt)*)?) => {

@@ -72,8 +72,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, min: u16, on: bool, sel: u
         f,
         240.0,
         (y0 + 54) as f32,
-        crate::i18n::text("BY THE CLOCK IN THE TOP BAR"),
-        &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16),
+        crate::i18n::text("By the clock in the top bar"),
+        &crate::kit::hint_style(t),
     );
     let ft = fields_top();
     crate::widgets::hline(c, ft, t.line);

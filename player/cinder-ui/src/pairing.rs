@@ -613,8 +613,8 @@ pub fn render(
         f,
         22.0,
         760.0,
-        crate::i18n::text("PIN AND CONFIRM PROMPTS APPEAR HERE"),
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1),
+        crate::i18n::text("PIN and confirm prompts appear here"),
+        &crate::kit::hint_style(t),
         458.0,
     );
     icons::rx(c, 30.0, 776.0, 14.0, t.faint);
@@ -623,8 +623,8 @@ pub fn render(
         f,
         46.0,
         780.0,
-        crate::i18n::text("OR TAP THE DEVICE TO THE REAR PANEL (NFC)"),
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
+        crate::i18n::text("Or tap the device to the rear panel (NFC)"),
+        &crate::kit::hint_style(t),
         458.0,
     );
 }

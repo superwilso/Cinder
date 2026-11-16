@@ -32,14 +32,14 @@ day.panel = #202020
 day.line  = #333333
 day.ink   = #ffffff
 day.dim   = #999999
-day.faint = #686868
+day.faint = #767676
 
 night.bg    = #000000
 night.panel = #121212
 night.line  = #1e1e1e
 night.ink   = #8a8a8a
 night.dim   = #5a5a5a
-night.faint = #3c3c3c
+night.faint = #464646
 
 # Sony's muted gold. All six or none — a partial accent block is refused.
 day.accent       = #c0a565

@@ -183,7 +183,13 @@ pub fn render(
                     .trail(trail)
                     .sel(m.active),
             );
-            let style = widgets::sty(Family::Sans, Weight::Regular, 12.0, t.dim, 0.0);
+            let style = widgets::sty(
+                Family::Sans,
+                Weight::Regular,
+                crate::scale::CAPTION,
+                t.dim,
+                0.0,
+            );
             let reserve = if m.home { 96.0 } else { 0.0 };
             // Under the title, which an icon moves right.
             let indent = if m.icon.is_some() { 40.0 } else { 0.0 };

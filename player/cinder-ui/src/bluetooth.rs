@@ -408,6 +408,10 @@ pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
     if (dy..dy + dh).contains(&y) && (dx..dx + dw).contains(&x) {
         return BtHit::Disconnect;
     }
+    // PAIR NEW before the rows: its 44 px zone reaches 10 px into the first paired row.
+    if crate::kit::section_action_hit(PAIRED_LABEL_Y, x, y) {
+        return BtHit::Pair;
+    }
     let rows = paired.min(PAIRED_SHOWN()) as i32;
     if (PAIRED_Y0..PAIRED_Y0 + rows * PAIRED_RH()).contains(&y) {
         return BtHit::PairedRow(((y - PAIRED_Y0) / PAIRED_RH()) as usize);
@@ -417,9 +421,6 @@ pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
     }
     if (DEBUG_Y()..DEBUG_Y() + DEBUG_H()).contains(&y) {
         return BtHit::DebugLog;
-    }
-    if crate::kit::section_action_hit(PAIRED_LABEL_Y, x, y) {
-        return BtHit::Pair;
     }
     BtHit::None
 }
@@ -756,8 +757,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     // Footer: an NFC hint on the left and the Receiver-mode link on the right, on ONE baseline.
     // Both were drawn at fixed x, so at 140% "…TO REAR PANEL" ran straight through "RECEIVER
     // MODE ›". The link keeps its width (it names a destination); the hint gives way.
-    let hint = crate::i18n::text("NFC · TOUCH THE REAR PANEL");
-    let hint_st = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08);
+    let hint = crate::i18n::text("NFC: touch the rear panel");
+    let hint_st = crate::kit::hint_style(t);
     let link = "RECEIVER MODE \u{203a}";
     let link_st = sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08);
     // Two lines when one would cut the hint: in Big view always, and at a large text size without

@@ -9,11 +9,11 @@ day.panel = #141820
 day.line  = #232a35
 day.ink   = #e6ebf2
 day.dim   = #8d97a5
-day.faint = #58616e
+day.faint = #757e8c
 
 night.bg    = #000000
 night.panel = #0a0c10
 night.line  = #151a21
 night.ink   = #8a93a0
 night.dim   = #57606c
-night.faint = #373d46
+night.faint = #3f4650

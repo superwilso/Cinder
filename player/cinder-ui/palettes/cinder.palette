@@ -17,14 +17,14 @@ day.panel = #13110f
 day.line  = #221f1b
 day.ink   = #ece7df
 day.dim   = #95908a
-day.faint = #5f5a52
+day.faint = #807b74
 
 night.bg    = #000000
 night.panel = #0a0908
 night.line  = #161310
 night.ink   = #8d8170
 night.dim   = #5b5347
-night.faint = #3b362d
+night.faint = #4c463b
 
 # Leave the accent out and Settings ▸ Accent picks one of Cinder's six. Set all six keys to
 # give the palette an accent of its own; the Accent row then says the palette has chosen.

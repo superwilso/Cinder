@@ -280,7 +280,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
                 (METER_X + METER_W - 30) as f32,
                 (METER_Y - 8) as f32,
                 crate::i18n::text("ST"),
-                &sty(Family::Mono, Weight::Regular, 10.0, t.acc, 0.10),
+                &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.10),
             );
         }
     }
@@ -297,7 +297,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
             x as f32,
             (DIAL_Y + 24) as f32,
             &format!("{mhz}"),
-            &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.0),
+            &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0),
         );
         mhz += 2;
     }
@@ -389,7 +389,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
             (cx + PRESET_W / 2) as f32,
             (cy + 40) as f32,
             &format!("P{}", i + 1),
-            &sty(Family::Mono, Weight::Regular, 10.0, col, 0.14),
+            &sty(Family::Mono, Weight::Regular, 11.0, col, 0.14),
         );
     }
 
@@ -476,7 +476,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
         240.0,
         (SCAN_Y + SCAN_H + 20) as f32,
         scan_note,
-        &sty(Family::Sans, Weight::Regular, 11.0, t.faint, 0.0),
+        &sty(
+            Family::Sans,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.faint,
+            0.0,
+        ),
     );
 
     hline(c, 740, t.line);

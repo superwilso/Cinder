@@ -215,7 +215,7 @@ pub const CINDER: Tokens = Tokens {
         line: 0x221f1b,
         ink: 0xece7df,
         dim: 0x95908a,
-        faint: 0x5f5a52,
+        faint: 0x807b74,
     },
     night: Neutrals {
         bg: 0x000000,
@@ -223,7 +223,7 @@ pub const CINDER: Tokens = Tokens {
         line: 0x161310,
         ink: 0x8d8170,
         dim: 0x5b5347,
-        faint: 0x3b362d,
+        faint: 0x4c463b,
     },
     accent: None,
 };
