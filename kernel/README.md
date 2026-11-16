@@ -95,3 +95,26 @@ codec tables no longer block it, writing the backlight's `duty` no longer crashe
 the built-in zram0 read back 34,036 pages with no kernel error. With `MTK_CM4_SUPPORT=yes` set, music played
 for 15 minutes through the low-power playback path with no stall and no kernel error, and the
 kernel printed no error a normal boot does not also print.
+
+## Installing on the player
+
+The bootloader's `fastboot flash boot` is refused ("Security deny"), so the image is written from
+the player itself. The `boot` partition is `mmcblk0p8` (`/proc/dumchar_info` lists it as
+`bootimg`); the bootloader is p7 and is never written. Keep a copy of p8 first.
+
+```sh
+adb shell 'busybox dd if=/dev/block/mmcblk0p8 of=/data/local/tmp/p8.bin'   # then adb pull it and keep it
+adb push out/boot.img /data/local/tmp/cinder_boot.img                       # out/boot.img, not the fastboot form
+adb shell 'busybox dd if=/data/local/tmp/cinder_boot.img of=/dev/block/mmcblk0p8 bs=4096 conv=fsync; sync'
+adb shell reboot
+```
+
+Check the write before restarting: read back exactly the image's length (`bs=512`, its size / 512
+blocks) and compare checksums. A short read does not match, which is not a failed write.
+
+To go back to Sony's kernel, write the saved p8 the same way. If the new kernel does not start,
+run Sony's kernel from RAM (Testing, above, with Sony's own zImage) and write the saved p8 from
+there. Uninstalling Cinder does not change the kernel.
+
+Done 2026-11-16 on an NW-A55 (patches 0001–0008, LZO): it started from flash with all of Sony's
+services, Cinder, touch and music. The kernel starts 3.4 s after power-on.
