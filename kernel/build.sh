@@ -49,7 +49,11 @@ MK=(make -C "$K" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf-
     MTK_TB_WIFI_3G_MODE=WIFI_ONLY LOCALVERSION=   # set but empty: in a git tree the kernel would call itself 3.10.26+ and refuse Sony's modules
     MTK_CM4_SUPPORT=yes   # without it the low-power playback PCM fails to open and Sony's hang checker restarts the player
     KBUILD_BUILD_USER=cinder KBUILD_BUILD_HOST=cinder   # not the builder's own account and PC name
-    "KCFLAGS=-I$K/drivers/staging/android/ion -I$K/drivers/misc/mediatek/lcm")
+    # A fixed version line, so the same source gives the same zImage on any machine: CI's payload
+    # check compares the release's kernel byte for byte with the maintainer's build.
+    "KBUILD_BUILD_TIMESTAMP=Wed Jan  1 00:00:00 UTC 2025" KBUILD_BUILD_VERSION=1
+    # __DATE__ and __TIME__ pinned too (half a dozen of Sony's drivers print them), with patch 0009.
+    "KCFLAGS=-I$K/drivers/staging/android/ion -I$K/drivers/misc/mediatek/lcm -Wno-builtin-macro-redefined -D__DATE__='\"2025-01-01\"' -D__TIME__='\"00:00:00\"'")
 "${MK[@]}" BBDMP5_linux_debug_defconfig >/dev/null
 # LZO instead of Sony's XZ: the bootloader hands over to a kernel that unpacks in 1.3 s, not 2.7 s
 # (measured 2026-11-15, patch 0006's log line against bootprof.lk_t). Needs lzop (apt install lzop).

@@ -61,6 +61,13 @@ pub enum Ask {
     DeleteAlbum,
     /// Settings ▸ Wi-Fi ▸ Install Cinder v…: download it, then restart into Sony's updater.
     WifiUpdate,
+    /// The song that is playing was tapped again, in an album, a playlist or another list
+    /// (owner, 2026-11-16). Starting it over from that list would restart the song; this offers
+    /// to queue what comes after it in that list instead, without touching playback. One per kind
+    /// of list, because a menu's row labels are fixed text.
+    SongPlayingAlbum,
+    SongPlayingPlaylist,
+    SongPlayingList,
 }
 
 /// Every question the modal can ask. Exists so the overflow audit can render all of them without
@@ -79,6 +86,9 @@ pub const ALL: &[Ask] = &[
     Ask::DeleteTrack,
     Ask::DeleteAlbum,
     Ask::WifiUpdate,
+    Ask::SongPlayingAlbum,
+    Ask::SongPlayingPlaylist,
+    Ask::SongPlayingList,
 ];
 
 impl Ask {
@@ -102,6 +112,9 @@ impl Ask {
             ),
             Ask::PowerMenu => (crate::i18n::text("Power"), "", ""),
             Ask::QueueOnPlay => (crate::i18n::text("Play this now?"), "", ""),
+            Ask::SongPlayingAlbum | Ask::SongPlayingPlaylist | Ask::SongPlayingList => {
+                (crate::i18n::text("This song is playing"), "", "")
+            }
             Ask::ResetSettings => (
                 crate::i18n::text("Reset settings?"),
                 crate::i18n::text("Every preference goes back to its default. Your music, playlists and pins are untouched."),
@@ -176,6 +189,23 @@ impl Ask {
                 ("Play now, then Up Next", Hit::KeepQueue),
                 ("Cancel", Hit::Cancel),
             ],
+            // Queueing first: it is the thing the song is already doing, carried on. Starting over
+            // is the old behaviour of the tap, kept one row down.
+            Ask::SongPlayingAlbum => &[
+                ("Play the rest of the album next", Hit::RestNext),
+                ("Start the album from here", Hit::RestRestart),
+                ("Keep playing", Hit::Cancel),
+            ],
+            Ask::SongPlayingPlaylist => &[
+                ("Play the rest of the playlist next", Hit::RestNext),
+                ("Start the playlist from here", Hit::RestRestart),
+                ("Keep playing", Hit::Cancel),
+            ],
+            Ask::SongPlayingList => &[
+                ("Play the rest of this list next", Hit::RestNext),
+                ("Start this list from here", Hit::RestRestart),
+                ("Keep playing", Hit::Cancel),
+            ],
             _ => &[],
         }
     }
@@ -233,6 +263,10 @@ pub enum Hit {
     ClearQueue,
     /// Play the tapped song and leave the queue alone — it plays after.
     KeepQueue,
+    /// The playing song was tapped in a list: queue the rest of that list after it.
+    RestNext,
+    /// ...or start that list from the tapped song, as the tap did before.
+    RestRestart,
 }
 
 /// Centre of the confirming button, for tests that need to press it without duplicating the

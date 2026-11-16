@@ -1,5 +1,5 @@
-//! Editing one of Cinder's own playlists (design handoff 5b): ≡ to move, × to remove, UNDO in the
-//! section label, DONE in the header's right slot.
+//! Editing one of Cinder's own playlists (design handoff 5b): its name and cover, ≡ to move, × to
+//! remove, UNDO in the section label, DONE in the header's right slot.
 //!
 //! An EDITOR, not the playlist page with extra buttons. Nothing here touches the file until DONE:
 //! the navigator holds a working order, every change pushes the order it replaced onto an undo
@@ -11,7 +11,8 @@
 //! playlist's members are rules (its EDIT opens `view_edit` instead).
 //!
 //!   header    Edit playlist                                  DONE
-//!   strip     NIGHT BUS
+//!   row       Name                                     Night Bus ›
+//!   row       Cover                                    Automatic ›
 //!   label     12 TRACKS                                      UNDO
 //!   rows      ≡  Title / artist                                 ×
 //!
@@ -34,10 +35,13 @@ pub fn RH() -> i32 {
     crate::scale::TRACK_ROW_H()
 }
 
-/// The strip naming the playlist.
-pub const STRIP_Y: i32 = crate::chrome::HEADER_BOTTOM;
+/// The Name and Cover rows. Each opens its own screen (the keyboard, the cover picker) and takes
+/// effect there, not at DONE — the same as the playlist page's RENAME always did.
+pub const FIELD_H: i32 = 52;
+pub const NAME_Y: i32 = crate::chrome::HEADER_BOTTOM;
+pub const COVER_Y: i32 = NAME_Y + FIELD_H;
 /// The "N TRACKS · UNDO" section label.
-pub const LABEL_Y: i32 = STRIP_Y + kit::STRIP_H;
+pub const LABEL_Y: i32 = COVER_Y + FIELD_H;
 /// Top of the scrolling rows.
 pub const LIST_TOP: i32 = LABEL_Y + kit::SECTION_H;
 /// Bottom of the scrolling rows: clear of the Shelf's swipe-up zone, as the pickers are.
@@ -88,6 +92,14 @@ pub fn hit_remove(n: usize, scroll_px: i32, x: i32, y: i32) -> Option<usize> {
     row_at(n, scroll_px, y)
 }
 
+pub fn hit_name(y: i32) -> bool {
+    (NAME_Y..COVER_Y).contains(&y)
+}
+
+pub fn hit_cover(y: i32) -> bool {
+    (COVER_Y..LABEL_Y).contains(&y)
+}
+
 /// Is `(x, y)` on UNDO? Only meaningful while there is something to undo — the caller asks.
 pub fn hit_undo(x: i32, y: i32) -> bool {
     kit::section_action_hit(LABEL_Y, x, y)
@@ -105,8 +117,9 @@ pub fn slot_for(n: usize, float_top: i32, scroll_px: i32) -> usize {
 
 /// What the editor shows.
 pub struct EditView<'a> {
-    /// The playlist's name, for the strip.
+    /// The playlist's name, and what its cover is ("Automatic", an album, a picture).
     pub name: &'a str,
+    pub cover: &'a str,
     /// The rows in the working order.
     pub rows: Vec<&'a SongRow>,
     pub scroll_px: i32,
@@ -166,7 +179,22 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
         crate::i18n::text("Edit playlist"),
         crate::i18n::text("DONE"),
     );
-    kit::strip(c, t, f, STRIP_Y, &v.name.to_uppercase());
+    kit::row(
+        c,
+        t,
+        f,
+        NAME_Y,
+        FIELD_H,
+        &kit::Row::new(crate::i18n::text("Name")).trail(kit::Trail::Open(v.name)),
+    );
+    kit::row(
+        c,
+        t,
+        f,
+        COVER_Y,
+        FIELD_H,
+        &kit::Row::new(crate::i18n::text("Cover")).trail(kit::Trail::Open(v.cover)),
+    );
     let n = v.rows.len();
     let count = if n == 1 {
         crate::i18n::text("1 TRACK").to_string()

@@ -60,6 +60,9 @@ SRC_HAGOWRAP=/contents/cinder-hagowrap
 SRC_GUARD=/contents/cinder-guard.sh
 SRC_PRELOAD=/contents/cinder-preload.sh
 SRC_FASTBOOT=/contents/cinder-fastboot.sh
+SRC_KERNEL_SH=/contents/cinder-kernel.sh
+SRC_BOOTIMG=/contents/cinder-bootimg
+SRC_KERNEL=/contents/cinder-kernel
 SRC_BTAAC=/contents/libcinder_aac.so
 SRC_ATRAC=/contents/libcinder_atrac.so
 SRC_FMREC=/contents/libcinder_fmrec.so
@@ -122,6 +125,7 @@ WANT_LLUSBDAC="$(comp_bool CINDER_LLUSBDAC 0)"
 WANT_BT_SBC_XQ="$(comp_bool CINDER_BT_SBC_XQ 0)"
 WANT_WIFI="$(comp_bool CINDER_WIFI 0)"
 WANT_FAST_BOOT="$(comp_bool CINDER_FAST_BOOT 0)"
+WANT_KERNEL="$(comp_bool CINDER_KERNEL 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
 WANT_CHAIN="$(comp_chain)"
@@ -131,7 +135,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC wifi=$WANT_WIFI fast-boot=$WANT_FAST_BOOT"
+echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC wifi=$WANT_WIFI fast-boot=$WANT_FAST_BOOT kernel=$WANT_KERNEL"
 
 
 # ── what was ALREADY mounted before we touched anything ──────────────────────────────────────
@@ -723,6 +727,37 @@ if [ "$WANT_FAST_BOOT" = 1 ]; then
     fi
 elif [ -s "$FASTBOOT_SH" ]; then
     sh "$FASTBOOT_SH" remove || echo "WARN: fast-boot — could not be removed cleanly (see the line above)."
+fi
+
+# 1g3c) the `kernel` component (deploy/cinder-kernel.sh, src/cinder-bootimg.c, host test
+#      tools/test_kernel.sh): Cinder's kernel in the boot partition. The script and its tool are
+#      installed whenever they are staged, because `remove` is what puts Sony's kernel back. The
+#      script writes nothing without a saved original that reads back, and puts the original back
+#      if its own write does not read back. Non-fatal either way: the rest of the install goes on.
+KERNEL_SH=$BIN/cinder-kernel.sh
+for kf in "$SRC_KERNEL_SH:$KERNEL_SH" "$SRC_BOOTIMG:$BIN/cinder-bootimg"; do
+    ksrc="${kf%%:*}"; kdst="${kf#*:}"
+    [ -s "$ksrc" ] || continue
+    "$BB" cat "$ksrc" > "$kdst.tmp" 2>/dev/null
+    if [ -s "$kdst.tmp" ] && "$BB" cmp -s "$ksrc" "$kdst.tmp"; then
+        "$BB" chown 0:0 "$kdst.tmp" 2>/dev/null
+        "$BB" chmod 755 "$kdst.tmp"
+        "$BB" mv -f "$kdst.tmp" "$kdst"
+    else
+        "$BB" rm -f "$kdst.tmp" 2>/dev/null
+        echo "WARN: kernel — $ksrc did not copy whole; the one on the player (if any) is kept."
+    fi
+done
+if [ "$WANT_KERNEL" = 1 ]; then
+    if [ -s "$KERNEL_SH" ] && [ -x "$BIN/cinder-bootimg" ] && [ -s "$SRC_KERNEL" ]; then
+        BB="$BB" CINDER_BOOTIMG="$BIN/cinder-bootimg" sh "$KERNEL_SH" install "$SRC_KERNEL" \
+            || echo "WARN: kernel — not installed (see the line above); the boot partition is as it was."
+    else
+        echo "WARN: kernel selected but not staged (this build has no kernel) — nothing installed."
+    fi
+elif [ -s "$KERNEL_SH" ] && [ -x "$BIN/cinder-bootimg" ]; then
+    BB="$BB" CINDER_BOOTIMG="$BIN/cinder-bootimg" sh "$KERNEL_SH" remove \
+        || echo "WARN: kernel — Cinder's kernel could not be taken out (see the line above)."
 fi
 
 # 1g4) AAC Bluetooth transmit and SBC XQ: the `bt-aac` component (cinder-aac/). Two

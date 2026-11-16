@@ -16,8 +16,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-11-11
+
 ### Added
 
+- **Faster kernel (installer option `kernel`, off by default, experimental).** The player's own
+  kernel, rebuilt from the source Sony published, with fixes: it starts about 1.5 seconds sooner,
+  wakes the processor less often with the screen off, and no longer crashes or hangs in three of
+  Sony's drivers. Only the boot partition is written: the original is saved to the drive first as
+  `cinder_boot_original.img`, the new image is read back after writing (the original goes straight
+  back if it differs), and unticking the option or uninstalling puts the original back. Back the
+  player up with cinder-rescue first. *Ran from the boot partition on one NW-A55; installed by hand,
+  the installer's own install and removal not yet run on a player.*
 - **Join Wi-Fi with the router's WPS button.** Settings ▸ Wi-Fi ▸ Network has a "Router's WPS
   button" row: tap it, press the button on the router within two minutes, and the player joins and
   saves the network without a password typed. *Joined the owner's router on a player; with no
@@ -44,54 +54,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   option the checks are skipped once they have found nothing to do, and run again by themselves if
   a Sony update changes the firmware. Measured on a player: Sony's services start 2.1 s sooner and
   Cinder 2.2 s sooner.
-
-### Changed
-
-- **Fewer wakeups for Sony's buttons and lights (with `preload`).** Sony's key and LED services
-  each wake the processor ten times a second, whether or not a button is held or a light blinks.
-  The `preload` wrapper now lets the system run those wakeups together with others it was doing
-  anyway. Measured on a player with the screen off: about a fifth fewer wakeups during playback
-  (87 to 72 a second) and when paused (46 to 37). Sony's own screens may notice a held button up to
-  0.05 s later. Cinder reads the buttons itself, so it is unaffected.
-- **The Headphone EQ refuses a filter that would run away.** The sound service now checks every
-  filter it is handed is stable and in range, and plays without EQ otherwise, so a damaged control
-  file can never turn into full-scale noise. AutoEQ files and media-server answers were also
-  fuzzed (200,000 mangled inputs each): no crash, and every accepted profile designs stable filters
-  at every rate from 32 to 384 kHz.
-- **Internet radio and "Play to this player" decode AAC with a current decoder.** They used the
-  firmware's own AAC decoder from 2019, which lacks the fixes made to it since, on streams from any
-  station or anyone on the network. The Wi-Fi option now carries fdk-aac 2.0.3's decoder, built from
-  source, and falls back to the firmware's only if it is missing. On a player the two decoders'
-  output differs by at most 1 bit on AAC-LC (HE-AAC: a difference 91 dB down). *Not yet heard on a
-  station: the player's saved Wi-Fi network was cleared.*
-- **Wi-Fi option rebuilt on OpenSSL 3.5.9 and wpa_supplicant 2.12.** OpenSSL 3.0 left support on
-  2026-09-07; 3.5 is the long-term series (to 2030). wpa_supplicant 2.12 carries the fixes since 2.10,
-  among them CVE-2023-52160 (an enterprise network saved without a server name to check). curl and
-  both AirPlay receivers use the new OpenSSL too. *Scanning checked on a player; joining a network
-  not yet.*
-- **Releases ship the player files GitHub builds from the public source.** Each release now builds
-  the device payload on GitHub and publishes only if every file is byte-identical to the
-  maintainer's own build (v0.4.2-rc4 was the first to match, 83 of 83 files). Anyone can rebuild a
-  release's player files from this repository and check them against `cinder-home/dist/PAYLOAD.sha256`.
-
-### Fixed
-
-- **Clearing a bad-boot revert from the drive:** `cinderhome_clear` on the drive did nothing, so a
-  player that had switched to Sony's player stayed there until Cinder was installed again. It now
-  works.
-- **Auto power-off on unplugging:** a player left on the charger for longer than the auto
-  power-off time switched off the moment it was unplugged. Unplugging now starts the countdown
-  again.
-- **Album grid covers:** a player that started on the album grid showed gradients instead of
-  covers until the library was rebuilt. The grid now waits for the covers to be ready instead of
-  giving up on them.
-- **Deleting an album whose files are already gone:** Cinder said it could not delete it, and the
-  album stayed listed. A file that is already gone now counts as deleted, and the library updates.
-
-## [0.4.2] — 2026-11-11
-
-### Added
-
 - **Headphone EQ (Sound ▸ Advanced, off by default).** Plays a parametric EQ profile for your
   headphones: copy the `ParametricEQ.txt` files AutoEQ publishes (or any file in the same format, as
   Equalizer APO reads) into a folder named `cinder_eq` on the player, and each tap of the row moves to
@@ -172,6 +134,17 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Clearing a bad-boot revert from the drive:** `cinderhome_clear` on the drive did nothing, so a
+  player that had switched to Sony's player stayed there until Cinder was installed again. It now
+  works.
+- **Auto power-off on unplugging:** a player left on the charger for longer than the auto
+  power-off time switched off the moment it was unplugged. Unplugging now starts the countdown
+  again.
+- **Album grid covers:** a player that started on the album grid showed gradients instead of
+  covers until the library was rebuilt. The grid now waits for the covers to be ready instead of
+  giving up on them.
+- **Deleting an album whose files are already gone:** Cinder said it could not delete it, and the
+  album stayed listed. A file that is already gone now counts as deleted, and the library updates.
 - **Removing a song that is in Up Next twice could put the other copy back in the wrong place**
   when shuffle was turned off. The copy removed is now the one forgotten.
 
@@ -229,6 +202,46 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **Playlists: name, cover and removal live in EDIT.** The editor has Name and Cover rows at the
+  top. Cover opens a picker (also opened by tapping the cover): Automatic, each album in the list,
+  or any picture copied into the `cinder_playlists` folder on the drive. The × on each row of the
+  playlist page is gone, because it was too easy to hit by accident; songs are removed in EDIT,
+  which has UNDO and saves only at DONE. *Host-tested; not yet tried on a player.*
+- **Tapping the song that is already playing asks first.** From an album, a playlist or any list,
+  tapping the playing song offers "Play the rest of the … next" (the rest of that list goes after
+  the current song, which keeps playing), "Start the … from here", or "Keep playing", instead of
+  restarting it. *Host-tested; not yet tried on a player.*
+- **Easier to read and tap (a UI audit).** Section labels, captions and hints are brighter (4.5:1
+  contrast in Cinder's palettes, was 2.9:1). Instructions read as sentences instead of tiny
+  capitals ("Tap Done to save, or Back to cancel"), and nothing is smaller than 11 px. The keyboard's
+  gaps and edges type the nearest key, SCAN and PAIR NEW answer a taller area, and a selected option
+  is ringed in the accent instead of filled with it.
+- **Fewer wakeups for Sony's buttons and lights (with `preload`).** Sony's key and LED services
+  each wake the processor ten times a second, whether or not a button is held or a light blinks.
+  The `preload` wrapper now lets the system run those wakeups together with others it was doing
+  anyway. Measured on a player with the screen off: about a fifth fewer wakeups during playback
+  (87 to 72 a second) and when paused (46 to 37). Sony's own screens may notice a held button up to
+  0.05 s later. Cinder reads the buttons itself, so it is unaffected.
+- **The Headphone EQ refuses a filter that would run away.** The sound service now checks every
+  filter it is handed is stable and in range, and plays without EQ otherwise, so a damaged control
+  file can never turn into full-scale noise. AutoEQ files and media-server answers were also
+  fuzzed (200,000 mangled inputs each): no crash, and every accepted profile designs stable filters
+  at every rate from 32 to 384 kHz.
+- **Internet radio and "Play to this player" decode AAC with a current decoder.** They used the
+  firmware's own AAC decoder from 2019, which lacks the fixes made to it since, on streams from any
+  station or anyone on the network. The Wi-Fi option now carries fdk-aac 2.0.3's decoder, built from
+  source, and falls back to the firmware's only if it is missing. On a player the two decoders'
+  output differs by at most 1 bit on AAC-LC (HE-AAC: a difference 91 dB down). *Not yet heard on a
+  station: the player's saved Wi-Fi network was cleared.*
+- **Wi-Fi option rebuilt on OpenSSL 3.5.9 and wpa_supplicant 2.12.** OpenSSL 3.0 left support on
+  2026-09-07; 3.5 is the long-term series (to 2030). wpa_supplicant 2.12 carries the fixes since 2.10,
+  among them CVE-2023-52160 (an enterprise network saved without a server name to check). curl and
+  both AirPlay receivers use the new OpenSSL too. *Scanning checked on a player; joining a network
+  not yet.*
+- **Releases ship the player files GitHub builds from the public source.** Each release now builds
+  the device payload on GitHub and publishes only if every file is byte-identical to the
+  maintainer's own build (v0.4.2-rc4 was the first to match, 83 of 83 files). Anyone can rebuild a
+  release's player files from this repository and check them against `cinder-home/dist/PAYLOAD.sha256`.
 - **The player's files can be built on GitHub.** The build links against stand-ins made from the
   device libraries' symbol lists instead of the firmware, and comes out byte for byte the same
   (checked against v0.4.2-rc2: every file Cinder compiles matched). The Wi-Fi option and the AAC

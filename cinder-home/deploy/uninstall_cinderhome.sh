@@ -167,6 +167,14 @@ if [ "$restored" = 1 ]; then
         sh "$BIN/cinder-fastboot.sh" remove 2>&1 || echo "fast-boot: could not be removed cleanly (see the line above)"
     fi
 
+    # 1c3. The `kernel` component (install_cinderhome.sh 1g3c): Sony's kernel back from the copy
+    #      saved on the drive. Best-effort: with no saved copy, Cinder's kernel stays (it runs
+    #      Sony's firmware unchanged), and Sony's firmware installer or cinder-rescue puts Sony's back.
+    if [ -s "$BIN/cinder-kernel.sh" ] && [ -x "$BIN/cinder-bootimg" ]; then
+        BB="$BB" CINDER_BOOTIMG="$BIN/cinder-bootimg" sh "$BIN/cinder-kernel.sh" remove 2>&1 \
+            || echo "kernel: Cinder's kernel could not be taken out (see the line above)"
+    fi
+
     # 1d. The switches of `bt-aac` (install_cinderhome.sh 1g4); its libraries go with the folder.
     "$BB" rm -f /data/cinder/bt_aac /data/cinder/bt_sbc_xq /data/cinder/bt_aptxhd 2>/dev/null
 

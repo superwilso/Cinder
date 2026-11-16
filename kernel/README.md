@@ -3,8 +3,9 @@
 The NW-A50 series kernel, rebuilt from Sony's own GPL source, with fixes for bugs in Sony's and
 MediaTek's drivers. GPL-2.0 (see `LICENSE`), like the source it patches.
 
-Nothing here is installed by Cinder yet. A rebuilt kernel is tested by booting it from RAM over
-fastboot, which writes nothing to the player (see "Testing" below).
+The installer's `kernel` option (off by default, experimental) installs it: see "Installing on the
+player" below. A rebuilt kernel is tried first by booting it from RAM over fastboot, which writes
+nothing to the player (see "Testing" below).
 
 ## Build
 
@@ -45,6 +46,7 @@ the ones the patches remove and two the compilers handle differently.
 | 0006 | Logs when the kernel started, in ms since power-on (`cinder: kernel started N ms`), so boot time can be measured: subtract `bootprof.lk_t` from the command line. |
 | 0007 | The touch panel's 0.6 s power-up runs beside the other drivers instead of in front of them: userspace starts 0.3 s sooner (2.57 s, was 2.88 s). The panel keeps its input number, which Sony's own app is given. |
 | 0008 | Sony's USB unplug check (`khubd_poll`) looks every 100 ms only while a high-speed device is plugged into the player as a host, and once a second otherwise. That is 9 fewer wakeups a second almost all the time: measured on a player with the screen off, 87 to 79 a second during playback and 46 to 39 when paused. |
+| 0009 | Two builds of the same source give the same image. The Mali GPU driver wrote the build machine's git revision, commit date and clock into its version string; with `__DATE__` and `__TIME__` pinned in `build.sh`, the release check can compare the kernel byte for byte. |
 
 ## czram.ko: working swap on the stock kernel
 
@@ -98,7 +100,21 @@ kernel printed no error a normal boot does not also print.
 
 ## Installing on the player
 
-The bootloader's `fastboot flash boot` is refused ("Security deny"), so the image is written from
+**With the installer:** tick `kernel` (Device). In Sony's updater, `deploy/cinder-kernel.sh`:
+
+1. saves the partition's image to the drive as `cinder_boot_original.img`, reads it back, and
+   writes nothing without it (an existing saved copy is never replaced);
+2. puts the new image together on the player with `cinder-bootimg` (`src/cinder-bootimg.c`): the
+   partition's own header and ramdisk, so stock and Walkman One keep theirs, this kernel, and
+   `cinder` in the header's name field so a later run knows whose kernel is in place;
+3. writes it to `bootimg` and reads it back; if it differs, the saved original goes straight back.
+
+Unticking `kernel` and updating, or uninstalling, writes the saved original back the same way.
+Host test: `cinder-home/tools/test_kernel.sh`. A player that will not start after this: restore
+`bootimg` with cinder-rescue, or boot Sony's kernel from RAM as in "Testing" and write the saved
+original back.
+
+**By hand** (how the first player got it, 2026-11-16). The bootloader's `fastboot flash boot` is refused ("Security deny"), so the image is written from
 the player itself. The `boot` partition is `mmcblk0p8` (`/proc/dumchar_info` lists it as
 `bootimg`); the bootloader is p7 and is never written. Keep a copy of p8 first.
 

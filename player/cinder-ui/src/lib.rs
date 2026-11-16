@@ -50,6 +50,7 @@ pub mod overlay;
 pub mod pairing;
 pub mod palette;
 pub mod palette_list;
+pub mod playlist_cover;
 pub mod playlist_edit;
 pub mod playlist_pick;
 pub mod presets;

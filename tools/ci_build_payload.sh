@@ -42,7 +42,7 @@ if [ -z "${SKIP_APT:-}" ]; then
     sudo apt-get install -y -qq --no-install-recommends \
         clang-18 lld-18 gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
         qemu-user-static libcrypto++-dev zlib1g-dev autoconf automake libtool pkg-config bison flex bc cpio \
-        python3 g++ make patch xz-utils curl git >/dev/null
+        python3 g++ make patch xz-utils lzop curl git >/dev/null
 fi
 # Versions, for the log: a difference here is the first suspect when a file does not match.
 clang++-18 --version | head -1

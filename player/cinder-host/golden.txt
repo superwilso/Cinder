@@ -33,7 +33,7 @@ da37a42a4081cb44 up_next_queue_day
 e96bd2703ffdb5d6 playlist_page_day
 3d09c686531fb700 sound_source_direct_day
 2cb1bb19118d47a3 sound_tone_control_day
-af94610de81a2235 playlist_page_own_day
+8607ef8940b2c809 playlist_page_own_day
 292ea61294168826 library_playlists_own_day
 1a28997a0b040fe2 keyboard_day
 1ec0be187808cb53 keyboard_symbols_day
@@ -59,8 +59,9 @@ e2f7c62ae6737d15 album_rated_day
 3eb2d4e9d679357f artist_played_day
 e18902c71758ef25 library_playlists_smart_day
 0c5de0315f7e1ece playlist_page_smart_day
-fc4f8de3b37b5534 playlist_edit_day
-c96a57281c65ade5 playlist_edit_drag_day
+67a2188614529b81 playlist_cover_day
+a22471f66bf403f1 playlist_edit_day
+955dbacf417dbb48 playlist_edit_drag_day
 e430f8f39f4a2668 view_edit_day
 6a2a53357e8728ba view_edit_new_day
 e99e81a4e788f319 eq_day
@@ -150,7 +151,7 @@ e976f87aedae3a9f up_next_night
 1d45e2e347a60f70 playlist_page_night
 268cc807909e3091 sound_source_direct_night
 e3d002de8f10081b sound_tone_control_night
-47002f39eea21cb7 playlist_page_own_night
+43d06b8d8df84712 playlist_page_own_night
 cee93a7f16f4b664 library_playlists_own_night
 aa0af58f43255c12 keyboard_night
 b8addabe41b48ef9 keyboard_symbols_night
@@ -176,8 +177,9 @@ cba65ccde1616f97 album_rated_night
 b0ed768a039d4df9 artist_played_night
 c8f7fffc5dec8bc1 library_playlists_smart_night
 e6fe54042cb0c761 playlist_page_smart_night
-8e5ee88fd897093f playlist_edit_night
-cdd8fabae868c167 playlist_edit_drag_night
+d3593ba93371e9a8 playlist_cover_night
+c301c050483ff469 playlist_edit_night
+57433d4771cfb76d playlist_edit_drag_night
 a6e9fbd8fd97ab5b view_edit_night
 04a2a9834aad3c60 view_edit_new_night
 63d7cf6ded21e62e eq_night
@@ -241,11 +243,11 @@ a41fb60d04e3c4ff viz_size_0_off
 29b9883e713e131a viz_size_2_full
 9974537d9fa9416a confirm_restart
 021f37ff4496f782 confirm_poweroff
-c5490c12a76b2f5b settings_scrolled
+f719acf0cab05012 settings_scrolled
 29d598206f182408 device
 282fb2e404152b60 storage
 bde38f2e7b3fac11 storage_end
-aadbd2f3fc3e868d device_scrolled
+a5a7003674280124 device_scrolled
 0fc20701211ff500 device_degraded
 03562d3442b24876 np_page_0
 b7ab36af1fe26b06 np_page_1
@@ -336,7 +338,7 @@ d157ec1a991c3baa uiscale_80_upnext
 d02b838fcf5ac993 uiscale_80_receiver_ldac
 d3fc68d72a7b8aad uiscale_80_receiver_aac
 f3470d5b579cd652 uiscale_80_receiver_sbc
-c55b131bef1e85bb uiscale_80_settings_bottom
+9ce9d476d5bf8547 uiscale_80_settings_bottom
 be796bf661455c6b uiscale_100_library
 246bba60cd6f9938 uiscale_100_settings
 26a9f686fa3ccc5f uiscale_100_display
@@ -349,7 +351,7 @@ a41fb60d04e3c4ff uiscale_100_nowplaying
 b7360d24ce319fbf uiscale_100_receiver_ldac
 cb7b20e5e422bef4 uiscale_100_receiver_aac
 753865ab121ab98f uiscale_100_receiver_sbc
-c5490c12a76b2f5b uiscale_100_settings_bottom
+f719acf0cab05012 uiscale_100_settings_bottom
 a503204c783b014d uiscale_120_library
 b0690f165a4464a0 uiscale_120_settings
 49d082269b7215c6 uiscale_120_display
@@ -362,7 +364,7 @@ fed8d67aa19eb907 uiscale_120_nowplaying
 41319ed7a0cea57a uiscale_120_receiver_ldac
 f6a4099c49cd93dd uiscale_120_receiver_aac
 d5932a1e69dd3c45 uiscale_120_receiver_sbc
-42bc0d78ef03e279 uiscale_120_settings_bottom
+7c0dddb889e6a745 uiscale_120_settings_bottom
 d6f38ea46f779957 uiscale_140_library
 3f20768c9588b8d8 uiscale_140_settings
 545058ee0b110996 uiscale_140_display
@@ -375,7 +377,7 @@ d6f38ea46f779957 uiscale_140_library
 cb5a7c244c902d7f uiscale_140_receiver_ldac
 a98e86edd66a31dc uiscale_140_receiver_aac
 0a820198169b2f60 uiscale_140_receiver_sbc
-f673409a1aafa92c uiscale_140_settings_bottom
+31146bffc524172c uiscale_140_settings_bottom
 06ab738d00370a5e palette_picker_100
 59786667ac85e50a palette_picker_140
 48d766a005cade91 viz_0_bars
@@ -417,7 +419,7 @@ e6b8d4b9e62d72c1 viz_signal_radial_night
 b264b7e86322ad38 soundscape_beach_music_night
 818944dfb97b3eb7 language_picker_100
 bec8f0ab95eacff2 language_picker_140
-c5490c12a76b2f5b language_entry_no_sony
+f719acf0cab05012 language_entry_no_sony
 2a6b0765615dde92 zappin_ready_en
 c75af52ce3aeb4aa zappin_no_queue_en
 c746740de3aa2901 zappin_active_sabi_en

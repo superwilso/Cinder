@@ -269,6 +269,10 @@ done
 [ -n "$UMOUNT_CC" ] || { echo "ERROR: arm-linux-musleabihf-gcc not found (needed for cinder-umount)"; exit 1; }
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-umount" "$HERE/src/cinder-umount.c"
 echo "built: $HERE/cinder-umount ($(stat -c %s "$HERE/cinder-umount") bytes)"
+# cinder-bootimg: the `kernel` option's boot-image tool (src/cinder-bootimg.c), run as root by
+# deploy/cinder-kernel.sh. Static, like the helpers above.
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-bootimg" "$HERE/src/cinder-bootimg.c"
+echo "built: $HERE/cinder-bootimg ($(stat -c %s "$HERE/cinder-bootimg") bytes)"
 
 # cinder-power: third setuid-root helper — reboot(2) for Power off / Restart. Sony's own
 # PowerMgrServiceClient cannot do it while Cinder is the Home app (its shutdown barrier waits on a
@@ -400,6 +404,18 @@ cp -f "$HERE/cinder-hagowrap" "$DIST/cinder-hagowrap"
 cp -f "$HERE/deploy/cinder-guard.sh" "$DIST/cinder-guard.sh"
 cp -f "$HERE/deploy/cinder-preload.sh" "$DIST/cinder-preload.sh"
 cp -f "$HERE/deploy/cinder-fastboot.sh" "$DIST/cinder-fastboot.sh"
+# The `kernel` option: Cinder's kernel (kernel/, GPL-2.0, built from Sony's source), the tool that
+# puts it into the player's own boot image, and the script that installs and removes it. The kernel
+# builds only where Sony's tree is (cinder-llusbdac's work/), so a build without it offers no kernel.
+cp -f "$HERE/cinder-bootimg" "$DIST/cinder-bootimg"
+cp -f "$HERE/deploy/cinder-kernel.sh" "$DIST/cinder-kernel.sh"
+[ -s "$REPO/kernel/out/zImage" ] || bash "$REPO/kernel/build.sh" >/dev/null 2>&1 || true
+if [ -s "$REPO/kernel/out/zImage" ]; then
+    cp -f "$REPO/kernel/out/zImage" "$DIST/cinder-kernel"
+else
+    rm -f "$DIST/cinder-kernel"
+    echo "WARN: kernel/out/zImage is missing (needs Sony's kernel tree and lzop) — no kernel in this build."
+fi
 cp -f "$AAC_DIR/build/libcinder_aac.so" "$DIST/libcinder_aac.so"
 cp -f "$AAC_DIR/build/libfdk-aac-enc.so" "$DIST/libfdk-aac-enc.so"
 cp -f "$HERE/cinder-fm" "$DIST/cinder-fm"
