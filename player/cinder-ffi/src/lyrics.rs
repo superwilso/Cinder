@@ -184,7 +184,22 @@ fn keep(key: &str) -> Option<String> {
         return Some("LYRICS".into());
     }
     let k = key.to_ascii_uppercase();
-    k.starts_with("REPLAYGAIN_").then_some(k)
+    (k.starts_with("REPLAYGAIN_") || k == "ARTIST").then_some(k)
+}
+
+/// The artist a scrobble should name, when the file's tags give more than one.
+///
+/// A FLAC can carry several `ARTIST` values (`Amy Winehouse`, `Ade Omotayo`, `Zalon Thompson`),
+/// and Sony's scanner keeps the LAST, so the play went to the guest (seen 2026-11-16 on the owner's
+/// Last.fm). Last.fm and ListenBrainz take one artist per play, and the first value is the main
+/// one. None when the tags name one artist or none: the database's artist is right then.
+pub fn first_of_several_artists(track_path: &str) -> Option<String> {
+    let artists: Vec<String> = tags(track_path)
+        .into_iter()
+        .filter(|(k, v)| k == "ARTIST" && !v.trim().is_empty())
+        .map(|(_, v)| v.trim().to_string())
+        .collect();
+    (artists.len() > 1).then(|| artists[0].clone())
 }
 
 /// FLAC metadata blocks from `pos`: the Vorbis comment block's kept keys. The value is always
@@ -1152,6 +1167,28 @@ mod tests {
             ..Gain::default()
         };
         assert!(wild.q24(false).unwrap() < 4 * unity, "kept under +12 dB");
+    }
+
+    /// Several ARTIST values: the scrobble names the first, not the last Sony's scanner keeps (the
+    /// owner's "Hey Little Rich Girl", 2026-11-16). One value, or none, leaves the database's.
+    #[test]
+    fn a_scrobble_names_the_first_of_several_artists() {
+        let p = scratch(
+            "several.flac",
+            &flac(&[
+                "TITLE=Hey Little Rich Girl",
+                "ARTIST=Amy Winehouse",
+                "ARTIST=Ade Omotayo",
+                "artist=Zalon Thompson",
+            ]),
+        );
+        assert_eq!(
+            first_of_several_artists(p.to_str().unwrap()).as_deref(),
+            Some("Amy Winehouse")
+        );
+        let p = scratch("one.flac", &flac(&["ARTIST=Little Simz", "TITLE=Woman"]));
+        assert_eq!(first_of_several_artists(p.to_str().unwrap()), None);
+        assert_eq!(first_of_several_artists("/no/such/file.flac"), None);
     }
 
     #[test]

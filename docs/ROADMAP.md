@@ -89,7 +89,8 @@ ones. Read its safety rules first. Grouped by what each needs:
   sending (RAOP), not built.
 - **Wireless sync.** Built: **Share the drive** (Settings ▸ Wi-Fi ▸ Options) serves the drive
   over WebDAV, which Windows and macOS map as a drive, and Flint syncs to that as to the cable.
-  Open: the SD card (only internal memory is shared), and folder COPY within the share.
+  The SD card is a second address (`…/<code>-sd`), mapped as a second drive. Open: folder COPY
+  within the share.
 - **The player as a network speaker.** Built: **Play to this player** (Settings ▸ Wi-Fi ▸
   Options) is a UPnP/DLNA media renderer that plays what a controller sends through the internet
   radio's decoders (MP3, AAC, FLAC, WAV). Open: pause that holds the place, seeking, and the
