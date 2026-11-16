@@ -39,6 +39,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **Fewer wakeups for Sony's buttons and lights (with `preload`).** Sony's key and LED services
+  each wake the processor ten times a second, whether or not a button is held or a light blinks.
+  The `preload` wrapper now lets the system run those wakeups together with others it was doing
+  anyway. Measured on a player with the screen off: about a fifth fewer wakeups during playback
+  (87 to 72 a second) and when paused (46 to 37). Sony's own screens may notice a held button up to
+  0.05 s later. Cinder reads the buttons itself, so it is unaffected.
 - **The Headphone EQ refuses a filter that would run away.** The sound service now checks every
   filter it is handed is stable and in range, and plays without EQ otherwise, so a damaged control
   file can never turn into full-scale noise. AutoEQ files and media-server answers were also

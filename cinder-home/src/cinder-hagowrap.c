@@ -34,6 +34,7 @@
  * and /data/cinder/mono_shim_off).
  */
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -116,6 +117,12 @@ int main(int argc, char** argv)
     const char* shims[2];
     int ns = 0;
     if (argc >= 2 && argv[1] && access(HAGO_OFF, F_OK) != 0 && access(HAGO_OFF_MSC, F_OK) != 0) {
+        /* Sony's KeyService and LED driver share this process and each wake the CPU every 100 ms,
+         * held key or not, blinking light or not (select timeouts in KeyCompImp::ThreadEntry and
+         * LedCompImp::ThreadEntry). 50 ms of timer slack lets the kernel run them together and
+         * beside other wakeups: about 10 fewer a second, measured 2026-11-16. Slack survives the
+         * exec; a failure here changes nothing. */
+        if (strcmp(argv[1], "WMPortService") == 0) prctl(PR_SET_TIMERSLACK, 50000000UL, 0, 0, 0);
         if (strcmp(argv[1], "SoundServiceFw") == 0 && usable(HAGO_SHIM)) shims[ns++] = HAGO_SHIM;
         if (service_shim(argv[1]) && usable(g_svc)) shims[ns++] = g_svc;
     }

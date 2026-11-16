@@ -16,6 +16,7 @@ cat > "$T/real" <<'R'
 #!/bin/sh
 echo "args=$*"
 echo "preload=${LD_PRELOAD-unset}"
+echo "slack=$(cat /proc/self/timerslack_ns 2>/dev/null)"
 R
 chmod +x "$T/real"
 build() {   # build <out> <real>
@@ -76,6 +77,21 @@ for name in "x/y" "../x" "" "Bt.Common"; do
 done
 ok "a name with anything but letters, digits and _ is never a path"
 rm -rf "$T/pre/x" "$T/x.so"
+
+# Timer slack for Sony's KeyService/LED process only, and not past the off switch.
+reset; base=$(cat /proc/self/timerslack_ns 2>/dev/null)
+if [ -n "$base" ]; then
+    out=$(run "$T/wrap" WMPortService KeyService DisplayService)
+    [[ "$out" == *"slack=50000000"* && "$out" == *"args=WMPortService KeyService DisplayService"* ]] \
+        && ok "WMPortService runs with 50 ms of timer slack" || bad "no slack for WMPortService: $out"
+    out=$(run "$T/wrap" SoundServiceFw)
+    [[ "$out" == *"slack=$base"* ]] && ok "other services keep their timer slack" || bad "slack leaked: $out"
+    touch "$T/off"; out=$(run "$T/wrap" WMPortService)
+    [[ "$out" == *"slack=$base"* ]] && ok "the off switch covers the slack too" || bad "slack past the off switch: $out"
+    reset
+else
+    echo "  skip timer slack (no /proc/self/timerslack_ns on this kernel)"
+fi
 
 build "$T/wrap_noreal" "$T/does-not-exist"
 out=$(run "$T/wrap_noreal" SoundServiceFw); rc=$?
