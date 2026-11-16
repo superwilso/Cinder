@@ -779,18 +779,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("playlist_page", &|c: &mut Canvas| {
                 if let Some(pl) = lib.playlists.first() {
-                    library::playlist_view(
-                        c,
-                        &theme,
-                        &fonts,
-                        &lib,
-                        pl,
-                        0,
-                        Some(0),
-                        None,
-                        false,
-                        None,
-                    )
+                    library::playlist_view(c, &theme, &fonts, &lib, pl, 0, Some(0), None, false)
                 }
             }),
             // The playlists you MADE: the same page, plus its edit bar and a row armed for
@@ -816,18 +805,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         name: "Late Night On The Bus".into(),
                         ..pl.clone()
                     };
-                    library::playlist_view(
-                        c,
-                        &theme,
-                        &fonts,
-                        &lib,
-                        &mine,
-                        0,
-                        Some(1),
-                        None,
-                        false,
-                        Some(1),
-                    );
+                    library::playlist_view(c, &theme, &fonts, &lib, &mine, 0, Some(1), None, false);
                 }
             }),
             // The Playlists tab, which is where a playlist gets made.
@@ -1338,8 +1316,19 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     Some(0),
                     None,
                     false,
-                    None,
                 );
+            }),
+            ("playlist_cover", &|c: &mut Canvas| {
+                if let Some(pl) = lib.playlists.first() {
+                    let mine = cinder_ui::model::PlaylistRow {
+                        user: true,
+                        ..pl.clone()
+                    };
+                    let ch = cinder_ui::playlist_cover::choices(&lib, &mine);
+                    cinder_ui::playlist_cover::render(
+                        c, &theme, &fonts, &lib, &mine, &ch, 0, false,
+                    );
+                }
             }),
             // The playlist editor (5b): at rest with something to undo, and mid-drag.
             ("playlist_edit", &|c: &mut Canvas| {
@@ -1349,6 +1338,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     &fonts,
                     &cinder_ui::playlist_edit::EditView {
                         name: "Late Night On The Bus",
+                        cover: "Automatic",
                         rows: lib.songs.iter().collect(),
                         scroll_px: 0,
                         drag: None,
@@ -1376,6 +1366,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     &fonts,
                     &pe::EditView {
                         name: "Late Night On The Bus",
+                        cover: "Automatic",
                         rows: lib.songs.iter().collect(),
                         scroll_px: 0,
                         drag: Some(d),

@@ -254,6 +254,8 @@ jobs:
         run: bash cinder-home/tools/test_preload.sh
       - name: fast-boot (Sony's firmware checks skipped only while nothing changed)
         run: bash cinder-home/tools/test_fastboot.sh
+      - name: kernel option (boot image put together like bootimg.py; no way back, no write)
+        run: bash cinder-home/tools/test_kernel.sh
       - name: sound signature (patch, revert, Walkman One's boot copy)
         run: bash cinder-home/tools/test_signature.sh
       - name: effect chain (Clear Bass patch, revert, unknown library left alone)

@@ -2614,6 +2614,8 @@ fn build_library_with(
         // Filled by `refresh_playlists`, which runs right after this — and normally empty, since
         // only a playlist whose cover is a PICTURE FILE needs one.
         playlist_thumbs: Default::default(),
+        cover_pictures: Vec::new(),
+        playlist_pictures: Default::default(),
         genres,
         hires_tracks,
         filter_genre: None,
@@ -2774,7 +2776,7 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 59] = [
+const SCREEN_NAMES: [&str; 60] = [
     "Lock",
     "NowPlaying",
     "Menu",
@@ -2836,6 +2838,7 @@ const SCREEN_NAMES: [&str; 59] = [
     "RadioFind",
     "MediaServers",
     "Alarm",
+    "PlaylistCover",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -2901,6 +2904,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::RadioFind => 56,
         S::MediaServers => 57,
         S::Alarm => 58,
+        S::PlaylistCover => 59,
     }
 }
 
@@ -4434,13 +4438,7 @@ fn playlist_cover_images(
         if !playlists::Playlist::cover_is_image(&src) {
             continue;
         }
-        let key = art_cache::key_of(&src);
-        let img = art_cache::load(key, art_cache::T48).or_else(|| {
-            let bytes = std::fs::read(&src).ok()?;
-            let full = art_load::decode(&bytes)?;
-            art_cache::store_image(key, &full)
-        });
-        match img {
+        match picture_thumb(&src) {
             Some(img) => {
                 out.insert(list.id, img);
             }
@@ -4448,6 +4446,55 @@ fn playlist_cover_images(
         }
     }
     out
+}
+
+/// A picture file's 48 px thumbnail: from the art cache, or decoded once and cached.
+fn picture_thumb(src: &str) -> Option<cinder_ui::art::Image> {
+    let key = art_cache::key_of(src);
+    art_cache::load(key, art_cache::T48).or_else(|| {
+        let bytes = std::fs::read(src).ok()?;
+        let full = art_load::decode(&bytes)?;
+        art_cache::store_image(key, &full)
+    })
+}
+
+/// The pictures in the playlists folders, for the cover picker, and which one each playlist wears.
+/// ponytail: capped at 64 pictures (one decode each, cached); a picker with folders if anyone
+/// keeps more there.
+fn cover_pictures(
+    store: &playlists::Store,
+) -> (
+    Vec<cinder_ui::model::CoverPicture>,
+    std::collections::HashMap<i64, usize>,
+) {
+    let mut paths: Vec<std::path::PathBuf> = [playlists::DIR, playlists::EXT_DIR]
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|rd| rd.flatten().map(|e| e.path()))
+        .filter(|p| p.to_str().is_some_and(playlists::Playlist::cover_is_image))
+        .collect();
+    paths.sort();
+    paths.truncate(64);
+    let pics: Vec<cinder_ui::model::CoverPicture> = paths
+        .iter()
+        .filter_map(|p| {
+            let path = p.to_str()?.to_string();
+            Some(cinder_ui::model::CoverPicture {
+                name: p.file_stem()?.to_string_lossy().into_owned(),
+                thumb: picture_thumb(&path)?,
+                path,
+            })
+        })
+        .collect();
+    let worn = store
+        .lists
+        .iter()
+        .filter_map(|l| {
+            let src = l.cover_source()?;
+            Some((l.id, pics.iter().position(|p| p.path == src)?))
+        })
+        .collect();
+    (pics, worn)
 }
 
 /// Build the UI rows for Cinder's own playlists, resolving each member path back to a library
@@ -4596,6 +4643,9 @@ fn refresh_playlists(r: &mut Render) {
     auto_playlist_covers(&mut rows);
     r.app.set_playlists(rows);
     r.app.library_mut().playlist_thumbs = playlist_cover_images(&r.plists);
+    let (pics, worn) = cover_pictures(&r.plists);
+    r.app.library_mut().cover_pictures = pics;
+    r.app.library_mut().playlist_pictures = worn;
     r.dirty = true;
 }
 
@@ -6549,25 +6599,6 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
             r.app.note_pre_shuffle(pre);
             8
         }
-        Action::PlaylistRemoveAt(playlist_id, position) => {
-            // `position` is a row of the PAGE, which lists only the members the library resolved.
-            // The file may hold more (a member on a card that is out), so the row is mapped to its
-            // file entry first — removing by the raw number took out a different track whenever an
-            // unresolved one sat above it.
-            let entry = playlist_entry_ids(r, *playlist_id)
-                .iter()
-                .enumerate()
-                .filter(|(_, id)| id.is_some())
-                .map(|(i, _)| i)
-                .nth(*position as usize);
-            let position = &(entry? as u32);
-            match r.plists.remove_at(*playlist_id, *position as usize) {
-                Ok(true) => refresh_playlists(r),
-                Ok(false) => {}
-                Err(e) => eprintln!("cinder-ffi: playlist remove: {e}"),
-            }
-            return None;
-        }
         Action::PlaylistSetCover(playlist_id, object_id) => {
             // Object id 0 is "back to automatic". Otherwise the track's PATH is what gets stored,
             // for the same reason a member is: object ids are re-issued whenever Sony's database
@@ -6588,6 +6619,20 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                 Ok(true) => refresh_playlists(r),
                 Ok(false) => {}
                 Err(e) => eprintln!("cinder-ffi: playlist cover: {e}"),
+            }
+            return None;
+        }
+        Action::PlaylistSetPicture(playlist_id, idx) => {
+            let path = r
+                .app
+                .library()
+                .cover_pictures
+                .get(*idx as usize)
+                .map(|p| p.path.clone())?;
+            match r.plists.set_cover(*playlist_id, Some(&path)) {
+                Ok(true) => refresh_playlists(r),
+                Ok(false) => {}
+                Err(e) => eprintln!("cinder-ffi: playlist picture: {e}"),
             }
             return None;
         }
@@ -12477,6 +12522,7 @@ mod tests {
             S::RadioFind,
             S::MediaServers,
             S::Alarm,
+            S::PlaylistCover,
         ];
         // One ordinal (42) is spare — see SCREEN_NAMES.
         const RESERVED: usize = 1;

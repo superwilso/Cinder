@@ -1183,6 +1183,8 @@ times are from power-on.
 | 51.14 | Dev crash reports: a restart, then a start after it | **Pass 11-16**: each start after a restart left a `cinder_reports/<time>-restart` folder (log, kernel log, restart reason, kernel messages). Not seen yet: a real freeze or crash |
 | 51.15 | Wi-Fi ▸ Network ▸ Router's WPS button, then the router's button | **Pass 11-16** on the owner's router: joined (2.4 GHz, −76 dBm), the network saved (file 0600), then the clock set, 83 plays sent to ListenBrainz and the update check ran on the same connect. With no button pressed it waits 2 min, gives up and saves nothing |
 | 51.16 | `cinderhome_clear` on the drive after a bad-boot revert | Open. The launcher's `rm -f` never removed the latch on this shell (11-16, the player stayed on stock); fixed and on the player, not yet tried. A revert by the boot guard (`cinder-guard.sh`, which puts Sony's Home app back) is not cleared this way |
+| 51.17 | Playlist cover picker and editor Name/Cover rows | Open. On one of your playlists: tap the cover, pick an album, then a picture copied into `cinder_playlists`, then Automatic; each shows on the page and the Playlists tab. EDIT ▸ Name renames; the page's rows have no × |
+| 51.18 | Tapping the playing song again | Open. Play a song from an album, open a playlist holding it, tap it: the dialog appears and playback does not restart. "Play the rest of the playlist next" puts the rest after it in Up Next |
 
 **Decision for the owner.** Cinder's first frame waits 2.4–3.5 s for Sony's app framework
 (`onActivate`). Drawing could start about 2.8 s sooner, but Cinder's settings are on `/contents`,

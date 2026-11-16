@@ -96,6 +96,13 @@ const FILES: &[(&str, &str, &str, bool)] = &[
         "fast-boot",
         false,
     ),
+    // The `kernel` option (deploy/cinder-kernel.sh, src/cinder-bootimg.c, kernel/). The script and
+    // its tool go with every install, because the script's `remove` is what puts Sony's kernel back
+    // when the option is unticked; the kernel itself only when it is ticked. Not `required`: the
+    // kernel builds only where Sony's kernel tree is, so a build without it offers no kernel.
+    ("dist/{ch}/cinder-bootimg", "cinder-bootimg", "", false),
+    ("dist/{ch}/cinder-kernel.sh", "cinder-kernel.sh", "", false),
+    ("dist/{ch}/cinder-kernel", "cinder-kernel", "kernel", false),
     // The `bt-aac` component: AAC Bluetooth transmit (cinder-aac/) and the fdk-aac encoder it
     // prefers. Not `required` yet, for the same reason as the preload files: the committed
     // dist/stable predates them, and tools/release.sh is what refuses a release without them.

@@ -3800,24 +3800,6 @@ pub fn hit_playlist_action(pl: &crate::model::PlaylistRow, x: i32, y: i32) -> Op
     })
 }
 
-/// The remove (×) column on a user playlist's rows. Two-tap: the first tap arms the row and it
-/// says REMOVE?, the second removes. Tapping anywhere else disarms — the same shape Settings ▸
-/// Boot to stock uses, and the reason is the same: a single tap next to a track should never be
-/// able to quietly delete it.
-pub const PLAYLIST_REMOVE_X: i32 = 396;
-
-pub fn hit_playlist_remove(
-    pl: &crate::model::PlaylistRow,
-    scroll_px: i32,
-    x: i32,
-    y: i32,
-) -> Option<usize> {
-    if !pl.user || x < PLAYLIST_REMOVE_X {
-        return None;
-    }
-    playlist_hit_track(pl, scroll_px, y)
-}
-
 /// Playlist drill-in: fixed header (name, count, shuffle band) then the members in saved order.
 #[allow(clippy::too_many_arguments)]
 pub fn playlist_view(
@@ -3831,8 +3813,6 @@ pub fn playlist_view(
     sel: Option<usize>,
     swipe: Option<SwipeRow>,
     sbar_active: bool,
-    // `armed`: the row whose × is armed, if any (two-tap remove).
-    armed: Option<usize>,
 ) {
     let scroll_px = scroll_px.clamp(0, playlist_max_scroll_px(pl));
     c.fill(t.bg);
@@ -4014,34 +3994,15 @@ pub fn playlist_view(
             &crate::widgets::fit(f, &sgn.artist, &ast, 268.0 - thumb_dx() as f32),
             &ast,
         );
-        // The duration moves left on a user playlist to make room for the × column.
-        let dur_x = if pl.user {
-            (PLAYLIST_REMOVE_X - 12) as f32
-        } else {
-            452.0
-        };
+        // Removing a member is the editor's job (EDIT), so the row keeps its whole width here.
         right(
             c,
             f,
-            dur_x,
+            452.0,
             (cy + 4) as f32,
             &sgn.dur,
             &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
         );
-        if pl.user {
-            if armed == Some(i) {
-                // The word stays inside the × column it answers for (the tap target, 396..458):
-                // a size down, untracked, when it would not fit there ("REMOV…" at 120 %).
-                let word = crate::i18n::text("REMOVE?");
-                let mut st = sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.08);
-                if text::measure(f, word, &st) > 60.0 {
-                    st = sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.0);
-                }
-                crate::widgets::center(c, f, 428.0, (cy + 4) as f32, word, &st);
-            } else {
-                icons::close(c, 428.0, cy as f32, 11.0, t.faint);
-            }
-        }
         hline(c, y + PLAYLIST_TRACK_RH(), t.line);
         if sw.is_some() {
             c.clear_offset_x();

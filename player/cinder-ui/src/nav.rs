@@ -183,6 +183,9 @@ pub enum Screen {
     /// Editing one of Cinder's own playlists (handoff 5b): move, remove, UNDO, DONE. Pushed from
     /// the playlist page's EDIT; nothing is written until DONE. See `playlist_edit.rs`.
     PlaylistEdit,
+    /// Choosing a playlist's cover (`playlist_cover.rs`), from the editor's Cover row or the
+    /// page's cover. Each choice is saved at once.
+    PlaylistCover,
     /// The saved-view editor (handoff 5c): a smart playlist's name, rules and sort. Pushed from
     /// the Playlists tab's SMART half-row, or from a smart playlist's EDIT. See `view_edit.rs`.
     ViewEdit,
@@ -521,15 +524,11 @@ pub enum Action {
     DeleteMusic,
     /// `(playlist id, track object id)`.
     PlaylistAddTrack(i64, i64),
-    /// `(playlist id, position)` — remove one member. Two-tap armed in the UI.
-    PlaylistRemoveAt(i64, u32),
     /// `(playlist id, track object id)` — give the playlist the cover of that track's album, or
-    /// clear it back to automatic with object id 0.
-    ///
-    /// A TRACK, not an image path, because `Action` is `Copy` and the device has no file browser:
-    /// every cover you can choose here is already a row in the playlist. An arbitrary picture is
-    /// the PC's job — drop a JPEG beside the `.m3u8` (see `playlists::Playlist::cover_source`).
+    /// clear it back to automatic with object id 0. A TRACK, not a path, because `Action` is `Copy`.
     PlaylistSetCover(i64, i64),
+    /// `(playlist id, index into Library::cover_pictures)` — use a picture from the drive.
+    PlaylistSetPicture(i64, u32),
     /// The playlist editor's DONE: write the edited order back to the `.m3u8`. The order itself
     /// travels out-of-band (`App::take_playlist_edit`), because `Action` is `Copy`.
     PlaylistSaveEdit(i64),
@@ -1823,9 +1822,7 @@ pub struct App {
     /// screen opens: sorting 3,945 rows per frame is exactly the kind of per-frame derived work
     /// the 2026-08-16 performance pass went and removed everywhere else.
     track_pick_order: Vec<usize>,
-    /// The playlist member whose × is armed. First tap arms, second removes, a tap anywhere else
-    /// disarms — a single tap beside a track must never be able to delete it.
-    playlist_remove_arm: Option<usize>,
+    cover_scroll_px: i32,
     /// The playlist editor's working state, while `Screen::PlaylistEdit` is open.
     pl_edit: Option<PlEdit>,
     /// The order the editor's DONE produced, waiting for the shell to write it.
@@ -1849,6 +1846,9 @@ pub struct App {
     /// funnel, and a funnel that forgets which context you started from is the same defect as
     /// having no context at all (see `Action::PlayPlaylistAt`).
     pending_play: Option<Action>,
+    /// What comes after the playing song in the list it was tapped in again, held while the
+    /// "This song is playing" menu is up (`start_play_action`). Queued by RestNext.
+    pending_rest: Vec<crate::model::SongRow>,
     /// The ids behind a pending `Action::PlayListAt`, in play order. See that action.
     play_list: Vec<i64>,
     /// How many tracks are liked — drives the Library's "Liked songs" row. The set itself lives in
@@ -2354,9 +2354,9 @@ impl Default for App {
             kb_purpose: KbPurpose::NewPlaylist,
             pick_track: 0,
             pick_scroll_px: 0,
+            cover_scroll_px: 0,
             track_pick_scroll_px: 0,
             track_pick_order: Vec::new(),
-            playlist_remove_arm: None,
             pl_edit: None,
             pl_edit_done: None,
             views: Vec::new(),
@@ -2364,6 +2364,7 @@ impl Default for App {
             shuffle_by: crate::shuffle::ShuffleBy::Songs,
             list_shuffle_by: crate::shuffle::ShuffleBy::Songs,
             pending_play: None,
+            pending_rest: Vec::new(),
             play_list: Vec::new(),
             liked_count: 0,
             settings_scroll_px: 0,
@@ -2533,6 +2534,15 @@ impl App {
                 self.playlist_view = self.lib.playlists.iter().position(|p| p.user).unwrap_or(0);
                 self.stack.push(Screen::Playlist);
                 self.open_playlist_edit();
+                return;
+            }
+            Screen::PlaylistCover => {
+                if let Some(p) = self.lib.playlists.iter_mut().find(|p| !p.smart) {
+                    p.user = true;
+                }
+                self.playlist_view = self.lib.playlists.iter().position(|p| p.user).unwrap_or(0);
+                self.stack.push(Screen::Playlist);
+                self.open_cover_pick();
                 return;
             }
             Screen::ViewEdit => {
@@ -2793,6 +2803,80 @@ impl App {
     /// The same funnel for a play action that already knows its context (a playlist member, say).
     /// `start_play` is the object-id shorthand for it.
     fn start_play_action(&mut self, act: Action) -> Vec<Action> {
+        // THE PLAYING SONG, TAPPED AGAIN in an album, a playlist or the Songs list. Starting that
+        // list from it would restart the song mid-play; ask instead, and offer to queue the rest
+        // of that list behind it (owner, 2026-11-16: "no matter where it came from"). Not asked
+        // when what follows is already that list: then the tap means what it always meant.
+        if let Some((rest, ask)) = self.rest_after_playing(&act) {
+            let upcoming = self.context.get(self.context_idx + 1..).unwrap_or(&[]);
+            // The list's next few songs are what comes next already (more may follow them).
+            let n = rest.len().min(3);
+            let same = n > 0
+                && upcoming.len() >= n
+                && upcoming
+                    .iter()
+                    .zip(&rest)
+                    .take(n)
+                    .all(|(a, b)| a.object_id == b.object_id);
+            if !same {
+                self.pending_play = Some(act);
+                self.pending_rest = rest;
+                self.confirm = Some(ask);
+                return vec![];
+            }
+        }
+        self.start_play_now(act)
+    }
+
+    /// What would play after the tapped song if `act` started its list, when that song is the one
+    /// playing: the rest of the playlist, the album, or the list on screen. `None` for every other
+    /// play (a different song, a book, a channel, a shuffle, a CUE track).
+    fn rest_after_playing(
+        &self,
+        act: &Action,
+    ) -> Option<(Vec<crate::model::SongRow>, crate::confirm::Ask)> {
+        let playing = self.playing_object_id()?;
+        match act {
+            Action::PlayPlaylistAt(id, i) => {
+                let pl = self.lib.playlists.iter().find(|p| p.id == *id)?;
+                let i = *i as usize;
+                (pl.track_list.get(i)?.object_id == playing).then(|| {
+                    (
+                        pl.track_list[i + 1..].to_vec(),
+                        crate::confirm::Ask::SongPlayingPlaylist,
+                    )
+                })
+            }
+            Action::PlayListAt(n) => {
+                let n = *n;
+                (*self.play_list.get(n)? == playing).then(|| {
+                    let rest = self.play_list[n + 1..]
+                        .iter()
+                        .filter_map(|id| {
+                            self.lib.songs.iter().find(|s| s.object_id == *id).cloned()
+                        })
+                        .collect();
+                    (rest, crate::confirm::Ask::SongPlayingList)
+                })
+            }
+            Action::PlayIndex(id) if *id == playing => self
+                .lib
+                .album_groups
+                .iter()
+                .flat_map(|g| &g.albums)
+                .find_map(|al| {
+                    let p = al.track_list.iter().position(|s| s.object_id == *id)?;
+                    Some((
+                        al.track_list[p + 1..].to_vec(),
+                        crate::confirm::Ask::SongPlayingAlbum,
+                    ))
+                }),
+            _ => None,
+        }
+    }
+
+    /// The play funnel past the "This song is playing" question: the Up Next question, then play.
+    fn start_play_now(&mut self, act: Action) -> Vec<Action> {
         // Only a HAND-BUILT list is worth interrupting for: an album the user merely started is
         // not work they would lose by starting another.
         if !self.hand_added || self.upcoming_len() == 0 {
@@ -5213,6 +5297,7 @@ impl App {
             return match crate::confirm::hit(ask, x, y) {
                 crate::confirm::Hit::Cancel => {
                     self.pending_play = None;
+                    self.pending_rest.clear();
                     vec![]
                 }
                 // The menu's own rows say which action was chosen; a yes/no card's Confirm means
@@ -5227,6 +5312,26 @@ impl App {
                     .take()
                     .map(|act| vec![act])
                     .unwrap_or_default(),
+                // The playing song was tapped again: queue the rest of its list behind it, and
+                // leave playback alone.
+                crate::confirm::Hit::RestNext => {
+                    self.pending_play = None;
+                    let rest = std::mem::take(&mut self.pending_rest);
+                    if rest.is_empty() {
+                        self.notify(crate::i18n::text("Nothing comes after this song"));
+                        return vec![];
+                    }
+                    let n = rest.len().to_string();
+                    self.notify_format("Playing next — {} songs", vec![("0", n)]);
+                    self.insert_rows(rest, QueueAt::Next)
+                }
+                crate::confirm::Hit::RestRestart => {
+                    self.pending_rest.clear();
+                    match self.pending_play.take() {
+                        Some(act) => self.start_play_now(act),
+                        None => vec![],
+                    }
+                }
                 crate::confirm::Hit::KeepQueue => {
                     // Honour it for real: what was still to come plays AFTER the new sequence.
                     self.queue_keep = true;
@@ -5654,6 +5759,7 @@ impl App {
             Screen::PlaylistPick => self.tap_playlist_pick(y),
             Screen::TrackPick => self.tap_track_pick(y),
             Screen::PlaylistEdit => self.tap_playlist_edit(x, y),
+            Screen::PlaylistCover => self.tap_cover_pick(y),
             Screen::ViewEdit => self.tap_view_edit(x, y),
             Screen::Search => self.tap_search(y),
             Screen::UpNext => {
@@ -6999,6 +7105,15 @@ impl App {
             self.notify(crate::i18n::text("Playlist saved"));
             return vec![Action::PlaylistSaveEdit(id)];
         }
+        if pe::hit_name(y) {
+            let id = e.id;
+            self.open_keyboard(KbPurpose::Rename(id));
+            return vec![];
+        }
+        if pe::hit_cover(y) {
+            self.open_cover_pick();
+            return vec![];
+        }
         if !e.undo.is_empty() && pe::hit_undo(x, y) {
             if let Some(prev) = e.undo.pop() {
                 e.order = prev;
@@ -7179,7 +7294,6 @@ impl App {
         // The shell's rows are the stored playlists only; the smart ones are ours to put back on
         // top, and the open page is then found again by id among all of them.
         self.rebuild_smart(open);
-        self.playlist_remove_arm = None;
     }
 
     /// Put the page for playlist `id` on screen. Used by the shell right after it creates one, so
@@ -7315,7 +7429,6 @@ impl App {
             .playlist_row()
             .is_some_and(|p| library::hit_playlist_edit(p, x, y))
         {
-            self.playlist_remove_arm = None;
             if smart {
                 let at = self.views.iter().position(|v| v.id() == id);
                 if at.is_some() {
@@ -7367,21 +7480,19 @@ impl App {
             return self.start_play_action(Action::ShufflePlaylist(id));
         }
         if user {
-            // THE COVER, which is a button on a user playlist. Each tap moves to the next album
-            // represented in the list, wrapping back to automatic — see `next_playlist_cover`.
+            // THE COVER, which is a button on a user playlist: it opens the cover picker.
             if self
                 .playlist_row()
                 .is_some_and(|p| library::hit_playlist_cover(p, x, y))
             {
-                self.playlist_remove_arm = None;
-                return self.cycle_playlist_cover();
+                self.open_cover_pick();
+                return vec![];
             }
             // The edit bar, above the list.
             if let Some(action) = self
                 .playlist_row()
                 .and_then(|p| library::hit_playlist_action(p, x, y))
             {
-                self.playlist_remove_arm = None;
                 match action {
                     0 => self.open_track_pick(),
                     1 => self.open_keyboard(KbPurpose::Rename(id)),
@@ -7389,21 +7500,6 @@ impl App {
                 }
                 return vec![];
             }
-            // The × column: first tap arms that row, second removes it.
-            let hit = self
-                .playlist_row()
-                .and_then(|p| library::hit_playlist_remove(p, self.playlist_scroll_px, x, y));
-            if let Some(row) = hit {
-                if self.playlist_remove_arm == Some(row) {
-                    self.playlist_remove_arm = None;
-                    self.notify(crate::i18n::text("Removed"));
-                    return vec![Action::PlaylistRemoveAt(id, row as u32)];
-                }
-                self.playlist_remove_arm = Some(row);
-                return vec![];
-            }
-            // Anything else on the page disarms — including a tap that plays a track.
-            self.playlist_remove_arm = None;
         }
         // Copy the object id out before mutating — `playlist_row` borrows `self.lib`.
         let hit = self.playlist_row().and_then(|p| {
@@ -7421,48 +7517,72 @@ impl App {
         }
     }
 
-    /// Advance the open playlist's cover to the next album its members offer, and say which.
-    ///
-    /// A CYCLE rather than a picker screen. There is no file browser on this device, so every cover
-    /// that can be chosen here is an album already in the list, and for a playlist of a handful of
-    /// albums "tap until it looks right" is a shorter path than a screen that has to be opened,
-    /// scrolled and dismissed. The toast names each one, so it is not a guessing game.
-    ///
-    /// The stops are the DISTINCT member albums in list order, and automatic is the first of them
-    /// — automatic *is* the first member's cover, so it needs no stop of its own, only a way back.
-    /// A playlist whose members are all one album therefore has nothing to cycle, and says so
-    /// rather than flashing an identical picture.
-    fn cycle_playlist_cover(&mut self) -> Vec<Action> {
-        let Some(pl) = self.playlist_row() else {
+    /// Open the cover picker on the playlist that is open (one Cinder can write).
+    fn open_cover_pick(&mut self) {
+        if self.playlist_row().is_some_and(|p| p.user && !p.smart) {
+            self.cover_scroll_px = 0;
+            self.fling_v = 0.0;
+            self.push(Screen::PlaylistCover);
+        }
+    }
+
+    fn cover_choices(&self) -> Vec<crate::playlist_cover::Choice> {
+        self.playlist_row()
+            .map(|p| crate::playlist_cover::choices(&self.lib, p))
+            .unwrap_or_default()
+    }
+
+    /// A choice in the cover picker: saved at once, named in a toast, and back to where it opened.
+    fn tap_cover_pick(&mut self, y: i32) -> Vec<Action> {
+        use crate::playlist_cover::Choice;
+        let choices = self.cover_choices();
+        let Some(i) = crate::playlist_cover::hit_row(choices.len(), self.cover_scroll_px, y) else {
             return vec![];
         };
-        let id = pl.id;
-        // Distinct albums, in the order the list plays them, each with a track to name it by.
-        let mut stops: Vec<(i64, i64, String)> = Vec::new(); // (album_id, object_id, label)
-        for t in &pl.track_list {
-            if t.album_id != 0 && !stops.iter().any(|(a, _, _)| *a == t.album_id) {
-                stops.push((t.album_id, t.object_id, t.art.clone()));
+        let Some(id) = self.playlist_row().map(|p| p.id) else {
+            return vec![];
+        };
+        self.pop();
+        match &choices[i] {
+            Choice::Auto => {
+                self.notify(crate::i18n::text("Cover: automatic"));
+                vec![Action::PlaylistSetCover(id, 0)]
+            }
+            Choice::Album {
+                object_id, name, ..
+            } => {
+                self.notify_format("Cover: {label}", vec![("label", name.clone())]);
+                vec![Action::PlaylistSetCover(id, *object_id)]
+            }
+            Choice::Picture(p) => {
+                let name = self.lib.cover_pictures[*p].name.clone();
+                self.notify_format("Cover: {label}", vec![("label", name)]);
+                vec![Action::PlaylistSetPicture(id, *p as u32)]
             }
         }
-        if stops.len() < 2 {
-            self.notify(crate::i18n::text("Only one album in this playlist"));
-            return vec![];
+    }
+
+    /// What the open playlist's cover is, in words, for the editor's Cover row.
+    fn cover_label(&self) -> String {
+        let Some(p) = self.playlist_row() else {
+            return String::new();
+        };
+        if let Some(pic) = self
+            .lib
+            .playlist_pictures
+            .get(&p.id)
+            .and_then(|&i| self.lib.cover_pictures.get(i))
+        {
+            return pic.name.clone();
         }
-        // Where the cycle is now: automatic sits at stop 0, so a custom cover that matches stop 0
-        // is indistinguishable from automatic and is treated as it.
-        let at = pl
-            .cover_custom
-            .then(|| stops.iter().position(|(a, _, _)| *a == pl.cover_album_id))
-            .flatten()
-            .unwrap_or(0);
-        let next = (at + 1) % stops.len();
-        if next == 0 {
-            self.notify(crate::i18n::text("Cover: automatic"));
-            return vec![Action::PlaylistSetCover(id, 0)];
+        match p
+            .track_list
+            .iter()
+            .find(|t| p.cover_custom && t.album_id == p.cover_album_id)
+        {
+            Some(t) => t.art.clone(),
+            None => crate::i18n::text("Automatic").to_string(),
         }
-        let (_, object_id, label) = stops[next].clone();
-        self.notify_format("Cover: {label}", vec![("label", label.to_string())]);
-        vec![Action::PlaylistSetCover(id, object_id)]
     }
 
     /// Anything that has to happen after a key changes the buffer, whichever route the key came
@@ -7516,7 +7636,13 @@ impl App {
             KbPurpose::TrackSearch | KbPurpose::LibrarySearch => vec![],
             KbPurpose::NewPlaylist => vec![Action::PlaylistCreate],
             KbPurpose::NewPlaylistWith(object_id) => vec![Action::PlaylistCreateWith(object_id)],
-            KbPurpose::Rename(id) => vec![Action::PlaylistRename(id)],
+            KbPurpose::Rename(id) => {
+                // The editor's Name row shows the new name at once; the shell renames the file.
+                if let Some(e) = self.pl_edit.as_mut().filter(|e| e.id == id) {
+                    e.name = self.kb_text.trim().to_string();
+                }
+                vec![Action::PlaylistRename(id)]
+            }
             KbPurpose::SaveQueue => vec![Action::PlaylistCreateFromQueue],
             KbPurpose::ViewName => {
                 let name = crate::views::clean_name(&self.kb_text);
@@ -8596,6 +8722,10 @@ impl App {
                 let max = self.pick_max_scroll();
                 self.pick_scroll_px = (self.pick_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::PlaylistCover => {
+                let max = crate::playlist_cover::max_scroll(self.cover_choices().len());
+                self.cover_scroll_px = (self.cover_scroll_px + dy_px).clamp(0, max);
+            }
             Screen::TrackPick => {
                 let max = self.track_pick_max_scroll();
                 self.track_pick_scroll_px = (self.track_pick_scroll_px + dy_px).clamp(0, max);
@@ -9527,6 +9657,11 @@ impl App {
                 crate::playlist_pick::TOP,
                 crate::playlist_pick::BOTTOM,
             )),
+            Screen::PlaylistCover => Some((
+                crate::playlist_cover::max_scroll(self.cover_choices().len()),
+                crate::playlist_cover::TOP,
+                crate::playlist_cover::BOTTOM,
+            )),
             Screen::Search => Some((
                 self.search_max_scroll(),
                 crate::playlist_pick::TOP,
@@ -9612,6 +9747,7 @@ impl App {
             Screen::SensMe => self.sensme_scroll_px,
             Screen::Books => self.books_scroll_px,
             Screen::PlaylistPick => self.pick_scroll_px,
+            Screen::PlaylistCover => self.cover_scroll_px,
             Screen::TrackPick => self.track_pick_scroll_px,
             Screen::Search => self.search_scroll_px,
             Screen::PlaylistEdit => self.pl_edit.as_ref().map_or(0, |e| e.scroll_px),
@@ -11646,7 +11782,6 @@ impl App {
                         .and_then(|id| pl.track_list.iter().position(|s| s.object_id == id)),
                     self.swipe_row,
                     self.sbar_active(),
-                    self.playlist_remove_arm,
                 ),
                 // The library reloaded and the index is stale — fall back to the tab rather than
                 // drawing a blank page the user cannot leave.
@@ -12532,12 +12667,26 @@ impl App {
                     fonts,
                     &crate::playlist_edit::EditView {
                         name: &e.name,
+                        cover: &self.cover_label(),
                         rows: e.order.iter().filter_map(|&i| e.rows.get(i)).collect(),
                         scroll_px: e.scroll_px,
                         drag: self.row_drag,
                         can_undo: !e.undo.is_empty(),
                         sbar_active: self.sbar_active(),
                     },
+                ),
+                None => c.fill(theme.bg),
+            },
+            Screen::PlaylistCover => match self.playlist_row() {
+                Some(pl) => crate::playlist_cover::render(
+                    c,
+                    &theme,
+                    fonts,
+                    &self.lib,
+                    pl,
+                    &self.cover_choices(),
+                    self.cover_scroll_px,
+                    self.sbar_active(),
                 ),
                 None => c.fill(theme.bg),
             },
@@ -17054,6 +17203,7 @@ mod tests {
             Screen::PlaylistPick,
             Screen::TrackPick,
             Screen::PlaylistEdit,
+            Screen::PlaylistCover,
         ];
         let x = crate::canvas::W as i32 - 4;
         for screen in screens {
@@ -18259,6 +18409,60 @@ mod tests {
         // Nothing to shuffle => no action, no crash.
         a.set_play_context(vec![SongRow::default(), SongRow::default()], 0);
         assert!(a.queue_shuffle().is_empty());
+    }
+
+    /// The playing song tapped again in another list asks first, and "Play the rest … next" queues
+    /// what follows it there without a play action; the list it is already playing does not ask.
+    #[test]
+    fn the_playing_song_tapped_again_offers_the_rest_of_the_list() {
+        use crate::confirm::{hit, Ask, Hit};
+        let row = |id: i64| SongRow {
+            object_id: id,
+            title: format!("t{id}"),
+            ..Default::default()
+        };
+        let mut a = unlocked();
+        a.lib.songs = (1..=5).map(row).collect();
+        a.set_play_context(vec![row(9), row(3), row(8)], 1); // song 3 plays, from another list
+        let press = |a: &mut App, ask: Ask, want: Hit| {
+            let y = (0..crate::canvas::H as i32)
+                .find(|y| hit(ask, 240, *y) == want)
+                .unwrap();
+            a.tap(240, y)
+        };
+        // Songs list 1..5, song 3 tapped: asked, nothing played.
+        assert!(a.start_play_list(vec![1, 2, 3, 4, 5], 2).is_empty());
+        assert_eq!(a.confirm, Some(Ask::SongPlayingList));
+        assert_eq!(
+            press(&mut a, Ask::SongPlayingList, Hit::RestNext),
+            vec![Action::QueueChanged]
+        );
+        let ids: Vec<i64> = a.context().iter().map(|r| r.object_id).collect();
+        assert_eq!(
+            ids,
+            [9, 3, 4, 5, 8],
+            "the rest of the list, straight after the playing song"
+        );
+        // Tapped again, the rest is already what follows: no "playing" question, only the usual
+        // one about Up Next, which now holds songs added by hand.
+        assert!(a.start_play_list(vec![1, 2, 3, 4, 5], 2).is_empty());
+        assert_eq!(a.confirm, Some(Ask::QueueOnPlay));
+        a.confirm = None;
+        // Start over from the list instead.
+        a.set_play_context(vec![row(9), row(3), row(8)], 1);
+        a.hand_added = false;
+        a.start_play_list(vec![1, 2, 3, 4, 5], 2);
+        assert_eq!(
+            press(&mut a, Ask::SongPlayingList, Hit::RestRestart),
+            vec![Action::PlayListAt(2)]
+        );
+        // A different song never asks.
+        a.set_play_context(vec![row(9), row(3), row(8)], 1);
+        a.hand_added = false;
+        assert_eq!(
+            a.start_play_list(vec![1, 2, 3, 4, 5], 0),
+            vec![Action::PlayListAt(0)]
+        );
     }
 
     /// Removing the SECOND copy of a song from Up Next forgets that copy's place in the un-shuffle
@@ -19566,6 +19770,7 @@ mod tests {
             Screen::PlaylistPick,
             Screen::TrackPick,
             Screen::PlaylistEdit,
+            Screen::PlaylistCover,
             Screen::ViewEdit,
         ];
         for s in with_header {
@@ -20665,26 +20870,15 @@ mod tests {
         );
     }
 
-    /// Removing a track is two taps. One tap next to a track must never delete it.
+    /// The page has no × any more: removing is the editor's job, so a tap at the row's right end
+    /// plays it like the rest of the row.
     #[test]
-    fn removing_a_member_takes_two_taps_and_disarms_on_a_miss() {
+    fn the_playlist_page_plays_where_the_remove_column_was() {
         let mut a = own_and_sony();
         a.open_playlist(0);
         let row_y = library::playlist_content_top(a.playlist_row().unwrap())
             + library::PLAYLIST_TRACK_RH() / 2;
-        let x = library::PLAYLIST_REMOVE_X + 20;
-
-        assert!(a.tap(x, row_y).is_empty(), "the first tap only arms");
-        assert_eq!(a.tap(x, row_y), vec![Action::PlaylistRemoveAt(-42, 0)]);
-
-        // Arm it again, then tap somewhere else: the arm is gone, so the next × tap re-arms
-        // rather than removing.
-        assert!(a.tap(x, row_y).is_empty());
-        a.tap(120, row_y); // plays that track — and disarms
-        assert!(
-            a.tap(x, row_y).is_empty(),
-            "a tap elsewhere must disarm the row"
-        );
+        assert_eq!(a.tap(420, row_y), vec![Action::PlayPlaylistAt(-42, 0)]);
     }
 
     /// Settings ▸ Delete music: off, the header slot does nothing; on, DELETE asks, and yes hands
@@ -20855,14 +21049,11 @@ mod tests {
         let pl = a.playlist_row().unwrap();
         let (bx, by, bw, bh) = library::playlist_action_rect(2);
         assert!(library::hit_playlist_action(pl, bx + bw / 2, by + bh / 2).is_none());
-        // And the × column is just part of the row: tapping there plays the track.
+        // The row's right end plays it, as on a list Cinder owns.
         let row_y = library::playlist_content_top(a.playlist_row().unwrap())
             + library::PLAYLIST_TRACK_RH() / 2;
         // …and it plays the PLAYLIST from that row, not the track's album.
-        assert_eq!(
-            a.tap(library::PLAYLIST_REMOVE_X + 20, row_y),
-            vec![Action::PlayPlaylistAt(7, 0)]
-        );
+        assert_eq!(a.tap(420, row_y), vec![Action::PlayPlaylistAt(7, 0)]);
     }
 
     /// The metadata block is tappable IN BOTH THEMES, at the place it is actually drawn.
@@ -23982,21 +24173,15 @@ mod tests {
         }
     }
 
-    /// The playlist page's cover is a control on OUR playlists and a picture on Sony's, and each
-    /// tap moves to the next album the list actually contains.
+    /// The playlist page's cover and the editor's Cover row both open the picker; a choice saves at
+    /// once and comes back. Sony's playlists have nowhere to store one, so theirs is just a picture.
     #[test]
-    fn tapping_a_playlist_cover_cycles_through_its_albums() {
+    fn the_cover_picker_offers_auto_albums_and_pictures() {
+        use crate::playlist_cover as pc;
         let (cx, cy, cw, ch) = library::PLAYLIST_COVER;
         let (tap_x, tap_y) = (cx + cw / 2, cy + ch / 2);
+        let row = |i: usize| pc::TOP + i as i32 * pc::ROW_H + pc::ROW_H / 2;
 
-        let mut a = own_and_sony();
-        // `own_and_sony`'s tracks carry no album ids, so there is nothing to cycle and the screen
-        // says so rather than flashing the same picture back.
-        a.open_playlist(0);
-        assert!(a.tap(tap_x, tap_y).is_empty());
-        assert_eq!(a.toast, "Only one album in this playlist");
-
-        // A playlist spanning three albums: automatic, then each of the others, then back.
         let mut b = App::unlocked();
         b.push_for_test(Screen::Library);
         b.lib_tab = Tab::Playlists;
@@ -24020,20 +24205,41 @@ mod tests {
                 cover_album_id: 1,
                 ..Default::default()
             }],
+            cover_pictures: vec![crate::model::CoverPicture {
+                path: "/contents/cinder_playlists/beach.jpg".into(),
+                name: "beach".into(),
+                thumb: crate::art::Image {
+                    w: 0,
+                    h: 0,
+                    rgb: Vec::new(),
+                },
+            }],
             ..Default::default()
         };
         b.open_playlist(0);
-        // Album 0 is what automatic shows, so one tap moves to album 1 — named by its first track.
-        assert_eq!(b.tap(tap_x, tap_y), vec![Action::PlaylistSetCover(-9, 902)]);
+        assert!(b.tap(tap_x, tap_y).is_empty());
+        assert_eq!(b.current(), Screen::PlaylistCover);
+        // Automatic, Album 0, Album 1 (named by its first track), the picture.
+        assert_eq!(b.tap(240, row(2)), vec![Action::PlaylistSetCover(-9, 902)]);
+        assert_eq!(b.current(), Screen::Playlist, "a choice goes back");
         assert_eq!(b.toast, "Cover: Album 1");
-        // With that applied, the next tap wraps back to automatic.
-        b.lib.playlists[0].cover_custom = true;
-        b.lib.playlists[0].cover_album_id = 2;
-        assert_eq!(b.tap(tap_x, tap_y), vec![Action::PlaylistSetCover(-9, 0)]);
+        b.tap(tap_x, tap_y);
+        assert_eq!(b.tap(240, row(3)), vec![Action::PlaylistSetPicture(-9, 0)]);
+        assert_eq!(b.toast, "Cover: beach");
+        b.tap(tap_x, tap_y);
+        assert_eq!(b.tap(240, row(0)), vec![Action::PlaylistSetCover(-9, 0)]);
         assert_eq!(b.toast, "Cover: automatic");
 
-        // SONY'S playlists have nowhere to store a choice, so the cover is not a control on them
-        // and the tap falls through to the page rather than offering something that cannot work.
+        // From the editor's Cover row too, and its Name row opens the keyboard on the name.
+        b.tap(458, 66); // EDIT
+        assert_eq!(b.current(), Screen::PlaylistEdit);
+        b.tap(240, crate::playlist_edit::COVER_Y + 10);
+        assert_eq!(b.current(), Screen::PlaylistCover);
+        b.pop();
+        b.tap(240, crate::playlist_edit::NAME_Y + 10);
+        assert_eq!(b.current(), Screen::Keyboard);
+        assert_eq!(b.text_input(), "Mine");
+
         let mut c = own_and_sony();
         c.open_playlist(1);
         assert!(!library::hit_playlist_cover(

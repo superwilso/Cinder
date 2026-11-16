@@ -233,6 +233,14 @@ pub struct ArtistRow {
 /// One playlist row (Playlists tab). `id` is the DB container's `object_id` — the handle
 /// `cinder-db::playlist_tracks` takes to resolve the member tracks in saved order. It is 0 for
 /// the host/sim sample data, which has no DB behind it.
+/// A picture on the drive a playlist can wear: its path, its name (the file stem) and a 48 px thumb.
+#[derive(Clone)]
+pub struct CoverPicture {
+    pub path: String,
+    pub name: String,
+    pub thumb: crate::art::Image,
+}
+
 #[derive(Clone, Default)]
 pub struct PlaylistRow {
     pub id: i64,
@@ -489,6 +497,10 @@ pub struct Library {
     /// album's cover through `PlaylistRow::cover_album_id`, which costs nothing. So this map is
     /// normally empty, and a playlist missing from it is the rule rather than a failure.
     pub playlist_thumbs: std::collections::HashMap<i64, crate::art::Image>,
+    /// Pictures in the playlists folder, offered by the cover picker (`playlist_cover`).
+    pub cover_pictures: Vec<CoverPicture>,
+    /// Playlist id → the `cover_pictures` entry it uses, for the picker's mark.
+    pub playlist_pictures: std::collections::HashMap<i64, usize>,
     /// Every genre that at least one track carries, with its count. Built once at library build.
     pub genres: Vec<GenreRow>,
     /// The ACTIVE genre filter: `Some(id)` hides every track that does not carry it.
@@ -855,6 +867,8 @@ impl Library {
             playlists,
             thumbs: Default::default(),
             playlist_thumbs: Default::default(),
+            cover_pictures: Vec::new(),
+            playlist_pictures: Default::default(),
             genres,
             filter_genre: None,
             filter_hires: false,

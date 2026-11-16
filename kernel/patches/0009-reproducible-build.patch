@@ -1,0 +1,60 @@
+build: two builds of the same source give the same image
+
+The Mali driver's Kbuild put the build tree's git revision, its last commit date and `date` into
+__malidrv_build_info(), and lzop put the time into the compressed kernel's header (its input is a
+pipe, whose time is "now"). Either one meant two builds of the same source never matched, and the
+release check compares the kernel byte for byte with the maintainer's build. The Mali strings now
+carry the release name, and lzop reads a file dated 1970; the kernel's unpacker skips that field.
+build.sh pins __DATE__ and __TIME__ for the other drivers that print them.
+
+diff --git a/drivers/gpu/mali/mt8590/mali/mali/Kbuild b/drivers/gpu/mali/mt8590/mali/mali/Kbuild
+index 52829e2e..cec48f1b 100644
+--- a/drivers/gpu/mali/mt8590/mali/mali/Kbuild
++++ b/drivers/gpu/mali/mt8590/mali/mali/Kbuild
+@@ -197,7 +197,8 @@ ccflags-y += -I$(DRIVER_DIR) -I$(DRIVER_DIR)/include -I$(DRIVER_DIR)/common -I$(
+ # Get subversion revision number, fall back to only ${MALI_RELEASE_NAME} if no svn info is available
+ MALI_RELEASE_NAME=$(shell cat $(DRIVER_DIR)/.version 2> /dev/null)
+ 
+-SVN_INFO = (cd $(DRIVER_DIR); svn info 2>/dev/null)
++# Cinder: no revision, commit date or build date from the build machine (see below).
++SVN_INFO = true
+ 
+ ifneq ($(shell $(SVN_INFO) 2>/dev/null),)
+ # SVN detected
+@@ -208,7 +209,7 @@ CHANGED_REVISION := $(shell $(SVN_INFO) | grep '^Last Changed Rev: ' | cut -d: -
+ REPO_URL := $(shell $(SVN_INFO) | grep '^URL: ' | cut -d: -f2- | cut -b2-)
+ 
+ else # SVN
+-GIT_REV := $(shell cd $(DRIVER_DIR); git describe --always 2>/dev/null)
++GIT_REV :=
+ ifneq ($(GIT_REV),)
+ # Git detected
+ DRIVER_REV := $(MALI_RELEASE_NAME)-$(GIT_REV)
+@@ -232,7 +233,7 @@ VERSION_STRINGS += REPO_URL=$(REPO_URL)
+ VERSION_STRINGS += REVISION=$(DRIVER_REV)
+ VERSION_STRINGS += CHANGED_REVISION=$(CHANGED_REVISION)
+ VERSION_STRINGS += CHANGE_DATE=$(CHANGE_DATE)
+-VERSION_STRINGS += BUILD_DATE=$(shell date)
++VERSION_STRINGS += BUILD_DATE=$(MALI_RELEASE_NAME)
+ ifdef CONFIG_MALI400_DEBUG
+ VERSION_STRINGS += BUILD=debug
+ else
+diff --git a/scripts/Makefile.lib b/scripts/Makefile.lib
+index ef2142a6..5a8acc6c 100644
+--- a/scripts/Makefile.lib
++++ b/scripts/Makefile.lib
+@@ -313,9 +313,11 @@ cmd_lzma = (cat $(filter-out FORCE,$^) | \
+ 	(rm -f $@ ; false)
+ 
+ quiet_cmd_lzo = LZO     $@
+-cmd_lzo = (cat $(filter-out FORCE,$^) | \
+-	lzop -9 && $(call size_append, $(filter-out FORCE,$^))) > $@ || \
+-	(rm -f $@ ; false)
++# Cinder: lzop puts its input's time in its header, and a pipe's time is "now". A file dated 1970
++# makes the same source give the same zImage (the kernel's unpacker skips that field).
++cmd_lzo = (cat $(filter-out FORCE,$^) > $@.in && touch -d @0 $@.in && \
++	lzop -9 < $@.in && rm -f $@.in && $(call size_append, $(filter-out FORCE,$^))) > $@ || \
++	(rm -f $@ $@.in ; false)
+ 
+ # U-Boot mkimage
+ # ---------------------------------------------------------------------------

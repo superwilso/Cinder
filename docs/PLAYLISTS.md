@@ -64,13 +64,16 @@ editor:
 
 | | |
 |---|---|
+| **Name** | Opens the keyboard on the name; saved when the keyboard's Done is pressed |
+| **Cover** | Opens the cover picker (see "Covers"); saved when a cover is tapped |
 | **≡** | Drag a row by its handle to move it. A hold anywhere on the row lifts it too |
 | **×** | Removes the row at once |
 | **UNDO** | In the "N TRACKS" label. Takes back the last move or removal, one step at a time |
 | **DONE** | Writes the file, once |
 | Back | Leaves without saving |
 
-Nothing is written until DONE, and DONE with nothing changed writes nothing.
+The track list is written once, at DONE; DONE with nothing changed writes nothing. Name and Cover
+save on their own screens, as the page's RENAME always did.
 
 **A track the library cannot find is never dropped by an edit.** The editor lists the members whose
 files are in the library right now. A member on an SD card that is out is not listed, so it cannot
@@ -102,14 +105,14 @@ a row in the playlist. `.jpg`, `.jpeg`, `.png` and `.bmp` are the picture extens
 exactly what `art_load::decode` reads — listing anything else would put a file on screen that
 silently never rendered.
 
-**On the device:** tap the cover on a playlist's page. Each tap moves to the next album the list
-contains, wrapping back to automatic, and a toast names each one. A cycle rather than a picker
-screen because the candidates are few and already on the page; a playlist whose members are all one
-album says so instead of flashing an identical picture. Sony's playlists have nowhere to store a
-choice, so their cover is not a control — it is the automatic one and nothing else.
+**On the device:** tap the cover on a playlist's page, or **Cover** in the editor. The picker lists
+**Automatic**, each album in the list once, and every picture in the `cinder_playlists` folder (up
+to 64, by file name). A tap saves it (`#EXTIMG:`) and goes back. Sony's playlists have nowhere to
+store a choice, so their cover is not a control — it is the automatic one and nothing else.
 
-**From a PC:** drop a JPEG next to the `.m3u8`. Nothing to edit, nothing to learn, and it is the
-route for artwork that is not any album's — the one thing the device cannot offer. A picture cover
+**From a PC:** copy pictures into `cinder_playlists` and pick one on the player, or name one after
+the playlist (`Night Drives.jpg`) and it is the cover with nothing to pick. A picture beside the file
+wins over Automatic, so to go back to Automatic, delete or rename that picture. A picture cover
 is decoded once and cached like album art (`art_cache::store_image`), keyed by its path.
 
 Every failure here is silent and falls back to the next source, and finally to the generated
@@ -120,10 +123,9 @@ gradient: a cover is decoration, and a missing one must never be why a list does
 | where | what |
 |---|---|
 | **Library ▸ Playlists** | a **NEW PLAYLIST** row between the shuffle band and the list — the only way in, so it is a full-width row. It slides away under the tabs with the band as the list scrolls down, and comes back the moment it scrolls up. Rows read "*n* tracks" — the "· YOURS" suffix was dropped 2026-09-15, because on a device where nearly every playlist is the owner's it was a word repeated down the whole list to say "normal". |
-| **the playlist page** | a 64 px cover beside the name, then an edit bar (yours only): **+ TRACKS**, **RENAME**, **DELETE**, and a **×** on each row. |
-| **the cover** (yours only) | tap to cycle it through the albums in the list — see "Covers". It carries a hairline to say it is a control; Sony's does not, because on those it is not one. |
-| **× on a row** | two taps: the first arms the row and it says REMOVE?, the second removes. A tap anywhere else disarms. The same idiom as Settings ▸ Boot to stock, for the same reason. |
-| **DELETE** | a yes/no modal (`confirm::Ask::DeletePlaylist`). The two-tap idiom is already spent on the ×, and "remove one track" and "delete the whole list" must not be the same gesture. |
+| **the playlist page** | a 64 px cover beside the name, then an edit bar (yours only): **+ TRACKS**, **RENAME**, **DELETE**. Rows only play: removing a song is the editor's job (EDIT), where it has UNDO and saves at DONE. The page's own × was too easy to hit by accident (removed 2026-11-16). |
+| **the cover** (yours only) | opens the cover picker — see "Covers". It carries a hairline to say it is a control; Sony's does not, because on those it is not one. |
+| **DELETE** | a yes/no modal (`confirm::Ask::DeletePlaylist`), so "delete the whole list" is never one tap. |
 | **+ TRACKS** | the library in title order, one tap adds one track, ticks show what is already in. The screen stays open — building a playlist is a run of taps. |
 | **Now Playing ▸ toolbar slot 3** | "add what is playing to a playlist" → pick a playlist, or make one and it lands in there. |
 

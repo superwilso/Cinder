@@ -65,7 +65,7 @@ FASTBOOT_CMDLINE = ("console=/dev/null root=/dev/ram vmalloc=496M slub_max_order
                     "vram=6291456 androidboot.selinux=disabled")
 
 
-def pack(zimage, ramdisk, rname="ROOTFS", cmdline="", addrs=(KADDR, RADDR, TAGS)):
+def pack(zimage, ramdisk, rname="ROOTFS", cmdline="", addrs=(KADDR, RADDR, TAGS), name=""):
     k, r = mtk_wrap("KERNEL", zimage), mtk_wrap(rname, ramdisk)
     sha = hashlib.sha1()
     for part in (k, r, b""):
@@ -76,7 +76,8 @@ def pack(zimage, ramdisk, rname="ROOTFS", cmdline="", addrs=(KADDR, RADDR, TAGS)
     c = cmdline.encode()
     if len(c) >= 512:
         raise SystemExit("command line longer than the header's 512 bytes")
-    hdr += b"\0" * 16 + c + b"\0" * (512 - len(c)) + sha.digest() + b"\0" * 12
+    n = name.encode()  # empty in Sony's images; "cinder" marks Cinder's (src/cinder-bootimg.c)
+    hdr += n + b"\0" * (16 - len(n)) + c + b"\0" * (512 - len(c)) + sha.digest() + b"\0" * 12
     return pad(hdr) + pad(k) + pad(r)
 
 

@@ -350,18 +350,6 @@ impl Store {
         Ok(true)
     }
 
-    pub fn remove_at(&mut self, id: i64, position: usize) -> std::io::Result<bool> {
-        let Some(index) = self.index_of(id) else {
-            return Ok(false);
-        };
-        if position >= self.lists[index].entries.len() {
-            return Ok(false);
-        }
-        self.lists[index].entries.remove(position);
-        write_file(&mut self.lists[index])?;
-        Ok(true)
-    }
-
     /// Set (or clear) the playlist's picture. `path` names an image file or a music file whose
     /// embedded cover to borrow; `None` goes back to the automatic cover.
     ///
@@ -939,27 +927,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_at_takes_the_right_row() {
-        let dir = Dir::new("remove");
-        let mut store = Store::open(&dir.0);
-        let id = store.create("Trim").unwrap();
-        for name in ["a", "b", "c"] {
-            store.add(id, &format!("/x/{name}.flac"), name).unwrap();
-        }
-        assert!(store.remove_at(id, 1).unwrap());
-        assert_eq!(uris(store.get(id).unwrap()), vec!["/x/a.flac", "/x/c.flac"]);
-        assert!(
-            !store.remove_at(id, 9).unwrap(),
-            "an out-of-range row must not remove anything"
-        );
-        // and it survives the round trip
-        assert_eq!(
-            uris(&Store::open(&dir.0).lists[0]),
-            vec!["/x/a.flac", "/x/c.flac"]
-        );
-    }
-
-    #[test]
     fn rename_keeps_the_id_and_the_tracks() {
         let dir = Dir::new("rename");
         let mut store = Store::open(&dir.0);
@@ -1238,7 +1205,6 @@ mod tests {
                 .unwrap(),
             0
         );
-        assert!(!store.remove_at(id, 0).unwrap());
         assert!(!store.set_cover(id, Some("/x.jpg")).unwrap());
         store.rename(id, "Mine").unwrap();
         store.delete(id).unwrap();
