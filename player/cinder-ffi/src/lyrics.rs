@@ -511,13 +511,115 @@ fn strip_word_stamps(s: &str) -> String {
     out
 }
 
+/// Put back line breaks a tagger lost: `\n` written with its backslash dropped, so every break is a
+/// bare `n` and the whole song arrives as one line. Seen in 293 of the owner's 2,419 tagged songs
+/// (2026-11-16): `…for myselfn[00:21.50]Out of some blue…` and `Riding on my bicycle,nI saw…`.
+///
+/// Synced: a line with timestamps in its middle is split at each one, and when EVERY piece before a
+/// stamp ends in `n`, that `n` was the break. Plain: only a tag that is one long line with no break
+/// at all; an `n` (run) right before a capital or `(` is the break, a doubled one a blank line, unless
+/// a letter a word can end `…n` with comes before it (`sonnI` is "son", then "I"). Lines that started lower-case stay joined.
+fn restore_lost_breaks(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.split('\n') {
+        // Inline stamps: a `[mm:ss…]` with words before it, so not the line's leading run of stamps.
+        let mut cuts = Vec::new();
+        let mut i = 0;
+        while let Some(off) = line[i..].find('[') {
+            let at = i + off;
+            let stamp = line[at..]
+                .find(']')
+                .is_some_and(|c| timestamp(&line[at + 1..at + c]).is_some());
+            if stamp && at > 0 && !line[..at].trim_end().ends_with(']') {
+                cuts.push(at);
+            }
+            i = at + 1;
+        }
+        if cuts.len() >= 2 {
+            let mut pieces = Vec::new();
+            let mut from = 0;
+            for &c in &cuts {
+                pieces.push(&line[from..c]);
+                from = c;
+            }
+            pieces.push(&line[from..]);
+            let lost = pieces[..pieces.len() - 1]
+                .iter()
+                .all(|p| p.trim_end().ends_with('n'));
+            for (k, p) in pieces.iter().enumerate() {
+                let p = p.trim_end();
+                out.push(if lost && k + 1 < pieces.len() {
+                    p[..p.len() - 1].to_string()
+                } else {
+                    p.to_string()
+                });
+            }
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    if out.len() == 1 && out[0].len() > 100 {
+        let plain = plain_breaks(&out[0]);
+        if plain.len() >= 4 {
+            return plain.join("\n");
+        }
+    }
+    out.join("\n")
+}
+
+/// The plain half of [`restore_lost_breaks`]: the lines, or just the one when there is nothing to cut.
+fn plain_breaks(s: &str) -> Vec<String> {
+    let c: Vec<char> = s.chars().collect();
+    let mut lines = vec![String::new()];
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == 'n' && i > 0 && !c[i - 1].is_whitespace() {
+            let mut j = i;
+            while j < c.len() && c[j] == 'n' {
+                j += 1;
+            }
+            let next = c.get(j).copied();
+            // CJK text has no Latin `n` of its own, so one next to it is always a break.
+            let cjk = |ch: char| ch as u32 >= 0x2E80;
+            let after_cjk = cjk(c[i - 1]);
+            if next.is_some_and(|n| n.is_uppercase() || n == '(' || cjk(n))
+                || after_cjk && next.is_some()
+            {
+                let run = j - i;
+                let before = c[i - 1].to_ascii_lowercase();
+                // Letters a word's final `n` follows: vowels, and turn/down/sign/autumn/kiln.
+                let vowel = !after_cjk && "aeiouyrwgml".contains(before);
+                // (n's that belong to the word, blank lines)
+                let (keep, blank) = match run {
+                    1 => (0, false),
+                    2 if vowel => (1, false),
+                    2 => (0, true),
+                    _ if after_cjk => (0, true),
+                    _ => (1, true),
+                };
+                let last = lines.last_mut().expect("never empty");
+                last.extend(std::iter::repeat_n('n', keep));
+                if blank {
+                    lines.push(String::new());
+                }
+                lines.push(String::new());
+                i = j;
+                continue;
+            }
+        }
+        lines.last_mut().expect("never empty").push(c[i]);
+        i += 1;
+    }
+    lines
+}
+
 pub fn parse(text: &str) -> Lyrics {
     let mut offset_ms: i64 = 0;
     let mut timed: Vec<(u32, String)> = Vec::new();
     let mut plain: Vec<String> = Vec::new();
 
     // iTunes writes `©lyr` with bare CR line breaks, which `lines()` alone would run together.
-    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let text = restore_lost_breaks(&text.replace("\r\n", "\n").replace('\r', "\n"));
     for raw in text.lines() {
         let mut rest = raw.trim_start_matches('\u{FEFF}').trim();
         let mut stamps: Vec<u32> = Vec::new();
@@ -589,6 +691,87 @@ mod tests {
 
     fn stamps(l: &Lyrics) -> Vec<(Option<u32>, &str)> {
         l.lines.iter().map(|l| (l.at_ms, l.text.as_str())).collect()
+    }
+
+    /// Tags whose line breaks lost their backslash (`\n` → `n`), copied from the owner's library
+    /// (Westside Cowboy, Outkast, The Avalanches; 2026-11-16).
+    #[test]
+    fn line_breaks_a_tagger_lost_are_put_back() {
+        let l = parse("[00:14.51]Maybe soon I will follow you and I will see for myselfn[00:21.50]Out of some blue or some fantasy fortune, the locks have heldn[00:26.19]n[00:27.67]And the rain sounds like bells");
+        assert_eq!(
+            stamps(&l),
+            vec![
+                (
+                    Some(14_510),
+                    "Maybe soon I will follow you and I will see for myself"
+                ),
+                (
+                    Some(21_500),
+                    "Out of some blue or some fantasy fortune, the locks have held"
+                ),
+                (Some(26_190), ""),
+                (Some(27_670), "And the rain sounds like bells"),
+            ]
+        );
+        // The last stamp has nothing after it, and an `n` that is a word's own stays.
+        let l =
+            parse("[01:45.86] On and on and onn[01:48.50] It goes on and on and onn[01:52.47] ");
+        assert_eq!(l.lines[0].text, "On and on and on");
+        assert_eq!(l.lines[1].text, "It goes on and on and on");
+
+        let l = parse("Watch the stepsnGet a drink, have a good time nownWelcome to paradise (Paradise, paradise)nnSince I met younI found the world so newnEh, eh, ehnSince I left");
+        let text: Vec<&str> = l.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            text,
+            vec![
+                "Watch the steps",
+                "Get a drink, have a good time now",
+                "Welcome to paradise (Paradise, paradise)",
+                "",
+                "Since I met you",
+                "I found the world so new",
+                "Eh, eh, eh",
+                "Since I left",
+            ]
+        );
+        let l = parse("We got Bankhead right here, southwest Atlanta from the A-TownnWe got Bankhead right here, southwest Atlanta too strongn(Break)nI found the world sonI found");
+        let text: Vec<&str> = l.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            text[0],
+            "We got Bankhead right here, southwest Atlanta from the A-Town"
+        );
+        assert_eq!(text[2], "(Break)");
+        assert_eq!(text[3], "I found the world so");
+        // Japanese (Fishmans, "Weather Report").
+        let l = parse("東京地方に大雨が降り続けてn部屋の中に居続けることもあるさnまるで魚になった気分だよnまるで水槽の中の魚nn台風の夜は");
+        let text: Vec<&str> = l.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            text,
+            vec![
+                "東京地方に大雨が降り続けて",
+                "部屋の中に居続けることもあるさ",
+                "まるで魚になった気分だよ",
+                "まるで水槽の中の魚",
+                "",
+                "台風の夜は",
+            ]
+        );
+    }
+
+    /// Ordinary lyrics are left alone: a line that ends in `n`, two stamps in a row, a short tag.
+    #[test]
+    fn lyrics_with_their_breaks_are_unchanged() {
+        let l = parse("[00:01.00]I'm a man\n[00:03.00]Run Ronnie Run\n");
+        assert_eq!(
+            stamps(&l),
+            vec![(Some(1_000), "I'm a man"), (Some(3_000), "Run Ronnie Run")]
+        );
+        let l = parse("[00:01.00][00:09.00]Again\n");
+        assert_eq!(l.lines.len(), 2);
+        assert_eq!(
+            parse("Seven nations Army").lines[0].text,
+            "Seven nations Army"
+        );
     }
 
     #[test]

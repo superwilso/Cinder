@@ -16,6 +16,22 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Lyrics that showed as one long block now show line by line.** Some taggers write the lyrics'
+  line breaks as a bare `n`, so the whole song arrived as one line, synced or not
+  (`…for myselfn[00:21.50]Out of some blue…`). Cinder now puts those breaks back, in Japanese and
+  Chinese lyrics too. On the owner's library this fixed 297 of 2,419 songs with lyrics. Lyrics
+  that have a website's page text glued on (one long paragraph at the end) are a problem in the
+  file itself and are shown as they are.
+- **The "tap the playing song" question reads right when paused.** It is titled "This is the
+  current song", and its last row is "Cancel" instead of "Keep playing".
+
+### Changed
+
+- **Chinese (zh-CN): translations for this release's new screens:** the playlist editor's Name and
+  Cover rows, the cover picker, the "current song" question and the Wi-Fi WPS row.
+
 ## [0.4.2] — 2026-11-11
 
 ### Added
