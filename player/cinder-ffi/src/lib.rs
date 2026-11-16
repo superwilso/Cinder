@@ -4914,7 +4914,8 @@ fn zappin_release_hold(r: &mut Render) {
             if let Some(scrob) = r.scrob.as_mut() {
                 scrob.restart_track(
                     scrobble::Track {
-                        artist: t.artist.clone(),
+                        artist: lyrics::first_of_several_artists(&t.filename)
+                            .unwrap_or_else(|| t.artist.clone()),
                         album: t.album.clone(),
                         title: r.np.title.clone(),
                         track_no: t.track_no.max(0) as u32,
@@ -5000,7 +5001,8 @@ fn zappin_confirm_handoff(r: &mut Render, uri: &str, progress: f32, playing: boo
 
     let length_s = (duration_ms as u64 / 1_000) as u32;
     let meta = scrobble::Track {
-        artist: track.artist.clone(),
+        artist: lyrics::first_of_several_artists(&track.filename)
+            .unwrap_or_else(|| track.artist.clone()),
         album: track.album.clone(),
         title: r.np.title.clone(),
         track_no: track.track_no.max(0) as u32,
@@ -5615,11 +5617,14 @@ fn drive_tick(r: &mut Render) {
         let ip = cast::own_ip_towards("http://239.255.255.250:1900");
         let code = r.app.drive_code().to_string();
         let note = match ip.and_then(|ip| {
-            drive::start(std::path::Path::new("/contents"), &code, true).map(|p| (ip, p))
+            // The card is offered whenever the share runs; while none is in, its address is
+            // refused (not mounted), exactly as the drive is during USB storage mode.
+            let sd = std::path::Path::new("/contents_ext");
+            drive::start(std::path::Path::new("/contents"), Some(sd), &code, true).map(|p| (ip, p))
         }) {
             Ok((ip, port)) => {
-                eprintln!("cinder-ffi: drive: shared on port {port}");
-                format!("http://{ip}:{port}/{code}")
+                eprintln!("cinder-ffi: drive: shared on port {port} (SD card at /{code}-sd)");
+                format!("http://{ip}:{port}/{code}(-sd)")
             }
             Err(e) => {
                 eprintln!("cinder-ffi: drive: could not share: {e}");

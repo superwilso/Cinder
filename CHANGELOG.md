@@ -16,8 +16,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **The SD card over Wi-Fi.** Settings ▸ Wi-Fi ▸ Options ▸ Share the drive now shares the card
+  too, at the same address with `-sd` on the end (`http://<player>:8081/<code>-sd`; the row shows
+  it as `…/<code>(-sd)`). Map it as a
+  second drive and Flint syncs to both, as it does over the cable:
+  `flint sync <library> --to W:\ --to X:\`. With no card in, that address answers nothing.
+
 ### Fixed
 
+- **Songs with several artists scrobble to the main one.** A FLAC tagged with more than one
+  `ARTIST` (`Amy Winehouse`, `Ade Omotayo`, `Zalon Thompson`) was scrobbled to the last of them,
+  which is the one Sony's music database keeps. Cinder now reads the song's own tags and sends the
+  first. Last.fm and ListenBrainz take one artist per play.
 - **Lyrics that showed as one long block now show line by line.** Some taggers write the lyrics'
   line breaks as a bare `n`, so the whole song arrived as one line, synced or not
   (`…for myselfn[00:21.50]Out of some blue…`). Cinder now puts those breaks back, in Japanese and

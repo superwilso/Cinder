@@ -1,5 +1,7 @@
 //! Settings ▸ Wi-Fi ▸ Options ▸ Share the drive: the player's drive as a WebDAV share, so a
 //! computer maps it as a drive letter (Windows: Map network drive, `http://<player>:8081/<code>`;
+//! the SD card is a second share, `http://<player>:8081/<code>-sd`, mapped as a second letter so
+//! each reports its own free space and Flint syncs to the two as to the cable's two drives;
 //! macOS: Finder ▸ Connect to Server; Linux: davfs2 or the file manager) and copies music, or syncs
 //! with Flint (`flint sync Z:\MUSIC`), over Wi-Fi as it would over the cable.
 //!
@@ -37,6 +39,8 @@ const PART: &str = ".cinder-part";
 #[derive(Default)]
 struct Shared {
     root: PathBuf,
+    /// The SD card, shared as `/<code>-sd/`. Refused like the drive while it is not mounted.
+    sd: Option<PathBuf>,
     code: String,
     /// Refuse every request unless `root` is a mount of its own (USB storage mode unmounts it).
     check_mount: bool,
@@ -64,8 +68,8 @@ pub fn new_code() -> String {
     b.iter().map(|x| A[*x as usize % A.len()] as char).collect()
 }
 
-/// Share `root` under `/<code>/`. Returns the port.
-pub fn start(root: &Path, code: &str, check_mount: bool) -> Result<u16, String> {
+/// Share `root` under `/<code>/`, and `sd` under `/<code>-sd/`. Returns the port.
+pub fn start(root: &Path, sd: Option<&Path>, code: &str, check_mount: bool) -> Result<u16, String> {
     if running() {
         stop();
         std::thread::sleep(Duration::from_millis(600));
@@ -81,6 +85,7 @@ pub fn start(root: &Path, code: &str, check_mount: bool) -> Result<u16, String> 
     l.set_nonblocking(true).map_err(|e| e.to_string())?;
     *state().lock().unwrap() = Shared {
         root: root.to_path_buf(),
+        sd: sd.map(Path::to_path_buf),
         code: code.to_string(),
         check_mount,
         ..Shared::default()
@@ -340,9 +345,16 @@ fn handle(req: &Request, r: &mut impl BufRead, c: &mut TcpStream) -> bool {
     }
     let (root, code, check_mount, locked) = {
         let s = state().lock().unwrap();
+        // Which share: the card's when the address starts `/<code>-sd/`. Everything below, the
+        // hrefs and a MOVE's destination included, then stays inside that one.
+        let sd_code = format!("{}-sd", s.code);
+        let (root, code) = match &s.sd {
+            Some(sd) if relative(&req.path, &sd_code).is_ok() => (sd.clone(), sd_code),
+            _ => (s.root.clone(), s.code.clone()),
+        };
         (
-            s.root.clone(),
-            s.code.clone(),
+            root,
+            code,
             s.check_mount,
             s.locked_until.is_some_and(|t| Instant::now() < t),
         )
@@ -971,7 +983,7 @@ mod tests {
         fs::create_dir_all(root.join("MUSIC")).unwrap();
         fs::write(root.join("MUSIC/old.mp3"), b"0123456789").unwrap();
         crate::remote::take_uploaded();
-        let port = start(&root, "k7m2qx9p", false).unwrap();
+        let port = start(&root, None, "k7m2qx9p", false).unwrap();
         let p = |s: &str| format!("/k7m2qx9p{s}");
 
         let o = ask(port, &req("OPTIONS", "/", "", b""));
@@ -1132,6 +1144,70 @@ mod tests {
         stop();
         std::thread::sleep(Duration::from_millis(300));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The SD card is a share of its own beside the drive: its own listing and free space, writes
+    /// land on the card, and nothing moves between the two.
+    #[test]
+    fn the_sd_card_is_a_second_share() {
+        let _g = crate::cast::tests::E2E
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("cinder-drive-sd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (int, sd) = (base.join("int"), base.join("sd"));
+        fs::create_dir_all(int.join("MUSIC")).unwrap();
+        fs::create_dir_all(sd.join("MUSIC")).unwrap();
+        fs::write(sd.join("MUSIC/card.flac"), b"card").unwrap();
+        let port = start(&int, Some(&sd), "k7m2qx9p", false).unwrap();
+
+        let list = ask(
+            port,
+            &req("PROPFIND", "/k7m2qx9p-sd/MUSIC/", "Depth: 1\r\n", b""),
+        );
+        assert!(list.starts_with("HTTP/1.1 207"), "{list}");
+        assert!(
+            list.contains("<D:href>/k7m2qx9p-sd/MUSIC/card.flac</D:href>"),
+            "{list}"
+        );
+        let int_list = ask(
+            port,
+            &req("PROPFIND", "/k7m2qx9p/MUSIC/", "Depth: 1\r\n", b""),
+        );
+        assert!(
+            !int_list.contains("card.flac"),
+            "the drive does not show the card's files"
+        );
+
+        let put = ask(port, &req("PUT", "/k7m2qx9p-sd/MUSIC/new.flac", "", b"abc"));
+        assert!(put.starts_with("HTTP/1.1 201"), "{put}");
+        assert_eq!(fs::read(sd.join("MUSIC/new.flac")).unwrap(), b"abc");
+        assert!(!int.join("MUSIC/new.flac").exists());
+
+        let mv = ask(
+            port,
+            &req(
+                "MOVE",
+                "/k7m2qx9p-sd/MUSIC/new.flac",
+                "Destination: http://x/k7m2qx9p/MUSIC/new.flac\r\n",
+                b"",
+            ),
+        );
+        assert!(
+            mv.starts_with("HTTP/1.1 400"),
+            "no move between the two: {mv}"
+        );
+        assert!(sd.join("MUSIC/new.flac").exists());
+        stop();
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Without a card, the `-sd` address is a wrong code like any other.
+        let port = start(&int, None, "k7m2qx9p", false).unwrap();
+        let none = ask(port, &req("PROPFIND", "/k7m2qx9p-sd/", "Depth: 0\r\n", b""));
+        assert!(none.starts_with("HTTP/1.1 404"), "{none}");
+        stop();
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
