@@ -17,7 +17,7 @@ printf '#!/bin/sh\ncmd="$1"; shift\ncase "$cmd" in chown) exit 0 ;; esac\nexec "
 chmod +x "$T/bin/busybox"
 export PATH="$T/bin:$PATH"
 
-R=; F=; OUT=
+R=; F=
 fresh() {   # a scratch player with Sony's script and firmware; $1 = what the checks print
     R="$T/r$RANDOM$RANDOM"
     mkdir -p "$R/system/usr/bin" "$R/system/etc/firmware" "$R/data/cinder" "$R/xbin"
@@ -38,7 +38,7 @@ SONY
     cp "$R/system/usr/bin/optproc_for_boot.sh" "$R/sony.sh"
 }
 O() { echo "$R/system/usr/bin/optproc_for_boot.sh"; }
-run() { OUT="$(sh "$F" "$@" 2>&1)"; }
+run() { sh "$F" "$@" >/dev/null 2>&1; }
 boot() { sh "$(O)" > "$R/boot.out" 2>&1; }       # what init does at boot
 runs() { [ -f "$R/ran" ] && wc -l < "$R/ran" | tr -d ' ' || echo 0; }
 same() { cmp -s "$1" "$2" && echo same || echo differs; }
