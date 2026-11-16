@@ -103,7 +103,7 @@ the panel:
 | `dim` on `bg` | ≥ 3.0 | ≥ 1.35 |
 | `faint` on `bg` | ≥ 1.8 | ≥ 1.12 |
 | `accent` on `bg`, `accent_ink` on `accent`, `accent` on `row_select` | ≥ 3.0 | ≥ 1.2 |
-| *Cinder itself: ink / dim / faint* | *15.9 / 6.2 / 2.9* | *2.26 / 1.54 / 1.25* |
+| *Cinder itself: ink / dim / faint* | *15.9 / 6.2 / 4.7* | *2.26 / 1.54 / 1.39* |
 
 And:
 

@@ -12,14 +12,14 @@ day.panel = #ebe6dc
 day.line  = #d6d0c4
 day.ink   = #1c1a17
 day.dim   = #5f5a52
-day.faint = #8f887d
+day.faint = #726c63
 
 night.bg    = #000000
 night.panel = #0a0908
 night.line  = #161310
 night.ink   = #8d8170
 night.dim   = #5b5347
-night.faint = #3b362d
+night.faint = #4c463b
 
 day.accent       = #c4471a
 day.accent_ink   = #ffffff

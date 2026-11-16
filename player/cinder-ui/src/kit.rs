@@ -38,6 +38,19 @@ pub const SWITCH_H: i32 = 22;
 pub const BUTTON_H: i32 = 56;
 /// Left and right content edges.
 pub const LEFT: i32 = 20;
+
+/// A hint or an instruction: a sentence in sans at the caption size, in `dim`. Mono capitals are
+/// for labels (`NOW PLAYING`, `FLAC 24/96`); a sentence set that way at 11 px in `faint` was the
+/// hardest text on the glass to read (UI audit, 2026-11-16).
+pub fn hint_style(t: &Theme) -> crate::text::TextStyle {
+    sty(
+        Family::Sans,
+        Weight::Regular,
+        crate::scale::CAPTION,
+        t.dim,
+        0.0,
+    )
+}
 pub const RIGHT: i32 = W as i32 - 20;
 /// Gap between chips.
 pub const CHIP_GAP: i32 = 8;
@@ -81,9 +94,15 @@ pub fn section_label(
 
 /// Where a section label's action sits, for the hit test: the right-hand half of the label band.
 /// Generous on purpose — the words are short and the band is only 34 px tall.
+/// The zone is 44 px tall: the 34 px label plus 10 px into the row under it, on the right half
+/// only, where the action wins (UI audit, 2026-11-16: 34 px was under the 44 px floor). Callers test
+/// it BEFORE the rows below.
 pub fn section_action_hit(label_y: i32, x: i32, y: i32) -> bool {
-    y >= label_y && y < label_y + SECTION_H && x >= W as i32 / 2
+    y >= label_y && y < label_y + SECTION_ACTION_H && x >= W as i32 / 2
 }
+
+/// The section action's target height (see [`section_action_hit`]).
+pub const SECTION_ACTION_H: i32 = 44;
 
 /// The strip: one line of state on the panel tone, hairlines above and below. Returns the y below.
 pub fn strip(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, line: &str) -> i32 {
@@ -378,7 +397,7 @@ pub fn chip_at(n: usize, y: i32, x: i32, py: i32) -> Option<usize> {
     })
 }
 
-/// A row of equal chips at `y`, `sel` filled in the accent. Returns the y below the chips.
+/// A row of equal chips at `y`, `sel` washed and ringed in the accent. Returns the y below the chips.
 pub fn chips(
     c: &mut Canvas,
     t: &Theme,
@@ -421,18 +440,17 @@ pub fn chips_in(
         let l = crate::i18n::text(l);
         let (x, w) = chip_span(i, cols);
         let on = sel == Some(i);
+        // Selected: the row wash and a 2 px accent ring, not a solid accent block. A screen of
+        // choices (Display has three rows of them) was mostly orange, and the accent is meant for
+        // the few things to act on (UI audit, 2026-11-16). The label stays in `ink`: accent text
+        // on the wash misses 4.5:1 with the red accent.
         if on {
-            fill_rect(c, x, y, w, CHIP_H, t.acc);
+            fill_rect(c, x, y, w, CHIP_H, t.row_sel);
+            stroke_rect(c, x, y, w, CHIP_H, t.acc, 2);
         } else {
             stroke_rect(c, x, y, w, CHIP_H, t.ctrl(), 1);
         }
-        let st = sty(
-            Family::Sans,
-            Weight::SemiBold,
-            size,
-            if on { t.acc_ink } else { t.ink },
-            0.0,
-        );
+        let st = sty(Family::Sans, Weight::SemiBold, size, t.ink, 0.0);
         let s = fit(f, l, &st, (w - 16) as f32);
         let tw = text::measure(f, &s, &st);
         text::draw(

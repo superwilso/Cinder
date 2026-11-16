@@ -232,8 +232,16 @@ fn nothing_playing(c: &mut Canvas, t: &Theme, f: &FontSet, cx: f32, cy: f32, upp
         f,
         cx,
         cy + 26.0,
-        crate::i18n::text("CHOOSE A TRACK FROM YOUR LIBRARY"),
-        &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+        if upper {
+            crate::i18n::text("CHOOSE A TRACK FROM YOUR LIBRARY")
+        } else {
+            crate::i18n::text("Choose a track from your library")
+        },
+        &if upper {
+            s(Family::Mono, Weight::Regular, 11.0, t.dim, 0.18)
+        } else {
+            crate::kit::hint_style(t)
+        },
     );
 }
 
@@ -489,7 +497,7 @@ fn nocturne_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, l: &
             x,
             y + 24.0,
             crate::i18n::text("ALBUM"),
-            &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1),
+            &s(Family::Mono, Weight::Bold, 11.0, t.acc, 0.1),
         );
     }
 

@@ -337,8 +337,8 @@ pub fn render(
         f,
         240.0,
         770.0,
-        crate::i18n::text("CHARGING WHILE IN DAC MODE: ON"),
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1),
+        crate::i18n::text("Charging while in DAC mode: on"),
+        &crate::kit::hint_style(t),
     );
 }
 

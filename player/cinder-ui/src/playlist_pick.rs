@@ -108,7 +108,7 @@ pub fn render_targets(
                 26.0,
                 (cy + 19) as f32,
                 crate::i18n::text("NAME IT, THEN ADD THIS TRACK"),
-                &sty(Family::Mono, Weight::Regular, 10.0, t.acc_ink, 0.14),
+                &sty(Family::Mono, Weight::Regular, 11.0, t.acc_ink, 0.14),
             );
         } else {
             let target = &targets[index - 1];
@@ -272,8 +272,8 @@ pub fn render_tracks(
         f,
         240.0,
         (BOTTOM + 26) as f32,
-        crate::i18n::text("BACK WHEN YOU ARE DONE"),
-        &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16),
+        crate::i18n::text("Back when you are done"),
+        &crate::kit::hint_style(t),
     );
 }
 
@@ -281,11 +281,11 @@ fn footer(c: &mut Canvas, t: &Theme, f: &FontSet, sony_count: usize) {
     // Short enough to fit the panel at every UI scale — the first version ran off the right edge.
     let note = if sony_count > 0 {
         crate::ui_format!(
-            "{sony_count} SONY PLAYLIST(S) CANNOT BE EDITED HERE",
+            "{sony_count} Sony playlist(s) cannot be edited here",
             sony_count = sony_count
         )
     } else {
-        crate::i18n::text("PLAYLISTS YOU MAKE ARE SAVED ON THE DEVICE").to_string()
+        crate::i18n::text("Playlists you make are saved on the player").to_string()
     };
     crate::widgets::center(
         c,
@@ -293,7 +293,7 @@ fn footer(c: &mut Canvas, t: &Theme, f: &FontSet, sony_count: usize) {
         240.0,
         (BOTTOM + 26) as f32,
         &note,
-        &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16),
+        &crate::kit::hint_style(t),
     );
 }
 

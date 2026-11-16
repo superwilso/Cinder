@@ -145,7 +145,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
         22.0,
         (y0 + 46) as f32,
         crate::i18n::text("Sony saves the two separately; only one is ever applied."),
-        &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+        &sty(
+            Family::Sans,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.faint,
+            0.0,
+        ),
     );
 
     // ── the slider field ────────────────────────────────────────────────────────────────────
@@ -223,7 +229,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tc: &Tone, sel: usize) {
         (W / 2) as f32,
         (by + 52) as f32,
         crate::i18n::text("dB   ·   tap above or below the line"),
-        &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+        &sty(
+            Family::Sans,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.faint,
+            0.0,
+        ),
     );
 
     // ── footer ──────────────────────────────────────────────────────────────────────────────

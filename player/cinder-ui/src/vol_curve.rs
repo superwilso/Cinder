@@ -211,7 +211,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VolCurve, sel: usize) 
         (W / 2) as f32,
         (FIELD_BOTTOM + 52) as f32,
         crate::i18n::text("Volume number below · Sony's step above"),
-        &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0),
+        &sty(
+            Family::Sans,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            t.faint,
+            0.0,
+        ),
     );
 
     let fcy = (FOOTER_TOP + FOOTER_H / 2) as f32;

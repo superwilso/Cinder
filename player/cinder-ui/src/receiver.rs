@@ -310,8 +310,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         ny += 22.0;
     }
     hline(c, 740, t.line);
-    let footer = crate::i18n::text("EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE");
-    let footer_style = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1);
+    let footer = crate::i18n::text("Experimental · tested with Windows and iPhone");
+    let footer_style = crate::kit::hint_style(t);
     if crate::scale::large() || crate::text::measure(f, footer, &footer_style) > 480.0 - 44.0 {
         crate::widgets::draw_wrap2(c, f, 22.0, 758.0, footer, &footer_style, 458.0, 19.0);
     } else {

@@ -1078,8 +1078,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             f,
             240.0,
             cy + 26.0,
-            crate::i18n::text("CHOOSE A TRACK FROM YOUR LIBRARY"),
-            &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+            crate::i18n::text("Choose a track from your library"),
+            &crate::kit::hint_style(t),
         );
         idle_chrome(c, t, f);
         return;
@@ -1309,7 +1309,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             436.0,
             ty + g(27.0),
             crate::i18n::text("ALBUM"),
-            &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1),
+            &s(Family::Mono, Weight::Bold, 11.0, t.acc, 0.1),
         );
     }
 

@@ -95,7 +95,7 @@ Design with the **token names**, not hex values. The palette supplies the values
 | `ink` | Primary text: titles, row labels |
 | `dim` | Secondary text: artists, subtitles, times |
 | `faint` | Tertiary text: captions, section labels, idle icons |
-| `acc` | **The accent. It means "this is live, act here":** the play button, the played part of the rail, the selected chip, a switch that's on |
+| `acc` | **The accent. It means "this is live, act here":** the play button, the played part of the rail, the ring around a selected chip, a switch that's on |
 | `acc_ink` | Anything drawn **on** an accent fill: the play glyph, a selected chip's label |
 | `row_sel` | The wash behind the highlighted row |
 
@@ -104,7 +104,8 @@ The rules:
 - **The accent is for things you can act on, and what's active.** Use it on as few elements per
   screen as possible. Never use it for decoration, headings or plain labels.
 - **Text colour follows importance:** `ink`, then `dim`, then `faint`. The palette rules guarantee
-  each one stands out more than the next.
+  each one stands out more than the next. `faint` carries small text too (section labels,
+  captions), so Cinder's own palettes keep it at 4.5:1 or more by day, like the other two.
 - **Night is the same design, dimmer.** Night scales every colour to 55%, and the Brightness row
   scales it further. The cover is dimmed too: Cinder shows it at about a third of its brightness.
   Don't design a separate night look that needs colours of its own.
@@ -143,14 +144,19 @@ Design every text box for 140%:
   three-hour track (`2:45:09`). The overflow tests use exactly these.
 
 Mono capitals are **tracked** (letter-spaced about 0.14–0.18 em) and set at 11–13 px. They are
-labels, never sentences.
+labels, never sentences. A hint or an instruction ("Tap Done to save, or Back to cancel") is a
+sentence: sans, `CAPTION`, in `dim` (`kit::hint_style`). Nothing is set below 11 px, and sans text
+never below `CAPTION`.
 
 ## 6. Touch
 
 - **Every target is at least 44 × 44 px.** A drawn control can be smaller than that (a 24 px
   shuffle icon, a 6 px rail), but the area that answers the tap can't.
 - **Targets don't overlap.** Where two have to touch, one of them has to win, and your design has
-  to say which.
+  to say which. A section label's action (SCAN, PAIR NEW) answers 44 px down from the label's
+  top, 10 px into the row below on the right half, and wins there.
+- **Gaps belong to a target.** A gap drawn between keys or chips is split between its neighbours,
+  and the keys at the ends of a keyboard row reach the edge of the glass.
 - **Row heights are fixed per kind of row:**
 
   | Row | Height |

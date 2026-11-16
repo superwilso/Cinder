@@ -13,7 +13,7 @@ murk.palette	day.ink on day.bg: contrast 1.05, needs at least 4.50
 murk.palette	day.dim on day.bg: contrast 1.05, needs at least 3.00
 murk.palette	day.ink on day.panel: contrast 1.01, needs at least 4.50
 murk.palette	day.dim stands out as much as day.ink (1.05 vs 1.05) — dim is for secondary text
-murk.palette	day.faint stands out as much as day.dim (2.86 vs 1.05)
+murk.palette	day.faint stands out as much as day.dim (4.66 vs 1.05)
 paper.palette	ok
 plain.palette	ok
 slate.palette	ok

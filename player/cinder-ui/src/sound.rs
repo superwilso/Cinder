@@ -1137,7 +1137,7 @@ pub fn render(
         }
         // The hint sits LEFT of the segments rather than under them: the segments fill the
         // header's vertical space, and a caption below would run past HEADER_BOTTOM into the list.
-        let hint = sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14);
+        let hint = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.14);
         let (x0, _, _, _) = ab_rect(0);
         right(
             c,
