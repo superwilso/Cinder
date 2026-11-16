@@ -1,0 +1,55 @@
+usb hub: Sony's disconnect poll looks once a second when nothing is attached
+
+hub_poll_discnt_thread (khubd_poll) re-reads a high-speed host device's descriptor to notice an
+unplug, and sleeps 100 ms between looks whether or not any such device is attached. On a player
+that is almost always a USB device, never a host, that is 10 wakeups a second for nothing, awake
+or playing. With no high-speed device on a host port it now sleeps 1 s; with one, Sony's 100 ms.
+Measured 2026-11-16 on an NW-A55: khubd_poll 9.2 wakeups/s before.
+
+diff --git a/drivers/usb/core/hub.c b/drivers/usb/core/hub.c
+index 1a61a582..5f2abba4 100755
+--- a/drivers/usb/core/hub.c
++++ b/drivers/usb/core/hub.c
+@@ -5191,6 +5191,7 @@ static int hub_poll_discnt_thread(void *__unused)
+ 		return 0;
+ 	
+ 	do {
++		bool watching = false;	/* a high-speed device is on a host port */
+ #if (defined(CONFIG_USB_MTK_HDRC)) 
+ 		if (port0_root_hub != NULL){
+ 			if(mtk_musb->is_host) {
+@@ -5198,6 +5199,7 @@ static int hub_poll_discnt_thread(void *__unused)
+ 				
+ 				if ((port0_udev != NULL)&&(port0_udev->speed == USB_SPEED_HIGH))   /*need wakeup mechnism*/
+ 				{		
++					watching = true;
+ 					if(port0_poll_need == true){
+ 						/* there's always [9.4.3] a device descriptor [9.6.1] */
+ 						mutex_lock(&usb_address0_mutex);
+@@ -5225,6 +5227,7 @@ static int hub_poll_discnt_thread(void *__unused)
+ 				
+ 				if ((port1_udev != NULL)&&(port1_udev->speed == USB_SPEED_HIGH))   /*need wakeup mechnism*/
+ 				{		
++					watching = true;
+ 					if(port1_poll_need == true){
+ 						/* there's always [9.4.3] a device descriptor [9.6.1] */
+ 						mutex_lock(&usb_address0_mutex);
+@@ -5262,6 +5265,7 @@ static int hub_poll_discnt_thread(void *__unused)
+ 			port1_udev = port1_root_hub->ports[0]->child;
+ 			if ((port1_udev != NULL)&&(port1_udev->speed == USB_SPEED_HIGH))   /*need wakeup mechnism*/
+ 			{		
++				watching = true;
+ 				if(port1_poll_need == true){
+ 					/* there's always [9.4.3] a device descriptor [9.6.1] */
+ 					mutex_lock(&usb_address0_mutex);
+@@ -5279,7 +5283,9 @@ static int hub_poll_discnt_thread(void *__unused)
+ 			}
+ 		}
+ #endif
+-		msleep(100);
++		/* Nothing to watch is the usual case (the player is a USB device, not a host):
++		 * look again in 1 s, not 100 ms. Watching keeps Sony's 100 ms. */
++		msleep(watching ? 100 : 1000);
+ 	} while (1);
+ 
+ 	printk(KERN_ERR "%s: hub_poll_discnt_thread exit\n", usbcore_name);

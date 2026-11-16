@@ -44,6 +44,7 @@ the ones the patches remove and two the compilers handle differently.
 | 0005 | zram swap hung the player the first time a swapped page came back (backport of the upstream fix). |
 | 0006 | Logs when the kernel started, in ms since power-on (`cinder: kernel started N ms`), so boot time can be measured: subtract `bootprof.lk_t` from the command line. |
 | 0007 | The touch panel's 0.6 s power-up runs beside the other drivers instead of in front of them: userspace starts 0.3 s sooner (2.57 s, was 2.88 s). The panel keeps its input number, which Sony's own app is given. |
+| 0008 | Sony's USB unplug check (`khubd_poll`) looks every 100 ms only while a high-speed device is plugged into the player as a host, and once a second otherwise. That is 9 fewer wakeups a second almost all the time: measured on a player with the screen off, 87 to 79 a second during playback and 46 to 39 when paused. |
 
 ## czram.ko: working swap on the stock kernel
 
