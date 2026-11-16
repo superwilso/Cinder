@@ -1185,6 +1185,7 @@ times are from power-on.
 | 51.16 | `cinderhome_clear` on the drive after a bad-boot revert | Open. The launcher's `rm -f` never removed the latch on this shell (11-16, the player stayed on stock); fixed and on the player, not yet tried. A revert by the boot guard (`cinder-guard.sh`, which puts Sony's Home app back) is not cleared this way |
 | 51.17 | Playlist cover picker and editor Name/Cover rows | Open. On one of your playlists: tap the cover, pick an album, then a picture copied into `cinder_playlists`, then Automatic; each shows on the page and the Playlists tab. EDIT ▸ Name renames; the page's rows have no × |
 | 51.18 | Tapping the playing song again | Open. Play a song from an album, open a playlist holding it, tap it: the dialog appears and playback does not restart. "Play the rest of the playlist next" puts the rest after it in Up Next |
+| 51.19 | `kernel` option: install, remove, install | Pass 11-16 over adb with `cinder-kernel.sh` (the installer's own call): install → boots Cinder's kernel (built 2025-01-01 stamp); a second install writes nothing; remove → partition md5 = Sony's dump, boots Sony's 2019 kernel; install again → boots. bootcount 0 every time. Not yet run from inside Sony's updater (the installer `--update` with `kernel` ticked) |
 
 **Decision for the owner.** Cinder's first frame waits 2.4–3.5 s for Sony's app framework
 (`onActivate`). Drawing could start about 2.8 s sooner, but Cinder's settings are on `/contents`,

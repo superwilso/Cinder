@@ -26,8 +26,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Sony's drivers. Only the boot partition is written: the original is saved to the drive first as
   `cinder_boot_original.img`, the new image is read back after writing (the original goes straight
   back if it differs), and unticking the option or uninstalling puts the original back. Back the
-  player up with cinder-rescue first. *Ran from the boot partition on one NW-A55; installed by hand,
-  the installer's own install and removal not yet run on a player.*
+  player up with cinder-rescue first. *On one NW-A55, the option's own script installed it, removed
+  it (the boot partition read back byte for byte as Sony's) and installed it again, each followed
+  by a restart; not yet run from inside the installer.*
 - **Join Wi-Fi with the router's WPS button.** Settings ▸ Wi-Fi ▸ Network has a "Router's WPS
   button" row: tap it, press the button on the router within two minutes, and the player joins and
   saves the network without a password typed. *Joined the owner's router on a player; with no
