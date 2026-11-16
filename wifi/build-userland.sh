@@ -2,7 +2,7 @@
 # build-userland.sh — the programs the player needs beside the modules, static, so they do not
 # depend on the player's glibc 2.23:
 #
-#   out/wpa_supplicant, out/wpa_cli   join a network (WPA2, WPA3/SAE, OWE), OpenSSL 3.5 inside
+#   out/wpa_supplicant, out/wpa_cli   join a network (WPA2, WPA3/SAE, OWE, WPS button), OpenSSL 3.5 inside
 #   out/iw                            inspect the radio
 #   out/wifiscan                      a scan with no libraries (tools/wifiscan.c)
 #   out/curl, out/cacert.pem          HTTPS for scrobbling and update checks (curl licence; Mozilla's
@@ -77,6 +77,7 @@ CONFIG_BACKEND=file
 CONFIG_SAE=y
 CONFIG_IEEE80211W=y
 CONFIG_OWE=y
+CONFIG_WPS=y
 CONFIG_GETRANDOM=y
 CONFIG_IEEE8021X_EAPOL=y
 CONFIG_EAP_PEAP=y

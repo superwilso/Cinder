@@ -1180,6 +1180,9 @@ times are from power-on.
 | 51.11 | `preload` wrapper gives Sony's key/LED process 50 ms of timer slack (two boots, trial guard confirmed) | **Pass 11-16**: 87.4 → 72.0 playing, 45.6 → 36.9 paused. Audio played through it, no underruns. Open: hold a button on Sony's own screens (stock fallback) and check it still acts |
 | 51.12 | Kernel patch 0008: `khubd_poll` looks once a second with nothing on the USB host port | **Pass 11-16** from RAM: 87.4 → 78.8 playing, 45.6 → 38.5 paused. With 51.11: **62.3 playing (−29%), 25.6 paused (−44%)**. Not tried: the owner has no USB DAC (with one attached, Sony's 100 ms check comes back unchanged) |
 | 51.13 | Battery run off the cable with 51.11 + 51.12: screen off, music for an hour, battery voltage before and after, against the same hour on Sony's kernel and wrapper | Open. Needs the owner to unplug. The only measure of what the wakeups cost: deep idle is impossible on the cable |
+| 51.14 | Dev crash reports: a restart, then a start after it | **Pass 11-16**: each start after a restart left a `cinder_reports/<time>-restart` folder (log, kernel log, restart reason, kernel messages). Not seen yet: a real freeze or crash |
+| 51.15 | Wi-Fi ▸ Network ▸ Router's WPS button, then the router's button | Open. Needs the owner's router. 11-16: with no button pressed it waited 2 min, gave up, saved nothing |
+| 51.16 | `cinderhome_clear` on the drive after a bad-boot revert | Open. The launcher's `rm -f` never removed the latch on this shell (11-16, the player stayed on stock); fixed and on the player, not yet tried. A revert by the boot guard (`cinder-guard.sh`, which puts Sony's Home app back) is not cleared this way |
 
 **Decision for the owner.** Cinder's first frame waits 2.4–3.5 s for Sony's app framework
 (`onActivate`). Drawing could start about 2.8 s sooner, but Cinder's settings are on `/contents`,

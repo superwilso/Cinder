@@ -18,6 +18,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Join Wi-Fi with the router's WPS button.** Settings ▸ Wi-Fi ▸ Network has a "Router's WPS
+  button" row: tap it, press the button on the router within two minutes, and the player joins and
+  saves the network without a password typed. *Not yet joined to a real router: a try with no
+  button pressed waited, gave up after two minutes and left the saved networks alone.*
+- **Crash reports on the dev build.** When the last start did not end in Cinder's own power off,
+  restart or update, the dev build saves Cinder's log, the kernel's log from before the restart and
+  the restart reason in `cinder_reports` on the drive (the newest ten), ready to attach to a report.
+
 - **Alarm (Settings ▸ Power ▸ Alarm, off by default).** Wakes the player and plays what was playing
   at a time of day, by the clock in the top bar; hour and minute buttons, then "Turn the alarm on".
   It sets the player's clock chip to wake it from sleep, so it works with the screen off. An alarm
@@ -68,6 +76,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Clearing a bad-boot revert from the drive:** `cinderhome_clear` on the drive did nothing, so a
+  player that had switched to Sony's player stayed there until Cinder was installed again. It now
+  works.
+- **Auto power-off on unplugging:** a player left on the charger for longer than the auto
+  power-off time switched off the moment it was unplugged. Unplugging now starts the countdown
+  again.
 - **Album grid covers:** a player that started on the album grid showed gradients instead of
   covers until the library was rebuilt. The grid now waits for the covers to be ready instead of
   giving up on them.

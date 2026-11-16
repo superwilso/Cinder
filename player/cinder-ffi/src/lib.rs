@@ -6764,6 +6764,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
         Action::RadioStop => 72,
         Action::WifiAirPlay => 73,
         Action::WifiUpdateInstall => 74,
+        Action::WifiWps => 75,
         // Handled by `carry_action` before this point.
         Action::SpeakersScan | Action::SpeakerPlay(_) | Action::SpeakerStop => return None,
         Action::MediaSearch | Action::MediaOpen { .. } | Action::MediaFind { .. } => return None,

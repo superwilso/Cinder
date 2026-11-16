@@ -626,6 +626,9 @@ pub enum Action {
     /// A network chosen (and its password typed): the shell takes it with `take_wifi_join`, feeds
     /// it to `cinder-wifi join` on stdin, then runs `on`.
     WifiJoin,
+    /// Settings ▸ Wi-Fi ▸ Network ▸ WPS: `cinder-wifi wps` (up to 2 min for the router's button),
+    /// then `on`. The shell answers with a status.
+    WifiWps,
     /// Settings ▸ Wi-Fi ▸ Set the clock switched on while connected: `cinder-wifi timesync` now
     /// (otherwise the shell runs it after each successful `on` while the setting is on).
     WifiTimeSync,
@@ -1733,6 +1736,8 @@ pub struct App {
     wifi_scanning: bool,
     /// The network whose password the keyboard is asking for.
     wifi_join_target: Option<Vec<u8>>,
+    /// A WPS join is waiting for the router's button; cleared by the next status.
+    wifi_wps: bool,
     /// A join for the shell to carry out (SSID bytes, password; empty for an open network). Taken
     /// once by `take_wifi_join`, so the password does not stay in memory longer than it must.
     wifi_join: Option<(Vec<u8>, String)>,
@@ -2302,6 +2307,7 @@ impl Default for App {
             wifi_status: crate::wifi::Status::default(),
             wifi_networks: Vec::new(),
             wifi_scanning: false,
+            wifi_wps: false,
             wifi_join_target: None,
             wifi_join: None,
             airplay_note: String::new(),
@@ -7926,6 +7932,16 @@ impl App {
                 self.wifi_scanning = true;
                 vec![Action::WifiScan]
             }
+            ListHit::Wps if !self.wifi_wps => {
+                if matches!(self.wifi_status.state, State::Off) {
+                    self.notify(crate::i18n::text("Switch Wi-Fi on first"));
+                    return vec![];
+                }
+                self.wifi_wps = true;
+                self.wifi_status.state = State::Busy;
+                crate::wifi::note_state(State::Busy);
+                vec![Action::WifiWps]
+            }
             ListHit::Network(i) => {
                 let Some(n) = self.wifi_networks.get(i).cloned() else {
                     return vec![];
@@ -7988,6 +8004,7 @@ impl App {
             self.remote_dropped = true;
         }
         crate::wifi::note_state(st.state);
+        self.wifi_wps = false;
         self.wifi_status = st;
     }
 
@@ -12373,6 +12390,7 @@ impl App {
                     status: &self.wifi_status,
                     networks: &self.wifi_networks,
                     scanning: self.wifi_scanning,
+                    wps: self.wifi_wps,
                     sel: None,
                 },
             ),
@@ -28036,6 +28054,23 @@ mod r4_tests {
     /// The four options are plain saved switches, off by default. Set the clock, ListenBrainz and
     /// Check for updates switched on while connected act at once. Tapping the joined network asks
     /// before forgetting it.
+    #[test]
+    fn wifi_wps_row_asks_once_and_waits() {
+        use crate::wifi::ListHit;
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::WifiNetworks);
+        let wps_y = (0..crate::canvas::H as i32)
+            .find(|&y| crate::wifi::hit_list(240, y, 0) == ListHit::Wps)
+            .unwrap();
+        a.set_wifi_status("state=off\n", "");
+        assert!(a.tap(240, wps_y).is_empty(), "off: nothing to press yet");
+        a.set_wifi_status("state=on\n", "");
+        assert_eq!(a.tap(240, wps_y), vec![Action::WifiWps]);
+        assert!(a.tap(240, wps_y).is_empty(), "one wait at a time");
+        a.set_wifi_status("state=connected\n", "");
+        assert_eq!(a.tap(240, wps_y), vec![Action::WifiWps]);
+    }
+
     #[test]
     fn wifi_options_and_forget() {
         use crate::wifi::{Hit, ListHit};

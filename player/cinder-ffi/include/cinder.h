@@ -264,6 +264,9 @@ typedef enum {
     /* Settings > Wi-Fi > Install Cinder v..., confirmed: on the Wi-Fi worker, cinder_update_stage();
      * on 0, `cinder-power update` (Sony's update flag, then restart into its updater). */
     CINDER_ACT_WIFI_UPDATE_INSTALL = 74,
+    /* Settings > Wi-Fi > Network > WPS: `cinder-wifi wps` (waits up to 2 min for the router's
+     * button), then `on`, and report the status as for CINDER_ACT_WIFI_ON. */
+    CINDER_ACT_WIFI_WPS = 75,
     /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
      * resume function (Configuration 5008/5039), then boot to stock exactly as
      * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */
