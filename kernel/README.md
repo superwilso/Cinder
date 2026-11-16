@@ -22,6 +22,11 @@ Two settings come from Sony's internal project configuration, not the kernel con
 the second, the low-power playback path does not open, Sony's sound service stalls, and Sony's hang
 checker restarts the player about 10 s into playback.
 
+One deliberate difference from Sony's configuration: the kernel is compressed with LZO instead of
+XZ, which needs `lzop` on the build machine (`apt install lzop`). The image is 6.2 MB instead of
+3.8 MB, and the player starts it 1.4 s sooner: 1.3 s from the bootloader to the kernel's first
+timer, against 2.7 s (measured with patch 0006).
+
 How close the result is to the player's own kernel: the configuration is identical to the player's
 `/proc/config.gz`; the build has 47,715 symbols to the shipped kernel's 47,719, the difference being
 small functions GCC 4.9 inlines where Sony's GCC 4.8 did not; every symbol Sony's 12 binary
@@ -37,6 +42,8 @@ the ones the patches remove and two the compilers handle differently.
 | 0003 | Writing the backlight's `duty` or `div` crashed and restarted the player. Removes `pwm_register`, which wrote any value to any hardware address. |
 | 0004 | Three `/proc` and ioctl handlers copied caller-chosen lengths into small fixed buffers. |
 | 0005 | zram swap hung the player the first time a swapped page came back (backport of the upstream fix). |
+| 0006 | Logs when the kernel started, in ms since power-on (`cinder: kernel started N ms`), so boot time can be measured: subtract `bootprof.lk_t` from the command line. |
+| 0007 | The touch panel's 0.6 s power-up runs beside the other drivers instead of in front of them: userspace starts 0.3 s sooner (2.57 s, was 2.88 s). The panel keeps its input number, which Sony's own app is given. |
 
 ## czram.ko: working swap on the stock kernel
 

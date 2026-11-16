@@ -161,6 +161,12 @@ if [ "$restored" = 1 ]; then
         echo "preload: not installed, nothing to remove"
     fi
 
+    # 1c2. The `fast-boot` component (install_cinderhome.sh 1g3b): Sony's firmware-check script
+    #      back in place. Best-effort: left in place, ours still runs Sony's checks on any change.
+    if [ -s "$BIN/cinder-fastboot.sh" ]; then
+        sh "$BIN/cinder-fastboot.sh" remove 2>&1 || echo "fast-boot: could not be removed cleanly (see the line above)"
+    fi
+
     # 1d. The switches of `bt-aac` (install_cinderhome.sh 1g4); its libraries go with the folder.
     "$BB" rm -f /data/cinder/bt_aac /data/cinder/bt_sbc_xq /data/cinder/bt_aptxhd 2>/dev/null
 

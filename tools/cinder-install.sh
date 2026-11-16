@@ -14,6 +14,8 @@
 #   tools/cinder-install.sh --full         # also push + chmod 4755 the setuid helpers
 #   tools/cinder-install.sh --preload      # also the `preload` component: hagodaemon wrapper,
 #                                          #   boot guard and mono shim (deploy/cinder-preload.sh)
+#   tools/cinder-install.sh --fast-boot    # also the `fast-boot` component: Sony's boot-time
+#                                          #   firmware checks skipped (deploy/cinder-fastboot.sh)
 #   tools/cinder-install.sh --rollback     # restore previous binary from /data/cinder/
 #   tools/cinder-install.sh --logs         # tail /contents/cinderhome.log
 #   tools/cinder-install.sh --status       # device + install health check
@@ -58,6 +60,7 @@ DO_BUILD=1
 MODE="install"
 FULL=0
 PRELOAD=0
+FASTBOOT=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-build) DO_BUILD=0; shift;;
@@ -65,6 +68,7 @@ while [ $# -gt 0 ]; do
         --dev)      CHANNEL="dev"; shift;;
         --full)     FULL=1; shift;;
         --preload)  PRELOAD=1; shift;;
+        --fast-boot) FASTBOOT=1; shift;;
         --logs)     MODE="logs"; shift;;
         --status)   MODE="status"; shift;;
         --rollback) MODE="rollback"; shift;;
@@ -302,6 +306,16 @@ if [ -f /data/local/tmp/cinder-preload.sh.new ]; then
     done
 fi
 
+#    the fast-boot component if --fast-boot staged it (deploy/cinder-fastboot.sh, the same script
+#    the .UPG installer runs). Its failures leave Sony's script in place and do not stop the swap.
+if [ -f /data/local/tmp/cinder-fastboot.sh.new ]; then
+    sh /data/local/tmp/cinder-fastboot.sh.new install 2>&1 | while read -r line; do echo "[swap] \$line"; done
+    cp /data/local/tmp/cinder-fastboot.sh.new "\$HELPERS_DIR/cinder-fastboot.sh.tmp" \\
+        && chmod 755 "\$HELPERS_DIR/cinder-fastboot.sh.tmp" \\
+        && mv "\$HELPERS_DIR/cinder-fastboot.sh.tmp" "\$HELPERS_DIR/cinder-fastboot.sh" || true
+    rm /data/local/tmp/cinder-fastboot.sh.new 2>/dev/null || true
+fi
+
 # 3b. install the LAUNCHER, still in the calm phase — before anything is killed.
 #
 # The launcher is the recovery ladder, so this is the most dangerous single write this script
@@ -514,6 +528,13 @@ if [ "$PRELOAD" = 1 ]; then
         push "$DIST/$h" "/data/local/tmp/$h.new"
         ok "  staged $h"
     done
+fi
+
+# 4c. the `fast-boot` component if --fast-boot, staged the same way.
+if [ "$FASTBOOT" = 1 ]; then
+    [ -f "$DIST/cinder-fastboot.sh" ] || die "$DIST/cinder-fastboot.sh is missing — build first (cinder-home/build.sh $CHANNEL)"
+    push "$DIST/cinder-fastboot.sh" /data/local/tmp/cinder-fastboot.sh.new
+    ok "  staged cinder-fastboot.sh"
 fi
 
 # 5. upload + run the swap script

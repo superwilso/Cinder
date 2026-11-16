@@ -1,0 +1,19 @@
+mt_gpt: print when the kernel started, in ms since power-on
+
+MediaTek already reads the bootloaders' 1 ms timer (GPT4) as the kernel sets up its own, and
+keeps it as gpt_boot_time(), but nothing reports it. One line in the log makes kernel boot-time
+work measurable: subtract bootprof.lk_t (from the command line) to get the time spent
+decompressing and starting the kernel.
+
+diff --git a/arch/arm/mach-mt8590/mt_gpt.c b/arch/arm/mach-mt8590/mt_gpt.c
+index c1aef2e1..d67a9322 100644
+--- a/arch/arm/mach-mt8590/mt_gpt.c
++++ b/arch/arm/mach-mt8590/mt_gpt.c
+@@ -919,6 +919,7 @@ static void mt_gpt_init(void)
+     int i;
+     unsigned long save_flags;
+     boot_time_value = xgpt_boot_up_time(); /*record the time when init GPT*/
++    printk(KERN_INFO "cinder: kernel started %u ms after power-on (GPT4)\n", boot_time_value);
+ 
+     gpt_update_lock(save_flags);
+ 

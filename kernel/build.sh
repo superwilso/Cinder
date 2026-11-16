@@ -51,6 +51,10 @@ MK=(make -C "$K" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf-
     KBUILD_BUILD_USER=cinder KBUILD_BUILD_HOST=cinder   # not the builder's own account and PC name
     "KCFLAGS=-I$K/drivers/staging/android/ion -I$K/drivers/misc/mediatek/lcm")
 "${MK[@]}" BBDMP5_linux_debug_defconfig >/dev/null
+# LZO instead of Sony's XZ: the bootloader hands over to a kernel that unpacks in 1.3 s, not 2.7 s
+# (measured 2026-11-15, patch 0006's log line against bootprof.lk_t). Needs lzop (apt install lzop).
+"$K/scripts/config" --file "$K/.config" --disable KERNEL_XZ --enable KERNEL_LZO
+"${MK[@]}" olddefconfig >/dev/null
 "${MK[@]}" -j"$(nproc)" zImage modules >"$W/build.log" 2>&1 || { grep -E "error|Error" "$W/build.log" | tail -20; exit 1; }
 
 cp "$K/arch/arm/boot/zImage" "$K/System.map" "$OUT/"

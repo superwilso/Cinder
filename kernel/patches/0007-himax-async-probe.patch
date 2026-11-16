@@ -1,0 +1,131 @@
+himax touch: power the panel up beside the other drivers, not in front of them
+
+The HX8526 probe powers the panel up with about 0.6 s of msleep()s, and the I2C core runs it while
+it registers bus 0, inside kernel init, so every driver after it waited. The input device is now
+registered first, in the probe, so it keeps its place (event1, which Sony's Qt app is given in
+init.hagoromo.rc), and the power-up and everything after it run as async work. init waits for
+async work just before it starts userspace. A panel that does not power up is taken down again
+and the device stays bound with no data, which remove() (and so shutdown()) now allows for.
+
+diff --git a/drivers/input/touchscreen/himax_hx8526_icx.c b/drivers/input/touchscreen/himax_hx8526_icx.c
+index da379752..cd188f97 100644
+--- a/drivers/input/touchscreen/himax_hx8526_icx.c
++++ b/drivers/input/touchscreen/himax_hx8526_icx.c
+@@ -20,6 +20,7 @@
+ #include <linux/earlysuspend.h>
+ #include <linux/hrtimer.h>
+ #include <linux/i2c.h>
++#include <linux/async.h>
+ #include <linux/input.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+@@ -1021,6 +1022,50 @@ static int himax_hx8526_ts_reinitialize(struct himax_hx8526_ts_data *ts)
+ 	return ret;
+ }
+ 
++/* Cinder: the second half of the probe, as async work (see the end of himax_hx8526_ts_probe). If
++ * the panel does not power up it is taken down again and the device stays bound with no data,
++ * which remove() (and so shutdown()) allows for. */
++static void himax_hx8526_ts_poweron_async(void *data, async_cookie_t cookie)
++{
++	struct himax_hx8526_ts_data *ts = data;
++	struct i2c_client *client = ts->client;
++	struct ts_icx_platform_data *pdata = client->dev.platform_data;
++
++	if (himax_hx8526_ts_poweron(ts) < 0) {
++		pr_err("[%s] power on failure: no touch panel this boot\n", __func__);
++		i2c_set_clientdata(client, NULL);
++		input_unregister_device(ts->input_dev);
++		dma_free_coherent(NULL, MAX_DATA_SIZE, ts->buf_virt, ts->buf_phys);
++		kfree(ts);
++		return;
++	}
++
++	himax_hx8526_icx_ts_data = ts; 
++
++	mt_eint_set_sens(client->irq, MT_EDGE_SENSITIVE);
++	mt_eint_registration(client->irq, pdata->irqflags, himax_hx8526_ts_irq_handler, 1);
++
++#ifdef CONFIG_HAS_EARLYSUSPEND
++	ts->early_suspend.level   = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
++	ts->early_suspend.suspend = himax_hx8526_ts_early_suspend;
++	ts->early_suspend.resume  = himax_hx8526_ts_late_resume;
++	register_early_suspend(&ts->early_suspend);
++#endif
++
++	device_create_file(&client->dev, &dev_attr_regv);
++	device_create_file(&client->dev, &dev_attr_regp);
++	device_create_file(&client->dev, &dev_attr_xrst);
++	device_create_file(&client->dev, &dev_attr_sleep);
++	device_create_file(&client->dev, &dev_attr_clear);
++
++	ts->last_touch_time = jiffies;
++
++	himax_hx8526_ts_enable_irq(ts);
++	queue_delayed_work(himax_hx8526_wq, &ts->keepalive_work, HIMAX_HX8526_TS_KEEPALIVE_PERIOD);
++
++	himax_touch_proc_init();
++}
++
+ static int himax_hx8526_ts_probe(struct i2c_client *client, const struct i2c_device_id *id)
+ {
+ 	struct himax_hx8526_ts_data *ts;
+@@ -1083,12 +1128,6 @@ static int himax_hx8526_ts_probe(struct i2c_client *client, const struct i2c_dev
+ 		goto err_detect_failed;
+ 	}
+ 
+-	ret = himax_hx8526_ts_poweron(ts);
+-	if (ret < 0) {
+-		pr_err("[%s] power on failure\n", __func__);
+-		goto err_detect_failed;
+-	}
+-
+ 	ts->input_dev = input_allocate_device();
+ 	if (ts->input_dev == NULL) {
+ 		ret = -ENOMEM;
+@@ -1119,30 +1158,11 @@ static int himax_hx8526_ts_probe(struct i2c_client *client, const struct i2c_dev
+ 		goto err_input_register_device_failed;
+ 	}
+ 
+-	himax_hx8526_icx_ts_data = ts; 
+-
+-	mt_eint_set_sens(client->irq, MT_EDGE_SENSITIVE);
+-	mt_eint_registration(client->irq, pdata->irqflags, himax_hx8526_ts_irq_handler, 1);
+-
+-#ifdef CONFIG_HAS_EARLYSUSPEND
+-	ts->early_suspend.level   = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
+-	ts->early_suspend.suspend = himax_hx8526_ts_early_suspend;
+-	ts->early_suspend.resume  = himax_hx8526_ts_late_resume;
+-	register_early_suspend(&ts->early_suspend);
+-#endif
+-
+-	device_create_file(&client->dev, &dev_attr_regv);
+-	device_create_file(&client->dev, &dev_attr_regp);
+-	device_create_file(&client->dev, &dev_attr_xrst);
+-	device_create_file(&client->dev, &dev_attr_sleep);
+-	device_create_file(&client->dev, &dev_attr_clear);
+-
+-	ts->last_touch_time = jiffies;
+-
+-	himax_hx8526_ts_enable_irq(ts);
+-	queue_delayed_work(himax_hx8526_wq, &ts->keepalive_work, HIMAX_HX8526_TS_KEEPALIVE_PERIOD);
+-
+-	himax_touch_proc_init();
++	/* Cinder: the panel's power-up (about 0.6 s of msleep()s) runs as async work beside the other
++	 * drivers; the I2C core calls this probe while it registers bus 0, inside kernel init. The
++	 * input device is registered first, here, so it keeps its place (event1: Sony's Qt app is
++	 * told that in init.hagoromo.rc). init waits for async work before it starts userspace. */
++	async_schedule(himax_hx8526_ts_poweron_async, ts);
+ 
+ 	return 0;
+ 
+@@ -1167,6 +1187,9 @@ static int himax_hx8526_ts_remove(struct i2c_client *client)
+ 	struct himax_hx8526_ts_data *ts = i2c_get_clientdata(client);
+ 	struct ts_icx_platform_data *pdata = client->dev.platform_data;
+ 
++	if (!ts)		/* Cinder: the panel did not power up (himax_hx8526_ts_poweron_async) */
++		return 0;
++
+ 	mt_eint_mask(client->irq);
+ 
+ 	cancel_work_sync(&ts->irq_work);

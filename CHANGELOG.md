@@ -30,6 +30,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   thing in the jack may be earphones. It is off again after every restart for the same reason. The
   codec's own line outputs were measured first: they do not reach the 3.5 mm jack (it went silent).
   *Host-tested; not yet tried on a player.*
+- **Faster start-up (installer option `fast-boot`, off by default).** The player starts about 2
+  seconds sooner. On every start, Sony's software checks whether the touch screen, sound chip and
+  NFC chip need new firmware, and every Sony service waits for it (1.9 s on an NW-A55). With this
+  option the checks are skipped once they have found nothing to do, and run again by themselves if
+  a Sony update changes the firmware. Measured on a player: Sony's services start 2.1 s sooner and
+  Cinder 2.2 s sooner.
 
 ### Changed
 
