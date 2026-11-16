@@ -511,6 +511,21 @@ fn strip_word_stamps(s: &str) -> String {
     out
 }
 
+/// Where a lyrics website's page text starts, when a tagger copied the whole page into the tag:
+/// letras.mus.br's buttons (English, Spanish) and its ad-free offer, which is all an instrumental's
+/// tag holds. Everything from the first one on is the site's, not the song's (136 songs in the
+/// owner's library, 2026-11-16).
+const SITE_JUNK: &[&str] = &[
+    "Add to favorites Add to Playlist",
+    "Agregar a favoritos Agregar a playlist",
+    "One-time payment and enjoy it all year long",
+];
+
+fn cut_site_junk(text: &str) -> &str {
+    let at = SITE_JUNK.iter().filter_map(|m| text.find(m)).min();
+    at.map_or(text, |i| &text[..i])
+}
+
 /// Put back line breaks a tagger lost: `\n` written with its backslash dropped, so every break is a
 /// bare `n` and the whole song arrives as one line. Seen in 293 of the owner's 2,419 tagged songs
 /// (2026-11-16): `…for myselfn[00:21.50]Out of some blue…` and `Riding on my bicycle,nI saw…`.
@@ -619,7 +634,11 @@ pub fn parse(text: &str) -> Lyrics {
     let mut plain: Vec<String> = Vec::new();
 
     // iTunes writes `©lyr` with bare CR line breaks, which `lines()` alone would run together.
-    let text = restore_lost_breaks(&text.replace("\r\n", "\n").replace('\r', "\n"));
+    let text = restore_lost_breaks(
+        &cut_site_junk(text)
+            .replace("\r\n", "\n")
+            .replace('\r', "\n"),
+    );
     for raw in text.lines() {
         let mut rest = raw.trim_start_matches('\u{FEFF}').trim();
         let mut stamps: Vec<u32> = Vec::new();
@@ -755,6 +774,32 @@ mod tests {
                 "",
                 "台風の夜は",
             ]
+        );
+    }
+
+    /// A lyrics site's page copied into the tag: the words stay, the page goes; an instrumental's
+    /// tag, which is nothing but the page, is no lyrics. Copied from the owner's library.
+    #[test]
+    fn a_lyrics_sites_page_text_is_cut_off() {
+        let l = parse("We are Sex Bob-omb!!!\r\n1 2 3 4\r\n\r\nYeah Yeah oh\r\nAaaah Add to favorites Add to Playlist Font size Tab Print Correct Auto-scroll Notes  Enabled DisabledWritten by: Beck Hansen. Isn't this right? Let us know.");
+        let text: Vec<&str> = l.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            text,
+            vec![
+                "We are Sex Bob-omb!!!",
+                "1 2 3 4",
+                "",
+                "Yeah Yeah oh",
+                "Aaaah"
+            ]
+        );
+        let l = parse("Where have you been? Agregar a favoritos Agregar a playlist Tamaño de la fuente Acordes Imprimir");
+        assert_eq!(l.lines.len(), 1);
+        assert_eq!(l.lines[0].text, "Where have you been?");
+        let l = parse("One-time payment and enjoy it all year long R$   /anoEnjoy Letras ad-free. Best choice");
+        assert!(
+            l.lines.iter().all(|l| l.text.is_empty()),
+            "an instrumental has no words"
         );
     }
 
