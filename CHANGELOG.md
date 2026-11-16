@@ -21,9 +21,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Lyrics that showed as one long block now show line by line.** Some taggers write the lyrics'
   line breaks as a bare `n`, so the whole song arrived as one line, synced or not
   (`…for myselfn[00:21.50]Out of some blue…`). Cinder now puts those breaks back, in Japanese and
-  Chinese lyrics too. On the owner's library this fixed 297 of 2,419 songs with lyrics. Lyrics
-  that have a website's page text glued on (one long paragraph at the end) are a problem in the
-  file itself and are shown as they are.
+  Chinese lyrics too. On the owner's library this fixed 297 of 2,419 songs with lyrics. 
+- **Lyrics copied with a website's page text no longer show it.** Some taggers copy the whole
+  page from letras.mus.br into the tag, so the lyrics ended in a long paragraph of buttons, credits
+  and adverts ("Add to favorites Add to Playlist Font size…"). Cinder now stops at the first of
+  those, in English or Spanish; an instrumental whose tag held only the page shows no lyrics. On the
+  owner's library: 138 songs.
 - **The "tap the playing song" question reads right when paused.** It is titled "This is the
   current song", and its last row is "Cancel" instead of "Keep playing".
 
