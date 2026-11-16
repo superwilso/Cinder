@@ -113,7 +113,7 @@ impl Ask {
             Ask::PowerMenu => (crate::i18n::text("Power"), "", ""),
             Ask::QueueOnPlay => (crate::i18n::text("Play this now?"), "", ""),
             Ask::SongPlayingAlbum | Ask::SongPlayingPlaylist | Ask::SongPlayingList => {
-                (crate::i18n::text("This song is playing"), "", "")
+                (crate::i18n::text("This is the current song"), "", "")
             }
             Ask::ResetSettings => (
                 crate::i18n::text("Reset settings?"),
@@ -194,17 +194,17 @@ impl Ask {
             Ask::SongPlayingAlbum => &[
                 ("Play the rest of the album next", Hit::RestNext),
                 ("Start the album from here", Hit::RestRestart),
-                ("Keep playing", Hit::Cancel),
+                ("Cancel", Hit::Cancel),
             ],
             Ask::SongPlayingPlaylist => &[
                 ("Play the rest of the playlist next", Hit::RestNext),
                 ("Start the playlist from here", Hit::RestRestart),
-                ("Keep playing", Hit::Cancel),
+                ("Cancel", Hit::Cancel),
             ],
             Ask::SongPlayingList => &[
                 ("Play the rest of this list next", Hit::RestNext),
                 ("Start this list from here", Hit::RestRestart),
-                ("Keep playing", Hit::Cancel),
+                ("Cancel", Hit::Cancel),
             ],
             _ => &[],
         }

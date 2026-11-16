@@ -1847,7 +1847,7 @@ pub struct App {
     /// having no context at all (see `Action::PlayPlaylistAt`).
     pending_play: Option<Action>,
     /// What comes after the playing song in the list it was tapped in again, held while the
-    /// "This song is playing" menu is up (`start_play_action`). Queued by RestNext.
+    /// "This is the current song" menu is up (`start_play_action`). Queued by RestNext.
     pending_rest: Vec<crate::model::SongRow>,
     /// The ids behind a pending `Action::PlayListAt`, in play order. See that action.
     play_list: Vec<i64>,
@@ -2875,7 +2875,7 @@ impl App {
         }
     }
 
-    /// The play funnel past the "This song is playing" question: the Up Next question, then play.
+    /// The play funnel past the "This is the current song" question: the Up Next question, then play.
     fn start_play_now(&mut self, act: Action) -> Vec<Action> {
         // Only a HAND-BUILT list is worth interrupting for: an album the user merely started is
         // not work they would lose by starting another.
