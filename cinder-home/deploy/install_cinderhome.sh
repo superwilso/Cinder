@@ -59,6 +59,7 @@ SRC_MONO=/contents/libcinder_mono.so
 SRC_HAGOWRAP=/contents/cinder-hagowrap
 SRC_GUARD=/contents/cinder-guard.sh
 SRC_PRELOAD=/contents/cinder-preload.sh
+SRC_FASTBOOT=/contents/cinder-fastboot.sh
 SRC_BTAAC=/contents/libcinder_aac.so
 SRC_ATRAC=/contents/libcinder_atrac.so
 SRC_FMREC=/contents/libcinder_fmrec.so
@@ -120,6 +121,7 @@ WANT_FMREC="$(comp_bool CINDER_FMREC 0)"
 WANT_LLUSBDAC="$(comp_bool CINDER_LLUSBDAC 0)"
 WANT_BT_SBC_XQ="$(comp_bool CINDER_BT_SBC_XQ 0)"
 WANT_WIFI="$(comp_bool CINDER_WIFI 0)"
+WANT_FAST_BOOT="$(comp_bool CINDER_FAST_BOOT 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
 WANT_CHAIN="$(comp_chain)"
@@ -129,7 +131,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC wifi=$WANT_WIFI"
+echo "components: chain=$WANT_CHAIN power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE preload=$WANT_PRELOAD bt-aac=$WANT_BT_AAC bt-sbc-xq=$WANT_BT_SBC_XQ signature=$WANT_SIGNATURE atrac=$WANT_ATRAC fmrec=$WANT_FMREC llusbdac=$WANT_LLUSBDAC wifi=$WANT_WIFI fast-boot=$WANT_FAST_BOOT"
 
 
 # ── what was ALREADY mounted before we touched anything ──────────────────────────────────────
@@ -695,6 +697,32 @@ else
     if [ -s "$PRELOAD_SH" ]; then
         sh "$PRELOAD_SH" remove || echo "WARN: preload — could not be removed cleanly (see the line above)."
     fi
+fi
+
+# 1g3b) the `fast-boot` component (deploy/cinder-fastboot.sh, host test tools/test_fastboot.sh):
+#      Sony's boot-time firmware checks skipped while nothing has changed. Like preload, the script
+#      is installed whenever it is staged, because its `remove` is what takes the component off.
+#      Non-fatal: every failure in there leaves Sony's script in place.
+FASTBOOT_SH=$BIN/cinder-fastboot.sh
+if [ -s "$SRC_FASTBOOT" ]; then
+    "$BB" cat "$SRC_FASTBOOT" > "$FASTBOOT_SH.tmp" 2>/dev/null
+    if [ -s "$FASTBOOT_SH.tmp" ] && "$BB" cmp -s "$SRC_FASTBOOT" "$FASTBOOT_SH.tmp"; then
+        "$BB" chown 0:0 "$FASTBOOT_SH.tmp" 2>/dev/null
+        "$BB" chmod 755 "$FASTBOOT_SH.tmp"
+        "$BB" mv -f "$FASTBOOT_SH.tmp" "$FASTBOOT_SH"
+    else
+        "$BB" rm -f "$FASTBOOT_SH.tmp" 2>/dev/null
+        echo "WARN: fast-boot — cinder-fastboot.sh did not copy whole; the one on the player (if any) is kept."
+    fi
+fi
+if [ "$WANT_FAST_BOOT" = 1 ]; then
+    if [ -s "$FASTBOOT_SH" ]; then
+        sh "$FASTBOOT_SH" install || echo "WARN: fast-boot — not installed (see the line above); Sony's script is unchanged."
+    else
+        echo "WARN: fast-boot selected but $SRC_FASTBOOT is not staged — nothing installed."
+    fi
+elif [ -s "$FASTBOOT_SH" ]; then
+    sh "$FASTBOOT_SH" remove || echo "WARN: fast-boot — could not be removed cleanly (see the line above)."
 fi
 
 # 1g4) AAC Bluetooth transmit and SBC XQ: the `bt-aac` component (cinder-aac/). Two

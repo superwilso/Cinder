@@ -245,6 +245,7 @@ removes something the player cannot do without (`components.conf` explains the d
 | Headphone volume curve (`voltable`) | Sony standard | How much each volume step changes the loudness. See [The volume curve tables](#the-volume-curve-tables) | — |
 | Sound signature (`signature`) | Sony standard | Walkman One's Plus modes, to compare by ear. See [below](#the-sound-signature) | — |
 | Mono and soundscapes over music (`preload`) | **off** | The Mono switch works on the jack and Bluetooth, and soundscapes play over music, with or without Wampy. It puts a small program in front of Sony's audio services and edits Sony's start-up script, with a guard that undoes it if a start fails. An Update ticks it on a player where the old `mono` option was working | Mono works only for USB-DAC → Bluetooth, and a soundscape pauses while music plays |
+| Faster start-up (`fast-boot`) | **off** | The player starts about 2 seconds sooner: Sony's start-up firmware checks for the touch screen, sound chip and NFC chip are skipped once they have found nothing to do, and run again by themselves after a Sony update | Sony's checks run on every start, as on a player without Cinder |
 
 How each one works, and why it is optional, is in the `#` notes in
 [`components.conf`](cinder-home/deploy/components.conf).

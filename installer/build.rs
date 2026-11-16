@@ -88,6 +88,14 @@ const FILES: &[(&str, &str, &str, bool)] = &[
         "preload",
         false,
     ),
+    // The `fast-boot` component: Sony's boot-time firmware checks skipped while nothing changed
+    // (deploy/cinder-fastboot.sh). Not `required` until a release rebuilds dist/stable.
+    (
+        "dist/{ch}/cinder-fastboot.sh",
+        "cinder-fastboot.sh",
+        "fast-boot",
+        false,
+    ),
     // The `bt-aac` component: AAC Bluetooth transmit (cinder-aac/) and the fdk-aac encoder it
     // prefers. Not `required` yet, for the same reason as the preload files: the committed
     // dist/stable predates them, and tools/release.sh is what refuses a release without them.

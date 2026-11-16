@@ -1157,3 +1157,28 @@ Sony's own values read back gain 2, filter 1.
 | 50.2 | gain 1 | **+1.33 dB at every tone** (1–21 kHz, within 0.08 dB of each other): a plain level step |
 | 50.3 | gain 0, or filter 0 | **Not a setting**: the service skips the converter and opens its native DSD output (`fmt 48`, DSD_U8) with `se_hp_dsd_native_enabled` at 0 — silence and a low thump (peak −15.8 dBFS at volume 96, above the music). Never offer 0 |
 | 50.4 | filter 2, gain 3 | Not tried: the converter library asserts below 2 and 3 (an abort in the sound service) |
+
+## 51 — 2026-11-15 — Kernel, start-up speed and battery
+
+Sony's kernel rebuilt from its GPL source (`kernel/`). Test kernels are booted from RAM over the
+bootloader's fastboot (`kernel/README.md`, Testing), which writes nothing: the next restart is
+back on the kernel in flash. Headphones were in the jack for every measurement below. Start-up
+times are from power-on.
+
+| # | Test | Result |
+|---|---|---|
+| 51.1 | Patched kernel from RAM: Sony's modules, Cinder, 15 min of music on the jack | **Pass 11-15**, after `MTK_CM4_SUPPORT=yes` was added to the build: without it the low-power playback path did not open and Sony's hang checker restarted the player about 10 s into playback |
+| 51.2 | `fast-boot` installed; two normal starts from flash | **Pass 11-15**: the first ran Sony's firmware checks and kept the stamp; the second skipped them. Sony's services 8.14 → 6.04 s, Cinder 10.08 → 7.90 s, all 28 services up |
+| 51.3 | LZO kernel from RAM, against XZ | **Measured 11-15**: the kernel's first timer 1.30 s after the bootloader (two boots), XZ 2.70 s |
+| 51.4 | Patch 0007 from RAM: the touch panel powers up beside the other drivers | **Measured 11-15**: userspace 2.57 s, was 2.88 s; the panel stays `event1` and Cinder finds it there. Open: tap and scroll for a minute on that kernel. Pass = touch works everywhere |
+| 51.5 | Sony's four `setprop` calls in `bootswitcher.sh`, sent in the background (a RAM ramdisk) | **Measured 11-15**: Sony's services a further 1.2 s sooner, properties correct. Ships only in a boot image |
+| 51.6 | Flash the patched kernel to the boot partition (`bootimg`) | Open. Brings 51.3–51.5 to normal starts (about 2.9 s). Needs the owner present, a `wbrt` backup checked first, and the owner's go-ahead. Never the bootloader partition |
+| 51.7 | Bluetooth headphones on and connected, music for ~10 min, screen off | Open. Measures the kernel's share of Bluetooth playback (BTIF interrupts against the encoder), on Sony's kernel then the patched one |
+| 51.8 | Battery levers judged | **Measured 11-15**: Sony's logger `icx_syslog` 0 CPU and 0 bytes written in 2 min, 24 wakeups (leave it on); `DEBUG_PREEMPT` off made no measurable difference over 5 min of playback (leave it as Sony built it). Screen off, playing: 3.3% CPU, 97 timer wakeups/s, of which Cinder 3/s and Sony's MediaStoreService and WMPortService 30/s |
+| 51.9 | Repeat 51.8's playback numbers with nothing in the jack | Open. The codec's state may differ with no headphones; compare against 51.8 |
+
+**Decision for the owner.** Cinder's first frame waits 2.4–3.5 s for Sony's app framework
+(`onActivate`). Drawing could start about 2.8 s sooner, but Cinder's settings are on `/contents`,
+which may not be readable that early, so the first frame could show the default theme and volume
+for a moment. Either find what Sony's library waits for, or paint a plain frame early and the real
+interface once it can.
