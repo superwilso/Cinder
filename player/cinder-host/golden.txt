@@ -463,7 +463,7 @@ c6bf06fd52c636a1 usb_storage
 90370e43a7388ae7 quick_wifi
 1b6d94eefe3a9abb quick_wifi_icons
 6cb4365611259a10 menu_wifi
-56707d779ea3ffa7 wifi_networks
+91420a5a812f4211 wifi_networks
 c36dab556d7186e7 netradio_playing
 adccbaa6999bad73 netradio_find
 0e41bd769c666880 wifi_remote_on
