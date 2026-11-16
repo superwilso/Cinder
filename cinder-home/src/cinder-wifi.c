@@ -14,6 +14,7 @@
  *                         (/contents/cinder_wifi.txt, if there, is imported first and deleted)
  *   cinder-wifi join      stdin: SSID line, then password line (empty = open network)  -> 0 / 2
  *                         saves the network beside the others; does not connect (run `on` after)
+ *   cinder-wifi wps       join by the router's WPS button (waits up to 2 min); saves it  -> 0 / 1
  *   cinder-wifi forget    delete the network the player is on (none: every saved one)  -> 0
  *   cinder-wifi timesync  set the system clock and the RTC from the internet (NTP)     -> 0 / 1
  *   cinder-wifi nqptp-start   AirPlay 2's timing (nqptp) on UDP 319/320, which needs root to
@@ -146,10 +147,15 @@ static size_t unescape(const char* s, unsigned char* out, size_t cap)
     return n;
 }
 
+static int wpa_cli2(const char* cmd, const char* arg1, const char* arg2, char* buf, size_t cap)
+{
+    char* const a[] = { DIR_ "/wpa_cli", "-p", RUN "/ctrl", "-i", "wlan0", (char*)cmd, (char*)arg1, (char*)arg2, NULL };
+    return capture(a, buf, cap);
+}
+
 static int wpa_cli(const char* cmd, char* buf, size_t cap)
 {
-    char* const a[] = { DIR_ "/wpa_cli", "-p", RUN "/ctrl", "-i", "wlan0", (char*)cmd, NULL };
-    return capture(a, buf, cap);
+    return wpa_cli2(cmd, NULL, NULL, buf, cap);
 }
 
 /* The saved list names a network (`on` with none saved writes a list without one). */
@@ -282,6 +288,42 @@ static int do_join(void)
     char out[256];
     wpa_cli("reconfigure", out, sizeof out);
     puts("saved");
+    return 0;
+}
+
+/* WPS push button: the router's button is pressed (before or after; the router waits 2 min).
+ * wpa_supplicant fetches the network and its password from the router, joins, and, with
+ * update_config on, writes the network into the saved list itself (beside the others, which it
+ * keeps). `on` then gets the address. 0 joined and saved, 1 not. */
+static int do_wps(void)
+{
+    static char st[4096];
+    char v[64];
+    if (access("/sys/class/net/wlan0", F_OK) != 0) { puts("wifi is off"); return 1; }
+    wpa_cli2("set", "update_config", "1", st, sizeof st);
+    if (wpa_cli("wps_pbc", st, sizeof st) != 0 || !strstr(st, "OK")) {
+        puts("WPS is not available");
+        return 1;
+    }
+    int joined = 0;
+    sleep(3);   /* let it leave a network it was on, so that one's COMPLETED is not taken for this */
+    for (int i = 0; i < 125 && !joined; i++) {
+        wpa_cli("status", st, sizeof st);
+        joined = field(st, "wpa_state", v, sizeof v) && strcmp(v, "COMPLETED") == 0
+              && !(field(st, "key_mgmt", v, sizeof v) && strstr(v, "WPS"));
+        if (!joined) sleep(1);
+    }
+    if (!joined) {
+        wpa_cli("wps_cancel", st, sizeof st);
+        wpa_cli2("set", "update_config", "0", st, sizeof st);
+        puts("no WPS answer from the router in 2 minutes");
+        return 1;
+    }
+    int saved = wpa_cli("save_config", st, sizeof st) == 0 && strstr(st, "OK");
+    wpa_cli2("set", "update_config", "0", st, sizeof st);
+    chmod(CONF, 0600);   /* wpa_supplicant writes it 0644; it holds passwords */
+    if (!saved) { puts("joined, but the network could not be saved"); return 1; }
+    puts("joined by WPS");
     return 0;
 }
 
@@ -449,7 +491,7 @@ int main(int argc, char** argv)
     /* Who asked (cinder-home, uid 100), before becoming root: nqptp goes back to being them. */
     const uid_t caller_uid = getuid();
     const gid_t caller_gid = getgid();
-    if (argc != 2) { fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync|nqptp-start|nqptp-stop|awake|doze\n", stderr); return 2; }
+    if (argc != 2) { fputs("usage: cinder-wifi on|off|status|scan|join|wps|forget|timesync|nqptp-start|nqptp-stop|awake|doze\n", stderr); return 2; }
     if (setuid(0) != 0 || setgid(0) != 0) { puts("not root: the setuid bit is missing"); return 3; }
     /* cinder-home's umask is 077; files the scripts make for everyone (/tmp/resolv.conf) must not
      * inherit it. Private files (the saved network) are created with explicit modes regardless. */
@@ -484,6 +526,7 @@ int main(int argc, char** argv)
     if (strcmp(v, "status") == 0) return do_status();
     if (strcmp(v, "scan") == 0) return do_scan();
     if (strcmp(v, "join") == 0) return do_join();
+    if (strcmp(v, "wps") == 0) return do_wps();
     if (strcmp(v, "forget") == 0) return do_forget();
     if (strcmp(v, "timesync") == 0) return do_timesync();
     /* Asleep, the radio wakes for the access point's beacons only: a phone or computer connecting
@@ -493,6 +536,6 @@ int main(int argc, char** argv)
         char* const a[] = { DIR_ "/iw", "dev", "wlan0", "set", "power_save", v[0] == 'a' ? "off" : "on", NULL };
         return run(a) == 0 ? 0 : 1;
     }
-    fputs("usage: cinder-wifi on|off|status|scan|join|forget|timesync|nqptp-start|nqptp-stop|awake|doze\n", stderr);
+    fputs("usage: cinder-wifi on|off|status|scan|join|wps|forget|timesync|nqptp-start|nqptp-stop|awake|doze\n", stderr);
     return 2;
 }

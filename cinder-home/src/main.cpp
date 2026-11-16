@@ -1298,6 +1298,93 @@ static void dev_compose_adb() {
         "echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null; "
         "setprop ctl.start adbd 2>/dev/null ) </dev/null >/dev/null 2>&1 &");
 }
+
+// Dev channel: CRASH REPORTS. The evidence of a crash is gone two boots later: the launcher keeps
+// one old log, and the kernel's tail (/proc/last_kmsg) only survives a warm restart, until the
+// next one. A freeze-and-restart at the start of playback (owner, 2026-11-16) left nothing to read.
+// So at each start, when something went wrong, copy what a report needs into
+// /contents/cinder_reports/<time>-<why>/, where it can be attached from a PC. Two triggers:
+//   * the previous boot's log does not end in Cinder's own power off / reboot / update (a
+//     restart, a freeze, a flat battery, a held Power key; an `adb reboot` counts too, by design)
+//   * this boot's log shows the launcher restarting a crashed cinder-home
+// Keeps the newest ten.
+static bool dev_copy(const char* src, const std::string& dst, bool kernel_lines_only) {
+    FILE* in = std::fopen(src, "r");
+    if (!in) return false;
+    FILE* out = std::fopen(dst.c_str(), "w");
+    if (!out) { std::fclose(in); return false; }
+    char line[1024];
+    while (std::fgets(line, sizeof line, in)) {
+        // last_kmsg is the kernel's RAM log behind a header and unwritten filler bytes: keep the
+        // timestamped lines ("[   54.830123] ...") and drop the rest.
+        if (kernel_lines_only && !(line[0] == '[' && (line[1] == ' ' || (line[1] >= '0' && line[1] <= '9'))))
+            continue;
+        std::fputs(line, out);
+    }
+    std::fclose(in);
+    std::fclose(out);
+    return true;
+}
+
+static void dev_report(const char* why, const char* log) {
+    const std::string root = "/contents/cinder_reports";
+    char stamp[32];
+    const time_t t = std::time(nullptr);
+    std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", std::localtime(&t));
+    const std::string d = root + "/" + stamp + "-" + why;
+    if (mkdir(d.c_str(), 0777) != 0) return;
+    dev_copy(log, d + "/cinderhome.log", false);
+    dev_copy("/proc/last_kmsg", d + "/last_kmsg.txt", true);
+    dev_copy("/proc/aed/reboot-reason", d + "/reboot-reason.txt", false);
+    // /proc/cmdline is root's; the same boot reason is a property.
+    std::system(("dmesg > '" + d + "/dmesg.txt' 2>/dev/null; echo \"bootreason=$(getprop ro.boot.bootreason)\" >> '" +
+                 d + "/reboot-reason.txt'").c_str());
+    // Newest ten: the names start with the time, so they sort oldest first.
+    std::vector<std::string> all;
+    if (DIR* dir = opendir(root.c_str())) {
+        while (dirent* e = readdir(dir))
+            if (e->d_name[0] == '2') all.push_back(e->d_name);
+        closedir(dir);
+    }
+    std::sort(all.begin(), all.end());
+    for (size_t i = 0; i + 10 < all.size(); i++)
+        std::system(("rm -r '" + root + "/" + all[i] + "'").c_str());
+    sync();
+    clog_(("report: saved " + d).c_str());
+}
+
+static bool dev_file_has(const char* path, const char* needle, long tail_bytes) {
+    FILE* f = std::fopen(path, "r");
+    if (!f) return false;
+    if (tail_bytes > 0 && std::fseek(f, -tail_bytes, SEEK_END) != 0) std::rewind(f);
+    std::string s;
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
+    std::fclose(f);
+    return s.find(needle) != std::string::npos;
+}
+
+static void* dev_crash_report_thread(void*) {
+    // /contents is unreadable for a few seconds of every boot (the USB storage bind): wait for it.
+    const std::string root = "/contents/cinder_reports";
+    for (int i = 0; i < 60 && mkdir(root.c_str(), 0777) != 0 && errno != EEXIST; i++) sleep(1);
+    if (dev_file_has("/contents/cinderhome.log", "cinder-home CRASHED rc=", 0))
+        dev_report("app-crash", "/contents/cinderhome.log");
+    // The previous boot, once: the launcher restarting a crashed app runs this again in the same
+    // boot, so remember which old log has been looked at.
+    struct stat st;
+    const char* prev = "/contents/cinderhome.log.1";
+    if (stat(prev, &st) != 0) return nullptr;
+    char key[64];
+    std::snprintf(key, sizeof key, "%lld %ld\n", (long long)st.st_size, (long)st.st_mtime);
+    const std::string seen = root + "/.seen";
+    if (dev_file_has(seen.c_str(), key, 0)) return nullptr;
+    if (FILE* f = std::fopen(seen.c_str(), "w")) { std::fputs(key, f); std::fclose(f); }
+    if (!dev_file_has(prev, "exec cinder-power", 4096))
+        dev_report(access("/proc/last_kmsg", R_OK) == 0 ? "restart" : "power-loss", prev);
+    return nullptr;
+}
 #endif
 
 // Transport state. This is our INTENT (the last play/pause we sent); poll_now_playing replaces it
@@ -1768,6 +1855,15 @@ void deferred_up() {
     // And tell Sony's USB manager, so its own cable and resume handling keeps adb (see
     // usb_adb_enable_dev). dev_adb_keepalive stays as the backstop.
     run_guarded("deferred_up: Sony USB manager adb flag (dev)", 6, usb_adb_enable_dev);
+    {
+        pthread_t th;
+        pthread_attr_t at;
+        pthread_attr_init(&at);
+        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&th, &at, dev_crash_report_thread, nullptr) != 0)
+            clog_("report: pthread_create FAILED");
+        pthread_attr_destroy(&at);
+    }
 #endif
     // The real-spectrum visualiser is NOT started here any more. It is now started ON DEMAND (see
     // viz_analyzer_tick in the pump) only while its output is actually on screen, which keeps a
@@ -3800,6 +3896,10 @@ static void* wifi_thread(void* arg) {
             if (rc == 0) rc = wifi_helper("on", nullptr, &out);
             else out = rc == 2 ? "That password cannot be used" : "Could not save the network";
             break;
+        case CINDER_ACT_WIFI_WPS:
+            rc = wifi_helper("wps", nullptr, &out);
+            if (rc == 0) rc = wifi_helper("on", nullptr, &out);
+            break;
         case CINDER_ACT_WIFI_TIMESYNC: rc = wifi_helper("timesync", nullptr, &out); break;
         case CINDER_ACT_WIFI_LISTENBRAINZ:
         case CINDER_ACT_WIFI_UPDATE_CHECK:
@@ -3812,7 +3912,8 @@ static void* wifi_thread(void* arg) {
     }
     // Settings > Wi-Fi > Set the clock: once connected, ask a time server. A failure here is only
     // logged; the link is up and the page should say so, not that the clock could not be set.
-    bool connected = (job->act == CINDER_ACT_WIFI_ON || job->act == CINDER_ACT_WIFI_JOIN) && rc == 0;
+    bool connected = (job->act == CINDER_ACT_WIFI_ON || job->act == CINDER_ACT_WIFI_JOIN
+                      || job->act == CINDER_ACT_WIFI_WPS) && rc == 0;
     if (connected && job->clock) {
         std::string ts;
         int trc = wifi_helper("timesync", nullptr, &ts);
@@ -3926,7 +4027,8 @@ static void wifi_start(int act, const std::string& join = std::string()) {
     bool due = g_wifi_last_update < 0 || now_ms() - g_wifi_last_update > 24LL * 3600 * 1000;
     bool want_up = cinder_wifi_updates() != 0
                 && (act == CINDER_ACT_WIFI_UPDATE_CHECK
-                    || (due && (act == CINDER_ACT_WIFI_ON || act == CINDER_ACT_WIFI_JOIN || g_wifi_connected)));
+                    || (due && (act == CINDER_ACT_WIFI_ON || act == CINDER_ACT_WIFI_JOIN || act == CINDER_ACT_WIFI_WPS
+                            || g_wifi_connected)));
     WifiJob* job = new WifiJob{act, join, cinder_wifi_clock() != 0, cinder_wifi_lb() != 0, want_up,
                                cinder_wifi_serving() != 0 || cinder_wifi_airplay() != 0};
     if (pthread_create(&th, &at, wifi_thread, job) != 0) {
@@ -13368,6 +13470,7 @@ void carry_out(int act) {
         case CINDER_ACT_WIFI_OFF:
         case CINDER_ACT_WIFI_SCAN:
         case CINDER_ACT_WIFI_JOIN:
+        case CINDER_ACT_WIFI_WPS:
         case CINDER_ACT_WIFI_TIMESYNC:
         case CINDER_ACT_WIFI_FORGET:
         case CINDER_ACT_WIFI_LISTENBRAINZ:
@@ -16741,9 +16844,18 @@ void* render_driver(void*) {
                 // idle threshold is met it stays met, so nothing else here would ever stop it.
                 static long long next_try_ms = 0;
                 static int  attempts = 0;
+                // Pulling the cable is someone handling the player, so the countdown starts there.
+                // Without this the idle time piled up on the charger counted, and a player parked
+                // for an hour switched off the moment it was unplugged (owner, 2026-11-16).
+                static bool was_charging = false;
+                static long long unplugged_ms = 0;
+                const bool charging = battery_charging();
+                if (was_charging && !charging) unplugged_ms = now_ms();
+                was_charging = charging;
+                const long long idle_from = std::max(g_last_input_ms, unplugged_ms);
                 if (off_min > 0 && !audible && !g_msc_active && !g_wifi_updating && !cinder_modal_open() &&
-                    !battery_charging() && now_ms() >= next_try_ms &&
-                    now_ms() - g_last_input_ms >= (long)off_min * 60000L) {
+                    !charging && now_ms() >= next_try_ms &&
+                    now_ms() - idle_from >= (long)off_min * 60000L) {
                     // Only the first few attempts are worth announcing, for the same reason
                     // power_action stops narrating its failures: after the third, the machine is
                     // staying up and every line is an fflush to /contents. It keeps TRYING — the

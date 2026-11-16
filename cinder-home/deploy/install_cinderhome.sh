@@ -1168,9 +1168,11 @@ fi
 
 # MSC ESCAPE — clear the latch without a shell: drop /contents/cinderhome_clear over USB-MSC.
 # Consumed here (deleted) so it fires exactly once.
+# One `rm` per file, no -f: this shell's rm reads -f as a FILE NAME and stops at its first failure,
+# so `rm -f` here removed nothing and this escape never worked (found 2026-11-16).
 if [ -f "$MSC_CLEAR" ]; then
-    rm -f "$MSC_CLEAR" 2>/dev/null
-    rm -f "$DISABLED" "$OFF" "$BOOTCOUNT" 2>/dev/null
+    rm "$MSC_CLEAR" 2>/dev/null
+    for _f in "$DISABLED" "$OFF" "$BOOTCOUNT"; do rm "$_f" 2>/dev/null; done
     sync
 fi
 
@@ -1182,14 +1184,14 @@ fi
 # developer, so clear the latch and give the new build its chance. If the shell lacks `-nt` the
 # test just fails and we leave the latch alone (safe fallback).
 if [ -f "$DISABLED" ] && [ "$HOME_BIN" -nt "$DISABLED" ] 2>/dev/null; then
-    rm -f "$DISABLED" "$OFF" "$BOOTCOUNT" 2>/dev/null; sync
+    for _f in "$DISABLED" "$OFF" "$BOOTCOUNT"; do rm "$_f" 2>/dev/null; done; sync
 fi
 
 # ONE-SHOT stock boot: consume the flag and hand over. Checked BEFORE the counter is incremented,
 # because this is a deliberate user choice, not a failed boot — it must not spend a bad-boot life.
 if [ -f "$ONCE" ] || [ -f "$MSC_ONCE" ]; then
-    rm -f "$ONCE" 2>/dev/null
-    rm -f "$MSC_ONCE" 2>/dev/null
+    rm "$ONCE" 2>/dev/null
+    rm "$MSC_ONCE" 2>/dev/null
     sync
     breadcrumb "boot to stock, once (asked for in Settings)"
     run_stock "$@"
@@ -1225,7 +1227,7 @@ if ! wtest; then
     breadcrumb "$STATE cannot be written, so the bad-boot counter has no safety net"
     run_stock "$@"
 fi
-rm -f "$STATE/.wtest" 2>/dev/null
+rm "$STATE/.wtest" 2>/dev/null
 
 # bad-boot counter: increment + persist FIRST. cinder-home resets it once healthy.
 n=0; [ -f "$BOOTCOUNT" ] && n=$(cat "$BOOTCOUNT" 2>/dev/null)

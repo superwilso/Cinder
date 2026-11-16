@@ -563,25 +563,32 @@ pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
 
 // ── Settings ▸ Wi-Fi ▸ Network: the networks in range ───────────────────────────────────────────
 
-fn list_layout(networks: usize) -> (i32, i32, usize) {
+/// (section label, the WPS row, the first network, how many networks fit).
+fn list_layout(networks: usize) -> (i32, i32, i32, usize) {
     let section_y = crate::chrome::HEADER_BOTTOM;
-    let list_y = section_y + kit::SECTION_H;
+    let wps_y = section_y + kit::SECTION_H;
+    let list_y = wps_y + kit::ROW_H();
     let room = (H as i32 - FOOT_H - list_y).max(0) / kit::ROW_H();
-    (section_y, list_y, networks.min(room as usize))
+    (section_y, wps_y, list_y, networks.min(room as usize))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListHit {
     Scan,
+    /// "Router's WPS button": join by pressing the router's button instead of typing a password.
+    Wps,
     /// Network `i` of the list as given to `render_list`.
     Network(usize),
     None,
 }
 
 pub fn hit_list(x: i32, y: i32, networks: usize) -> ListHit {
-    let (section_y, list_y, rows) = list_layout(networks);
+    let (section_y, wps_y, list_y, rows) = list_layout(networks);
     if kit::section_action_hit(section_y, x, y) {
         return ListHit::Scan;
+    }
+    if y >= wps_y && y < list_y && x >= 0 && x < W as i32 {
+        return ListHit::Wps;
     }
     if y >= list_y && x >= 0 && x < W as i32 {
         let i = ((y - list_y) / kit::ROW_H()) as usize;
@@ -596,13 +603,15 @@ pub struct ListView<'a> {
     pub status: &'a Status,
     pub networks: &'a [Network],
     pub scanning: bool,
+    /// Waiting for the router's WPS button.
+    pub wps: bool,
     pub sel: Option<usize>,
 }
 
 pub fn render_list(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ListView) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, crate::i18n::text("Network"), None);
-    let (section_y, list_y, rows) = list_layout(v.networks.len());
+    let (section_y, wps_y, list_y, rows) = list_layout(v.networks.len());
     kit::section_label(
         c,
         t,
@@ -610,6 +619,20 @@ pub fn render_list(c: &mut Canvas, t: &Theme, f: &FontSet, v: &ListView) {
         section_y,
         "NETWORKS",
         Some(if v.scanning { "SCANNING…" } else { "SCAN" }),
+    );
+    kit::row(
+        c,
+        t,
+        f,
+        wps_y,
+        kit::ROW_H(),
+        &Row::new(crate::i18n::text("Router's WPS button"))
+            .sub(crate::i18n::text(if v.wps {
+                "Press it on the router now (2 minutes)"
+            } else {
+                "Join without typing the password"
+            }))
+            .trail(Trail::Open("")),
     );
     let mut y = list_y;
     for (i, n) in v.networks.iter().take(rows).enumerate() {
@@ -1003,7 +1026,8 @@ mod tests {
 
     #[test]
     fn the_network_list_answers_its_rows_only() {
-        let (_, list_y, _) = list_layout(3);
+        let (_, wps_y, list_y, _) = list_layout(3);
+        assert_eq!(hit_list(200, wps_y + 5, 3), ListHit::Wps);
         assert_eq!(hit_list(200, list_y + 5, 3), ListHit::Network(0));
         assert_eq!(
             hit_list(200, list_y + kit::ROW_H() + 5, 3),
@@ -1013,8 +1037,8 @@ mod tests {
             hit_list(200, list_y + 3 * kit::ROW_H() + 5, 3),
             ListHit::None
         );
-        let (_, _, rows) = list_layout(40);
-        assert!(rows >= 9, "the list page has room for {rows} networks");
+        let (_, _, _, rows) = list_layout(40);
+        assert!(rows >= 8, "the list page has room for {rows} networks");
     }
 
     #[test]
