@@ -20,8 +20,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 - **Join Wi-Fi with the router's WPS button.** Settings ▸ Wi-Fi ▸ Network has a "Router's WPS
   button" row: tap it, press the button on the router within two minutes, and the player joins and
-  saves the network without a password typed. *Not yet joined to a real router: a try with no
-  button pressed waited, gave up after two minutes and left the saved networks alone.*
+  saves the network without a password typed. *Joined the owner's router on a player; with no
+  button pressed it gives up after two minutes and leaves the saved networks alone.*
 - **Crash reports on the dev build.** When the last start did not end in Cinder's own power off,
   restart or update, the dev build saves Cinder's log, the kernel's log from before the restart and
   the restart reason in `cinder_reports` on the drive (the newest ten), ready to attach to a report.

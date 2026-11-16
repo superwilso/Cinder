@@ -40,6 +40,7 @@
 #include <sys/mount.h>   // umount/umount2 (we unmount /contents ourselves before the MSC handoff)
 #include <cerrno>
 #include <string>            // std::string — Sony's pst::base::string IS libc++ std::string
+#include <algorithm>         // std::sort (dev crash reports), std::max
 #include <vector>            // ditto for pst::base::vector (GetConnectInformation's MAC out-param)
 #include <sys/socket.h>      // the USB-DAC -> LDAC bridge writes PCM to an abstract AF_UNIX socket
 #include <sys/un.h>
