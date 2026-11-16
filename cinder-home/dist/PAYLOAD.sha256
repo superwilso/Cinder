@@ -3,7 +3,7 @@
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
 tag v0.4.2-rc5
-e15744e997ca773c28a35a9577ec7b9082794cfd7d067c6bb15c0550486ee0b5  cinder-home/dist/stable/cinder-home
+e6357c36ed10ecd2b42c485741e41763e8d75f058a33e39179ece504e7b1e1e5  cinder-home/dist/stable/cinder-home
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
 5e06b895af633962064290a3ab4ed956f64239aa5433ccb3e3b9e0b6e3b37401  cinder-home/dist/stable/cinder-power
 9dc63ca6de6b5bf421507684c4cf8bfde9e6c634efd1eb9a82c7b19a1b4e0d2a  cinder-home/dist/stable/cinder-msc
@@ -46,7 +46,7 @@ c5709c627ae98e90c14c5f6ee25d521d004cafc0facf77281b1afe08819f0137  cinder-home/di
 b15b431ec8531a2a48a1832e2c1e83fdbf96890146e25be16a4adcc04b5c5adf  cinder-home/dist/stable/cinder_home_uninstall.upg
 22efa01fda6b498eb58b45888c85622040e28eb1b10b42060efe78180910fbf6  cinder-home/dist/stable/cinder_home_install.nw-wm1a.upg
 cc75f5170f5477eb4520017df35561ae8d844bf96dd412e7d58db95a13da18b2  cinder-home/dist/stable/cinder_home_uninstall.nw-wm1a.upg
-0ed96296431af11ff7df7300da727bdf34bae1b8b535f91ee70220cc94d7003a  cinder-home/dist/dev/cinder-home
+0a5c49ed857d46e1c1c3290d4600a0d24b7743ec5d15aab38cb3540c73a4b372  cinder-home/dist/dev/cinder-home
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/dev/cinder-umount
 5e06b895af633962064290a3ab4ed956f64239aa5433ccb3e3b9e0b6e3b37401  cinder-home/dist/dev/cinder-power
 9dc63ca6de6b5bf421507684c4cf8bfde9e6c634efd1eb9a82c7b19a1b4e0d2a  cinder-home/dist/dev/cinder-msc
@@ -89,4 +89,4 @@ b68dc33c3fe3f6fbf98cfbf2719388a887a27c374a3332e6dbcc72c04c46fd97  cinder-home/di
 b15b431ec8531a2a48a1832e2c1e83fdbf96890146e25be16a4adcc04b5c5adf  cinder-home/dist/dev/cinder_home_uninstall.upg
 22efa01fda6b498eb58b45888c85622040e28eb1b10b42060efe78180910fbf6  cinder-home/dist/dev/cinder_home_install.nw-wm1a.upg
 cc75f5170f5477eb4520017df35561ae8d844bf96dd412e7d58db95a13da18b2  cinder-home/dist/dev/cinder_home_uninstall.nw-wm1a.upg
-6f901cdca20efd98e285170a32fe94bb1b523d1ec6dc637e66e82344b160cd20  cinder-home/dist/dev/cinder-probe
+03ac91d76c0fb3a39f310096ec9593492ead192e6925f4f90a6ebf0eaec951b6  cinder-home/dist/dev/cinder-probe
