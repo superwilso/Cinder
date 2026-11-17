@@ -44,6 +44,9 @@ pub enum Opt {
     WifiAirplay,
     /// Wi-Fi ▸ Phone remote: kept on across restarts, serving whenever Wi-Fi is connected.
     WifiRemote,
+    /// Wi-Fi ▸ Options ▸ Share the drive: kept on across restarts like the phone remote, so a
+    /// computer can sync whenever Wi-Fi is connected.
+    WifiDrive,
     /// Now Playing's background takes the cover's colour (Head-Fi).
     NpTint,
     /// DSD to the headphone jack as 1-bit (`settings::ROW_DSD_NATIVE`).
@@ -64,7 +67,7 @@ pub enum Opt {
 }
 
 impl Opt {
-    pub const ALL: [Opt; 23] = [
+    pub const ALL: [Opt; 24] = [
         Opt::Quick,
         Opt::FoldersTab,
         Opt::DeleteMusic,
@@ -81,6 +84,7 @@ impl Opt {
         Opt::WifiPlayTo,
         Opt::WifiAirplay,
         Opt::WifiRemote,
+        Opt::WifiDrive,
         Opt::NpTint,
         Opt::DsdNative,
         Opt::Crossfeed,
@@ -109,6 +113,7 @@ impl Opt {
             Opt::WifiPlayTo => "wifi_play_to",
             Opt::WifiAirplay => "wifi_airplay",
             Opt::WifiRemote => "wifi_remote",
+            Opt::WifiDrive => "wifi_drive",
             Opt::NpTint => "np_tint",
             Opt::DsdNative => "dsd_native",
             Opt::Crossfeed => "crossfeed",

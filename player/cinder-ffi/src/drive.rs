@@ -5,8 +5,8 @@
 //! macOS: Finder ▸ Connect to Server; Linux: davfs2 or the file manager) and copies music, or syncs
 //! with Flint (`flint sync Z:\MUSIC`), over Wi-Fi as it would over the cable.
 //!
-//! OFF AT EACH START: the switch is on until the player restarts, like the phone remote, because
-//! anyone who has the address can write to the drive. The address carries an 8-character code
+//! Off on a fresh install, and once on it stays on across restarts, like the phone remote, serving
+//! whenever Wi-Fi is connected. Anyone who has the address can write to the drive: the address carries an 8-character code
 //! (saved, so a computer's mapping keeps working the next time); ten wrong codes in a minute lock
 //! the share for a minute. Plain HTTP: the Wi-Fi password is what keeps strangers off the network.
 //!
@@ -47,9 +47,61 @@ struct Shared {
     fails: u32,
     fails_since: Option<Instant>,
     locked_until: Option<Instant>,
+    /// Files whose last upload broke off. Windows' WebClient uploads a file when it is closed and
+    /// drops that error, so the copier goes on to rename what is there, often the empty file the
+    /// upload started with, over a good song (5 songs emptied on 11-17, Flint over Wi-Fi). A move
+    /// or copy from one of these is refused until it is uploaded whole or deleted.
+    broken: std::collections::HashSet<PathBuf>,
+    /// Files being uploaded now. WebClient stops waiting on a slow upload after about two minutes
+    /// and sends the rename on another connection while the upload still runs (trace 11-17), so a
+    /// move or copy from one of these waits for it to end.
+    uploading: std::collections::HashSet<PathBuf>,
+}
+
+/// Marks `path` as being uploaded until dropped.
+struct Uploading(PathBuf);
+impl Uploading {
+    fn new(path: &Path) -> Self {
+        let mut s = state().lock().unwrap_or_else(|e| e.into_inner());
+        s.uploading.insert(path.to_path_buf());
+        Uploading(path.to_path_buf())
+    }
+}
+impl Drop for Uploading {
+    fn drop(&mut self) {
+        let mut s = state().lock().unwrap_or_else(|e| e.into_inner());
+        s.uploading.remove(&self.0);
+    }
+}
+
+/// Wait while `path` is being uploaded, up to `limit`. ponytail: a 200 ms poll; a Condvar if it
+/// ever matters.
+fn wait_upload(path: &Path, limit: Duration) {
+    let until = Instant::now() + limit;
+    while Instant::now() < until
+        && state()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .uploading
+            .contains(path)
+    {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn broken(path: &Path, is: bool) {
+    let mut s = state().lock().unwrap_or_else(|e| e.into_inner());
+    if is {
+        s.broken.insert(path.to_path_buf());
+    } else {
+        s.broken.remove(path);
+    }
 }
 
 static RUN: AtomicBool = AtomicBool::new(false);
+/// Every request and its answer to the log, while `/data/cinder/drive_trace` exists at start (what
+/// a client really sends is the only evidence of how it writes a file).
+static TRACE: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static STATE: OnceLock<Mutex<Shared>> = OnceLock::new();
 fn state() -> &'static Mutex<Shared> {
@@ -82,6 +134,10 @@ pub fn start(root: &Path, sd: Option<&Path>, code: &str, check_mount: bool) -> R
         }
     }
     let (l, port) = bound.ok_or("no free port")?;
+    TRACE.store(
+        Path::new("/data/cinder/drive_trace").exists(),
+        Ordering::Relaxed,
+    );
     l.set_nonblocking(true).map_err(|e| e.to_string())?;
     *state().lock().unwrap() = Shared {
         root: root.to_path_buf(),
@@ -245,6 +301,9 @@ pub fn parse_http_date(v: &str) -> Option<i64> {
 // ── HTTP ──────────────────────────────────────────────────────────────────────────────────────────
 
 fn reply(c: &mut TcpStream, status: &str, headers: &[(&str, String)], body: &[u8]) {
+    if TRACE.load(Ordering::Relaxed) {
+        eprintln!("cinder-ffi: drive: -> {status}");
+    }
     let mut h = format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
@@ -325,6 +384,18 @@ fn connection(c: TcpStream) {
     // opens a new connection for most requests anyway and leaves the old ones idle, so kept-alive
     // connections only pile up until the cap refuses it (seen 11-05, Flint over a mapped share).
     if let Some(req) = read_head(&mut r) {
+        if TRACE.load(Ordering::Relaxed) {
+            let h = |k| req.header(k).unwrap_or("-");
+            eprintln!(
+                "cinder-ffi: drive: {:?} {} {} len={} dest={} te={}",
+                Instant::now(),
+                req.method,
+                req.path,
+                h("content-length"),
+                h("destination"),
+                h("transfer-encoding")
+            );
+        }
         handle(&req, &mut r, &mut c);
     }
 }
@@ -456,6 +527,7 @@ fn handle(req: &Request, r: &mut impl BufRead, c: &mut TcpStream) -> bool {
             };
             match res {
                 Ok(()) => {
+                    broken(&path, false);
                     crate::remote::note_uploaded(1);
                     reply(c, "204 No Content", &[], b"")
                 }
@@ -690,6 +762,10 @@ fn put(req: &Request, r: &mut impl BufRead, c: &mut TcpStream, root: &Path, path
     }
     let part = dir.join(format!(".{}{PART}", name.to_string_lossy()));
     let existed = path.exists();
+    // Mid-file the Wi-Fi can go quiet for most of a minute and come back (11-17); the 20 s that
+    // frees an idle connection would end the upload.
+    let _ = c.set_read_timeout(Some(Duration::from_secs(120)));
+    let _busy = Uploading::new(path);
     let got = match fs::File::create(&part) {
         Ok(mut f) => body(req, r, &mut f).filter(|_| f.flush().is_ok()),
         Err(_) => {
@@ -699,12 +775,22 @@ fn put(req: &Request, r: &mut impl BufRead, c: &mut TcpStream, root: &Path, path
     };
     if got.is_none() {
         let _ = fs::remove_file(&part);
+        eprintln!(
+            "cinder-ffi: drive: the upload of {} broke off ({want} bytes due)",
+            path.display()
+        );
+        broken(path, true);
         return false; // the connection broke mid-file: nothing to answer
     }
     if fs::rename(&part, path).is_err() {
         let _ = fs::remove_file(&part);
         reply(c, "500 Internal Server Error", &[], b"");
         return true;
+    }
+    // An empty upload is how WebClient starts a file, and it sends one again after a failed
+    // upload (11-17): only bytes clear the mark.
+    if got != Some(0) {
+        broken(path, false);
     }
     crate::remote::note_uploaded(1);
     reply(
@@ -727,6 +813,33 @@ fn move_or_copy(
     overwrite: bool,
     from_root: bool,
 ) -> &'static str {
+    wait_upload(from, Duration::from_secs(600));
+    let size = |p: &Path| {
+        fs::metadata(p)
+            .ok()
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+    };
+    let was_broken = state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .broken
+        .contains(from);
+    // Never an empty file over one with something in it: that is a failed upload being put in
+    // place (Windows does not say the upload failed), and the song it replaces is lost.
+    if was_broken || (size(from) == Some(0) && size(to).is_some_and(|n| n > 0)) {
+        eprintln!(
+            "cinder-ffi: drive: refused to put {} in place of {}: {}",
+            from.display(),
+            to.display(),
+            if was_broken {
+                "its upload broke off"
+            } else {
+                "it is empty"
+            }
+        );
+        return "409 Conflict";
+    }
     if from_root || !from.exists() {
         return if from_root {
             "403 Forbidden"
@@ -1039,6 +1152,74 @@ mod tests {
             fs::read_dir(root.join("MUSIC/Björk")).unwrap().count() == 1,
             "no part file left"
         );
+        // An upload that broke off is never renamed over a song: Windows hides the failure and
+        // renames what is there, the empty file it started with.
+        let part = p("/MUSIC/Bj%C3%B6rk/.t.flac.flint-partial");
+        let part_c = || "/k7m2qx9p/MUSIC/Bj%C3%B6rk/.t.flac.flint-partial".to_string();
+        assert!(ask(port, &req("PUT", &part, "", b"")).starts_with("HTTP/1.1 201"));
+        let mut cut = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut head = req("PUT", &part, "", &[7; 100]);
+        head.truncate(head.len() - 97);
+        cut.write_all(&head).unwrap();
+        cut.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = cut.read_to_end(&mut Vec::new());
+        let dest = "Destination: /k7m2qx9p/MUSIC/Bj%C3%B6rk/t.flac\r\n";
+        // WebClient sends an empty upload after the broken one; that does not clear the mark.
+        assert!(ask(port, &req("PUT", &part, "", b"")).starts_with("HTTP/1.1 204"));
+        let mv = ask(port, &req("MOVE", &part, dest, b""));
+        assert!(mv.starts_with("HTTP/1.1 409"), "{mv}");
+        assert_eq!(
+            fs::read(root.join("MUSIC/Björk/t.flac")).unwrap(),
+            b"fLaC-song-bytes",
+            "the song is kept"
+        );
+        assert!(ask(port, &req("DELETE", &part, "", b"")).starts_with("HTTP/1.1 204"));
+        // An empty file is never put over a song, whatever came before.
+        assert!(ask(port, &req("PUT", &part, "", b"")).starts_with("HTTP/1.1 201"));
+        assert!(ask(port, &req("MOVE", &part, dest, b"")).starts_with("HTTP/1.1 409"));
+        assert!(ask(port, &req("PUT", &part, "", b"fLaC-new")).starts_with("HTTP/1.1 204"));
+        assert!(ask(port, &req("MOVE", &part, dest, b"")).starts_with("HTTP/1.1 204"));
+        assert_eq!(
+            fs::read(root.join("MUSIC/Björk/t.flac")).unwrap(),
+            b"fLaC-new"
+        );
+        fs::write(root.join("MUSIC/Björk/t.flac"), b"fLaC-song-bytes").unwrap();
+
+        // The 11-17 trace: WebClient sends the rename while its upload is still arriving. The
+        // rename waits, and puts the whole song in place; or is refused if the upload breaks.
+        let slow = |finish: bool| {
+            assert!(ask(port, &req("PUT", &part, "", b"")).starts_with("HTTP/1.1 2"));
+            let mut up = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let mut whole = req("PUT", &part, "", b"fLaC-slow-upload");
+            let rest = whole.split_off(whole.len() - 6);
+            up.write_all(&whole).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            let mv = std::thread::spawn(move || ask(port, &req("MOVE", &part_c(), dest, b"")));
+            std::thread::sleep(Duration::from_millis(600));
+            assert!(!mv.is_finished(), "the rename waits for the upload");
+            if finish {
+                up.write_all(&rest).unwrap();
+            } else {
+                up.shutdown(std::net::Shutdown::Write).unwrap();
+            }
+            let _ = up.read_to_end(&mut Vec::new());
+            mv.join().unwrap()
+        };
+        let mv = slow(true);
+        assert!(mv.starts_with("HTTP/1.1 204"), "{mv}");
+        assert_eq!(
+            fs::read(root.join("MUSIC/Björk/t.flac")).unwrap(),
+            b"fLaC-slow-upload"
+        );
+        let mv = slow(false);
+        assert!(mv.starts_with("HTTP/1.1 409"), "{mv}");
+        assert_eq!(
+            fs::read(root.join("MUSIC/Björk/t.flac")).unwrap(),
+            b"fLaC-slow-upload"
+        );
+        assert!(ask(port, &req("DELETE", &part, "", b"")).starts_with("HTTP/1.1 204"));
+        fs::write(root.join("MUSIC/Björk/t.flac"), b"fLaC-song-bytes").unwrap();
+
         // Overwrite: F refuses an existing name.
         let mv2 = ask(
             port,
