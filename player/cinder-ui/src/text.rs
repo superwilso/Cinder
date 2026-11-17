@@ -9,6 +9,7 @@ use fontdue::{Font, FontSettings, Metrics};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::LazyLock;
 
 // ── UI text scale (Settings ▸ UI scale) ─────────────────────────────────────────────────────
 // One global multiplier applied to every `TextStyle::size`, by BOTH `measure` and `draw`. Doing
@@ -308,14 +309,28 @@ enum Slot {
     Ready(&'static Font),
 }
 
+/// The bundled fonts, each parsed the first time anything needs it. Parsing all seven is 0.7 s
+/// on the player (11-17: 707 ms of the 810 ms before the first frame, with one or two cores
+/// online at boot), so [`FontSet::load`] parses them on a thread of their own and the first
+/// frame waits only for the ones it draws with.
+fn parse(b: &[u8]) -> Font {
+    Font::from_bytes(b, FontSettings::default()).expect("font parse")
+}
+static BUNDLED: [LazyLock<Font>; 7] = [
+    LazyLock::new(|| parse(include_bytes!("../assets/fonts/HankenGrotesk-Regular.ttf"))),
+    LazyLock::new(|| parse(include_bytes!("../assets/fonts/HankenGrotesk-SemiBold.ttf"))),
+    LazyLock::new(|| parse(include_bytes!("../assets/fonts/HankenGrotesk-Bold.ttf"))),
+    LazyLock::new(|| {
+        parse(include_bytes!(
+            "../assets/fonts/HankenGrotesk-ExtraBold.ttf"
+        ))
+    }),
+    LazyLock::new(|| parse(include_bytes!("../assets/fonts/JetBrainsMono-Light.ttf"))),
+    LazyLock::new(|| parse(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"))),
+    LazyLock::new(|| parse(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"))),
+];
+
 pub struct FontSet {
-    sans_regular: Font,
-    sans_semibold: Font,
-    sans_bold: Font,
-    sans_extrabold: Font,
-    mono_light: Font,
-    mono_regular: Font,
-    mono_bold: Font,
     fallbacks: RefCell<Vec<Slot>>,
     /// The user's own font (`set_user_font`), drawn for every Sans weight. None = the bundled one.
     user_sans: RefCell<Option<&'static Font>>,
@@ -336,17 +351,14 @@ pub struct FontSet {
 
 impl FontSet {
     pub fn load() -> Self {
-        let f = |b: &[u8]| Font::from_bytes(b, FontSettings::default()).expect("font parse");
+        let _ = std::thread::Builder::new()
+            .name("cinder-fonts".into())
+            .spawn(|| {
+                BUNDLED.iter().for_each(|f| {
+                    LazyLock::force(f);
+                })
+            });
         FontSet {
-            sans_regular: f(include_bytes!("../assets/fonts/HankenGrotesk-Regular.ttf")),
-            sans_semibold: f(include_bytes!("../assets/fonts/HankenGrotesk-SemiBold.ttf")),
-            sans_bold: f(include_bytes!("../assets/fonts/HankenGrotesk-Bold.ttf")),
-            sans_extrabold: f(include_bytes!(
-                "../assets/fonts/HankenGrotesk-ExtraBold.ttf"
-            )),
-            mono_light: f(include_bytes!("../assets/fonts/JetBrainsMono-Light.ttf")),
-            mono_regular: f(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
-            mono_bold: f(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf")),
             fallbacks: RefCell::new((0..FALLBACK_FONTS.len()).map(|_| Slot::Untried).collect()),
             user_sans: RefCell::new(None),
             chain_walks: std::cell::Cell::new(0),
@@ -571,15 +583,15 @@ impl FontSet {
         }
         match fam {
             Family::Sans => match w {
-                Weight::Light | Weight::Regular => &self.sans_regular,
-                Weight::SemiBold => &self.sans_semibold,
-                Weight::Bold => &self.sans_bold,
-                Weight::ExtraBold => &self.sans_extrabold,
+                Weight::Light | Weight::Regular => &BUNDLED[0],
+                Weight::SemiBold => &BUNDLED[1],
+                Weight::Bold => &BUNDLED[2],
+                Weight::ExtraBold => &BUNDLED[3],
             },
             Family::Mono => match w {
-                Weight::Light => &self.mono_light,
-                Weight::Regular | Weight::SemiBold => &self.mono_regular,
-                Weight::Bold | Weight::ExtraBold => &self.mono_bold,
+                Weight::Light => &BUNDLED[4],
+                Weight::Regular | Weight::SemiBold => &BUNDLED[5],
+                Weight::Bold | Weight::ExtraBold => &BUNDLED[6],
             },
         }
     }

@@ -108,6 +108,11 @@ fn state() -> &'static Mutex<Shared> {
     STATE.get_or_init(|| Mutex::new(Shared::default()))
 }
 
+/// A connection is open: a sync is talking to the player.
+pub fn busy() -> bool {
+    ACTIVE.load(Ordering::SeqCst) > 0
+}
+
 pub fn running() -> bool {
     RUN.load(Ordering::SeqCst)
 }
@@ -147,6 +152,7 @@ pub fn start(root: &Path, sd: Option<&Path>, code: &str, check_mount: bool) -> R
         ..Shared::default()
     };
     RUN.store(true, Ordering::SeqCst);
+    crate::net_used();
     std::thread::Builder::new()
         .name("cinder-drive".into())
         .stack_size(128 * 1024)
@@ -164,6 +170,7 @@ pub fn start(root: &Path, sd: Option<&Path>, code: &str, check_mount: bool) -> R
                             .stack_size(256 * 1024)
                             .spawn(move || {
                                 connection(c);
+                                crate::net_used();
                                 ACTIVE.fetch_sub(1, Ordering::SeqCst);
                             });
                         if spawned.is_err() {

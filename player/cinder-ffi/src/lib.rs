@@ -8495,6 +8495,27 @@ pub extern "C" fn cinder_wifi_serving() -> libc::c_int {
     (drive::running() || renderer::running() || remote::running() || cast::active()) as libc::c_int
 }
 
+/// When a Wi-Fi server last started or finished with a connection.
+static NET_USED: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// A Wi-Fi server started, or finished with a connection: it was used just now.
+pub(crate) fn net_used() {
+    *NET_USED.lock().unwrap() = Some(std::time::Instant::now());
+}
+
+/// Seconds since a Wi-Fi server was last used; 0 while a connection is open or a speaker plays
+/// from the player. A switched-on server keeps Wi-Fi awake with the screen dark only until this
+/// passes the shell's limit, so an unused phone remote no longer keeps the player from sleeping.
+#[no_mangle]
+pub extern "C" fn cinder_wifi_quiet_s() -> libc::c_int {
+    if drive::busy() || remote::busy() || cast::active() {
+        return 0;
+    }
+    NET_USED.lock().unwrap().map_or(libc::c_int::MAX, |t| {
+        t.elapsed().as_secs().min(libc::c_int::MAX as u64) as libc::c_int
+    })
+}
+
 /// Settings ▸ Wi-Fi ▸ AirPlay (1/0): the receiver runs while this is on and Wi-Fi is connected.
 #[no_mangle]
 pub extern "C" fn cinder_wifi_airplay() -> libc::c_int {

@@ -145,6 +145,7 @@ pub fn start(ip: Ipv4Addr, name: &str, uuid: &str) -> Result<u16, String> {
         s.note = cinder_ui::ui_format!("Shows up as {}", name);
     }
     RUN.store(true, Ordering::SeqCst);
+    crate::net_used();
     std::thread::Builder::new()
         .name("cinder-dlna-http".into())
         .stack_size(256 * 1024)
@@ -156,6 +157,7 @@ pub fn start(ip: Ipv4Addr, name: &str, uuid: &str) -> Result<u16, String> {
                         let _ = c.set_read_timeout(Some(Duration::from_secs(10)));
                         let _ = c.set_write_timeout(Some(Duration::from_secs(10)));
                         serve(c);
+                        crate::net_used();
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(100)),
                 }
