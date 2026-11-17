@@ -2700,6 +2700,17 @@ pub fn render(
                             idx == current,
                             false,
                         );
+                        // A picture chosen for the playlist covers the album art the tile drew
+                        // (11-17: the grid showed the first song's cover after a picture was picked).
+                        if let Some(img) = lib.playlist_thumbs.get(&pl.id).filter(|i| i.w > 0) {
+                            let tile = grid_tile_px() as usize;
+                            let img = if img.w == tile && img.h == tile {
+                                std::borrow::Cow::Borrowed(img)
+                            } else {
+                                std::borrow::Cow::Owned(img.scaled_to(tile, tile))
+                            };
+                            art::draw_image(c, t, grid_x(col), y + GRID_TILE_TOP, &img, 1.0);
+                        }
                     }
                     line += 1;
                     y += rh;
@@ -4854,6 +4865,54 @@ mod tests {
         );
         assert_eq!(ids.len(), 9);
         assert!(ids.len() <= GRID_COVERS_MAX);
+    }
+
+    /// A picture chosen as a playlist's cover is what its grid tile shows, not the first song's
+    /// album (11-17 on the player: the page had it, the Playlists grid did not).
+    #[test]
+    fn a_playlists_picture_is_its_grid_tile() {
+        let _g = crate::text::scale_guard();
+        let f = FontSet::load();
+        let t = crate::theme::Theme::day();
+        let mut l = viewed(Library::default(), Tab::Playlists, LibView::Grid);
+        l.playlists.push(crate::model::PlaylistRow {
+            id: -1,
+            user: true,
+            name: "piano".into(),
+            ..Default::default()
+        });
+        l.playlist_thumbs.insert(
+            -1,
+            art::Image {
+                w: 96,
+                h: 96,
+                rgb: [250u8, 10, 10].repeat(96 * 96),
+            },
+        );
+        let mut c = Canvas::new();
+        render(
+            &mut c,
+            &t,
+            &f,
+            Tab::Playlists,
+            99,
+            0,
+            0,
+            0,
+            None,
+            &l,
+            None,
+            false,
+            0,
+            false,
+        );
+        let x = grid_x(0) + grid_tile_px() / 2;
+        let y = list_top(Tab::Playlists) + GRID_TILE_TOP + grid_tile_px() / 2;
+        let px = c.buf[y as usize * W as usize + x as usize];
+        assert!(
+            px >> 16 & 0xff > 200 && px >> 8 & 0xff < 60,
+            "tile centre is {px:06x}"
+        );
     }
 
     /// At every text size, with search installed or not, "Library" fits before the controls and

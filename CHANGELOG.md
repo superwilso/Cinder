@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-11-17
+
 ### Added
 
 - **The SD card over Wi-Fi.** Settings ▸ Wi-Fi ▸ Options ▸ Share the drive now shares the card
@@ -23,47 +25,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   it as `…/<code>(-sd)`). Map it as a
   second drive and Flint syncs to both, as it does over the cable:
   `flint sync <library> --to W:\ --to X:\`. With no card in, that address answers nothing.
-
-### Changed
-
-- **Share the drive stays on across restarts**, like the phone remote: switch it on once and the
-  share starts whenever Wi-Fi connects. It is still off on a fresh install.
-
-### Fixed
-
-- **A Wi-Fi sync could leave a song empty.** Windows uploads a file over the share when it is
-  closed; on a slow upload it stops waiting after about two minutes, renames the file while the
-  upload is still arriving, and drops the error. The rename then put the empty file the upload
-  started with in place of the song (6 songs on 11-17, from Flint). Now a rename waits for the
-  upload it depends on, is refused if that upload broke off, and an empty file is never put in
-  place of a song; a refused rename fails in Windows, so the copier keeps the old song and tries
-  again. *Host-tested by replaying the request order from a trace of the failing sync.*
-
-- **Songs with several artists scrobble to the main one.** A FLAC tagged with more than one
-  `ARTIST` (`Amy Winehouse`, `Ade Omotayo`, `Zalon Thompson`) was scrobbled to the last of them,
-  which is the one Sony's music database keeps. Cinder now reads the song's own tags and sends the
-  first. Last.fm and ListenBrainz take one artist per play.
-- **Lyrics that showed as one long block now show line by line.** Some taggers write the lyrics'
-  line breaks as a bare `n`, so the whole song arrived as one line, synced or not
-  (`…for myselfn[00:21.50]Out of some blue…`). Cinder now puts those breaks back, in Japanese and
-  Chinese lyrics too. On the owner's library this fixed 297 of 2,419 songs with lyrics. 
-- **Lyrics copied with a website's page text no longer show it.** Some taggers copy the whole
-  page from letras.mus.br into the tag, so the lyrics ended in a long paragraph of buttons, credits
-  and adverts ("Add to favorites Add to Playlist Font size…"). Cinder now stops at the first of
-  those, in English or Spanish; an instrumental whose tag held only the page shows no lyrics. On the
-  owner's library: 138 songs.
-- **The "tap the playing song" question reads right when paused.** It is titled "This is the
-  current song", and its last row is "Cancel" instead of "Keep playing".
-
-### Changed
-
-- **Chinese (zh-CN): translations for this release's new screens:** the playlist editor's Name and
-  Cover rows, the cover picker, the "current song" question and the Wi-Fi WPS row.
-
-## [0.4.2] — 2026-11-11
-
-### Added
-
 - **Faster kernel (installer option `kernel`, off by default, experimental).** The player's own
   kernel, rebuilt from the source Sony published, with fixes: it starts about 1.5 seconds sooner,
   wakes the processor less often with the screen off, and no longer crashes or hangs in three of
@@ -179,6 +140,38 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Wi-Fi stopped answering a few minutes after the screen went dark.** With a server on (Share
+  the drive, the phone remote, Play to this player, AirPlay), the player still went into its
+  screen-off power state, and Sony's Wi-Fi driver stops sending there and does not start again:
+  pings and uploads went unanswered until Wi-Fi was switched off and on. Now a server on Wi-Fi
+  keeps the player out of that state (it costs battery while a server is on with the screen dark).
+  *On the player: 5 minutes dark with the share on, then pings answered and two 50 MB uploads ran
+  at 1.9 MB/s.*
+- **A playlist's picture cover now shows on the Playlists grid**, not only on the playlist's own
+  page: the grid tile drew the first song's album whatever was picked. *On the player.*
+- **A Wi-Fi sync could leave a song empty.** Windows uploads a file over the share when it is
+  closed; on a slow upload it stops waiting after about two minutes, renames the file while the
+  upload is still arriving, and drops the error. The rename then put the empty file the upload
+  started with in place of the song (6 songs on 11-17, from Flint). Now a rename waits for the
+  upload it depends on, is refused if that upload broke off, and an empty file is never put in
+  place of a song; a refused rename fails in Windows, so the copier keeps the old song and tries
+  again. *Host-tested by replaying the request order from a trace of the failing sync.*
+
+- **Songs with several artists scrobble to the main one.** A FLAC tagged with more than one
+  `ARTIST` (`Amy Winehouse`, `Ade Omotayo`, `Zalon Thompson`) was scrobbled to the last of them,
+  which is the one Sony's music database keeps. Cinder now reads the song's own tags and sends the
+  first. Last.fm and ListenBrainz take one artist per play.
+- **Lyrics that showed as one long block now show line by line.** Some taggers write the lyrics'
+  line breaks as a bare `n`, so the whole song arrived as one line, synced or not
+  (`…for myselfn[00:21.50]Out of some blue…`). Cinder now puts those breaks back, in Japanese and
+  Chinese lyrics too. On the owner's library this fixed 297 of 2,419 songs with lyrics. 
+- **Lyrics copied with a website's page text no longer show it.** Some taggers copy the whole
+  page from letras.mus.br into the tag, so the lyrics ended in a long paragraph of buttons, credits
+  and adverts ("Add to favorites Add to Playlist Font size…"). Cinder now stops at the first of
+  those, in English or Spanish; an instrumental whose tag held only the page shows no lyrics. On the
+  owner's library: 138 songs.
+- **The "tap the playing song" question reads right when paused.** It is titled "This is the
+  current song", and its last row is "Cancel" instead of "Keep playing".
 - **Clearing a bad-boot revert from the drive:** `cinderhome_clear` on the drive did nothing, so a
   player that had switched to Sony's player stayed there until Cinder was installed again. It now
   works.
@@ -247,6 +240,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **Share the drive stays on across restarts**, like the phone remote: switch it on once and the
+  share starts whenever Wi-Fi connects. It is still off on a fresh install.
+
+
+- **Chinese (zh-CN): translations for this release's new screens:** the playlist editor's Name and
+  Cover rows, the cover picker, the "current song" question and the Wi-Fi WPS row.
 - **Playlists: name, cover and removal live in EDIT.** The editor has Name and Cover rows at the
   top. Cover opens a picker (also opened by tapping the cover): Automatic, each album in the list,
   or any picture copied into the `cinder_playlists` folder on the drive. The × on each row of the
@@ -4227,8 +4226,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.2-rc1...HEAD
-[0.4.2]: https://github.com/superwilso/Cinder/compare/v0.4.1...v0.4.2-rc1
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/superwilso/Cinder/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/superwilso/Cinder/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/superwilso/Cinder/compare/v0.3.22...v0.4.0
 [0.3.22]: https://github.com/superwilso/Cinder/compare/v0.3.21...v0.3.22-rc1
