@@ -796,6 +796,7 @@ void render_up_locked() {
     if (g_render_ready) return;
     clog_("render_up: cinder_render_init");
     if (cinder_render_init() != 0) { clog_("render_up: render init FAILED"); return; }
+    clog_("render_up: renderer open");
     g_render_ready = true;
     // Restore persisted UI preferences (theme/visualiser/EQ/sound) so the first paint reflects them.
     // Pure file read (no Sony service) — safe on the boot path; a missing file just leaves defaults.
@@ -812,6 +813,7 @@ void render_up_locked() {
     // device with no USB. Pure property read, no Sony service, safe on the boot path.
     cinder_set_usb_dac(gadget_in_dac_mode() ? 1 : 0);
     llusbdac_publish();
+    clog_("render_up: settings loaded");
     // Boot ALWAYS at DAY backlight, even if night theme is persisted — the night dim is NOT resumed
     // across boots. Otherwise a daytime boot into persisted night could come up at ~3% backlight and
     // you couldn't see the screen to turn it back up. The night dim is a deliberate per-session action
@@ -4334,6 +4336,7 @@ void touch_set_sleep(int slp) {
 // button restores the screen. That escape depends on strictly less than the thing it rescues (a
 // key event vs. the whole touch stack).
 static const int  kWifiIdleOffS = 2 * 60;  // Wi-Fi sleeps after this long dark and unused
+static const int  kWifiServeIdleS = 10 * 60; // ...or this long, and this long unused, with a server on
 static const int  kBtIdleOffS = 10 * 60;   // "Turn off when idle": this long dark and silent
 static const long kIdleLockMs = 5 * 60 * 1000L;   // an idle blank locks (touch asleep) after this
 static bool g_screen_auto_off = false;   // dark because of the idle timer (not the Power button)
@@ -16523,8 +16526,11 @@ void* render_driver(void*) {
                 // the network and it goes off, every Wi-Fi rail down; the screen or a button
                 // brings it back, ~10 s to rejoin. Two, not Bluetooth's ten: a glance at the
                 // clock does not cost a rejoin, and rejoining costs no one their headphones. Never while it is in use with the screen off: internet radio or AirPlay
-                // playing, a speaker fed from the player, a server switched on (Share the drive,
-                // Play to this player, the phone remote), AirPlay waiting to be found, or an update downloading.
+                // playing, a speaker fed from the player, AirPlay waiting to be found, or an update
+                // downloading. A server switched on (Share the drive, Play to this player, the
+                // phone remote) holds it for ten minutes of dark screen AND ten minutes since its
+                // last connection, not forever: switched on and left unused, it kept the player
+                // awake, Wi-Fi and SoC both, until the battery was flat (11-17).
                 {
                     static int wifi_idle_secs = 0;
                     if (g_wifi_slept_at && (g_screen_on || g_last_input_ms > g_wifi_slept_at)) {
@@ -16533,13 +16539,15 @@ void* render_driver(void*) {
                         wifi_start(CINDER_ACT_WIFI_ON);
                     }
                     const bool wifi_idle = !g_screen_on && g_wifi_on && !src.net && !g_wifi_slept_at
-                                           && !g_wifi_updating
-                                           && cinder_wifi_serving() == 0 && cinder_wifi_airplay() == 0;
+                                           && !g_wifi_updating && cinder_wifi_airplay() == 0;
+                    const bool serving = cinder_wifi_serving() != 0;
                     if (!wifi_idle) {
                         wifi_idle_secs = 0;
-                    } else if (++wifi_idle_secs >= kWifiIdleOffS) {
+                    } else if (++wifi_idle_secs >= (serving ? kWifiServeIdleS : kWifiIdleOffS)
+                               && (!serving || cinder_wifi_quiet_s() >= kWifiServeIdleS)) {
                         wifi_idle_secs = 0;
-                        clog_("wifi: idle 2 min with the screen off -> Wi-Fi off until the player is used");
+                        clog_(serving ? "wifi: servers unused 10 min with the screen off -> Wi-Fi off until the player is used"
+                                      : "wifi: idle 2 min with the screen off -> Wi-Fi off until the player is used");
                         wifi_start(CINDER_ACT_WIFI_OFF);
                         g_wifi_slept_at = now_ms();
                     }

@@ -526,6 +526,9 @@ int cinder_wifi_airplay(void);
  * playing from the player: the shell keeps the Wi-Fi radio out of power save, which made requests
  * to the player wait 4-20 s, and does not let Wi-Fi sleep when the player is idle. */
 int cinder_wifi_serving(void);
+/* Seconds since Share the drive, Play to this player or the phone remote last started or finished
+ * a connection; 0 while one is open or a speaker plays from the player. */
+int cinder_wifi_quiet_s(void);
 void cinder_set_airplay_note(const char *text);
 int cinder_remote_take_uploaded(void);
 /* Night on a schedule: call ~1x/sec. Returns CINDER_ACT_THEME_CHANGED when Night just came on or

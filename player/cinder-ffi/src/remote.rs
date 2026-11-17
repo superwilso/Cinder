@@ -199,6 +199,7 @@ pub fn start(code: &str) -> Result<u16, String> {
     }
     phones();
     RUN.store(true, Ordering::SeqCst);
+    crate::net_used();
     std::thread::Builder::new()
         .name("cinder-remote".into())
         .stack_size(256 * 1024)
@@ -228,6 +229,7 @@ pub fn start(code: &str) -> Result<u16, String> {
                             .stack_size(256 * 1024)
                             .spawn(move || {
                                 serve(c);
+                                crate::net_used();
                                 ACTIVE.fetch_sub(1, Ordering::SeqCst);
                             });
                         if spawned.is_err() {
@@ -255,6 +257,11 @@ pub fn stop() {
     s.buttons.clear();
     s.cmds.clear();
     s.lastfm = None;
+}
+
+/// A connection is open: a phone is talking to the player.
+pub fn busy() -> bool {
+    ACTIVE.load(Ordering::SeqCst) > 0
 }
 
 pub fn running() -> bool {

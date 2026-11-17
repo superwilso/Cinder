@@ -16,6 +16,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **The first screen appears sooner still.** The player's fonts are now read in the background,
+  and the first screen waits only for the ones it shows: the renderer is ready in about 50 ms
+  instead of 800 ms, and the first frame arrives 0.5–0.9 s after Cinder starts.
+
+### Fixed
+
+- **Wi-Fi no longer keeps the player awake forever.** With the phone remote, Share the drive or
+  Play to this player switched on, Wi-Fi stayed up and the player never slept, so a player left
+  in a drawer drained its battery. Now Wi-Fi switches off after ten minutes with the screen dark
+  and nothing connected; the screen or a button brings it back. A sync or a phone using the
+  player keeps it awake.
+
 ## [0.4.3] — 2026-11-17
 
 ### Changed
