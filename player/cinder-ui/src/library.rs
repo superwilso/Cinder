@@ -4908,7 +4908,7 @@ mod tests {
         );
         let x = grid_x(0) + grid_tile_px() / 2;
         let y = list_top(Tab::Playlists) + GRID_TILE_TOP + grid_tile_px() / 2;
-        let px = c.buf[y as usize * W as usize + x as usize];
+        let px = c.buf[y as usize * W + x as usize];
         assert!(
             px >> 16 & 0xff > 200 && px >> 8 & 0xff < 60,
             "tile centre is {px:06x}"
