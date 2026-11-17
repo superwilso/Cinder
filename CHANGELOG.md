@@ -16,6 +16,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-11-17
+
+### Changed
+
+- **The player starts faster.** Cinder's first screen now paints while Sony's framework is still
+  starting, instead of after it: the first frame arrives 0.35–0.6 s sooner (about 2.5 s sooner on
+  a slow start), and playback is ready about a second sooner. Settings are now also kept on the
+  player's internal data partition, so an early start reads them even when the music partition
+  is not readable yet.
+
 ## [0.4.2] — 2026-11-17
 
 ### Added
@@ -4226,7 +4236,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/superwilso/Cinder/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/superwilso/Cinder/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/superwilso/Cinder/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/superwilso/Cinder/compare/v0.3.22...v0.4.0

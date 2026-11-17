@@ -591,6 +591,11 @@ easel::ApplicationBase* g_app = nullptr; // the app — for StopBootAnimation() 
 volatile bool g_pump_ticker_run = false; // is the pump-driver ticker thread active?
 pthread_t g_pump_ticker = 0;   // the ticker thread handle (joined at finalize)
 bool g_deferred_done = false;  // slow/blocking init (DB + PlayerService) finished?
+// Has Sony's framework reached onForeground? The renderer comes up earlier, at onPostInitialize
+// (0.75-2.6 s sooner), but every Sony service call waits for this: deferred_up does not run, and
+// the boot is not marked good, until the framework is up.
+volatile bool g_foreground = false;
+pthread_mutex_t g_render_up_mu = PTHREAD_MUTEX_INITIALIZER;   // render_up runs from two threads
 // Bring-up finished, OR it has been retrying long enough that it is stalled rather than in
 // progress. The frame loop treats the two the same: stop deferring the rest of the loop. See the
 // long note at the deferred-init block in render_driver for what happened when it did not.
@@ -780,7 +785,14 @@ static void hago_tick(bool running) {
     clog_("wrapper: audio has run for 5 s through the preloaded sound service — confirmed for the boot guard");
 }
 
+void render_up_locked();
 void render_up() {
+    pthread_mutex_lock(&g_render_up_mu);
+    render_up_locked();
+    pthread_mutex_unlock(&g_render_up_mu);
+}
+
+void render_up_locked() {
     if (g_render_ready) return;
     clog_("render_up: cinder_render_init");
     if (cinder_render_init() != 0) { clog_("render_up: render init FAILED"); return; }
@@ -813,14 +825,8 @@ void render_up() {
     // before the user has touched anything.
     g_last_input_ms = now_ms();
     clog_("render_up: DONE (renderer ready)");
-    // From here the render_driver worker thread owns SIGALRM (per-frame watchdog + run_guarded).
-    // Block SIGALRM on THIS (main) thread first: main is about to get stuck in easel's OnForeground
-    // (CuiAppModule's blocking pump path), so a guard alarm raised by the worker must never be
-    // delivered here (it would fail the g_guard_owner check and _exit us). The worker unblocks
-    // SIGALRM on itself. (The construction alarm(20) is a process-wide timer; once armed it will be
-    // delivered to the worker, which supersedes it with its own per-frame alarm on the first tick.)
-    sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
-    pthread_sigmask(SIG_BLOCK, &sa, nullptr);
+    // SIGALRM is already blocked on main (cbPostI) and on this thread, which inherited it; the
+    // render_driver worker started below unblocks it on itself and owns it from here.
     // Nothing drives the easel pump for a non-Qt CuiAppModule, so run our own render+input loop.
     start_pump_ticker();
 }
@@ -1901,7 +1907,8 @@ void deferred_up() {
 // looped on the boot logo with the safety net silently disabled. /data is ext4 and USB-MSC never
 // touches it. The path MUST stay in step with $BOOTCOUNT in deploy/install_cinderhome.sh.
 void mark_healthy_maybe() {
-    if (g_counter_reset || g_first_paint_at == 0) return;
+    // A frame alone is not proof any more: it paints before Sony's framework is up.
+    if (g_counter_reset || g_first_paint_at == 0 || !g_foreground) return;
     if (now_ms() - g_first_paint_at >= 8000) {
         FILE* f = std::fopen("/data/cinder/bootcount", "w");
         if (!f) {
@@ -15769,7 +15776,7 @@ public:
     void OnInitialize() override     { clog_("app:OnInitialize");     easel::ApplicationBase::OnInitialize(); }
     void OnPostInitialize() override { clog_("app:OnPostInitialize"); easel::ApplicationBase::OnPostInitialize(); }
     void OnActivate() override       { clog_("app:OnActivate");       easel::ApplicationBase::OnActivate(); }
-    void OnForeground() override     { clog_("app:OnForeground");     render_up(); easel::ApplicationBase::OnForeground(); }
+    void OnForeground() override     { clog_("app:OnForeground");     g_foreground = true; render_up(); easel::ApplicationBase::OnForeground(); }
     void OnBackground() override     { clog_("app:OnBackground");     stop_analyzer(); easel::ApplicationBase::OnBackground(); }
     void OnInactivate() override     { clog_("app:OnInactivate");     easel::ApplicationBase::OnInactivate(); }
     void OnFinalize() override       { clog_("app:OnFinalize");       stop_analyzer(); cinder_render_shutdown(); easel::ApplicationBase::OnFinalize(); }
@@ -16276,7 +16283,7 @@ void* render_driver(void*) {
             if (n < 30) { ++n; usleep(16000); continue; }   // warm-up paints first
             const long long bring_now = now_ms();
             if (deferred_stalled_since == 0) deferred_stalled_since = bring_now;
-            deferred_up();
+            if (g_foreground) deferred_up();
             // Re-kill the boot animation: dense while a respawn is actually plausible, then rare,
             // then NOT AT ALL. The animation is dead within the first seconds and the only thing
             // that could bring it back is init respawning it, which the healthy path's straggler
@@ -17410,9 +17417,23 @@ int main(int argc, char** argv) {
     // The CuiAppModule callbacks (named per the RE'd ctor). They map to lifecycle phases;
     // each is traced. onForeground brings up the renderer; the pump ticks it.
     auto cbInit    = []() { clog_("cb:onInitialize"); };
-    auto cbPostI   = []() { clog_("cb:onPostInitialize"); };
+    // EARLY FIRST FRAME. Sony's framework takes 0.75 s (2.6 s on a slow boot) between
+    // onPostInitialize and onForeground, and the renderer needs nothing from it — so it comes up
+    // here, on its own thread, while main goes back to the framework. Sony service calls still wait
+    // for onForeground (g_foreground). Block SIGALRM on main first: it parks in easel's
+    // OnForeground, and a guard alarm landing on it would fail the g_guard_owner check and _exit
+    // us; the render thread inherits the mask and the render_driver worker unblocks it on itself.
+    auto cbPostI   = []() {
+        clog_("cb:onPostInitialize");
+        sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
+        pthread_sigmask(SIG_BLOCK, &sa, nullptr);
+        pthread_t t;
+        if (pthread_create(&t, nullptr, [](void*) -> void* { render_up(); return nullptr; }, nullptr) == 0)
+            pthread_detach(t);
+    };
     auto cbActivate= []() { clog_("cb:onActivate"); };
-    auto cbForeg   = []() { clog_("cb:onForeground"); render_up(); };
+    // render_up again: a no-op when the early one worked, the retry when it did not.
+    auto cbForeg   = []() { clog_("cb:onForeground"); g_foreground = true; render_up(); };
     auto cbFinal   = []() {
         clog_("cb:onFinalize");
         // Stop the pump ticker BEFORE the module is destroyed so it can't poke a freed object.

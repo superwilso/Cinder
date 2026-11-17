@@ -1772,7 +1772,38 @@ fn save_settings(r: &mut Render) {
     }
     if let Some(path) = r.settings_path.clone() {
         let _ = write_atomic(&path, &body);
+        if let Some(m) = settings_mirror(&path) {
+            let _ = write_atomic(m, &body);
+        }
         r.last_saved_body = body;
+    }
+}
+
+/// The first frame paints at onPostInitialize, about 10 s into boot, which is inside the window
+/// where the USB gadget binds /contents and reads of it fail. So the settings are kept twice: the
+/// copy on /data is what a boot reads when /contents cannot be read yet. Only for the real
+/// /contents file, so host tests never touch /data.
+fn settings_mirror(p: &str) -> Option<&'static str> {
+    p.starts_with("/contents/")
+        .then_some("/data/cinder/cinder_settings.conf")
+}
+
+/// The settings file, or its mirror when the file cannot be read. A good read refreshes the
+/// mirror, so a file edited over USB is what the next early boot sees.
+fn read_settings(p: &str, mirror: Option<&str>) -> std::io::Result<String> {
+    match (std::fs::read_to_string(p), mirror) {
+        (Ok(body), Some(m)) => {
+            if std::fs::read_to_string(m).ok().as_deref() != Some(body.as_str()) {
+                let _ = write_atomic(m, &body);
+            }
+            Ok(body)
+        }
+        (Err(e), Some(m)) => {
+            let body = std::fs::read_to_string(m)?;
+            eprintln!("cinder-ffi: {p} could not be read ({e}); settings from {m}");
+            Ok(body)
+        }
+        (res, None) => res,
     }
 }
 
@@ -9958,7 +9989,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         // Before the saved choice, which may only pick among them.
         r.app.set_languages(&installed_languages(LANGUAGES_PATH));
-        if let Ok(body) = std::fs::read_to_string(&p) {
+        if let Ok(body) = read_settings(&p, settings_mirror(&p)) {
             loaded = 1;
             // The spare A/B setup, accumulated across however many `bank_*` lines the file has and
             // installed once at the end — the keys can arrive in any order, and the live setup must
@@ -12790,6 +12821,23 @@ mod tests {
         pl.install(&mut app);
         app.select_setup(1);
         assert_eq!(app.dsee_mode(), cinder_ui::advanced::DSEE_MODES.len() - 1);
+    }
+
+    /// Settings come from the mirror when the file cannot be read, and a good read refreshes it.
+    #[test]
+    fn settings_fall_back_to_the_mirror() {
+        let dir = std::env::temp_dir().join(format!("cinder_mirror_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (file, mirror) = (dir.join("a.conf"), dir.join("m.conf"));
+        let (f, m) = (file.to_str().unwrap(), mirror.to_str().unwrap());
+        std::fs::write(&file, "volume=40\n").unwrap();
+        assert_eq!(read_settings(f, Some(m)).unwrap(), "volume=40\n");
+        assert_eq!(std::fs::read_to_string(&mirror).unwrap(), "volume=40\n");
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(read_settings(f, Some(m)).unwrap(), "volume=40\n");
+        assert!(read_settings(f, None).is_err());
+        assert_eq!(settings_mirror("/tmp/x.conf"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The settings write leaves the old file or the new one, never part of one, and no temporary
