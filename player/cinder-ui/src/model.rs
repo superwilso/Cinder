@@ -495,7 +495,8 @@ pub struct Library {
     ///
     /// Only playlists whose cover is a PICTURE FILE appear here — everything else borrows an
     /// album's cover through `PlaylistRow::cover_album_id`, which costs nothing. So this map is
-    /// normally empty, and a playlist missing from it is the rule rather than a failure.
+    /// normally empty, and a playlist missing from it is the rule rather than a failure. Held at the
+    /// grid's 96 px; the list and the page scale it down.
     pub playlist_thumbs: std::collections::HashMap<i64, crate::art::Image>,
     /// Pictures in the playlists folder, offered by the cover picker (`playlist_cover`).
     pub cover_pictures: Vec<CoverPicture>,

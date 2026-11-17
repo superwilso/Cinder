@@ -16657,10 +16657,23 @@ void* render_driver(void*) {
                                     "dropped link stops it for the boot)"
                                   : "suspend: stage 1 NOT on Bluetooth (/contents/cinder_no_suspend_bt)");
                 }
-                const bool soc_idle =
-                    suspend_while_playing
+                // A server on Wi-Fi (Share the drive, the phone remote, Play to this player,
+                // AirPlay) holds the SoC awake: Sony's wlan driver stops SENDING after its
+                // early-suspend hook (wlan_early_suspend) and does not start again on late resume —
+                // 11-17, the screen went dark under a Wi-Fi sync and the player answered nothing
+                // until Wi-Fi was switched off and on, while uploads in flight broke.
+                const bool wifi_serving =
+                    g_wifi_on && (cinder_wifi_serving() != 0 || cinder_wifi_airplay() != 0);
+                static int said_serving = -1;
+                if ((int)wifi_serving != said_serving) {
+                    said_serving = wifi_serving;
+                    clog_(wifi_serving ? "suspend: held off while Wi-Fi serves (the driver stops sending in early suspend)"
+                                       : "suspend: Wi-Fi is not serving, stage 1 allowed again");
+                }
+                const bool soc_idle = !wifi_serving &&
+                    (suspend_while_playing
                         ? (!g_screen_on && !src.unproven_in_stage1() && (!audible || on_jack_now || bt_ok))
-                        : idle;
+                        : idle);
                 // Say so when it changes, because this changes when the SoC suspends and the log is
                 // the only place that would ever explain a behaviour difference between two units.
                 static int said_swp = -1;
@@ -16744,7 +16757,7 @@ void* render_driver(void*) {
                 // does go down — the codec fix stands on its own and must not depend on this one
                 // being enabled.
                 // Stage 2's own, stricter test — Sony's interlocks (see soc_suspend_tick).
-                const bool ram_idle = idle && !g_nc_on && cinder_get_bt_route() == 0 && !g_bt_user_pending
+                const bool ram_idle = idle && !wifi_serving && !g_nc_on && cinder_get_bt_route() == 0 && !g_bt_user_pending
                     && !g_rx_active && !g_msc_active && !g_wifi_updating
                     && socsusp::read_node_long("/sys/class/power_supply/usb/online") == 0
                     && socsusp::read_node_long("/sys/class/power_supply/dc/online") <= 0;

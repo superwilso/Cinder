@@ -4438,7 +4438,7 @@ fn playlist_cover_images(
         if !playlists::Playlist::cover_is_image(&src) {
             continue;
         }
-        match picture_thumb(&src) {
+        match picture_t96(&src) {
             Some(img) => {
                 out.insert(list.id, img);
             }
@@ -4446,6 +4446,17 @@ fn playlist_cover_images(
         }
     }
     out
+}
+
+/// A picture file's 96 px cover, for the Playlists grid: from the art cache, or decoded once and
+/// cached (both sizes).
+fn picture_t96(src: &str) -> Option<cinder_ui::art::Image> {
+    let key = art_cache::key_of(src);
+    art_cache::load(key, art_cache::T96).or_else(|| {
+        let full = art_load::decode(&std::fs::read(src).ok()?)?;
+        art_cache::store_image(key, &full);
+        Some(full.scaled_to(art_cache::T96, art_cache::T96))
+    })
 }
 
 /// A picture file's 48 px thumbnail: from the art cache, or decoded once and cached.
