@@ -542,7 +542,7 @@ pub fn render_options(c: &mut Canvas, t: &Theme, f: &FontSet, v: &OptionsView) {
         (
             crate::i18n::text("Share the drive"),
             if v.drive_note.is_empty() {
-                crate::i18n::text("Map it on a computer · off at each start")
+                crate::i18n::text("Map it on a computer, or sync with Flint")
             } else {
                 v.drive_note
             },

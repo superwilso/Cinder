@@ -473,6 +473,6 @@ b0d3e2c661cdc205 wifi_speakers_casting
 c4bc4539ec3c0006 media_servers_none
 d772b66e6d59b788 media_servers
 04c458a34e2292b1 media_servers_folder
-ae158917cf166c5a wifi_options
+b786054cd19da9d3 wifi_options
 fc8b35ce8b081cf7 wifi_failed
 3f1438ac0f9dc5b3 keyboard_more_symbols

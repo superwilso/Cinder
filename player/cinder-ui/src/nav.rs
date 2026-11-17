@@ -1743,9 +1743,8 @@ pub struct App {
     /// What the AirPlay receiver is doing, and the DLNA renderer (Wi-Fi ▸ Options ▸ Play to).
     airplay_note: String,
     play_to_note: String,
-    /// Settings ▸ Wi-Fi ▸ Options ▸ Share the drive: on until the player restarts (never saved),
-    /// its address while on, and the code in that address (saved, so a computer's mapping lasts).
-    wifi_drive: bool,
+    /// Settings ▸ Wi-Fi ▸ Options ▸ Share the drive (`Opt::WifiDrive`): its address while on, and
+    /// the code in that address (saved, so a computer's mapping lasts).
     drive_note: String,
     drive_code: String,
     /// What the shell last said about each (shown as the row's second line).
@@ -2312,7 +2311,6 @@ impl Default for App {
             wifi_join: None,
             airplay_note: String::new(),
             play_to_note: String::new(),
-            wifi_drive: false,
             drive_note: String::new(),
             drive_code: String::new(),
             wifi_lb_note: String::new(),
@@ -7812,7 +7810,7 @@ impl App {
                 vec![]
             }
             Hit::Drive => {
-                self.wifi_drive = !self.wifi_drive;
+                self.toggle_opt(Opt::WifiDrive);
                 self.drive_note.clear();
                 vec![]
             }
@@ -8142,7 +8140,7 @@ impl App {
 
     /// Settings ▸ Wi-Fi ▸ Options ▸ Share the drive (on until the player restarts).
     pub fn wifi_drive(&self) -> bool {
-        self.wifi_drive
+        self.opt(Opt::WifiDrive)
     }
     pub fn drive_note(&self) -> &str {
         &self.drive_note
@@ -12452,7 +12450,7 @@ impl App {
                         self.opt(Opt::WifiLyrics),
                         self.opt(Opt::WifiArt),
                         self.opt(Opt::WifiPlayTo),
-                        self.wifi_drive,
+                        self.opt(Opt::WifiDrive),
                     ],
                     lb_note: &self.wifi_lb_note,
                     update_note: &self.wifi_update_note,

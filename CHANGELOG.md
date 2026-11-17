@@ -24,7 +24,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   second drive and Flint syncs to both, as it does over the cable:
   `flint sync <library> --to W:\ --to X:\`. With no card in, that address answers nothing.
 
+### Changed
+
+- **Share the drive stays on across restarts**, like the phone remote: switch it on once and the
+  share starts whenever Wi-Fi connects. It is still off on a fresh install.
+
 ### Fixed
+
+- **A Wi-Fi sync could leave a song empty.** Windows uploads a file over the share when it is
+  closed; on a slow upload it stops waiting after about two minutes, renames the file while the
+  upload is still arriving, and drops the error. The rename then put the empty file the upload
+  started with in place of the song (6 songs on 11-17, from Flint). Now a rename waits for the
+  upload it depends on, is refused if that upload broke off, and an empty file is never put in
+  place of a song; a refused rename fails in Windows, so the copier keeps the old song and tries
+  again. *Host-tested by replaying the request order from a trace of the failing sync.*
 
 - **Songs with several artists scrobble to the main one.** A FLAC tagged with more than one
   `ARTIST` (`Amy Winehouse`, `Ade Omotayo`, `Zalon Thompson`) was scrobbled to the last of them,
