@@ -131,6 +131,10 @@ int  cinder_audio_current_uri(char *buf, int cap);
  * Returns bytes written or <0. Read-only; frees the URI std::string at +0x6c like current_uri. */
 int  cinder_audio_dump_status(char *buf, int cap);
 
+// Cinder's own playback engine (src/engine.hpp): all-FLAC queues decoded by cinder-ffi and played
+// through Cinder's own track in Sony's sound service. Off until enabled.
+void cinder_audio_engine_enable(int on);
+
 #ifdef __cplusplus
 }
 #endif

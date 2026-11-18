@@ -59,6 +59,12 @@ std::map<const void*, Seq> g_seqs;
 } // namespace
 
 extern "C" void _ZN3pst8services13playerservice4util4NodeINS2_7UriInfoEED2Ev(void*) {}
+// The engine's decoder lives in cinder-ffi (Rust); the engine stays off here, so these never run.
+extern "C" void* cinder_flac_open(const char*) { return nullptr; }
+extern "C" void cinder_flac_info(const void*, unsigned*, unsigned*, unsigned*, unsigned long long*) {}
+extern "C" long cinder_flac_read(void*, int*, size_t) { return 0; }
+extern "C" int cinder_flac_seek(void*, unsigned long long) { return -1; }
+extern "C" void cinder_flac_close(void*) {}
 
 // The framework pump is not exercised here (it needs Sony's looper); the shim still links its calls.
 pst::core::Framework& pst::core::Framework::GetReference() { static char fw[0x40]; return *reinterpret_cast<Framework*>(fw); }

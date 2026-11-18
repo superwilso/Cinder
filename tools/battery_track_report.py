@@ -28,16 +28,22 @@ def rows(path):
                 epoch=int(f[0]), uptime=float(f[1]), cap=int(f[2]), volt=int(f[3]),
                 status=f[4], usb=f[5], bl=int(f[6] or 0),
                 cpu_idle=int(f[7]), cpu_total=int(f[8]), pcm=f[9], home=int(f[10]),
+                btif=int(f[11]) if len(f) > 11 and f[11].isdigit() else None,
             ))
         except ValueError:
             continue
     return out
 
 
-def state_of(r):
-    """What the player was doing. Ordered most-specific first."""
+def state_of(r, nxt=None):
+    """What the player was doing. Ordered most-specific first. Bluetooth playback opens no ALSA
+    PCM, so it is read from the Bluetooth interface's interrupt rate up to the next sample."""
+    bt = (nxt is not None and r.get("btif") is not None and nxt.get("btif") is not None
+          and nxt["epoch"] > r["epoch"] and (nxt["btif"] - r["btif"]) / (nxt["epoch"] - r["epoch"]) > 50)
     playing = r["pcm"] != "-" and "RUNNING" in r["pcm"]
     screen = r["bl"] > 0
+    if bt:
+        return "Bluetooth, screen on" if screen else "Bluetooth, screen off"
     if playing and screen:
         return "playing, screen on"
     if playing:
@@ -77,7 +83,7 @@ def main(path):
             charge_s += dt
             continue
 
-        st = state_of(a)
+        st = state_of(a, b)
         secs[st] += dt
         dcap[st] += a["cap"] - b["cap"]
         dmv[st] += (a["volt"] - b["volt"]) / 1000.0

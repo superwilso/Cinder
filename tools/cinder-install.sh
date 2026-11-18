@@ -301,7 +301,15 @@ if [ -f /data/local/tmp/cinder-preload.sh.new ]; then
     cp /data/local/tmp/cinder-preload.sh.new "\$HELPERS_DIR/cinder-preload.sh.tmp" \\
         && chmod 755 "\$HELPERS_DIR/cinder-preload.sh.tmp" \\
         && mv "\$HELPERS_DIR/cinder-preload.sh.tmp" "\$HELPERS_DIR/cinder-preload.sh" || true
-    for h in cinder-preload.sh cinder-hagowrap libcinder_mono.so cinder-guard.sh; do
+    # The AVRCP watcher (src/cinder-btwatch.c), loaded by the wrapper as BtCommonService.2.so.
+    if grep -q cinder-hagowrap /system/vendor/sony/bin/hagodaemon 2>/dev/null && [ -s /data/local/tmp/libcinder_btwatch.so.new ]; then
+        mkdir -p /system/vendor/cinder/lib/preload 2>/dev/null
+        W=/system/vendor/cinder/lib/preload/BtCommonService.2.so
+        cp /data/local/tmp/libcinder_btwatch.so.new "\$W.tmp" && cmp /data/local/tmp/libcinder_btwatch.so.new "\$W.tmp" \
+            && chmod 644 "\$W.tmp" && mv "\$W.tmp" "\$W" && echo "[swap] installed the AVRCP watcher" \
+            || { rm "\$W.tmp" 2>/dev/null; echo "[swap] WARN: AVRCP watcher copy mismatch, skipped"; }
+    fi
+    for h in cinder-preload.sh cinder-hagowrap libcinder_mono.so cinder-guard.sh libcinder_btwatch.so; do
         rm "/data/local/tmp/\$h.new" 2>/dev/null || true
     done
 fi
@@ -523,7 +531,7 @@ fi
 #     to deploy/cinder-preload.sh, the same script the .UPG installer runs, while /system is rw.
 if [ "$PRELOAD" = 1 ]; then
     info "pushing the preload component (--preload)…"
-    for h in cinder-preload.sh cinder-hagowrap cinder-guard.sh libcinder_mono.so; do
+    for h in cinder-preload.sh cinder-hagowrap cinder-guard.sh libcinder_mono.so libcinder_btwatch.so; do
         [ -f "$DIST/$h" ] || die "$DIST/$h is missing — build first (cinder-home/build.sh $CHANNEL)"
         push "$DIST/$h" "/data/local/tmp/$h.new"
         ok "  staged $h"

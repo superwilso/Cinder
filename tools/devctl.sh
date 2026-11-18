@@ -11,6 +11,7 @@
 #   tools/devctl.sh sh 'CMD'                               run CMD, exit with ITS code (adb shell's is always 0)
 #   tools/devctl.sh probe ARGS...                          push and run cinder-probe (dev build)
 #   tools/devctl.sh hci on|off|pull DIR                    Sony's HCI trace (btsnoop) in /tmp
+#   tools/devctl.sh set [PATTERN | KEY=VALUE… | restore | adv …]   settings, live (tools/devset.sh)
 #
 # /tmp is a 32 MB RAM disk and the HCI trace grows ~130 KB/s on LDAC (~40 KB/s on AAC): it fills
 # /tmp in about four minutes, and a full /tmp breaks Cinder's own status files. Pull and delete
@@ -43,6 +44,7 @@ swipe)
     done
     sh_ "$cmd sendevent $TOUCH 3 48 0; sendevent $TOUCH 0 2 0; sendevent $TOUCH 1 330 0; sendevent $TOUCH 0 0 0" ;;
 shot) shift; exec bash cinder-home/tools/screenshot.sh "$@" ;;
+set) shift; exec bash tools/devset.sh "$@" ;;
 state)
     # mtkbt only uses CPU while A2DP is streaming, so its tick count moving = playing over BT.
     sh_ 'p=$(ps | grep "[/]bin/mtkbt" | '"$BB"' awk "{print \$2}"); a=$(cut -d" " -f14 /proc/$p/stat); sleep 2; b=$(cut -d" " -f14 /proc/$p/stat)

@@ -366,6 +366,7 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/libfdk-aac-enc.so
     cinder-home/dist/stable/libcinder_atrac.so
     cinder-home/dist/stable/libcinder_fmrec.so
+    cinder-home/dist/stable/libcinder_btwatch.so
     cinder-home/dist/stable/cinder-wifi
     cinder-home/dist/stable/wifi-compat.ko
     cinder-home/dist/stable/wifi-cfg80211.ko

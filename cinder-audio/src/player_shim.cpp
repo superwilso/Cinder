@@ -236,6 +236,20 @@ void json_escape_into(std::string& out, const char* s) {
 }
 } // namespace
 
+#include "engine.hpp"
+
+namespace {
+// Hand the music track to the engine: PlayerService must let go of it first (a paused player keeps
+// it; only ClosePlayer releases it — see fm_power_fn in cinder-home).
+void release_for_engine() {
+    if (!g_ctrl) return;
+    change_state(pl::playstate_t::Stop);
+    g_seq.reset();
+    g_nts.reset();
+    g_ctrl->ClosePlayer();
+}
+} // namespace
+
 extern "C" {
 
 int cinder_audio_init(const char* name) {
@@ -351,6 +365,7 @@ int cinder_audio_suspend(void) {
 }
 
 int cinder_audio_close_player(void) {
+    eng::stop();
     if (!g_ctrl) return -1;
     int rc = g_ctrl->ClosePlayer();
     std::fprintf(stderr, "[cinder-audio] ClosePlayer rc=%d\n", rc);
@@ -362,6 +377,7 @@ void cinder_audio_shutdown(void) {
     // SoundService "Music" track. Skipping it leaks that track inside hagodaemon (which outlives
     // us), and the next process to try to play gets "Cannot create multiple tracks that have
     // same type" -> WMX_AudioOutput::Open() 0x80001009 -> a loaded track that never makes sound.
+    eng::stop();
     if (g_ctrl) { g_ctrl->ClosePlayer(); g_ctrl->Disconnect(); }
     g_ctrl.reset();
     g_seq.reset();
@@ -373,6 +389,13 @@ void cinder_audio_shutdown(void) {
 int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
     if (!g_ctrl || !uris || count <= 0) return -1;
     if (start < 0 || start >= count) start = 0;
+    if (eng::takes(uris, count)) {
+        release_for_engine();
+        g_last_uris.assign(uris, uris + count);
+        g_last_start = start;
+        return eng::play(uris, count, start);
+    }
+    eng::stop();   // a queue the engine does not take: PlayerService needs the track back
 
     // Build the Node-tree JSON: a root container whose children are the track leaves, in play
     // order. "format" is the int Sony's own psk::FileUtil::GetFormatFromFilename maps from the
@@ -461,6 +484,11 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
 // `uris[start]` must be the track that is playing. 0 = applied; anything else = nothing changed
 // and the caller should fall back to cinder_audio_play_tracks.
 int cinder_audio_edit_sequence(const char* const* uris, int count, int start) {
+    if (eng::active()) {
+        const int rc = eng::edit(uris, count, start);
+        if (rc == 0) { g_last_uris.assign(uris, uris + count); g_last_start = start; }
+        return rc;
+    }
     if (!g_ctrl || !g_nts || !uris || count <= 0 || start < 0 || start >= count) return -1;
     if (g_last_uris.empty() || g_last_start < 0 || g_last_start >= (int)g_last_uris.size()) return -1;
     std::string json = "{\"uri\":\"/\",\"format\":-1,\"children\":[";
@@ -504,8 +532,8 @@ int cinder_audio_edit_sequence(const char* const* uris, int count, int start) {
     return now == start ? 0 : -3;
 }
 
-int cinder_audio_play(void)  { return change_state(pl::playstate_t::Play); }
-int cinder_audio_pause(void) { return change_state(pl::playstate_t::Pause); }
+int cinder_audio_play(void)  { return eng::active() ? eng::resume() : change_state(pl::playstate_t::Play); }
+int cinder_audio_pause(void) { return eng::active() ? eng::pause() : change_state(pl::playstate_t::Pause); }
 
 // Stop playback AND drop our pinned track sequence, so PlayerService releases the current
 // track's file descriptor. Needed before handing /contents to the PC over USB-MSC: a paused
@@ -576,6 +604,7 @@ int cinder_audio_reissue_sequence(int dup_after_current) {
 
 int cinder_audio_set_repeat_one(int on) {
     g_repeat_one = (on != 0);
+    { std::lock_guard<std::mutex> g(eng::E.mu); eng::E.repeat_one = g_repeat_one; }
     if (!g_nts) return 1;  // no sequence yet — it will be applied when the next one is built
     // Turning repeat OFF still has to reach the live sequence, or it would stay on until the next
     // track. This is the only place Off is ever sent, and only after On was sent first.
@@ -599,13 +628,17 @@ int cinder_audio_set_one_track_raw(int v) {
 }
 
 int cinder_audio_release_sequence(void) {
+    if (eng::active()) { eng::stop(); return 0; }
     int rc = change_state(pl::playstate_t::Stop);
     g_seq.reset();
     g_nts.reset();
     return rc;
 }
 
-int cinder_audio_next_track(void) { return g_ctrl ? g_ctrl->NextTrack() : -1; }
+int cinder_audio_next_track(void) {
+    if (eng::active()) return eng::next_track();
+    return g_ctrl ? g_ctrl->NextTrack() : -1;
+}
 // ◁ AND ◁◁ PASS A REAL OPTION, NEVER NULL. Both of these used to pass `nullptr`, and Sony's client
 // dereferences it before it checks anything — see the disassembly quoted over PrevTrackOption in
 // playerservice_abi.hpp. The fault landed inside a guarded call, which latches `g_ipc_dead` and
@@ -613,12 +646,17 @@ int cinder_audio_next_track(void) { return g_ctrl ? g_ctrl->NextTrack() : -1; }
 // shape is "the UI still works but nothing plays and the screen won't sleep". Zero-initialised is
 // the no-special-request case, and the object is what makes the call survivable at all.
 int cinder_audio_prev_track(void) {
+    if (eng::active()) return eng::prev_track();
     if (!g_ctrl) return -1;
     const pl::PrevTrackOption opt = {};
     return g_ctrl->PrevTrack(&opt);
 }
-int cinder_audio_next_group(void) { return g_ctrl ? g_ctrl->NextGroup() : -1; }
+int cinder_audio_next_group(void) {
+    if (eng::active()) return eng::next_group();
+    return g_ctrl ? g_ctrl->NextGroup() : -1;
+}
 int cinder_audio_prev_group(void) {
+    if (eng::active()) return eng::prev_group();
     if (!g_ctrl) return -1;
     const pl::PrevGroupOption opt = {};
     return g_ctrl->PrevGroup(&opt);
@@ -631,6 +669,7 @@ int cinder_audio_prev_group(void) {
 /// the leftover r0 happened to be non-zero, which was pure noise: a rejected seek and an accepted
 /// one are indistinguishable from the caller. So 0 here means "sent", not "worked".
 int cinder_audio_seek_ms(int ms) {
+    if (eng::active()) return eng::seek_ms(ms);
     if (!g_ctrl) return -1;
     // THE ENGINE WILL NOT SEEK WHILE IT IS STREAMING. Drag-to-seek moved the bar and never moved
     // the audio, and the reason was not the parameters: with playback running, EVERY origin (swept
@@ -674,12 +713,14 @@ int cinder_audio_seek_ms(int ms) {
 /// wrong origin looks like — so the dev-channel `/tmp/cinder_seek.req` probe drives this directly
 /// to settle it against a real playing track. Everything else goes through cinder_audio_seek_ms.
 int cinder_audio_seek_ms_origin(int origin, int ms) {
+    if (eng::active()) return eng::seek_ms(ms);
     if (!g_ctrl) return -1;
     g_ctrl->SeekTime(static_cast<pl::media_origin_t>(origin), ms);
     return 0;
 }
 
 int cinder_audio_current_uri(char* buf, int cap) {
+    if (eng::active()) return buf ? eng::current_uri(buf, cap) : -1;
     if (!g_ctrl || !buf || cap <= 0) return -1;
     pl::PlayStatus st{};
     if (g_ctrl->GetCurrentStatus(st) != 0) return -2;

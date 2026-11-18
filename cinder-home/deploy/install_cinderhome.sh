@@ -66,6 +66,7 @@ SRC_KERNEL=/contents/cinder-kernel
 SRC_BTAAC=/contents/libcinder_aac.so
 SRC_ATRAC=/contents/libcinder_atrac.so
 SRC_FMREC=/contents/libcinder_fmrec.so
+SRC_BTWATCH=/contents/libcinder_btwatch.so
 SRC_FDK=/contents/libfdk-aac-enc.so
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
@@ -843,6 +844,18 @@ if [ "$WANT_FMREC" = 1 ]; then
     fi
 fi
 [ "$FMREC_IN" = 0 ] && "$BB" rm -f "$FMREC_LIB" 2>/dev/null
+
+# 1g7) The AVRCP watcher (src/cinder-btwatch.c): with the wrapper in place, always. It opens AVRCP
+#      when Sony's stack linked A2DP without it, so volume reaches the headphones.
+BTWATCH_LIB=$VENDOR/lib/preload/BtCommonService.2.so
+if "$BB" grep -q cinder-hagowrap "$SONYBIN/hagodaemon" 2>/dev/null && [ -s "$SRC_BTWATCH" ]; then
+    "$BB" mkdir -p "$VENDOR/lib/preload" 2>/dev/null
+    "$BB" chmod 755 "$VENDOR/lib/preload" 2>/dev/null
+    btaac_put "$SRC_BTWATCH" "$BTWATCH_LIB" && echo "btwatch: installed (from the next start)" \
+        || { echo "WARN: btwatch — the library did not copy whole; not installed."; "$BB" rm -f "$BTWATCH_LIB"; }
+else
+    "$BB" rm -f "$BTWATCH_LIB" 2>/dev/null
+fi
 
 # 1g7) Low-latency USB DAC: the `llusbdac` component. The PC installer downloads cinder-llusbdac's
 #      release to the top of the drive; this copies it in only if it is that exact file (the same

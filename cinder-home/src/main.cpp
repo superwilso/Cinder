@@ -1032,6 +1032,8 @@ void helper_log_mirror_tick() {
     static const char* const kAac[] = {"encoder st", "link is", "behind ", nullptr};
     log_mirror("/tmp/cinder_aac.log", aac_off, "aac: ", kAac);
     log_mirror("/tmp/cinder_mono.log", mono_off, "mono-shim: ", nullptr);
+    static long long btw_off = 0;   // the AVRCP watcher in Sony's Bluetooth service (cinder-btwatch.c)
+    log_mirror("/tmp/cinder_btwatch.log", btw_off, "btwatch: ", nullptr);
 }
 
 // Stop the analyzer stream (guarded — Stop() is a Sony-service call). No-op if it was never
@@ -1657,6 +1659,9 @@ void deferred_up() {
             return;
         }
         g_audio_ready = true;
+        // Cinder's own playback engine for all-FLAC queues (docs/PLAN_hardware_first.md, Phase 3):
+        // opt-in while it is new, `own_engine` in /contents/cinder_advanced.conf.
+        cinder_audio_engine_enable(adv_on("own_engine") ? 1 : 0);
     }
     // Sync the Settings "Battery care" toggle to the device's real Itawari state (guarded — the
     // PowerMgrServiceClient ctor connects to the power service). Unavailable (-1) leaves the UI default.
@@ -6192,8 +6197,9 @@ static void bt_connect_when_free(const std::vector<unsigned char>& addr) {
 }
 
 // Per frame while a volume step waits for its answer.
+static void bt_volw_repair(void* x);
 static void bt_volw_tick() {
-    enum { VIDX_GetAvrcpConnectionStatus = 4, VIDX_RequestDisconnection = 8 };
+    enum { VIDX_GetAvrcpConnectionStatus = 4 };
     const int r = cinder_bt_volw_tick(&g_bt_volw, now_ms());
     if (r == CINDER_BT_VOLW_NOTHING || !cinder_get_bt_route()) return;   // gone: nothing to repair
     void* x = bt_xmit();
@@ -6205,6 +6211,14 @@ static void bt_volw_tick() {
                   g_bt_volw.misses, bt_avsrc_status(), ((fn0)bt_slot(x, VIDX_GetAvrcpConnectionStatus))(x));
     clog_(m);
     if (r != CINDER_BT_VOLW_REPAIR || g_bt_volw_repaired || !bt_volw_answered_before()) return;
+    bt_volw_repair(x);
+}
+
+// The hang-up and redial that brings AVRCP back (once per boot; the ladder redials).
+static void bt_volw_repair(void* x) {
+    enum { VIDX_RequestDisconnection = 8 };
+    typedef int (*fn0)(void*);
+    char m[96];
     g_bt_volw_repaired = true;
     g_bt_volw_redial = true;
     // The hang-up pauses playback like any drop; the connect edge plays it again.
@@ -6215,6 +6229,27 @@ static void bt_volw_tick() {
     std::snprintf(m, sizeof m, "bt-vol: RequestDisconnection() rc=%d", ((fn0)bt_slot(x, VIDX_RequestDisconnection))(x));
     clog_(m);
     g_bt_peer_fast_until = now_ms() + BT_PEER_FAST_FOR_MS;
+}
+
+// A link that came up with audio but without AVRCP (volume) — seen 2026-11-18 after the player
+// redialled the headphones: AvSrc=5 Avrcp=1 for minutes. 15 s after each connect, read it once; the
+// AVRCP watcher in Sony's Bluetooth service (cinder-btwatch.c, with `preload`) acts at 3 s, so still
+// down here means nothing else will fix it: repair now, before anyone presses volume.
+// docs/PLAN_hardware_first.md, Phase 0.
+static long long g_bt_avrcp_check_at = 0;   // set on the connect edge; 0 = nothing to check
+static void bt_avrcp_check_tick() {
+    if (!g_bt_avrcp_check_at || now_ms() < g_bt_avrcp_check_at) return;
+    g_bt_avrcp_check_at = 0;
+    void* x = cinder_get_bt_route() ? bt_xmit() : nullptr;
+    if (!x) return;
+    enum { VIDX_GetAvrcpConnectionStatus = 4 };
+    typedef int (*fn0)(void*);
+    const int av = bt_avsrc_status(), rc = ((fn0)bt_slot(x, VIDX_GetAvrcpConnectionStatus))(x);
+    char m[128];
+    std::snprintf(m, sizeof m, "bt-vol: 15 s after connecting AvSrc=%d Avrcp=%d%s", av, rc,
+                  av == 5 && rc == 1 ? " — volume has no channel" : "");
+    clog_(m);
+    if (av == 5 && rc == 1 && !g_bt_volw_repaired) bt_volw_repair(x);
 }
 
 // Runs from the 1 Hz housekeeping. Cheap: the common paths are two boolean tests.
@@ -7521,6 +7556,7 @@ void refresh_bt_route() {
     if (on) {
         cinder_bt_volw_link(&g_bt_volw);
         g_bt_volw_marked = false;
+        g_bt_avrcp_check_at = now_ms() + 15000;
         if (g_bt_volw_resume_until && now_ms() < g_bt_volw_resume_until) {
             clog_("bt-vol: headphones are back after the volume repair — playing again");
             set_transport(true);
@@ -14323,7 +14359,11 @@ void vol_repeat_tick() {
     // fallback (SetVolumeUp/Down) is RELATIVE — advancing the UI by N there while sending one step
     // would desync the two — so that path stays at one step per tick, which is also why this cannot
     // simply be a faster timer.
-    const bool absolute = !cinder_get_bt_route() || bt_use_absolute_volume();
+    // Bluetooth is ALWAYS relative now: apply_bt_volume sends one SetVolumeUp/Down per call and no
+    // absolute write at all (see its comment). Asking bt_use_absolute_volume() here let a sink that
+    // CLAIMS absolute support advance the bar N steps per tick while one step went out — seen
+    // 2026-11-18 as the bar running ahead of the headphones on a held key, then snapping back.
+    const bool absolute = !cinder_get_bt_route();
     if (!absolute) steps = 1;
 
     int act = CINDER_ACT_NONE;
@@ -15983,6 +16023,7 @@ void* render_driver(void*) {
             if (now_ms() - last_bt_reconnect_ms >= 1000) {
                 last_bt_reconnect_ms = now_ms();
                 run_guarded("loop: BT reconnect", 8, bt_reconnect_tick);
+                run_guarded("loop: BT AVRCP check", 6, bt_avrcp_check_tick);
                 rx_tick();   // guards its own steps (apply_receiver runs system() too)
 
             }
@@ -17107,6 +17148,36 @@ void* render_driver(void*) {
                 cinder_show_usb_storage();
                 cinder_render_tick();                 // paint the modal; enter_usb_msc blocks ~8 s
                 carry_out(CINDER_ACT_ENTER_USB_MSC);
+            }
+            // tools/devset.sh edits the settings file over adb, then touches this flag: the file is
+            // read again exactly as at boot and the sound and EQ re-applied — no screens to click
+            // through. Keyed on the flag's mtime: /tmp is sticky and adb's root owns the file, so
+            // uid 100 cannot delete it.
+            {
+                static const time_t started = ::time(nullptr);   // a flag older than us is stale
+                auto touched = [](const char* flag, time_t& seen) {
+                    struct stat st{};
+                    if (::stat(flag, &st) != 0 || st.st_mtime == seen) return false;
+                    const bool stale = seen == 0 && st.st_mtime < started;
+                    seen = st.st_mtime;
+                    return !stale;
+                };
+                static time_t settings_seen = 0, release_seen = 0;
+                if (touched("/tmp/cinder_settings.reload", settings_seen)) {
+                    cinder_settings_load("/contents/cinder_settings.conf");
+                    fx_cache_drop();
+                    run_guarded("dev: re-apply EQ", 6, apply_eq_fn);
+                    run_guarded("dev: re-apply sound", 6, apply_sound_fn);
+                    clog_("dev: settings re-read from the file (tools/devset.sh)");
+                }
+                // `cinder-probe --sstrack` needs the sound service's one music track free: a paused
+                // PlayerService keeps it (see fm_power_fn). Play brings it back as after FM.
+                if (touched("/tmp/cinder_player.release", release_seen)) {
+                    if (g_playing) set_transport(false);
+                    cinder_audio_release_sequence();
+                    cinder_audio_close_player();
+                    clog_("dev: player closed, its sound-service track released");
+                }
             }
 #endif
             if (::access("/tmp/cinder_screenshot.req", F_OK) == 0) {
