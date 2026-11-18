@@ -16,6 +16,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Cinder can play FLAC itself** (being tested, off by default: `own_engine` in
+  `cinder_advanced.conf`). A queue that is all FLAC is decoded by Cinder and played through Sony's
+  sound service, so Sony's effects, volume and Bluetooth still apply, and 32-bit FLAC, which Sony's
+  player can't decode, plays. Any other queue plays as before.
+
 ### Changed
 
 - **The first screen appears sooner still.** The player's fonts are now read in the background,

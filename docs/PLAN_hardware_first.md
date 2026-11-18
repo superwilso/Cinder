@@ -200,6 +200,17 @@ track through Cinder's track went to the headphones by itself — no jack PCM op
 routing and effect chain exactly as PlayerService's does. Phase 3's gate is passed: next is the
 engine (FLAC through Cinder's track, PlayerService kept for every other format).
 
+**The engine, built 2026-11-18** (`cinder-audio/src/engine.hpp`, off unless `own_engine` is in
+`cinder_advanced.conf`). An all-FLAC queue goes to Cinder's track; any other queue stays with
+PlayerService, which is closed first so its track is free. Songs of one format follow each other
+in one track (gapless); a change of rate or depth drains, then opens a new track. Play, pause,
+seek, next and previous (song and album), Up Next edits, repeat one, ReplayGain and position all
+go through it. Mono plays on both sides; files with more than two channels are skipped. Because
+the device build aborts on a Rust panic, the decoder was fuzzed with 35,000 damaged copies of the
+fixtures (`damaged_files_never_panic`, `CINDER_FLAC_FUZZ=N` for more); it found a seek underflow
+on truncated files, now fixed, and the predictors now wrap instead of overflowing. Installed on the
+owner's player with `own_engine` on; **playback through it is not yet tried** (checklist 51.27).
+
 **Check.** The owner's library plays end to end with effects audibly on, over the jack and LDAC;
 the 32-bit file plays; gapless album shows no gap at the jack (capture rig).
 

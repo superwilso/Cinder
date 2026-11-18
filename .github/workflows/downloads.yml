@@ -1,0 +1,39 @@
+name: downloads
+
+# The README's download badge. GitHub's own total (and shields' github/downloads badge) counts
+# every release file, and most of those fetches are machines: CI and tools/fetch_payload.sh pull
+# cinder-payload.tar.gz, and checksum files get fetched alongside. This counts only the installers
+# people run (cinder-installer-*), once a day, and writes a shields "endpoint" JSON to the
+# `badges` branch so main gets no daily commits.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Count installer downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+                --jq '.[].assets[] | select(.name | startswith("cinder-installer-")) | .download_count' \
+              | awk '{s+=$1} END {print s+0}')
+          echo "installer downloads: $n"
+          mkdir -p out
+          printf '{"schemaVersion":1,"label":"downloads","message":"%s","color":"blue"}\n' "$n" > out/downloads.json
+      - name: Publish to the badges branch
+        run: |
+          cd out
+          git init -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add downloads.json
+          git commit -q -m "Installer downloads"
+          git push -q --force "https://x-access-token:${{ github.token }}@github.com/$GITHUB_REPOSITORY.git" badges

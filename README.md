@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/superwilso/Cinder/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/superwilso/Cinder/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/superwilso/Cinder?include_prereleases&sort=date&filter=v*)](https://github.com/superwilso/Cinder/releases)
-[![downloads](https://img.shields.io/github/downloads/superwilso/Cinder/total)](https://github.com/superwilso/Cinder/releases)
+[![downloads](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/superwilso/Cinder/badges/downloads.json)](https://github.com/superwilso/Cinder/releases)
 [![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 
 **A replacement music player for the Sony NW-A55 Walkman and the rest of the NW-A50 series.**
@@ -72,8 +72,8 @@ it has run on hardware (*device-verified*). Per-feature state: [`cinder-home/STA
 
 **Known issues**
 
-- **v0.3.9 doesn't start after a fresh install** ([#16](../../issues/16)). Fixed in **v0.3.12**:
-  install it over the top.
+- **v0.3.9 doesn't start after a fresh install** ([#16](../../issues/16)). Install any newer
+  release over it.
 - **Bluetooth receiver mode (Walkman as a speaker) is experimental.** Playing from a Windows PC
   works. iPhones won't connect, and some don't list the Walkman at all.
 - **Experimental options**, off by default: the low-latency USB DAC, FM recording, ATRAC playback
@@ -90,10 +90,24 @@ it has run on hardware (*device-verified*). Per-feature state: [`cinder-home/STA
 | NW-A55 | Walkman One 3.02 + Wampy | **Supported.** Install over it; Wampy can stay. | Late September 2026 |
 | NW-A55 | Other stock or Walkman One versions | **Not tried.** | — |
 | NW-A56 / A57 | Any of the above | **Should work.** Same firmware as the A55; no reports yet. | — |
-| A40 / A30 series, ZX300, WM1A/Z, DMP-Z1 | Anything | **Not supported.** Use [Wampy](https://github.com/unknown321/wampy), which covers the whole MT8590 family. If you own one and can test, get in touch through GitHub. | — |
+| A40 / A30 series (A45, A35…) | Anything | **Not yet.** Same chip as the A55; testers wanted ([below](#help-wanted-testers)). | — |
+| ZX300, WM1A/Z, DMP-Z1 | Anything | **Not supported.** [Wampy](https://github.com/unknown321/wampy) covers the whole MT8590 family. | — |
 
 A [device report](../../issues/new/choose) for a row marked "should work" or "not tried" helps,
 whether it works or not.
+
+### Help wanted: testers
+
+I only have an NW-A55, so Cinder only gets tested on an A55. If you have one of these and don't
+mind trying test builds, please [open an issue](../../issues/new/choose) and say what you have:
+
+- **An NW-A35 or NW-A45** (or anything in the A30 / A40 series). They use the same chip as the
+  A55, so getting Cinder onto them should be possible, but I need someone with the player to
+  try builds and send back logs.
+- **A Mac.** The macOS installer is built but has never been run on a real Mac with a player.
+
+You don't need to be able to code: installing a build, describing what happens, and attaching
+`cinderhome.log` is the whole job. Back up with [wbrt](https://github.com/unknown321/wbrt) first.
 
 ### With Wampy installed
 
@@ -110,12 +124,11 @@ You don't need to uninstall Wampy first.
 
 ## Install
 
-1. **Back up the player with [wbrt](https://github.com/unknown321/wbrt)** (Windows). It is the
-   proven way back for a player that no longer starts. Cinder's own `cinder-rescue` (on the
-   [Releases](../../releases) page from v0.3.21-rc1; double-click it for a page with every step on
-   buttons) can take a second backup and put back only the partitions a boot loop broke
-   ([`RECOVERY.md`](RECOVERY.md) Step 3), but it has run on one player so far. Until it has run on
-   more, keep a wbrt backup as well.
+1. **Back up the player with [wbrt](https://github.com/unknown321/wbrt)** (Windows). It's the
+   proven way back for a player that no longer starts. Cinder's own `cinder-rescue` (on
+   [Releases](../../releases)) can take a second backup and repair just the partitions a boot loop
+   broke ([`RECOVERY.md`](RECOVERY.md) Step 3), but it has only run on one player, so keep the wbrt
+   backup too.
 2. Download the installer from [Releases](../../releases):
    - **Windows:** `cinder-installer-windows-x64.exe`. Accept the administrator prompt; the last step
      needs raw drive access.
@@ -170,10 +183,9 @@ writes the package that key opens. Everything in Cinder works there except:
 
 Coming from Walkman One:
 
-- **Sound:** Walkman One's plus modes are a 3-byte change to Sony's audio library. Cinder's
-  *Sound signature* install option makes the same change to your own stock files, no flashing. Its
-  external tunings are other models' firmware and can't be reproduced. Measured at the jack, neither
-  changes the signal ([unknown321's measurements](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md#there-is-more)).
+- **Sound:** Walkman One's plus modes are a 3-byte change to Sony's audio library; Cinder's
+  *Sound signature* option makes the same change to your own files. Its other tunings are other
+  models' firmware and can't be copied. Measured at the jack, neither changes the signal ([unknown321's measurements](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md#there-is-more)).
 - **Volume curve:** Cinder removes Sony's regional volume limit by default; the *Headphone volume
   curve* option **Sony, with region limit** keeps it. **Smooth (NW-WM1A)** is a choice there too, if
   you supply Sony's table file ([how](install.md#the-volume-curve-tables)).
@@ -232,5 +244,5 @@ contains no Sony code or artwork; the reverse-engineering notes describe interfa
 
 Not affiliated with or endorsed by Sony. "Walkman" and "SensMe" are Sony's marks.
 
-As a disclaimer, a large amount of the reverse engineering work, documentation, and Rust and C++
-code was written by Claude. All work was supervised and checked by a human.
+Much of the reverse engineering, documentation and code was written by Claude, supervised and
+checked by me.

@@ -1020,6 +1020,16 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 
 ### ◐ Partial (UI works; backend/hardware leg pending — device-gated)
 
+- **2026-11-18 — Bluetooth volume and Cinder's own playback** ([`docs/PLAN_hardware_first.md`](../docs/PLAN_hardware_first.md)):
+  * **AVRCP watcher** (`preload` component, `libcinder_btwatch.so`): reopens the volume channel when
+    the player redials headphones and only the audio comes back. Installed; checklist 51.24 stays
+    open until a redial without AVRCP is seen and repaired.
+  * **Held volume on Bluetooth** moves one step at a time: device-verified (51.26).
+  * **Own FLAC engine** (`own_engine` in `cinder_advanced.conf`, off by default): Cinder decodes
+    all-FLAC queues itself into Sony's sound service, keeping Sony's effects, volume and Bluetooth;
+    32-bit FLAC plays. Its track over the jack and Bluetooth, with EQ, is device-verified; playback
+    through the full engine (pause, seek, skip, gapless) is not yet (51.27).
+
 - **New options, 2026-10-23 — code done, device-gated** (`docs/DEVICE_CHECKLIST.md` §39):
   * **ATRAC on any region** (`atrac`): verified by hand-install 10-22; installer path unrun.
   * **FM recording** (`fmrec`): the jack recorder verified by hand-install 10-22 (a 7.9 s WAV);
