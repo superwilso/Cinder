@@ -375,6 +375,15 @@ $CC -O2 -Wall -Werror -shared -fPIC "${T32[@]}" "${SYS223[@]}" -I"$HERE/src" -Wl
 gate_glibc "$HERE/libcinder_fmrec.so"
 echo "built: $HERE/libcinder_fmrec.so ($(stat -c %s "$HERE/libcinder_fmrec.so") bytes)"
 
+# libcinder_btwatch.so: opens AVRCP when Sony's stack linked A2DP without it (src/cinder-btwatch.c).
+# Loaded into the Bluetooth service by cinder-hagowrap as BtCommonService.2.so; ships with `preload`.
+echo "[6n] build libcinder_btwatch.so (AVRCP watcher for the Bluetooth service, glibc 2.23)…"
+$CC -O2 -Wall -Werror -shared -fPIC "${T32[@]}" "${SYS223[@]}" -Wl,-soname,libcinder_btwatch.so \
+    -o "$HERE/libcinder_btwatch.so" "$HERE/src/cinder-btwatch.c" \
+    -nostdlib -L"$RAMLIB" -l:libc.so.6 -l:libdl.so.2 -l:libpthread.so.0 "$($CC -print-libgcc-file-name)"
+gate_glibc "$HERE/libcinder_btwatch.so"
+echo "built: $HERE/libcinder_btwatch.so ($(stat -c %s "$HERE/libcinder_btwatch.so") bytes)"
+
 # cinder-aac/: AAC Bluetooth transmit and SBC XQ, the `bt-aac` component (deploy/components.conf).
 # Loaded into the Bluetooth service by cinder-hagowrap, so it needs the `preload` component on the
 # player. Its own build scripts, because the encoder (fdk-aac, fetched on first build) is C++.
@@ -400,6 +409,7 @@ cp -f "$HERE/cinder-msc" "$DIST/cinder-msc"
 cp -f "$HERE/libcinder_mono.so" "$DIST/libcinder_mono.so"
 cp -f "$HERE/libcinder_atrac.so" "$DIST/libcinder_atrac.so"
 cp -f "$HERE/libcinder_fmrec.so" "$DIST/libcinder_fmrec.so"
+cp -f "$HERE/libcinder_btwatch.so" "$DIST/libcinder_btwatch.so"
 cp -f "$HERE/cinder-hagowrap" "$DIST/cinder-hagowrap"
 cp -f "$HERE/deploy/cinder-guard.sh" "$DIST/cinder-guard.sh"
 cp -f "$HERE/deploy/cinder-preload.sh" "$DIST/cinder-preload.sh"

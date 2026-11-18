@@ -23,6 +23,12 @@
 # Hold the processor at least this fast while playing (default off). 598000 / 747500 / 1040000 / 1300000.
 #cpufloor_khz=1040000
 
+# ── Playback ─────────────────────────────────────────────────────────────────────────────────
+# Play queues that are all FLAC with Cinder's own decoder instead of Sony's player (new, being
+# tested). Sony's effects, volume and Bluetooth still apply; 32-bit FLAC plays. Other formats are
+# unchanged. Read at start.
+#own_engine
+
 # ── Other ────────────────────────────────────────────────────────────────────────────────────
 # Do not write /contents/.scrobbler.log (for players that run another scrobbler).
 #no_scrobble

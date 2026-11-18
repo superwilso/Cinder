@@ -14,9 +14,10 @@
  * LD_PRELOAD first.
  *
  * ANY SERVICE can be given a preload by a file at HAGO_DIR/<Service>.so (the service name as init
- * passes it, letters, digits and '_' only). Nothing in Cinder installs one; it is the door for a
- * separate project that hooks some other Sony service, so that project never has to replace this
- * wrapper. The same off switches and the same "missing or empty means no" rule apply to it.
+ * passes it, letters, digits and '_' only), and a second one at HAGO_DIR/<Service>.2.so, so two
+ * components can each hook the same service without sharing a file (bt-aac owns
+ * BtCommonService.so; the AVRCP watcher is BtCommonService.2.so). The same off switches and the
+ * same "missing or empty means no" rule apply to both.
  *
  * argv is passed through UNCHANGED, argv[0] included, so /proc/<pid>/cmdline reads exactly as it
  * does on stock — the shim's own "am I SoundServiceFw" test and every `hagodaemon <Service>` match
@@ -90,20 +91,20 @@ static int usable(const char* path)
     return stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
 }
 
-/* HAGO_DIR/<name>.so for a service name init could have passed; 0 for anything else. */
-static char g_svc[192];
-static int service_shim(const char* name)
+/* HAGO_DIR/<name><ext> for a service name init could have passed; 0 for anything else. */
+static char g_svc[192], g_svc2[192];
+static int service_shim(char* out, const char* name, const char* ext)
 {
-    size_t d = sizeof HAGO_DIR - 1, n = strlen(name);
-    if (n == 0 || d + 1 + n + 4 > sizeof g_svc) return 0;
+    size_t d = sizeof HAGO_DIR - 1, n = strlen(name), e = strlen(ext);
+    if (n == 0 || d + 1 + n + e + 1 > sizeof g_svc) return 0;
     for (size_t i = 0; i < n; i++) {
         char c = name[i];
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
             return 0;
     }
-    memcpy(g_svc, HAGO_DIR "/", d + 1);
-    memcpy(g_svc + d + 1, name, n);
-    memcpy(g_svc + d + 1 + n, ".so", 4);
+    memcpy(out, HAGO_DIR "/", d + 1);
+    memcpy(out + d + 1, name, n);
+    memcpy(out + d + 1 + n, ext, e + 1);
     return 1;
 }
 
@@ -114,7 +115,7 @@ int main(int argc, char** argv)
      * ours: the service still starts, with the environment it was given. */
     static char* env2[256];
 
-    const char* shims[2];
+    const char* shims[3];
     int ns = 0;
     if (argc >= 2 && argv[1] && access(HAGO_OFF, F_OK) != 0 && access(HAGO_OFF_MSC, F_OK) != 0) {
         /* Sony's KeyService and LED driver share this process and each wake the CPU every 100 ms,
@@ -124,7 +125,8 @@ int main(int argc, char** argv)
          * exec; a failure here changes nothing. */
         if (strcmp(argv[1], "WMPortService") == 0) prctl(PR_SET_TIMERSLACK, 50000000UL, 0, 0, 0);
         if (strcmp(argv[1], "SoundServiceFw") == 0 && usable(HAGO_SHIM)) shims[ns++] = HAGO_SHIM;
-        if (service_shim(argv[1]) && usable(g_svc)) shims[ns++] = g_svc;
+        if (service_shim(g_svc, argv[1], ".so") && usable(g_svc)) shims[ns++] = g_svc;
+        if (service_shim(g_svc2, argv[1], ".2.so") && usable(g_svc2)) shims[ns++] = g_svc2;
     }
     if (ns) {
         const char* have = 0;

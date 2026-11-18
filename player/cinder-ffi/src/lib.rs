@@ -19,6 +19,7 @@ mod chromecast;
 mod cue;
 mod delete;
 mod drive;
+mod flac;
 mod likes;
 mod lyrics;
 mod mdns;

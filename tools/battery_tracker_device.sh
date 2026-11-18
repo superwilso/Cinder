@@ -33,7 +33,7 @@ echo $$ > "$PIDFILE" 2>/dev/null
 
 # Header only once, so restarting after a reboot appends to the same series.
 if [ ! -s "$OUT" ]; then
-    echo "# cinder battery track — epoch uptime capacity voltage_uv status usb backlight cpu_idle cpu_total pcm home_jiffies" > "$OUT"
+    echo "# cinder battery track — epoch uptime capacity voltage_uv status usb backlight cpu_idle cpu_total pcm home_jiffies btif_rx" > "$OUT"
 fi
 
 r() { cat "$1" 2>/dev/null; }
@@ -81,9 +81,13 @@ while : ; do
         esac
     done
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    # Bluetooth audio never opens an ALSA PCM: count the Bluetooth interface's receive interrupts
+    # instead (cumulative; hundreds a second while A2DP streams, a few at idle).
+    BTIF=$(grep -m1 'btif rx dma' /proc/interrupts 2>/dev/null | tr -s ' ' | cut -d' ' -f2)
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$EPOCH" "$UP" "$CAP" "$VOLT" "$STAT" "$USB" "$BL" \
-        "$CPU_IDLE" "$CPU_TOTAL" "$PCM" "$HOME_J" >> "$OUT"
+        "$CPU_IDLE" "$CPU_TOTAL" "$PCM" "$HOME_J" "${BTIF:-0}" >> "$OUT"
 
     sleep "$INTERVAL"
 done

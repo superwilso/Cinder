@@ -88,6 +88,14 @@ const FILES: &[(&str, &str, &str, bool)] = &[
         "preload",
         false,
     ),
+    // The AVRCP watcher for Sony's Bluetooth service (cinder-home/src/cinder-btwatch.c), with
+    // `preload` because the wrapper is what loads it.
+    (
+        "dist/{ch}/libcinder_btwatch.so",
+        "libcinder_btwatch.so",
+        "preload",
+        false,
+    ),
     // The `fast-boot` component: Sony's boot-time firmware checks skipped while nothing changed
     // (deploy/cinder-fastboot.sh). Not `required` until a release rebuilds dist/stable.
     (

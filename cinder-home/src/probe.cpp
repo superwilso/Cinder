@@ -117,6 +117,10 @@ static void dump_maps() {
     std::fflush(stderr);
 }
 
+// A mode that holds something in a Sony service the service will not free when this process dies
+// (--sstrack: its sound-service track blocks all music until a reboot) puts the release here.
+static void (*g_crash_cleanup)() = nullptr;
+
 static void crash_handler(int sig, siginfo_t* si, void* uc_) {
     unsigned long pc = 0, lr = 0;
 #if defined(__arm__)
@@ -134,6 +138,12 @@ static void crash_handler(int sig, siginfo_t* si, void* uc_) {
     backtrace_symbols_fd(bt, n, 2);
     std::fflush(stderr);
     dump_maps();
+    if (void (*c)() = g_crash_cleanup) {
+        g_crash_cleanup = nullptr;   // once: a crash inside the cleanup must not loop
+        std::fprintf(stderr, "[cinder-probe] crash cleanup …\n");
+        c();
+        std::fprintf(stderr, "[cinder-probe] crash cleanup done\n");
+    }
     _exit(42);
 }
 
@@ -4987,6 +4997,202 @@ static void tone_sweep(const char* tag, int band,
     clog_(m);
 }
 
+// --sstrack [seconds] [hz]: Cinder's OWN track in Sony's sound service (docs/PLAN_hardware_first.md,
+// Phase 3 spike). A sine at -20 dBFS goes through SoundService::CreateTrack(type 0) and
+// AudioTrack::Write exactly as AudioInPlayerService feeds the FM radio, so it passes Sony's whole
+// effect chain and output routing (jack or Bluetooth). Nothing is linked: libSoundService.so is
+// dlopened, so the payload's stand-in libraries need no change. Pause music first: every Sony player
+// uses type 0 and the service refuses a second track of a type ("same type").
+//
+// ABI (artifacts/decomp, 2026-11-18): CreateTrack returns unique_ptr<AudioTrack> through r0 (sret),
+// `this` in r1; TrackParam is 100 bytes, filled as AudioInPlayerExhal::MakeTrackParam does.
+// AudioTrack vtable from the vptr: +0x10 Start, +0x14 Write(TrackBuffer{ptr,size} const&, unsigned*),
+// +0x2c Drop, +0x30 Stop, +0x04 deleting destructor.
+static void* g_sst_track = nullptr;
+static void sst_release() {
+    void* t = g_sst_track;
+    g_sst_track = nullptr;
+    if (!t) return;
+    void** vt = *(void***)t;
+    alarm(5);
+    ((int (*)(void*))vt[0x2c / 4])(t);   // Drop
+    ((int (*)(void*))vt[0x30 / 4])(t);   // Stop
+    ((void (*)(void*))vt[0x04 / 4])(t);  // delete: the service destroys the track
+    alarm(0);
+}
+
+extern "C" {
+void* cinder_flac_open(const char* path);
+void cinder_flac_info(const void* h, unsigned* rate, unsigned* channels, unsigned* bits,
+                      unsigned long long* total);
+long cinder_flac_read(void* h, int* out, size_t frames);
+void cinder_flac_close(void* h);
+}
+
+// `flac` null: a sine of `hz`. Otherwise that file, decoded by cinder-ffi's own FLAC decoder, at
+// its own rate and depth (16-bit as 2 bytes, 24 packed in 3, 32 in 4 — AudioIn's three formats).
+// `mode` (Phase 3 engine questions), acted on 5 s in: 1 = stop writing for 3 s (a stall), 2 = Stop,
+// wait 3 s, Start (pause as the service knows it), 3 = Drop (vptr+0x2c) and carry on (a seek's flush),
+// 4 = Pause (vptr+0x28), wait 3 s, Start. Each logs the ALSA state of hw:0,4 around it.
+static void sst_alsa_state(const char* when) {
+    char line[96] = "?";
+    if (FILE* f = std::fopen("/proc/asound/card0/pcm4p/sub0/status", "r")) {
+        if (!std::fgets(line, sizeof line, f)) std::strcpy(line, "?");
+        std::fclose(f);
+    }
+    if (char* nl = std::strchr(line, '\n')) *nl = 0;
+    char m[160];
+    std::snprintf(m, sizeof m, "sstrack: %s: hw:0,4 %s", when, line);
+    clog_(m);
+}
+
+static int sstrack_probe(int seconds, int hz, const char* flac, int mode = 0) {
+    start_probe_framework();
+    char m[240];
+    void* lib = dlopen("libSoundService.so", RTLD_NOW);
+    typedef void (*ctor_fn)(void*);
+    typedef void (*create_fn)(void** out, void* self, int type, const void* param, int* err,
+                              const std::vector<std::string>* names);
+    ctor_fn ctor = lib ? (ctor_fn)dlsym(lib, "_ZN3pst8services5sound12SoundServiceC1Ev") : nullptr;
+    create_fn create = lib ? (create_fn)dlsym(lib,
+        "_ZN3pst8services5sound12SoundService11CreateTrackENS1_9TrackTypeERKNS1_10TrackParamEPNS1_3"
+        "ErrERKNSt3__16vectorINS9_12basic_stringIcNS9_11char_traitsIcEENS9_9allocatorIcEEEENSE_ISG_EEEE")
+        : nullptr;
+    if (!ctor || !create) { clog_("sstrack: libSoundService.so or its symbols are missing"); return 1; }
+
+    unsigned rate = 44100, ch = 2, bits = 16;
+    unsigned long long total = 0;
+    void* dec = nullptr;
+    if (flac) {
+        dec = cinder_flac_open(flac);
+        if (!dec) { clog_("sstrack: not a FLAC the decoder can play"); return 1; }
+        cinder_flac_info(dec, &rate, &ch, &bits, &total);
+        if (ch != 2) { clog_("sstrack: stereo files only in this spike"); return 1; }
+    }
+    const unsigned bytes = bits <= 16 ? 2 : bits <= 24 ? 3 : 4;
+
+    alignas(8) static unsigned char service[256];
+    ctor(service);
+    int param[25] = {0};
+    param[0] = (int)rate;  param[1] = (int)(bytes * 8);  param[2] = 2;  param[3] = 2;
+    param[10] = 1;  param[11] = (int)bytes;  param[12] = 1;  param[13] = 1;  param[14] = 3;
+    const std::vector<std::string> names;
+    void* track = nullptr;
+    int err = -1;
+    wd_arm(10);
+    create(&track, service, 0, param, &err, &names);
+    wd_disarm();
+    std::snprintf(m, sizeof m, "sstrack: CreateTrack(type 0, %u Hz, %u-bit in %u bytes) -> track=%p err=%d",
+                  rate, bits, bytes, track, err);
+    clog_(m);
+    if (!track || err != 0) _exit(2);
+    g_sst_track = track;
+    g_crash_cleanup = sst_release;
+
+    void** vt = *(void***)track;
+    typedef int (*fn0)(void*);
+    struct TrackBuffer { const void* ptr; unsigned size; };
+    typedef int (*write_fn)(void*, const TrackBuffer*, unsigned*);
+    // AudioInPlayerExhal::Open: Init (+0x08) moves the track to "ready" and maps its shared memory,
+    // GetTrackEnvironment (+0x0c) gives the period size in bytes first; only then Start.
+    unsigned env[16] = {0};
+    wd_arm(10);
+    const int in = ((fn0)vt[0x08 / 4])(track);
+    const int ge = in == 0 ? ((int (*)(void*, void*))vt[0x0c / 4])(track, env) : -1;
+    wd_disarm();
+    std::snprintf(m, sizeof m, "sstrack: Init -> %d, GetTrackEnvironment -> %d, period %u bytes", in, ge, env[0]);
+    clog_(m);
+    if (in != 0 || ge != 0) { g_crash_cleanup = nullptr; sst_release(); _exit(4); }
+    const unsigned frame_bytes = bytes * 2;
+    const unsigned period = env[0] ? env[0] / frame_bytes * frame_bytes : 8192;
+    wd_arm(10);
+    const int st = ((fn0)vt[0x10 / 4])(track);
+    wd_disarm();
+    std::snprintf(m, sizeof m, "sstrack: Start -> %d; writing %d s of %s …", st, seconds,
+                  flac ? flac : "a sine");
+    clog_(m);
+
+    enum { FRAMES = 2048 };
+    static int dec_buf[FRAMES * 2];
+    static unsigned char out[FRAMES * 2 * 4];
+    double ph = 0;
+    const double step = 2 * M_PI * hz / rate;
+    struct timespec t0, t1, d0, d1;
+    double decode_s = 0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    long long sent = 0;
+    int bad = 0, short_writes = 0;
+    while (sent < (long long)seconds * rate) {
+        long got = FRAMES;
+        if (dec) {
+            clock_gettime(CLOCK_MONOTONIC, &d0);
+            got = cinder_flac_read(dec, dec_buf, FRAMES);
+            clock_gettime(CLOCK_MONOTONIC, &d1);
+            decode_s += (d1.tv_sec - d0.tv_sec) + (d1.tv_nsec - d0.tv_nsec) / 1e9;
+            if (got <= 0) break;
+        } else {
+            for (int i = 0; i < FRAMES; i++, ph += step) dec_buf[2 * i] = dec_buf[2 * i + 1] = (int)(3277 * std::sin(ph));
+        }
+        // Little-endian, `bytes` per sample, right-aligned values at the file's own depth.
+        unsigned char* o = out;
+        for (long i = 0; i < got * 2; i++) {
+            const int v = dec_buf[i];
+            for (unsigned k = 0; k < bytes; k++) *o++ = (unsigned char)(v >> (8 * k));
+        }
+        const unsigned char* p = out;
+        unsigned left = (unsigned)(o - out);
+        while (left) {
+            TrackBuffer b = { p, left < period ? left : period };
+            unsigned done = 0;
+            wd_arm(5);
+            const int rc = ((write_fn)vt[0x14 / 4])(track, &b, &done);
+            wd_disarm();
+            if (rc != 0) { if (++bad <= 3) { std::snprintf(m, sizeof m, "sstrack: Write -> %d", rc); clog_(m); } break; }
+            if (done < b.size) ++short_writes;
+            if (!done) usleep(5000);
+            p += done;
+            left -= done;
+        }
+        if (bad) break;
+        sent += got;
+        if (mode && sent >= 5LL * rate && sent - got < 5LL * rate) {
+            sst_alsa_state("before");
+            int rc = 0;
+            if (mode == 2) rc = ((fn0)vt[0x30 / 4])(track);
+            if (mode == 3) rc = ((fn0)vt[0x2c / 4])(track);
+            if (mode == 4) rc = ((fn0)vt[0x28 / 4])(track);
+            std::snprintf(m, sizeof m, "sstrack: mode %d call -> %d", mode, rc);
+            clog_(m);
+            if (mode != 3) {
+                usleep(1500000);
+                sst_alsa_state("1.5 s in");
+                usleep(1500000);
+                sst_alsa_state("3 s in");
+            } else {
+                usleep(100000);
+                sst_alsa_state("0.1 s after the drop");
+            }
+            if (mode == 2 || mode == 4) {
+                std::snprintf(m, sizeof m, "sstrack: Start again -> %d", ((fn0)vt[0x10 / 4])(track));
+                clog_(m);
+            }
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    const double el = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    std::snprintf(m, sizeof m, "sstrack: wrote %.1f s of audio in %.1f s (%d short writes, %d errors); "
+                  "decoding took %.2f s = %.0fx real time", sent / (double)rate, el, short_writes, bad,
+                  decode_s, decode_s > 0 ? sent / (double)rate / decode_s : 0.0);
+    clog_(m);
+    if (dec) cinder_flac_close(dec);
+    usleep(500000);   // let the queue drain before stopping
+    clog_("sstrack: Drop, Stop, delete …");
+    g_crash_cleanup = nullptr;
+    sst_release();
+    clog_("sstrack: track deleted");
+    _exit(bad ? 3 : 0);
+}
+
 static int tone_probe() {
     start_probe_framework();
 
@@ -7915,6 +8121,12 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--fx") == 0) {
         return fx_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--sstrack") == 0) {
+        return sstrack_probe(argc > 2 ? std::atoi(argv[2]) : 5, argc > 3 ? std::atoi(argv[3]) : 440, nullptr);
+    }
+    if (argc > 2 && std::strcmp(argv[1], "--sstflac") == 0) {
+        return sstrack_probe(argc > 3 ? std::atoi(argv[3]) : 30, 0, argv[2], argc > 4 ? std::atoi(argv[4]) : 0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--tone") == 0) {
         return tone_probe();

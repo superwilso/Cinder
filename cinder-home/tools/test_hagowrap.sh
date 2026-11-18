@@ -70,6 +70,12 @@ reset; echo x > "$T/pre/BtCommonService.so"; touch "$T/off"; out=$(run "$T/wrap"
 [[ "$out" == *"preload=unset"* ]] && ok "the off switch covers per-service shims" || bad "off switch vs per-service: $out"
 reset; : > "$T/pre/BtCommonService.so"; out=$(run "$T/wrap" BtCommonService)
 [[ "$out" == *"preload=unset"* ]] && ok "an empty per-service shim: pass-through" || bad "empty per-service shim: $out"
+reset; echo bt > "$T/pre/BtCommonService.so"; echo w > "$T/pre/BtCommonService.2.so"
+out=$(run "$T/wrap" BtCommonService | grep '^preload=')
+[[ "$out" == "preload=$T/pre/BtCommonService.so $T/pre/BtCommonService.2.so" ]] \
+    && ok "a service's second shim follows its first" || bad "second shim: $out"
+rm -f "$T/pre/BtCommonService.so"; out=$(run "$T/wrap" BtCommonService | grep '^preload=')
+[[ "$out" == "preload=$T/pre/BtCommonService.2.so" ]] && ok "the second shim alone" || bad "second alone: $out"
 reset; mkdir -p "$T/pre/x"; echo x > "$T/pre/x/y.so"; echo x > "$T/x.so"
 for name in "x/y" "../x" "" "Bt.Common"; do
     out=$(run "$T/wrap" "$name")

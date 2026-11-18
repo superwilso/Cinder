@@ -29,6 +29,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   in a drawer drained its battery. Now Wi-Fi switches off after ten minutes with the screen dark
   and nothing connected; the screen or a button brings it back. A sync or a phone using the
   player keeps it awake.
+- **Volume keeps reaching Bluetooth headphones after the player reconnects them.** When the
+  player redialled headphones, the music came back but the channel that carries volume sometimes
+  did not, so the volume buttons did nothing until Cinder hung up and redialled. With the
+  `preload` component Cinder now opens that channel itself a few seconds after the link comes up,
+  with no hang-up; without it, Cinder checks 15 seconds after every connect and repairs the link
+  straight away instead of waiting for you to press volume.
+- **Holding a volume button with Bluetooth headphones moves them one step at a time again.** On
+  headphones that claim absolute volume, the bar ran several steps ahead of what was sent, then
+  jumped back.
 
 ## [0.4.3] — 2026-11-17
 
