@@ -14,6 +14,10 @@ Each has a row in [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §41:
   for the NW-A50 kernel), and a Low latency switch on the USB-DAC screen.
 - **Bluetooth that sleeps and wakes:** the radio switches off after ten idle minutes and back on
   when the player is used (screen on or any button).
+- **Cinder's own FLAC playback** (`own_engine` in `cinder_advanced.conf`): FLAC decoded by Cinder
+  and played through Sony's sound service, so 32-bit FLAC works and Sony's effects stay. The next
+  steps after it, Cinder's own library index and an own Bluetooth stack, are in
+  [`PLAN_hardware_first.md`](PLAN_hardware_first.md).
 - **Look and buttons:** a list of Winamp skins and cassette tapes to pick from, swapping ⏮ and ⏭,
   dragging a long Winamp title, and your own font from the drive.
 
