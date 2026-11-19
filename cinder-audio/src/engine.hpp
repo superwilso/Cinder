@@ -20,6 +20,8 @@
 // deliberate exit deletes it (cinder_audio_shutdown / close_player / release_sequence stop the
 // engine); a crash of cinder-home ends in a reboot anyway (fault_handler), which clears it.
 // Off unless the shell enables it (`own_engine` in cinder_advanced.conf).
+// The timestamps in this file's log lines are CLOCK_MONOTONIC (seconds since boot); the shell's
+// lines count from cinder-home's start, about 10 s later — compare them with that offset.
 
 #include <dlfcn.h>
 #include <pthread.h>
@@ -163,6 +165,7 @@ struct Engine {
     int audible_idx = -1;
     bool active = false;    // a queue is loaded
     bool playing = false;
+    bool paused = false;    // paused by the listener: a seek or skip waits for the next resume
     // A song the engine cannot play (not FLAC) was reached: PlayerService takes the queue from
     // here. Set by the engine thread, acted on by the shell's thread (cinder_audio_engine_poll),
     // because Sony's player is driven from that thread only.
@@ -285,6 +288,7 @@ static void* run(void*) {
                 continue;
             }
             if (c == PAUSE && playing) {
+                E.paused = true;
                 paused_at = now_ms();
                 const Song s = audible();
                 E.want_idx = s.idx;
@@ -298,6 +302,7 @@ static void* run(void*) {
                 continue;
             }
             if (c == PLAY_AT || c == RESUME) {
+                E.paused = false;
                 const int idx = E.want_idx;
                 const long long ms = E.want_ms;
                 const std::string u = idx >= 0 && idx < (int)E.uris.size() ? E.uris[idx] : std::string();
@@ -327,6 +332,7 @@ static void* run(void*) {
                 }
                 wf = 0;
                 t0 = now_ms();
+                std::fprintf(stderr, "[cinder-audio] engine: %lld.%03lld play #%d from %lld ms\n", t0 / 1000, t0 % 1000, idx, ms);
                 songs.assign(1, Song{0, idx, ms, dur_of()});
                 E.audible_idx = idx;
                 E.playing = playing = true;
@@ -361,6 +367,9 @@ static void* run(void*) {
                 fade_done = 0;
                 std::rename("/tmp/cinder_rg_next", "/tmp/cinder_rg");
                 songs.push_back(Song{written_ms(), dec2_idx, 0, (long long)(total2 * 1000 / r2)});
+                const long long t = now_ms();
+                std::fprintf(stderr, "[cinder-audio] engine: %lld.%03lld fade into #%d over %lld ms (written %lld ms, heard %lld ms)\n",
+                             t / 1000, t % 1000, dec2_idx, fade_len * 1000 / rate, written_ms(), played());
             }
         }
         long n = read_stereo(dec, ch, pcm, 2048);
@@ -398,6 +407,11 @@ static void* run(void*) {
             dpos += (unsigned long long)n;
         }
         if (n <= 0) {
+            {
+                const long long t = now_ms();
+                std::fprintf(stderr, "[cinder-audio] engine: %lld.%03lld #%d decoded to the end (written %lld ms, heard %lld ms)\n",
+                             t / 1000, t % 1000, dec_idx, written_ms(), played());
+            }
             // End of this song (or a damaged file): the next one, gapless if its format matches.
             int next = rep1 ? dec_idx : dec_idx + 1;
             bool ok = false, other = false;
@@ -498,6 +512,7 @@ static int play(const char* const* uris, int count, int start) {
         E.want_idx = start < 0 || start >= count ? 0 : start;
         E.want_ms = 0;
         E.active = true;
+        E.paused = false;
         E.cmd = PLAY_AT;
         E.cv.notify_all();
     }
@@ -535,7 +550,9 @@ static int go(int idx, long long ms) {
     if (idx < 0 || idx >= (int)E.uris.size()) return -1;
     E.want_idx = idx;
     E.want_ms = ms < 0 ? 0 : ms;
-    if (E.playing) E.cmd = PLAY_AT;   // paused: the next resume starts here
+    // Paused by the listener: the next resume starts here. Otherwise jump now — including while a
+    // start is still opening the track, when `playing` is not set yet (a seek then was lost).
+    if (!E.paused) E.cmd = PLAY_AT;
     E.cv.notify_all();
     return 0;
 }

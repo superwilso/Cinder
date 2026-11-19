@@ -757,8 +757,9 @@ mod tests {
     /// A seek lands on the exact sample: compare against a straight decode.
     #[test]
     fn seek_is_sample_exact() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/flac");
-        let Ok(rd) = std::fs::read_dir(dir) else {
+        let dir = std::env::var("CINDER_FLAC_DIR")
+            .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/tests/flac").to_string());
+        let Ok(rd) = std::fs::read_dir(&dir) else {
             return;
         };
         for e in rd.filter_map(|e| e.ok()) {

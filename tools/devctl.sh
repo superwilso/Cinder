@@ -12,6 +12,11 @@
 #   tools/devctl.sh probe ARGS...                          push and run cinder-probe (dev build)
 #   tools/devctl.sh hci on|off|pull DIR                    Sony's HCI trace (btsnoop) in /tmp
 #   tools/devctl.sh set [PATTERN | KEY=VALUE… | restore | adv …]   settings, live (tools/devset.sh)
+#   tools/devctl.sh cmd 'CMD' ['CMD'…]                     playback with no screen (dev build): state,
+#                                                          play, pause, next, prev, seek MS, repeat 0-3,
+#                                                          find TEXT, album ID|TEXT [SONG] (replaces the queue),
+#                                                          restore (reload /tmp/cinder_restore_*.conf)
+#   tools/devctl.sh queue save|restore DIR                 back up the queue; put it back with no reboot
 #
 # /tmp is a 32 MB RAM disk and the HCI trace grows ~130 KB/s on LDAC (~40 KB/s on AAC): it fills
 # /tmp in about four minutes, and a full /tmp breaks Cinder's own status files. Pull and delete
@@ -45,6 +50,30 @@ swipe)
     sh_ "$cmd sendevent $TOUCH 3 48 0; sendevent $TOUCH 0 2 0; sendevent $TOUCH 1 330 0; sendevent $TOUCH 0 0 0" ;;
 shot) shift; exec bash cinder-home/tools/screenshot.sh "$@" ;;
 set) shift; exec bash tools/devset.sh "$@" ;;
+cmd) shift
+     [ $# -gt 0 ] || { echo "cmd: state | play | pause | next | prev | seek MS | repeat 0-3 | find TEXT | album ID|TEXT [SONG] | restore" >&2; exit 2; }
+     # One command a line; the shell answers in cinder_cmd.out within its 1 s tick.
+     body=$(printf '%s\n' "$@")
+     # adb's shell writes 0600 root: cinder-home (uid 100) must be able to read it.
+     sh_ "rm /tmp/cinder_cmd.out 2>/dev/null; printf '%s\n' '$body' > /tmp/cinder_cmd; chmod 644 /tmp/cinder_cmd"
+     for _ in 1 2 3 4 5 6 7 8 9 10; do
+         sleep 0.5
+         out=$(sh_ 'cat /tmp/cinder_cmd.out 2>/dev/null' | tr -d '\r')
+         [ -n "$out" ] && { printf '%s\n' "$out"; exit 0; }
+     done
+     echo "no answer in 5 s (a stable build, or cinder-home not running?)" >&2; exit 1 ;;
+queue)
+    # Back up the owner's queue before a test that replaces it; put it back with no reboot.
+    d=${3:?"queue save|restore DIR"}
+    case "${2:-}" in
+        save) mkdir -p "$d" && adb pull /data/cinder/queue.conf "$d/" && adb pull /data/cinder/resume.conf "$d/" ;;
+        restore)
+            # cinder-home copies these over the live files itself (its own save would race an adb copy).
+            adb push "$d/queue.conf" /tmp/cinder_restore_queue.conf && adb push "$d/resume.conf" /tmp/cinder_restore_resume.conf || exit 1
+            sh_ "chmod 644 /tmp/cinder_restore_queue.conf /tmp/cinder_restore_resume.conf"
+            exec "$0" cmd restore ;;
+        *) echo "queue save|restore DIR" >&2; exit 2 ;;
+    esac ;;
 state)
     # mtkbt only uses CPU while A2DP is streaming, so its tick count moving = playing over BT.
     sh_ 'p=$(ps | grep "[/]bin/mtkbt" | '"$BB"' awk "{print \$2}"); a=$(cut -d" " -f14 /proc/$p/stat); sleep 2; b=$(cut -d" " -f14 /proc/$p/stat)

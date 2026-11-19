@@ -138,8 +138,9 @@ index.rs): walks `/contents/MUSIC` and `/contents_ext/MUSIC`, skips files whose 
 unchanged, reads FLAC tags (STREAMINFO length, Vorbis comments; an ID3v2 tag in front is skipped),
 keeps each track's MTPDB id by path and gives new files ids above MTPDB's, drops rows for files that
 are gone. One small write per changed file, so a reboot mid-scan costs only that row. Lives in
-`/data/cinder/library.db` (ext4, mounted while `/contents` is shared over USB) rather than on
-`/contents`. Dev hook: `touch /tmp/cinder_index.scan` logs the comparison with MTPDB.
+`/db/cinder/library.db` (ext4, never shared over USB, ~80 MB free): `/data` is a 35 MB partition
+and an install needs about 8.5 MB of it free (a 1.7 MB index there blocked one); a night on
+`/contents` showed FAT doubling a first scan (91 s against 43 s). Dev hook: `touch /tmp/cinder_index.scan` logs the comparison with MTPDB.
 
 On the owner's player: **4,914 tracks and 441 albums, identical to MTPDB, every id carried over**;
 first scan 43 s, a scan with nothing changed 3.3 s. 22 tracks differ, all deliberately: where a file
@@ -238,8 +239,11 @@ PlayerService keeps the queue it was handed. Not device-tested: the owner's libr
 `cinder_advanced.conf`, off by default; between songs of the same rate and depth the next song is
 opened N seconds before the end and mixed in with linear gains; repeat one, a pause or a seek
 cancel it. On the player with `crossfade=4`: the next song started during the old one with the PCM
-never stopping and Now Playing following; the exact 4 s lead is to be read from the timestamped
-`engine: … now #` line, and the owner's ear decides the curve.
+never stopping and Now Playing following; the timestamped trace (11-19) shows the fade starting
+4.0 s before the end and the new song heard 0.6 s later. The owner's ear decides the curve. The end
+of the queue frees the track, and repeat-all restarts it through the engine. A seek that arrived
+while a start was still opening the track used to be dropped (`go` only jumped when `playing`);
+the engine now tracks "paused by the listener" instead.
 
 **Check.** The owner's library plays end to end with effects audibly on, over the jack and LDAC;
 the 32-bit file plays; gapless album shows no gap at the jack (capture rig).
@@ -326,6 +330,47 @@ kernel option already writes.
 
 **Check.** The boot timeline (`docs/` boot measurements) before and after; free memory after an
 hour of use.
+
+## Next steps (2026-11-19)
+
+In order; each builds and passes the harness before the next starts.
+
+1. ~~The engine's song-change timing~~ — done 11-19: no fault; the engine logs CLOCK_MONOTONIC and
+   the shell counts from its own start (~10 s later), and comparing the two made a 10 s gap.
+2. **The Library from the index** — built and on the owner's player 11-19 (`own_index`): 4,914
+   songs, 441 albums, 268 artists from the index, the same as MTPDB; a scan after boot (5.3 s,
+   nothing changed, no reload) and after USB storage, and the Library reloads when a scan changed
+   something. A root that is not mounted keeps its rows. Writes go 200 files to a transaction (a
+   first scan on `/contents` took 91 s one commit per file). Original plan: build
+   `cinder_ui::Library` from `/contents/.cinder/library.db` (ids unchanged; SensMe, art keys and
+   play counts joined by id), MTPDB stays the fallback when the index is missing or empty.
+3. **When to scan:** at boot after `/contents` mounts, and after USB storage is released; never
+   during USB storage. Sony's scanner keeps running for SensMe only.
+4. **ID3 (MP3) and MP4 (M4A/ALAC) tag readers** — built 11-19 (ID3v2.2–2.4 and v1; MP4 `ilst` and
+   the `mvhd` length), fuzzed with 4,000 damaged buffers; MP3 length still comes from MTPDB.
+5. **/data headroom** — done 11-19. `/data` (35 MB) cannot grow without rewriting the eMMC partition
+   table, but `/db` (ext4, 94 MB, ~80 MB free, never shared over USB, already holding Cinder's MTPDB
+   copy) has room: the album-art cache (16 MB for 441 albums, ~37 KB an album) and the index moved
+   there, the cache moving its files over once. The cache keeps 30 MB of `/db` free for MTPDB, its
+   copy and a scan's journal. `/cache` (23 MB, empty) is the next spare if needed.
+6. **Bluetooth kernel modules and the go/no-go tool** — 11-19. `wifi/build-bluetooth.sh` builds
+   `compat.ko`, `bluetooth.ko` and `hci_vhci.ko` (plus the Wi-Fi modules: one backports build must
+   carry both, its `compat.ko` differs from `build.sh`'s) with the player's vermagic. Not loaded yet.
+   `cinder-home/tools/btspike.c` (static, musl) opens `/dev/stpbt`, sends Sony's power-on commands
+   built from `/data/BT_Addr`, and runs an HCI inquiry. On the owner's player with Sony's Bluetooth
+   off (nothing held the node; the kernel log shows WMT powering the core on at open and off at
+   close): **all six power-on commands and the inquiry command completed with status 0** — the core
+   takes commands from a program that is not Sony's stack. No device answered a 10 s inquiry at
+   1 a.m.; the radio path is proven only when something in pairing mode answers.
+7. **A command channel for tests, no screen** (owner, 11-19) — first cut built and device-tested
+   11-19: `tools/devctl.sh cmd state | play | pause | next | prev | 'seek MS' | 'repeat 0-3'` (several
+   at once, one answer a line). Dev builds only; cinder-home reads `/tmp/cinder_cmd` (keyed on the
+   nanosecond mtime) and answers in `/tmp/cinder_cmd.out`. Added and device-tested the same day:
+   `'find TEXT'` (album ids), `'album ID|TEXT [SONG]'` (SONG counts from 1), `restore`, and
+   `devctl.sh queue save|restore DIR`, which puts a queue back with no reboot. Testing `restore`
+   found a real fault: ▶ on a pending resume, with the service paused on the same song, edited the
+   list and never played (fixed). Still to add: shuffle, play one track by path.
+8. **Battery runs** (Phase 1) wait for the owner: an hour each, player left alone.
 
 ## Limits this removes
 

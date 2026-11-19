@@ -33,6 +33,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **▶ could stay silent after resuming.** If the player was paused on the same song that a
+  saved queue resumes from, ▶ updated the list but never started playing.
+
 - **Wi-Fi no longer keeps the player awake forever.** With the phone remote, Share the drive or
   Play to this player switched on, Wi-Fi stayed up and the player never slept, so a player left
   in a drawer drained its battery. Now Wi-Fi switches off after ten minutes with the screen dark
@@ -44,6 +47,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   `preload` component Cinder now opens that channel itself a few seconds after the link comes up,
   with no hang-up; without it, Cinder checks 15 seconds after every connect and repairs the link
   straight away instead of waiting for you to press volume.
+- **Installing over adb is no longer refused because album covers filled the player's storage.**
+  The cover cache moved from the player's small settings area (35 MB, shared with the installer)
+  to the library database's area (94 MB), and moves its existing covers over by itself.
 - **Album covers appear straight away when you scroll the album grid quickly.** The grid used to
   show coloured blocks that turned into covers one by one; it now shows each album's small cover
   at once and sharpens it when the full one has loaded.
