@@ -15,9 +15,12 @@
 //! length and simply re-decoded). One file per album rather than a pack file so a partial build is
 //! resumable, corruption is isolated to one album, and no rewrite of a large file is ever needed.
 //!
-//! WHY /data AND NOT /contents: `/contents` is vfat, is handed to the PC during USB-MSC (so it
-//! vanishes mid-session), and is the partition that already ate the bad-boot counter once. `/data`
-//! is ext4 and USB-MSC never touches it. Same reasoning, same conclusion as the boot counter.
+//! WHY /db AND NOT /contents: `/contents` is vfat, is handed to the PC during USB-MSC (so it
+//! vanishes mid-session), and is the partition that already ate the bad-boot counter once. `/db` is
+//! ext4 and USB-MSC never touches it. It was `/data` until 2026-11-19, but `/data` is a 35 MB
+//! partition that also holds the launcher's counter and an install's rollback copy: 16 MB of covers
+//! for 441 albums left too little for an install. `/db` is 94 MB with ~80 MB free; what it must
+//! keep is room for Sony's MTPDB (see `RESERVE`).
 //!
 //! The whole cache is disposable: delete the directory and it rebuilds. Nothing here is allowed to
 //! fail loudly — every I/O error degrades to "no thumbnail", and the UI draws its gradient.
@@ -25,7 +28,9 @@
 use cinder_ui::art::Image;
 use std::os::unix::fs::PermissionsExt;
 
-const DEFAULT_DIR: &str = "/data/cinder/artcache";
+const DEFAULT_DIR: &str = "/db/cinder/artcache";
+/// Where the cache lived until 2026-11-19; moved to `/db` by `ensure_dir`, once.
+const OLD_DIR: &str = "/data/cinder/artcache";
 
 /// Cache directory. `CINDER_ART_CACHE` overrides it — used by the tests, and handy on device for
 /// pointing a run at a throwaway directory without disturbing the real cache.
@@ -127,9 +132,10 @@ fn store(key: u64, img: &Image) -> std::io::Result<()> {
 
 const ENOSPC: i32 = 28;
 
-/// What the cache leaves free on /data (35 MB on this player): the launcher's counter, the queue,
-/// the settings and the logs all live there.
-const RESERVE: u64 = 4 * 1_048_576;
+/// What the cache leaves free on its volume. On `/db` that is Sony's library database: MTPDB.dat
+/// (7 MB for 4,914 songs), Cinder's known-good copy of it (the same again), SQLite's journal during
+/// a scan and the growth of a bigger library — a full `/db` would break the scan that writes it.
+const RESERVE: u64 = 30 * 1_048_576;
 static RESERVE_SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Bytes free to this process on the cache's volume; `u64::MAX` when it cannot be asked, so a
@@ -385,11 +391,40 @@ pub fn ensure_dir() -> bool {
         eprintln!("cinder-ffi: art cache: {d} unusable ({e}) — covers stay as gradients");
         return false;
     }
+    if std::env::var_os("CINDER_ART_CACHE").is_none() {
+        migrate(OLD_DIR, &d);
+    }
     // See `store`: the builder may run as root (probe) or uid 100 (the app), and both must be able
     // to add files. Best-effort — it fails harmlessly when we don't own the directory.
     let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o777));
     discard_if_stale(&d);
     true
+}
+
+/// Move the covers from where the cache used to live, once: copy each file that is not already in
+/// `to`, then delete it from `from`, then the empty directory. A copy that fails (no room) stops the
+/// move and leaves the rest where it was; the builder makes what is missing either way.
+fn migrate(from: &str, to: &str) {
+    let Ok(rd) = std::fs::read_dir(from) else {
+        return;
+    };
+    let (mut moved, mut failed) = (0usize, false);
+    for e in rd.flatten() {
+        let dst = std::path::Path::new(to).join(e.file_name());
+        if !dst.exists() && std::fs::copy(e.path(), &dst).is_err() {
+            failed = true;
+            break;
+        }
+        let _ = std::fs::remove_file(e.path());
+        moved += 1;
+    }
+    if !failed {
+        let _ = std::fs::remove_dir(from);
+    }
+    eprintln!(
+        "cinder-ffi: art cache: moved {moved} file(s) from {from} to {to}{}",
+        if failed { " (stopped: no room)" } else { "" }
+    );
 }
 
 /// Cache format/quality version. **Bump this whenever the thumbnails a given cover produces
@@ -463,6 +498,26 @@ mod tests {
 
     /// #53: the album's named cover source will not decode (here: not an image at all); the next
     /// track's embedded picture is used instead, and lands in the cache under the album's key.
+    #[test]
+    fn covers_move_once_from_the_old_folder() {
+        let base = std::env::temp_dir().join(format!("cinder_art_move_{}", std::process::id()));
+        let (old, new) = (base.join("old"), base.join("new"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("a.t48"), b"a").unwrap();
+        std::fs::write(old.join("b.t96"), b"old b").unwrap();
+        std::fs::write(new.join("b.t96"), b"new b").unwrap();
+        migrate(old.to_str().unwrap(), new.to_str().unwrap());
+        assert!(!old.exists(), "the old folder is gone");
+        assert_eq!(std::fs::read(new.join("a.t48")).unwrap(), b"a");
+        assert_eq!(
+            std::fs::read(new.join("b.t96")).unwrap(),
+            b"new b",
+            "a file already moved is kept"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn an_album_takes_its_cover_from_another_track_when_the_first_fails() {
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());

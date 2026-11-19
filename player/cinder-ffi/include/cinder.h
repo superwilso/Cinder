@@ -469,6 +469,18 @@ int  cinder_scrub_action(void);
 int cinder_mem_report(char* buf, int cap);
 /* Dev: scan the music folders into Cinder's own index on a thread; logs how it compares with MTPDB. */
 int cinder_index_scan(void);
+/* own_index in cinder_advanced.conf: the Library's songs come from Cinder's own index. Set before the library loads. */
+void cinder_set_own_index(int on);
+/* Dev command channel (tools/devctl.sh cmd): set the repeat mode (0 off, 1 one, 2 all, 3 album);
+   returns the action to carry out (23) or 0. And one line of state. */
+int cinder_dev_set_repeat(int mode);
+int cinder_dev_state(char* buf, int cap);
+/* Play an album (id, or text in its name) from song `track` (0-based), replacing the queue;
+   returns the action to carry out, 0 if nothing matched. And albums matching text. */
+int cinder_dev_play_album(const char* what, int track);
+int cinder_dev_find(const char* what, char* buf, int cap);
+/* 1 once after a scan changed the index (own_index on): reload the library. */
+int cinder_index_take_changed(void);
 int  cinder_set_play_position(int cur_ms, int total_ms, int playing);
 
 /* Enable the built-in scrobbler: appends an Audioscrobbler/1.1 `.scrobbler.log` at `path`

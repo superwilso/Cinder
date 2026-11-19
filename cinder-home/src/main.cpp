@@ -1040,7 +1040,11 @@ void mem_log(const char* why) {
         }
         std::fclose(f);
     }
+    // mallinfo() is deprecated on newer glibc (CI's) for mallinfo2(), which the player's 2.23 lacks.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     const struct mallinfo mi = mallinfo();
+#pragma clang diagnostic pop
     char ui[400] = "";
     cinder_mem_report(ui, sizeof ui);
     char m[640];
@@ -1224,6 +1228,7 @@ int db_open_guarded(const char* path) {
     static bool first = true;
     const unsigned long long content = first ? 0 : cinder_db_content_signature(path);
     first = false;
+    cinder_set_own_index(adv_on("own_index") ? 1 : 0);   // the Library from Cinder's own index (Phase 2)
     int rc = cinder_db_open(path);
     bool restored = false;
     if (rc == -3 && db_snapshot_restore()) {
@@ -1252,6 +1257,7 @@ void* lib_open_thread(void*) {
         char m[112];
         std::snprintf(m, sizeof m, "deferred_up: library build finished in %lld ms", now_ms() - t0);
         clog_(m);
+        if (adv_on("own_index")) cinder_index_scan();   // catch what changed while the player was off
     }
     g_deferred_rc = rc;
     g_lib_pending = false;   // LAST: publishes the rc above
@@ -1584,6 +1590,7 @@ void deferred_up() {
     db_ok:
         db_every_ms = 1000;
         db_next_ms = 0;
+        if (adv_on("own_index")) cinder_index_scan();   // catch what changed while the player was off (Phase 2)
         g_db_ready = true;
     }
     // Bring back what was playing when the device was last powered off — the sequence, the user's
@@ -10621,6 +10628,7 @@ void exit_usb_msc() {
     if (contents_mounted()) {
         clog_("usb-msc: exited (/contents remounted; log restored)");
         db_open_guarded(DB_LIVE);
+        if (adv_on("own_index")) cinder_index_scan();   // new music from the PC (Phase 2)
         // Re-seed the watcher: this reload has already happened, and leaving the pre-MSC
         // signature in place would make the next poll do the whole ~3,500-track rebuild again.
         g_db_sig = db_signature();
@@ -10720,7 +10728,10 @@ enum class PendingSequenceMode {
     RestoreIfSame,
 };
 
+// Set when play_pending_sequence kept the service's own (paused) song and only edited the list.
+static bool g_pending_edited_in_place = false;
 static bool play_pending_sequence(const char* label, PendingSequenceMode mode) {
+    g_pending_edited_in_place = false;
     bool restore_position = mode == PendingSequenceMode::RestoreAfterPreview
         || mode == PendingSequenceMode::RestoreIfSame;
     int n = cinder_pending_play_count();
@@ -10806,6 +10817,8 @@ static bool play_pending_sequence(const char* label, PendingSequenceMode mode) {
         if (mode == PendingSequenceMode::RestoreIfSame) {
             // PlayerService keeps decoding the same track and consults the edited sequence at the
             // next boundary. Preserve the current position and pause intent; do not seek or Play.
+            // (The ▶ that took a pending resume plays it itself: see g_pending_edited_in_place.)
+            g_pending_edited_in_place = true;
             g_np_poll_now = true;
             return true;
         }
@@ -13349,6 +13362,9 @@ void carry_out(int act) {
                 // already put in cinder_play_position_ms().
                 if (!g_zappin.owns_sequence && g_playing && cinder_resume_take_pending()) {
                     play_pending_sequence("resume", PendingSequenceMode::RestoreIfSame);
+                    // The service was paused on this same song: the list was edited in place and
+                    // nothing told it to play, so ▶ was silent (seen 2026-11-19 after a live restore).
+                    if (g_pending_edited_in_place) cinder_audio_play();
                     return;
                 }
                 if (g_playing) cinder_audio_play(); else cinder_audio_pause();
@@ -14040,6 +14056,110 @@ static void transport_tick() {
 static bool g_scrub_apply_pending = false;  // a slider/rail value is waiting to be applied
 // g_seek_pending_ms (the release seek target) is declared above carry_out, which banks one too.
 static int  g_seek_do_ms = 0;               // arg for the guarded call (run_guarded takes no captures)
+
+static void seek_do_fn();
+#ifdef CINDER_DEV
+// ── the dev command channel: drive playback over adb with no screen (owner, 2026-11-19) ──────────
+// `tools/devctl.sh cmd 'seek 210000' state` writes /tmp/cinder_cmd (one command a line) and reads the
+// answers back from /tmp/cinder_cmd.out. Keyed on the file's mtime to the NANOSECOND, so two
+// commands in the same second both run (the settings flag's whole-second key would drop one).
+static void dev_command_tick() {
+    static struct timespec seen = {0, 0};
+    struct stat st{};
+    if (::stat("/tmp/cinder_cmd", &st) != 0) return;
+    if (st.st_mtim.tv_sec == seen.tv_sec && st.st_mtim.tv_nsec == seen.tv_nsec) return;
+    const bool first = seen.tv_sec == 0;
+    seen = st.st_mtim;
+    if (first && st.st_mtime < ::time(nullptr) - 5) return;   // a file older than us is stale
+    FILE* in = std::fopen("/tmp/cinder_cmd", "r");
+    if (!in) return;
+    std::string out;
+    char line[256];
+    while (std::fgets(line, sizeof line, in)) {
+        char word[32] = "";
+        long long n = 0;
+        const int got = std::sscanf(line, "%31s %lld", word, &n);
+        if (got < 1 || word[0] == '#') continue;
+        char res[512];
+        const std::string w = word;
+        if (w == "state") {
+            char s[400] = "";
+            cinder_dev_state(s, sizeof s);
+            char uri[300] = "";
+            cinder_audio_current_uri(uri, sizeof uri);
+            std::snprintf(res, sizeof res, "%s uri=%s", s, uri);
+        } else if (w == "play" || w == "pause") {
+            if (g_playing != (w == "play")) carry_out(CINDER_ACT_PLAYPAUSE);
+            std::snprintf(res, sizeof res, "%s: ok", word);
+        } else if (w == "next" || w == "prev") {
+            carry_out(w == "next" ? CINDER_ACT_NEXT : CINDER_ACT_PREV);
+            std::snprintf(res, sizeof res, "%s: ok", word);
+        } else if (w == "seek" && got == 2) {
+            g_seek_do_ms = (int)n;
+            run_guarded("dev: seek", 6, seek_do_fn);
+            std::snprintf(res, sizeof res, "seek %lld: ok", n);
+        } else if (w == "album" || w == "find") {
+            // The rest of the line: `album 1234 [track]`, `album let it bleed`, `find rumours`.
+            std::string rest = std::strstr(line, word) + std::strlen(word);
+            while (!rest.empty() && (rest[0] == ' ' || rest[0] == '\t')) rest.erase(0, 1);
+            while (!rest.empty() && (rest.back() == '\n' || rest.back() == '\r' || rest.back() == ' ')) rest.pop_back();
+            if (w == "find") {
+                char found[1600] = "";
+                cinder_dev_find(rest.c_str(), found, sizeof found);
+                out += found[0] ? found : "no album matches";
+                out += '\n';
+                continue;
+            }
+            int track = 0;
+            const size_t sp = rest.find_last_of(' ');
+            if (sp != std::string::npos && rest.find_first_not_of("0123456789", sp + 1) == std::string::npos && sp + 1 < rest.size()) {
+                track = std::atoi(rest.c_str() + sp + 1);
+                rest.erase(sp);
+            }
+            const int act = cinder_dev_play_album(rest.c_str(), track);
+            if (act) carry_out(act);
+            std::snprintf(res, sizeof res, "album %s from song %d: %s", rest.c_str(), track > 0 ? track : 1, act ? "playing" : "no match");
+        } else if (w == "restore") {
+            // Undo a test that replaced the queue (tools/devctl.sh queue restore DIR): copy the backup
+            // from /tmp/cinder_restore_{queue,resume}.conf over the live files and reload them the way
+            // boot does (paused; the next ▶ resumes). The copy happens HERE, on the thread that saves
+            // the position each second; copied from adb, that save overwrote resume.conf first.
+            if (g_playing) carry_out(CINDER_ACT_PLAYPAUSE);
+            for (const char* f : {"queue", "resume"}) {
+                const std::string src = std::string("/tmp/cinder_restore_") + f + ".conf";
+                const std::string dst = std::string("/data/cinder/") + f + ".conf";
+                FILE* s = std::fopen(src.c_str(), "r");
+                if (!s) continue;
+                std::string body;
+                char b[1024];
+                for (size_t k; (k = std::fread(b, 1, sizeof b, s)) > 0;) body.append(b, k);
+                std::fclose(s);
+                if (FILE* d = std::fopen(dst.c_str(), "w")) {
+                    std::fwrite(body.data(), 1, body.size(), d);
+                    std::fclose(d);
+                }
+                std::remove(src.c_str());
+            }
+            const int rr = cinder_resume_load("/data/cinder/queue.conf", "/data/cinder/resume.conf");
+            if (rr == 1) g_playing = false;
+            std::snprintf(res, sizeof res, "restore: %s", rr == 1 ? "queue reloaded, paused" : "nothing to restore");
+        } else if (w == "repeat" && got == 2) {
+            const int act = cinder_dev_set_repeat((int)n);
+            if (act) carry_out(act);
+            std::snprintf(res, sizeof res, "repeat %lld: %s", n, act ? "changed" : "already");
+        } else {
+            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, find TEXT, album ID|TEXT [SONG], restore)", word);
+        }
+        out += res;
+        out += '\n';
+    }
+    std::fclose(in);
+    if (FILE* o = std::fopen("/tmp/cinder_cmd.out", "w")) {
+        std::fputs(out.c_str(), o);
+        std::fclose(o);
+    }
+}
+#endif
 
 static void seek_do_fn() {
     int rc = cinder_audio_seek_ms(g_seek_do_ms);
@@ -17066,6 +17186,10 @@ void* render_driver(void*) {
             viz_analyzer_tick();              // analyzer runs only while its output is visible
             bt_trim_tick();                   // Bluetooth fine volume, applied off the press path
             cinder_audio_engine_poll();       // the engine handing a non-FLAC song to PlayerService
+            if (!g_msc_active && cinder_index_take_changed()) {
+                clog_("housekeeping: Cinder's index changed -> reloading library and playlists");
+                db_open_guarded(DB_LIVE);
+            }
             mem_log_tick();                   // one memory line per 30 min (Phase 5)
             helper_log_mirror_tick();            // the AAC encoder's and the mono shim's lines, into this log (#43, #44)
             volume_limit_tick();              // the safe-listening cap, applied when it is flipped
@@ -17200,6 +17324,7 @@ void* render_driver(void*) {
                 };
                 static time_t settings_seen = 0, release_seen = 0, mem_seen = 0;
                 if (touched("/tmp/cinder_mem.report", mem_seen)) mem_log("asked");
+                dev_command_tick();
                 static time_t index_seen = 0;
                 if (touched("/tmp/cinder_index.scan", index_seen)) cinder_index_scan();   // Phase 2, logs only
                 if (touched("/tmp/cinder_settings.reload", settings_seen)) {

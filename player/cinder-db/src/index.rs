@@ -10,8 +10,8 @@
 //! cinder-home runs `scan` and logs the comparison). The UI still reads MTPDB; switching it over is
 //! the next step. SensMe values stay in MTPDB (decided in the plan).
 //!
-//! ponytail: tags are read from FLAC only (the owner's library is all FLAC); other formats are
-//! indexed by path with the file name as the title. Add ID3/MP4 readers when a library needs them.
+//! Tags: FLAC (Vorbis comments), MP3 (ID3v2.2–2.4, ID3v1), MP4/M4A/ALAC (ilst). Other formats are
+//! indexed by path with the file name as the title.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
@@ -174,10 +174,254 @@ fn vorbis_comments(b: &[u8], t: &mut Tags) {
     }
 }
 
+/// Text of an ID3v2 text frame body: encoding byte, then the text (Latin-1, UTF-16 with BOM,
+/// UTF-16BE, UTF-8); the first of several NUL-separated values.
+fn id3_text(b: &[u8]) -> String {
+    let Some((&enc, body)) = b.split_first() else {
+        return String::new();
+    };
+    let s = match enc {
+        1 | 2 => {
+            let (be, body) = match body {
+                [0xfe, 0xff, rest @ ..] => (true, rest),
+                [0xff, 0xfe, rest @ ..] => (false, rest),
+                _ => (enc == 2, body),
+            };
+            let units: Vec<u16> = body
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| {
+                    if be {
+                        u16::from_be_bytes([c[0], c[1]])
+                    } else {
+                        u16::from_le_bytes([c[0], c[1]])
+                    }
+                })
+                .collect();
+            String::from_utf16_lossy(&units)
+        }
+        3 => String::from_utf8_lossy(body).into_owned(),
+        _ => body.iter().map(|&c| c as char).collect(),
+    };
+    s.split('\0').next().unwrap_or("").trim().to_string()
+}
+
+/// MP3 tags: ID3v2.3/2.4 text frames (v2.2's three-letter frames too), ID3v1 at the end if there
+/// is no v2. ponytail: no length for MP3 (it needs the frame headers or a Xing header); MTPDB's
+/// length is kept for files it knows.
+pub fn id3_tags<R: Read + Seek>(r: &mut R) -> Option<Tags> {
+    let mut t = Tags::default();
+    let mut h = [0u8; 10];
+    r.seek(SeekFrom::Start(0)).ok()?;
+    if r.read_exact(&mut h).is_ok() && &h[..3] == b"ID3" {
+        let ver = h[3];
+        let size = h[6..10]
+            .iter()
+            .fold(0usize, |a, b| (a << 7) | (*b & 0x7f) as usize);
+        let mut b = vec![0u8; size.min(4 << 20)];
+        r.read_exact(&mut b).ok()?;
+        let (idlen, hdr) = if ver == 2 { (3, 6) } else { (4, 10) };
+        let mut at = 0;
+        while at + hdr <= b.len() && b[at] != 0 {
+            let id = &b[at..at + idlen];
+            let len = match ver {
+                2 => (b[at + 3] as usize) << 16 | (b[at + 4] as usize) << 8 | b[at + 5] as usize,
+                4 => b[at + 4..at + 8]
+                    .iter()
+                    .fold(0usize, |a, x| (a << 7) | (*x & 0x7f) as usize),
+                _ => u32::from_be_bytes([b[at + 4], b[at + 5], b[at + 6], b[at + 7]]) as usize,
+            };
+            let Some(body) = (at + hdr).checked_add(len).and_then(|e| b.get(at + hdr..e)) else {
+                break;
+            };
+            let v = id3_text(body);
+            let num = |v: &str| {
+                v.split('/')
+                    .next()
+                    .and_then(|n| n.trim().parse().ok())
+                    .unwrap_or(0)
+            };
+            match id {
+                b"TIT2" | b"TT2" => t.title = v,
+                b"TPE1" | b"TP1" => t.artist = v,
+                b"TALB" | b"TAL" => t.album = v,
+                b"TPE2" | b"TP2" => t.album_artist = v,
+                b"TRCK" | b"TRK" => t.track = num(&v),
+                b"TPOS" | b"TPA" => t.disc = num(&v),
+                b"TDRC" | b"TYER" | b"TYE" => t.year = v.chars().take(4).collect(),
+                b"TCON" | b"TCO" => t.genre = v,
+                _ => {}
+            }
+            at += hdr + len;
+        }
+        return Some(t);
+    }
+    // ID3v1: the last 128 bytes.
+    let mut v1 = [0u8; 128];
+    r.seek(SeekFrom::End(-128)).ok()?;
+    r.read_exact(&mut v1).ok()?;
+    if &v1[..3] != b"TAG" {
+        return None;
+    }
+    let field = |a: usize, n: usize| -> String {
+        v1[a..a + n]
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as char)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    t.title = field(3, 30);
+    t.artist = field(33, 30);
+    t.album = field(63, 30);
+    t.year = field(93, 4);
+    if v1[125] == 0 && v1[126] != 0 {
+        t.track = i64::from(v1[126]);
+    }
+    Some(t)
+}
+
+/// Called for each MP4 atom: (reader, kind, body start, end).
+type AtomFn<'a, R> = dyn FnMut(&mut R, [u8; 4], u64, u64) -> Option<()> + 'a;
+
+/// MP4/M4A/ALAC tags: `moov/udta/meta/ilst` (©nam ©ART ©alb aART trkn disk ©day ©gen) and the
+/// length from `moov/mvhd`.
+pub fn mp4_tags<R: Read + Seek>(r: &mut R) -> Option<Tags> {
+    fn atoms<R: Read + Seek>(r: &mut R, start: u64, end: u64, f: &mut AtomFn<R>) -> Option<()> {
+        let mut at = start;
+        while at + 8 <= end {
+            r.seek(SeekFrom::Start(at)).ok()?;
+            let mut h = [0u8; 8];
+            r.read_exact(&mut h).ok()?;
+            let mut size = u64::from(u32::from_be_bytes([h[0], h[1], h[2], h[3]]));
+            let mut body = at + 8;
+            if size == 1 {
+                let mut x = [0u8; 8];
+                r.read_exact(&mut x).ok()?;
+                size = u64::from_be_bytes(x);
+                body += 8;
+            } else if size == 0 {
+                size = end - at;
+            }
+            let Some(stop) = at.checked_add(size) else {
+                return Some(());
+            };
+            if size < 8 || stop > end || body > stop {
+                return Some(());
+            }
+            f(r, [h[4], h[5], h[6], h[7]], body, stop)?;
+            at = stop;
+        }
+        Some(())
+    }
+    let end = r.seek(SeekFrom::End(0)).ok()?;
+    let mut t = Tags::default();
+    let mut is_mp4 = false;
+    atoms(r, 0, end, &mut |r, kind, b, e| {
+        match &kind {
+            b"ftyp" => is_mp4 = true,
+            b"moov" => {
+                atoms(r, b, e, &mut |r, kind, b, e| {
+                    match &kind {
+                        b"mvhd" => {
+                            let mut v = [0u8; 32];
+                            r.seek(SeekFrom::Start(b)).ok()?;
+                            r.read_exact(&mut v).ok()?;
+                            let (scale, dur) = if v[0] == 1 {
+                                (
+                                    u64::from(u32::from_be_bytes([v[20], v[21], v[22], v[23]])),
+                                    u64::from_be_bytes([
+                                        v[24], v[25], v[26], v[27], v[28], v[29], v[30], v[31],
+                                    ]),
+                                )
+                            } else {
+                                (
+                                    u64::from(u32::from_be_bytes([v[12], v[13], v[14], v[15]])),
+                                    u64::from(u32::from_be_bytes([v[16], v[17], v[18], v[19]])),
+                                )
+                            };
+                            if let Some(ms) = dur.saturating_mul(1000).checked_div(scale) {
+                                t.dur_ms = ms as i64;
+                            }
+                        }
+                        b"udta" => {
+                            atoms(r, b, e, &mut |r, kind, b, e| {
+                                if &kind == b"meta" {
+                                    // meta is a full box: 4 bytes of version and flags first.
+                                    atoms(r, b + 4, e, &mut |r, kind, b, e| {
+                                        if &kind == b"ilst" {
+                                            atoms(r, b, e, &mut |r, item, b, e| {
+                                                atoms(r, b, e, &mut |r, kind, b, e| {
+                                                    if &kind != b"data" || e < b + 8 {
+                                                        return Some(());
+                                                    }
+                                                    let mut v =
+                                                        vec![0u8; (e - b - 8).min(4096) as usize];
+                                                    r.seek(SeekFrom::Start(b + 8)).ok()?;
+                                                    r.read_exact(&mut v).ok()?;
+                                                    let text = || {
+                                                        String::from_utf8_lossy(&v)
+                                                            .trim()
+                                                            .to_string()
+                                                    };
+                                                    let pair = || {
+                                                        v.get(2..4).map_or(0, |x| {
+                                                            i64::from(u16::from_be_bytes([
+                                                                x[0], x[1],
+                                                            ]))
+                                                        })
+                                                    };
+                                                    match &item {
+                                                        b"\xa9nam" => t.title = text(),
+                                                        b"\xa9ART" => t.artist = text(),
+                                                        b"\xa9alb" => t.album = text(),
+                                                        b"aART" => t.album_artist = text(),
+                                                        b"\xa9day" => {
+                                                            t.year =
+                                                                text().chars().take(4).collect()
+                                                        }
+                                                        b"\xa9gen" => t.genre = text(),
+                                                        b"trkn" => t.track = pair(),
+                                                        b"disk" => t.disc = pair(),
+                                                        _ => {}
+                                                    }
+                                                    Some(())
+                                                })
+                                            })?;
+                                        }
+                                        Some(())
+                                    })?;
+                                }
+                                Some(())
+                            })?;
+                        }
+                        _ => {}
+                    }
+                    Some(())
+                })?;
+            }
+            _ => {}
+        }
+        Some(())
+    })?;
+    is_mp4.then_some(t)
+}
+
 fn read_tags(path: &str) -> Tags {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let mut t = File::open(path)
         .ok()
-        .and_then(|mut f| flac_tags(&mut f))
+        .and_then(|mut f| match ext.as_str() {
+            "mp3" => id3_tags(&mut f),
+            "m4a" | "mp4" | "aac" => mp4_tags(&mut f),
+            _ => flac_tags(&mut f),
+        })
         .unwrap_or_default();
     if t.title.is_empty() {
         t.title = Path::new(path)
@@ -187,10 +431,11 @@ fn read_tags(path: &str) -> Tags {
     t
 }
 
+/// Rollback journal, not WAL: one writer (the scan) and readers that open, read and close.
 pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let c = Connection::open(path)?;
     c.execute_batch(
-        "PRAGMA journal_mode=WAL;
+        "PRAGMA journal_mode=DELETE;
          CREATE TABLE IF NOT EXISTS files(
             path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER, id INTEGER UNIQUE,
             title TEXT, artist TEXT, album TEXT, album_artist TEXT, track INTEGER, disc INTEGER,
@@ -232,6 +477,12 @@ pub fn scan(
         .max(mtpdb_ids.values().copied().max().unwrap_or(0))
         + 1;
     let mut used: HashSet<i64> = known.values().map(|v| v.2).collect();
+    // Writes go in batches of BATCH files: on /contents (FAT) every commit is a flush, and one
+    // per file made a first scan of 4,914 files take 91 s against 43 s. A reboot mid-scan loses at
+    // most one batch, which the next scan reads again (those rows were never committed).
+    const BATCH: usize = 200;
+    let mut pending = 0;
+    c.execute_batch("BEGIN")?;
     for (path, size, mtime) in &found {
         let id = match known.get(path) {
             Some(&(s, m, _)) if s == *size as i64 && m == *mtime => continue,
@@ -248,6 +499,11 @@ pub fn scan(
         used.insert(id);
         let t = read_tags(path);
         rep.read += 1;
+        pending += 1;
+        if pending == BATCH {
+            c.execute_batch("COMMIT; BEGIN")?;
+            pending = 0;
+        }
         c.execute(
             "INSERT OR REPLACE INTO files VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
             params![
@@ -267,13 +523,115 @@ pub fn scan(
             ],
         )?;
     }
+    c.execute_batch("COMMIT")?;
     let seen: HashSet<&str> = found.iter().map(|f| f.0.as_str()).collect();
-    for path in known.keys().filter(|p| !seen.contains(p.as_str())) {
+    // A root that is not there right now (the drive shared over USB, the boot window, a card out)
+    // keeps its rows: an unmounted folder is not a deleted library.
+    // ponytail: a card taken out for good stays listed until it is back; drop its rows on a real
+    // card-removal event if that matters.
+    let missing: Vec<&str> = roots
+        .iter()
+        .copied()
+        .filter(|r| !Path::new(r).is_dir())
+        .collect();
+    for path in known
+        .keys()
+        .filter(|p| !seen.contains(p.as_str()) && !missing.iter().any(|m| p.starts_with(m)))
+    {
         c.execute("DELETE FROM files WHERE path = ?1", [path])?;
         rep.removed += 1;
     }
     rep.ms = t0.elapsed().as_millis();
     Ok(rep)
+}
+
+/// A stable album id for a file MTPDB never saw, from (album artist or artist, album). Above 2^40, so
+/// it cannot meet one of MTPDB's small ids.
+fn album_key(album_artist: &str, artist: &str, album: &str) -> i64 {
+    let who = if album_artist.is_empty() {
+        artist
+    } else {
+        album_artist
+    };
+    let h = format!("{who}\u{1f}{album}")
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+        });
+    (1i64 << 40) + (h % (1u64 << 40)) as i64
+}
+
+/// The track list for the Library, from the index: MTPDB's rows (their order, album ids, art,
+/// years, genres and SensMe keys, all by id) with the index's tags; files the index no longer has
+/// left out; files only the index has added after them, by title. `mtpdb` is
+/// [`crate::Db::tracks`]'s list (empty when MTPDB is unreadable).
+pub fn tracks(c: &Connection, mtpdb: Vec<crate::Track>) -> rusqlite::Result<Vec<crate::Track>> {
+    struct Row {
+        id: i64,
+        tags: Tags,
+    }
+    let mut rows: HashMap<String, Row> = {
+        let mut st = c.prepare(
+            "SELECT path, id, title, artist, album, album_artist, track, disc, year, genre, dur_ms FROM files",
+        )?;
+        let it = st.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                Row {
+                    id: r.get(1)?,
+                    tags: Tags {
+                        title: r.get(2)?,
+                        artist: r.get(3)?,
+                        album: r.get(4)?,
+                        album_artist: r.get(5)?,
+                        track: r.get(6)?,
+                        disc: r.get(7)?,
+                        year: r.get(8)?,
+                        genre: r.get(9)?,
+                        dur_ms: r.get(10)?,
+                    },
+                },
+            ))
+        })?;
+        it.collect::<rusqlite::Result<_>>()?
+    };
+    let apply = |t: &mut crate::Track, g: &Tags| {
+        t.title = g.title.clone();
+        t.artist = g.artist.clone();
+        t.album = g.album.clone();
+        t.album_artist = g.album_artist.clone();
+        t.track_no = g.track;
+        t.disc_no = g.disc;
+        if g.dur_ms > 0 {
+            t.duration_raw = Some(g.dur_ms);
+        }
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for mut t in mtpdb {
+        if let Some(r) = rows.remove(&t.filename) {
+            apply(&mut t, &r.tags);
+            out.push(t);
+        }
+    }
+    let mut rest: Vec<(String, Row)> = rows.into_iter().collect();
+    rest.sort_by(|a, b| {
+        a.1.tags
+            .title
+            .to_lowercase()
+            .cmp(&b.1.tags.title.to_lowercase())
+    });
+    for (path, r) in rest {
+        let g = &r.tags;
+        let mut t = crate::Track {
+            object_id: r.id,
+            filename: path,
+            album_id: Some(album_key(&g.album_artist, &g.artist, &g.album)),
+            ..Default::default()
+        };
+        apply(&mut t, g);
+        out.push(t);
+    }
+    Ok(out)
 }
 
 /// Tracks, albums (album artist or artist, plus album) and artists in the index.
@@ -366,6 +724,116 @@ mod tests {
     }
 
     #[test]
+    fn reads_id3_tags() {
+        let frame = |id: &[u8], text: &[u8]| {
+            let mut f = id.to_vec();
+            f.extend_from_slice(&((text.len() + 1) as u32).to_be_bytes());
+            f.extend_from_slice(&[0, 0, 3]); // flags, then UTF-8
+            f.extend_from_slice(text);
+            f
+        };
+        let mut body = Vec::new();
+        for (id, v) in [
+            (&b"TIT2"[..], &b"Song"[..]),
+            (b"TPE1", b"Band"),
+            (b"TALB", b"Record"),
+            (b"TRCK", b"3/9"),
+            (b"TYER", b"1999"),
+        ] {
+            body.extend(frame(id, v));
+        }
+        let mut f = b"ID3\x03\x00\x00".to_vec();
+        let n = body.len();
+        f.extend_from_slice(&[
+            (n >> 21) as u8 & 0x7f,
+            (n >> 14) as u8 & 0x7f,
+            (n >> 7) as u8 & 0x7f,
+            n as u8 & 0x7f,
+        ]);
+        f.extend(body);
+        f.extend_from_slice(&[0xff, 0xfb, 0x90, 0x00]);
+        let t = id3_tags(&mut std::io::Cursor::new(f)).unwrap();
+        assert_eq!(
+            (
+                t.title.as_str(),
+                t.artist.as_str(),
+                t.album.as_str(),
+                t.track,
+                t.year.as_str()
+            ),
+            ("Song", "Band", "Record", 3, "1999")
+        );
+        // ID3v1 only.
+        let mut v1 = vec![0u8; 300];
+        let tag = v1.len() - 128;
+        v1[tag..tag + 3].copy_from_slice(b"TAG");
+        v1[tag + 3..tag + 7].copy_from_slice(b"Old!");
+        let t = id3_tags(&mut std::io::Cursor::new(v1)).unwrap();
+        assert_eq!(t.title, "Old!");
+    }
+
+    #[test]
+    fn reads_mp4_tags_and_length() {
+        fn atom(kind: &[u8], body: &[u8]) -> Vec<u8> {
+            let mut a = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+            a.extend_from_slice(kind);
+            a.extend_from_slice(body);
+            a
+        }
+        let data = |v: &[u8]| atom(b"data", &[&[0u8, 0, 0, 1, 0, 0, 0, 0][..], v].concat());
+        let ilst = atom(
+            b"ilst",
+            &[
+                atom(b"\xa9nam", &data(b"Tune")),
+                atom(b"\xa9ART", &data(b"Singer")),
+                atom(b"trkn", &data(&[0, 0, 0, 4, 0, 10, 0, 0])),
+            ]
+            .concat(),
+        );
+        let meta = atom(b"meta", &[&[0u8; 4][..], &ilst].concat());
+        let mut mvhd = vec![0u8; 100];
+        mvhd[12..16].copy_from_slice(&1000u32.to_be_bytes());
+        mvhd[16..20].copy_from_slice(&65_432u32.to_be_bytes());
+        let moov = atom(
+            b"moov",
+            &[atom(b"mvhd", &mvhd), atom(b"udta", &meta)].concat(),
+        );
+        let f = [atom(b"ftyp", b"M4A \0\0\0\0"), moov].concat();
+        let t = mp4_tags(&mut std::io::Cursor::new(f)).unwrap();
+        assert_eq!(
+            (t.title.as_str(), t.artist.as_str(), t.track, t.dur_ms),
+            ("Tune", "Singer", 4, 65_432)
+        );
+        assert!(mp4_tags(&mut std::io::Cursor::new(b"not an mp4 file".to_vec())).is_none());
+    }
+
+    /// Damaged files end in None or odd tags, never a panic or a hang (the device aborts on panic).
+    #[test]
+    fn damaged_tags_never_panic() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let heads: [&[u8]; 4] = [
+            b"fLaC",
+            b"ID3\x03\x00\x00",
+            b"\0\0\0\x10ftypM4A ",
+            b"ID3\x04\x00\x00",
+        ];
+        for i in 0..4000 {
+            let mut b = heads[i % 4].to_vec();
+            let n = (rnd() % 600) as usize;
+            b.extend((0..n).map(|_| rnd() as u8));
+            let _ = flac_tags(&mut std::io::Cursor::new(b.clone()));
+            let _ = id3_tags(&mut std::io::Cursor::new(b.clone()));
+            let _ = mp4_tags(&mut std::io::Cursor::new(b));
+        }
+    }
+
+    #[test]
     fn scan_is_incremental_keeps_mtpdb_ids_and_drops_gone_files() {
         let dir = std::env::temp_dir().join(format!("cinder_index_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -404,9 +872,39 @@ mod tests {
         let r = scan(&c, &[root], &ids).unwrap();
         assert_eq!(r.read, 0, "nothing changed, nothing read");
 
+        // The Library's list: MTPDB's row for the file it knows (its album id kept, the index's
+        // tags on it), and the new file after it with an album id of its own.
+        let known = crate::Track {
+            object_id: 500,
+            filename: a.to_string_lossy().into_owned(),
+            title: "old title".into(),
+            album_id: Some(7),
+            ..Default::default()
+        };
+        let gone = crate::Track {
+            object_id: 9,
+            filename: "/nowhere.flac".into(),
+            ..Default::default()
+        };
+        let list = tracks(&c, vec![known, gone]).unwrap();
+        assert_eq!(list.len(), 2, "the file that is gone is left out");
+        assert_eq!(
+            (list[0].object_id, list[0].title.as_str(), list[0].album_id),
+            (500, "One", Some(7))
+        );
+        assert_eq!((list[1].object_id, list[1].title.as_str()), (501, "Two"));
+        assert!(list[1].album_id.unwrap() > 1 << 40);
+
         std::fs::remove_file(&b).unwrap();
         let r = scan(&c, &[root], &ids).unwrap();
         assert_eq!((r.files, r.removed), (1, 1));
+
+        // The folder unmounted: nothing found, nothing dropped.
+        let away = dir.with_extension("away");
+        std::fs::rename(&dir, &away).unwrap();
+        let r = scan(&c, &[root], &ids).unwrap();
+        assert_eq!((r.files, r.removed, counts(&c).unwrap().0), (0, 0, 1));
+        std::fs::rename(&away, &dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

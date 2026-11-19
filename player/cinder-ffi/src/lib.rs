@@ -2189,6 +2189,74 @@ fn statvfs_mb(path: &str) -> (i32, i32) {
     (mb(blocks), mb(avail))
 }
 
+/// Cinder's own library index (docs/PLAN_hardware_first.md, Phase 2). On /db: ext4 (a first scan is
+/// 43 s there against 91 s on /contents' FAT), never handed to the PC, ~80 MB free; /data is 35 MB
+/// and an install needs ~8.5 MB of it. It was on /contents for a night; `index_move` brings it over.
+const INDEX_PATH: &str = "/db/cinder/library.db";
+const INDEX_OLD: &str = "/contents/.cinder/library.db";
+
+/// Bring the index over from its first home (copy, then delete the old file and its folder).
+fn index_move() {
+    let _ = std::fs::create_dir_all("/db/cinder");
+    if std::path::Path::new(INDEX_OLD).exists()
+        && !std::path::Path::new(INDEX_PATH).exists()
+        && std::fs::copy(INDEX_OLD, INDEX_PATH).is_ok()
+    {
+        let _ = std::fs::remove_file(INDEX_OLD);
+        let _ = std::fs::remove_dir("/contents/.cinder");
+        eprintln!("cinder-ffi: index: moved to {INDEX_PATH}");
+    }
+}
+const INDEX_ROOTS: [&str; 2] = ["/contents/MUSIC", "/contents_ext/MUSIC"];
+/// `own_index` in cinder_advanced.conf: the Library's songs come from the index.
+static OWN_INDEX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A scan added, changed or removed something: the shell rebuilds the Library (own_index only).
+static INDEX_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A scan is running: a second request while it does is dropped, not queued.
+static INDEX_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 1 once after a scan that changed the index (and `own_index` is on); the shell then reloads.
+#[no_mangle]
+pub extern "C" fn cinder_index_take_changed() -> libc::c_int {
+    INDEX_CHANGED.swap(false, std::sync::atomic::Ordering::Relaxed) as libc::c_int
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_set_own_index(on: libc::c_int) {
+    OWN_INDEX.store(on != 0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// With `own_index` on and an index on the drive, the Library's track list comes from it
+/// ([`cinder_db::index::tracks`]: MTPDB's rows, the index's tags). Otherwise, or if the index is
+/// missing, empty or unreadable, MTPDB's list as it was.
+fn index_tracks(mtpdb: Vec<cinder_db::Track>) -> Vec<cinder_db::Track> {
+    if OWN_INDEX.load(std::sync::atomic::Ordering::Relaxed) {
+        index_move();
+    }
+    if !OWN_INDEX.load(std::sync::atomic::Ordering::Relaxed)
+        || !std::path::Path::new(INDEX_PATH).exists()
+    {
+        return mtpdb;
+    }
+    let n = mtpdb.len();
+    match cinder_db::index::open(INDEX_PATH)
+        .and_then(|c| cinder_db::index::tracks(&c, mtpdb.clone()))
+    {
+        Ok(v) if !v.is_empty() => {
+            eprintln!(
+                "cinder-ffi: library from Cinder's index: {} songs (MTPDB {n})",
+                v.len()
+            );
+            v
+        }
+        Ok(_) => mtpdb,
+        Err(e) => {
+            eprintln!("cinder-ffi: index unreadable ({e}) — library from MTPDB");
+            mtpdb
+        }
+    }
+}
+
 #[cfg(test)]
 fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     build_library_with(db, None, true)
@@ -2237,6 +2305,7 @@ fn build_library_with(
         eprintln!("cinder-ffi: track query FAILED — {e} (the library will show no songs)");
         Vec::new()
     });
+    let all_tracks = index_tracks(all_tracks);
     // AUDIOBOOKS ARE NOT MUSIC. With the component on, everything under `LEARNING` goes to the
     // Audiobooks screen and is kept out of Songs, Albums, Artists, Folders and every shuffle built
     // from them. With it off (the installer's choice, `audiobooks_enabled`) nothing is set apart
@@ -4146,6 +4215,129 @@ const REPEAT_ALBUM: u8 = cinder_ui::now_playing::REPEAT_ALBUM;
 
 /// The repeat button's cycle: off → all → album → one → off (0 → 2 → 3 → 1 → 0), the order other
 /// players use with album slotted between the two it sits between in size. Anything unknown is off.
+/// Dev command channel (`tools/devctl.sh cmd repeat N`): step the repeat mode the way the button
+/// does until it is `mode` (0 off, 1 one, 2 all, 3 album). Returns CINDER_ACT_REPEAT_CHANGED (23)
+/// for the shell to carry out when it changed, else 0.
+#[no_mangle]
+pub extern "C" fn cinder_dev_set_repeat(mode: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let want = mode.clamp(0, REPEAT_ALBUM as libc::c_int) as u8;
+    if r.np.repeat == want {
+        return 0;
+    }
+    while r.np.repeat != want {
+        let was = r.np.repeat;
+        r.np.repeat = next_repeat(was);
+        if was == REPEAT_ALBUM {
+            r.queue_pending = true;
+        }
+    }
+    r.album_lap_staged = false;
+    r.dirty = true;
+    23
+}
+
+/// Dev command channel: play an album as a tap on its song would — `what` is an album id, or text
+/// found in an album's name (the first match). `track` counts from 1 (0 = the first song). Returns the action for the
+/// shell to carry out (the same as the tap's), or 0 when nothing matched. Replaces the queue.
+#[no_mangle]
+pub extern "C" fn cinder_dev_play_album(what: *const c_char, track: libc::c_int) -> libc::c_int {
+    let what = unsafe { cstr(what) };
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let id: Option<i64> = what.trim().parse().ok();
+    let needle = what.trim().to_lowercase();
+    let rows = r
+        .app
+        .library()
+        .album_groups
+        .iter()
+        .flat_map(|g| g.albums.iter())
+        .find(|a| {
+            id.map_or_else(
+                || a.name.to_lowercase().contains(&needle),
+                |i| a.album_id == i,
+            )
+        })
+        .map(|a| a.track_list.clone());
+    let Some(rows) = rows.filter(|v| !v.is_empty()) else {
+        return 0;
+    };
+    let i = (track.max(1) as usize - 1).min(rows.len() - 1);
+    r.app.set_play_context(rows, i);
+    carry_action_now(r, &cinder_ui::nav::Action::PlayContextAt(i)).unwrap_or(0)
+}
+
+/// Dev command channel: albums whose name contains `what` (up to 12), one `id name — artist` a line.
+#[no_mangle]
+pub extern "C" fn cinder_dev_find(
+    what: *const c_char,
+    buf: *mut c_char,
+    cap: libc::c_int,
+) -> libc::c_int {
+    if buf.is_null() || cap <= 0 {
+        return -1;
+    }
+    let needle = unsafe { cstr(what) }.trim().to_lowercase();
+    let out = {
+        let guard = cell().lock().unwrap();
+        let Some(r) = guard.as_ref() else { return -1 };
+        r.app
+            .library()
+            .album_groups
+            .iter()
+            .flat_map(|g| g.albums.iter())
+            .filter(|a| a.name.to_lowercase().contains(&needle))
+            .take(12)
+            .map(|a| {
+                format!(
+                    "{} {} — {} ({} songs)",
+                    a.album_id,
+                    a.name,
+                    a.artist,
+                    a.track_list.len()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let n = out.len().min(cap as usize - 1);
+    unsafe {
+        std::ptr::copy_nonoverlapping(out.as_ptr(), buf.cast(), n);
+        *buf.add(n) = 0;
+    }
+    n as libc::c_int
+}
+
+/// Dev command channel: one line of what is playing, for `tools/devctl.sh cmd state`.
+#[no_mangle]
+pub extern "C" fn cinder_dev_state(buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
+    if buf.is_null() || cap <= 0 {
+        return -1;
+    }
+    let line = {
+        let guard = cell().lock().unwrap();
+        let Some(r) = guard.as_ref() else { return -1 };
+        format!(
+            "song={:?} artist={:?} pos={}ms dur={}ms playing={} repeat={} shuffle={}",
+            r.np.title,
+            r.np.artist,
+            r.play_pos_ms,
+            r.cur_duration_ms,
+            r.np.playing as u8,
+            r.np.repeat,
+            r.np.shuffle as u8
+        )
+    };
+    let n = line.len().min(cap as usize - 1);
+    unsafe {
+        std::ptr::copy_nonoverlapping(line.as_ptr(), buf.cast(), n);
+        *buf.add(n) = 0;
+    }
+    n as libc::c_int
+}
+
 fn next_repeat(was: u8) -> u8 {
     match was {
         0 => 2,
@@ -11941,11 +12133,12 @@ fn liked_toggle_current(r: &mut Render) -> libc::c_int {
 /// Dev: scan the music folders into Cinder's own library index (`cinder_db::index`, Phase 2 of
 /// docs/PLAN_hardware_first.md) on a thread of its own, then log how it compares with MTPDB:
 /// counts, time, and the first paths whose tags disagree. The UI does not read the index yet.
-/// The index lives on /data (ext4), which stays mounted while /contents is shared over USB.
+/// The index lives on /contents: /data is a 35 MB partition, and an install needs ~8.5 MB of it free
+/// for its rollback copy (a 1.7 MB index there blocked one, 2026-11-19).
 #[no_mangle]
 pub extern "C" fn cinder_index_scan() -> libc::c_int {
-    const INDEX: &str = "/data/cinder/library.db";
-    const ROOTS: [&str; 2] = ["/contents/MUSIC", "/contents_ext/MUSIC"];
+    const INDEX: &str = INDEX_PATH;
+    const ROOTS: [&str; 2] = INDEX_ROOTS;
     let db = {
         let guard = cell().lock().unwrap();
         guard.as_ref().and_then(|r| r.db_path.clone())
@@ -11966,6 +12159,7 @@ pub extern "C" fn cinder_index_scan() -> libc::c_int {
             .iter()
             .map(|t| (t.filename.clone(), t.object_id))
             .collect();
+        index_move();
         let c = cinder_db::index::open(INDEX)?;
         let rep = cinder_db::index::scan(&c, &ROOTS, &ids)?;
         let (tr, al, ar) = cinder_db::index::counts(&c)?;
@@ -11977,16 +12171,28 @@ pub extern "C" fn cinder_index_scan() -> libc::c_int {
         for d in dis.iter().take(12) {
             eprintln!("cinder-ffi: index: {d}");
         }
+        if (rep.read > 0 || rep.removed > 0) && OWN_INDEX.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            INDEX_CHANGED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(())
     };
-    std::thread::Builder::new()
+    if INDEX_BUSY.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return 0;
+    }
+    let spawned = std::thread::Builder::new()
         .name("cinder-index".into())
         .spawn(move || {
             if let Err(e) = run() {
                 eprintln!("cinder-ffi: index: scan failed: {e}");
             }
+            INDEX_BUSY.store(false, std::sync::atomic::Ordering::Relaxed);
         })
-        .is_ok() as libc::c_int
+        .is_ok();
+    if !spawned {
+        INDEX_BUSY.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    spawned as libc::c_int
 }
 
 /// One line for the shell's memory log: what the UI's own caches and model hold, in KB. Writes
@@ -12003,11 +12209,28 @@ pub extern "C" fn cinder_mem_report(buf: *mut c_char, cap: libc::c_int) -> libc:
             m.values().map(|i| i.rgb.len()).sum::<usize>()
         };
         let lib = r.app.library();
+        // The library model's rows: each song's strings plus the row itself. Albums keep their own
+        // copy of every track (`AlbumRow::track_list`), so that is counted separately.
+        let row = |s: &cinder_ui::model::SongRow| {
+            std::mem::size_of::<cinder_ui::model::SongRow>()
+                + s.title.capacity()
+                + s.artist.capacity()
+                + s.dur.capacity()
+                + s.art.capacity()
+        };
+        let songs_b: usize = lib.songs.iter().map(row).sum();
+        let album_b: usize = lib
+            .album_groups
+            .iter()
+            .flat_map(|g| g.albums.iter())
+            .flat_map(|a| a.track_list.iter())
+            .map(row)
+            .sum();
         let (glyph, glyphs, chain) = r.fonts.mem_report();
         let np_art = r.art_full.as_ref().map_or(0, |i| i.rgb.len())
             + r.art_thumb.as_ref().map_or(0, |i| i.rgb.len());
         format!(
-            "thumbs={}KB/{} covers={}KB/{} pl_thumbs={}KB np_art={}KB scaled+grad={}KB glyphs={}KB/{} chain_fonts={} songs={} albums={} artists={}",
+            "thumbs={}KB/{} covers={}KB/{} pl_thumbs={}KB np_art={}KB scaled+grad={}KB glyphs={}KB/{} chain_fonts={} songs={}/{}KB album_tracks={}KB albums={} artists={}",
             img(&lib.thumbs) / 1024,
             lib.thumbs.len(),
             img(&lib.covers) / 1024,
@@ -12019,13 +12242,15 @@ pub extern "C" fn cinder_mem_report(buf: *mut c_char, cap: libc::c_int) -> libc:
             glyphs,
             chain,
             lib.songs.len(),
-            lib.album_groups.len(),
+            songs_b / 1024,
+            album_b / 1024,
+            lib.album_groups.iter().map(|g| g.albums.len()).sum::<usize>(),
             lib.artists.len(),
         )
     };
     let n = line.len().min(cap as usize - 1);
     unsafe {
-        std::ptr::copy_nonoverlapping(line.as_ptr(), buf as *mut u8, n);
+        std::ptr::copy_nonoverlapping(line.as_ptr(), buf.cast(), n);
         *buf.add(n) = 0;
     }
     n as libc::c_int
