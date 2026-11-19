@@ -2054,6 +2054,21 @@ static int  g_keymap[768];
 static int  g_evfds[16];
 static int  g_evn = 0;
 static bool g_input_started = false;
+static char g_sidekey_path[64] = "";   // icx_key's node: the side keys (play, FF, REW, volume, Hold)
+
+// THE KEY THAT WOKE THE PLAYER. A side key wakes it from suspend-to-RAM, but Sony's key driver
+// reads the key's ADC ~0.6 s into the wake, before the ADC is back ("get_md_adc_val(ADIN1)
+// failed" in dmesg), so the press that woke it was lost: Play had to be pressed twice (11-19).
+// Which key it was is gone for good: the kernel's own ADC reading at the wake (icx_key_spm_stat)
+// reads 4095 on both channels with Play held, so the ladder has no voltage while asleep. What
+// survives is the line that woke it: wm_key's "any key" EINT 6, bit 6 of eint_sta's first word
+// (Power is EINT 150, word 4). The player only sleeps paused, and Play is the key that wakes a
+// paused player, so the lost press is replayed as Play, written into icx_key's own node so it
+// takes the ordinary path (Hold included). A Next or volume press that wakes it starts playback
+// too: the cost of not knowing.
+static bool      g_keywake_pending = false;
+static long long g_keywake_due_ms = 0;
+static const int kKeyWakeEint = 6;   // wm_key.ko's eint_num_key_wake
 
 // Touchscreen navigation (the NW-A55 has no d-pad). A contact is bracketed by BTN_TOUCH down/up;
 // ABS_X/Y (or the MT variants) give its position. A mostly-VERTICAL move past a small slop
@@ -2438,6 +2453,12 @@ static void input_open() {
         // The touchscreen only. Probing the other seven (grab, then release) cost 120 ms each, the
         // release waiting on the kernel's RCU grace period: 0.84 s of a dead screen per boot (11-10).
         if (g_evfds[i] != g_touch_fd) {
+            if (!std::strcmp(name, "icx_key")) {
+                char fdp[32];
+                std::snprintf(fdp, sizeof fdp, "/proc/self/fd/%d", g_evfds[i]);
+                const ssize_t n = readlink(fdp, g_sidekey_path, sizeof g_sidekey_path - 1);
+                g_sidekey_path[n > 0 ? n : 0] = 0;
+            }
             std::snprintf(msg, sizeof msg, "input: node %d '%s'", i, name);
             clog_(msg);
             continue;
@@ -4732,6 +4753,7 @@ const char kConfigFile[]  = "/contents/cinder_suspend_s";
 const char kStateNode[]   = "/sys/power/state";
 const char kWakeLock[]    = "/sys/power/wake_lock";
 const char kWakeUnlock[]  = "/sys/power/wake_unlock";
+bool g_ram_released = false;   // stage 2: our wakelock is released and the kernel may be suspending
 const char kResumeCount[] = "/sys/devices/platform/icx_pm_helper/resume_count";
 const char kSpmR12[]      = "/sys/devices/platform/icx_pm_helper/spm_r12";
 const char kLockName[]    = "cinder";
@@ -4905,12 +4927,26 @@ void resume_as_device(bool on) {
 // Leave stage 1 NOW, from the wake path. The tick would get there within a second, but the panel
 // cannot light until late resume has re-initialised the LCM (~0.3 s), so every tick of delay is
 // time the user spends pressing Power at a black screen. Same order as the tick's exit: lock first.
+// A KEY WHILE THE KERNEL IS GOING TO SLEEP. The lock is released and the kernel takes a second
+// or more to suspend, and Cinder still reads keys in that window. 11-19: Play 1.3 s after the
+// release started playback, the kernel then suspended under it, the audio looped and the player
+// hung until a forced restart. Taking the lock back before the key acts aborts the suspend
+// (activating a wakeup source mid-suspend is a pending wakeup to the kernel). Stays in stage 1.
+static void soc_suspend_hold_for_input() {
+    using namespace socsusp;
+    if (!g_ram_released) return;
+    g_ram_released = false;
+    write_node(kWakeLock, kLockName);
+    clog_("suspend: a key during suspend entry -> wakelock taken back first");
+}
+
 static void soc_suspend_leave_now(const char* why) {
     using namespace socsusp;
     if (!g_early) return;
     write_node(kWakeLock, kLockName);
     write_node(kStateNode, "on");
     g_early = false;
+    g_ram_released = false;
     char m[96];
     std::snprintf(m, sizeof m, "suspend: %s -> left early suspend", why);
     clog_(m);
@@ -4989,10 +5025,22 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
         write_node(kWakeLock, kLockName);
         write_node(kStateNode, "on");
         early = false;
+        g_ram_released = false;
         char m[88];
         std::snprintf(m, sizeof m, "suspend: resumed from RAM (r12=%#x) -> awake, countdown restarts", r12);
         clog_(m);
         g_usb_after_resume = true;   // the port comes back as an idle host: see usb_after_resume_tick
+        // Woken by a side key? See g_keywake_pending. The driver has already tried and failed by
+        // the time user space thaws; a short grace covers its event still being in the buffer.
+        unsigned eint0 = 0;
+        if (FILE* f = std::fopen("/sys/devices/platform/icx_pm_helper/eint_sta", "r")) {
+            if (std::fscanf(f, "%x", &eint0) != 1) eint0 = 0;
+            std::fclose(f);
+        }
+        if ((g_keywake_pending = (eint0 >> kKeyWakeEint) & 1)) {
+            g_keywake_due_ms = now_ms() + 150;   // the driver gave up ~0.3 s before tasks thaw
+            clog_("suspend: woken by a side key");
+        }
         return;
     }
 
@@ -5086,6 +5134,7 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
     ram_dwell = 0;
     clog_("suspend: idle and off the cable -> releasing the wakelock (suspend to RAM; Power wakes it)");
     resume_as_device(true);
+    g_ram_released = true;
     write_node(kWakeUnlock, kLockName);
 }
 
@@ -14502,6 +14551,21 @@ const long VOL_REPEAT_MAX_MS = 15000;    // dead-man: give up if a release was m
 // rather than a copy of it; build.sh runs that self-test on the host and refuses to pack if it
 // fails. See that header for why it is geometric.
 
+// Replay the lost press that woke the player as Play (see g_keywake_pending). Written into
+// icx_key's own node, so it comes back through input_pump like a real press.
+static void keywake_tick() {
+    if (!g_keywake_pending || now_ms() < g_keywake_due_ms) return;
+    g_keywake_pending = false;
+    const int fd = g_sidekey_path[0] ? open(g_sidekey_path, O_WRONLY | O_CLOEXEC) : -1;
+    ev_event ev[4] = {};
+    ev[0].type = EV_KEY_; ev[0].code = 28; ev[0].value = 1;
+    ev[2].type = EV_KEY_; ev[2].code = 28; ev[2].value = 0;   // [1] and [3] stay SYN_REPORT
+    const bool ok = fd >= 0 && write(fd, ev, sizeof ev) == (ssize_t)sizeof ev;
+    if (fd >= 0) close(fd);
+    clog_(ok ? "input: the key that woke the player was dropped -> replayed as Play"
+             : "input: the key that woke the player was dropped; replay FAILED (no icx_key node)");
+}
+
 void vol_repeat_tick() {
     if (g_vol_btn < 0) return;
     long long now = now_ms();
@@ -14912,6 +14976,7 @@ void input_pump() {
                     continue;
                 }
                 if (type != EV_KEY_ || val == 0) continue; // releases never act
+                soc_suspend_hold_for_input();               // FIRST: see its comment
                 int kc = code;
                 if (val == 1 && (kc == 201 || kc == 166)) g_peer_pause_ms = now_ms();
                 // Key REPEATS (val=2) only ramp the volume rocker; for everything else a held
@@ -14951,15 +15016,14 @@ void input_pump() {
                     clog_("input: PAUSE from the headphones while nothing is playing — ignored");
                     continue;
                 }
-                // Any mapped key press counts as activity for the idle blank. A key ALSO wakes an
-                // idle blank — and unlike a touch it is still delivered: the physical buttons do
-                // the same thing whether or not you can see the screen (transport, volume), so
-                // swallowing them would make the first press after an idle blank feel broken.
-                // Power is the exception and needs no special case: cinder_input maps it to
+                // Any mapped key press counts as activity for the idle blank, but does NOT wake
+                // it (owner 11-19: Play lit the screen). The physical buttons do the same thing
+                // whether or not you can see the screen, like a pocket player; Power or a touch
+                // wakes it. Power needs no special case: cinder_input maps it to
                 // CINDER_ACT_SLEEP -> screen_toggle, which takes ownership of the panel state.
                 if (val == 1) {
                     g_last_input_ms = now_ms();
-                    if (g_screen_auto_off && btn != CINDER_BTN_POWER) screen_auto_wake();
+                    g_keywake_pending = false;   // the driver delivered a key itself: nothing to replay
                     // The second escape from a level-0 backlight, and it must be taken BEFORE the
                     // Power block below — that one `continue`s once the hold gesture is armed, so
                     // a call placed after it would never run on a normal press.
@@ -15009,6 +15073,7 @@ void input_pump() {
     if (int act = cinder_remote_take_action()) carry_out_input(act);
     // Held rocker: the events are all drained, so anything still down is a genuine hold.
     vol_repeat_tick();
+    keywake_tick();
     // Banked slider/rail applies and the release seek — deliberate gestures, so ahead of a
     // backlog. Same reason as the line below: a Sony round trip must not be made from the drain.
     scrub_tick();
@@ -16971,7 +17036,9 @@ void* render_driver(void*) {
                 // does go down — the codec fix stands on its own and must not depend on this one
                 // being enabled.
                 // Stage 2's own, stricter test — Sony's interlocks (see soc_suspend_tick).
-                const bool ram_idle = idle && !wifi_serving && !g_nc_on && cinder_get_bt_route() == 0 && !g_bt_user_pending
+                // …and 10 s since the last key: stage 1's dwell ignores presses, so a pause 3 s
+                // before the dwell ran out went straight to RAM (11-19, the hang above).
+                const bool ram_idle = idle && now_ms() - g_last_input_ms >= 10000 && !wifi_serving && !g_nc_on && cinder_get_bt_route() == 0 && !g_bt_user_pending
                     && !g_rx_active && !g_msc_active && !g_wifi_updating
                     && socsusp::read_node_long("/sys/class/power_supply/usb/online") == 0
                     && socsusp::read_node_long("/sys/class/power_supply/dc/online") <= 0;

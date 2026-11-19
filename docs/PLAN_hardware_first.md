@@ -331,66 +331,58 @@ kernel option already writes.
 **Check.** The boot timeline (`docs/` boot measurements) before and after; free memory after an
 hour of use.
 
-## Next steps (2026-11-19)
+## Next steps (2026-11-19, evening)
 
-In order; each builds and passes the harness before the next starts.
+**Done 11-19:** the engine's timing (no fault), the library index (identical to MTPDB, MP3/MP4
+readers, re-read on a rules change), `/data` headroom (art cache and index on `/db`), the
+no-screen command channel (`devctl.sh cmd`, `queue save|restore`), and Phase 4's spike in full:
+the core powers on from our code, Linux's stack drives it over a vhci bridge, pairs, reads the
+endpoints and sends AAC (51.31, 51.32). Details are in each phase above.
 
-1. ~~The engine's song-change timing~~ — done 11-19: no fault; the engine logs CLOCK_MONOTONIC and
-   the shell counts from its own start (~10 s later), and comparing the two made a 10 s gap.
-2. **The Library from the index** — built and on the owner's player 11-19 (`own_index`): 4,914
-   songs, 441 albums, 268 artists from the index, the same as MTPDB; a scan after boot (5.3 s,
-   nothing changed, no reload) and after USB storage, and the Library reloads when a scan changed
-   something. A root that is not mounted keeps its rows. **Now identical to MTPDB** (0 of 4,914
-   differ, 11-19 evening): the 22 differences were Sony's own rules, which the index now follows: a
-   repeated field keeps its LAST value (`ARTIST=Kelela`, `ARTIST=Fousheé` lists as Fousheé), spaces
-   are kept, and a name stops at 255 UTF-16 units. A change of rules re-reads every file once
-   (`PRAGMA user_version`, ids kept; 4,914 files in 30 s). Writes go 200 files to a transaction (a
-   first scan on `/contents` took 91 s one commit per file). Original plan: build
-   `cinder_ui::Library` from `/contents/.cinder/library.db` (ids unchanged; SensMe, art keys and
-   play counts joined by id), MTPDB stays the fallback when the index is missing or empty.
-3. **When to scan:** at boot after `/contents` mounts, and after USB storage is released; never
-   during USB storage. Sony's scanner keeps running for SensMe only.
-4. **ID3 (MP3) and MP4 (M4A/ALAC) tag readers** — built 11-19 (ID3v2.2–2.4 and v1; MP4 `ilst` and
-   the `mvhd` length), fuzzed with 4,000 damaged buffers. MP3 length (Layer III) from the Xing,
-   Info or VBRI frame count, else the constant bitrate; host-tested only (the owner's library is all
-   FLAC).
-5. **/data headroom** — done 11-19. `/data` (35 MB) cannot grow without rewriting the eMMC partition
-   table, but `/db` (ext4, 94 MB, ~80 MB free, never shared over USB, already holding Cinder's MTPDB
-   copy) has room: the album-art cache (16 MB for 441 albums, ~37 KB an album) and the index moved
-   there, the cache moving its files over once. The cache keeps 30 MB of `/db` free for MTPDB, its
-   copy and a scan's journal. `/cache` (23 MB, empty) is the next spare if needed.
-6. **Bluetooth kernel modules and the go/no-go tool** — 11-19. `wifi/build-bluetooth.sh` builds
-   `compat.ko`, `bluetooth.ko` and `hci_vhci.ko` (plus the Wi-Fi modules: one backports build must
-   carry both, its `compat.ko` differs from `build.sh`'s) with the player's vermagic. Not loaded yet.
-   `cinder-home/tools/btspike.c` (static, musl) opens `/dev/stpbt`, sends Sony's power-on commands
-   built from `/data/BT_Addr`, and runs an HCI inquiry. On the owner's player with Sony's Bluetooth
-   off (nothing held the node; the kernel log shows WMT powering the core on at open and off at
-   close): **all six power-on commands and the inquiry command completed with status 0** — the core
-   takes commands from a program that is not Sony's stack. No device answered a 10 s inquiry at
-   1 a.m. **Radio proven 11-19:** with the owner's headphones in pairing mode, a 15 s inquiry got
-   an answer at −58 dBm (`GO`, exit 0). **Linux's stack drives it (11-19):** `compat.ko`,
-   `bluetooth.ko` and `hci_vhci.ko` load clean (Core 2.19); `cinder-home/tools/btbridge.c` copies
-   HCI packets between `/dev/stpbt` and `/dev/vhci`, and the kernel's own start-up and inquiry run
-   over it. One quirk: the core lists a feature page 2 and refuses to read it (status 0x30, which
-   the kernel turns into `ENOSYS`); the bridge reports page 1 as the last. Then
-   `cinder-home/tools/btpair.c` (no BlueZ daemon: the kernel's management socket and L2CAP)
-   paired in 1.2 s, read the headphones' endpoints over AVDTP (SBC, AAC, LDAC), configured AAC,
-   and sent 5 s of a 440 Hz tone as RTP/LATM frames from Cinder's AAC encoder: 215 frames, none
-   lost, 131 kb/s at a media MTU of 679. Test pairings use a changed address (`CINDER_BT_ALT=1`):
-   the real one is paired with the owner's headphones under Sony's stack, and a new key would
-   break that. Next: a real source (Cinder's PCM, not a tone), AVRCP volume, reconnect without
-   pairing (keep the link key), and a kernel HCI driver instead of the vhci bridge.
-7. **A command channel for tests, no screen** (owner, 11-19) — first cut built and device-tested
-   11-19: `tools/devctl.sh cmd state | play | pause | next | prev | 'seek MS' | 'repeat 0-3'` (several
-   at once, one answer a line). Dev builds only; cinder-home reads `/tmp/cinder_cmd` (keyed on the
-   nanosecond mtime) and answers in `/tmp/cinder_cmd.out`. Added and device-tested the same day:
-   `'find TEXT'` (album ids), `'album ID|TEXT [SONG]'` (SONG counts from 1), `restore`, and
-   `devctl.sh queue save|restore DIR`, which puts a queue back with no reboot. Testing `restore`
-   found a real fault: ▶ on a pending resume, with the service paused on the same song, edited the
-   list and never played (fixed). `'shuffle 0|1'` added after; one track by path was dropped,
-   `album NAME SONG` already plays any song. Behind a dark screen an answer can take over 5 s
-   (devctl waits 10).
-8. **Battery runs** (Phase 1) wait for the owner: an hour each, player left alone.
+The order: finish what is nearly finished, then answer the one question that decides how the
+Bluetooth stack is built, then build it in steps that each stand alone. Owner-only steps are
+marked; everything else runs with the player on the cable.
+
+1. **Finish Phase 3 on the player** (about 1 h, no owner). Drive album skip, end of queue and
+   repeat-album through the engine with `devctl.sh cmd`; play a 32-bit FLAC through the engine
+   (needs one 32-bit file the owner agrees to add, or a path in `/tmp` the dev channel can play).
+   Then the gapless check on the capture rig (owner plugs the jack lead in).
+2. **Phase 2 to default** (a week of use, then 30 min). `own_index` on for the owner's daily use;
+   the 30-minute memory line and a scan log per boot show cost and drift. If nothing differs for
+   a week, the index becomes the default source and MTPDB the fallback; a Sony rescan cut short
+   by a reboot (which can leave MTPDB with 0 tracks) stops emptying the Library. SensMe keeps Sony's scanner.
+3. **Phase 4 research gate: where Sony's effects go on Bluetooth** (half a day, read-only). Today
+   Sony's sound service applies DSEE, the EQs and the rest, then hands PCM to the transmitter
+   over the `bttransmitterservice` socket (type-1 handshake frame first, documented). Our own
+   stack must take that processed PCM, or Bluetooth listening loses the effects. Questions: does
+   the sound service route to that socket only while Sony's stack reports a connection; can our
+   process own the socket name with Sony's Bluetooth stopped; what frame types 0/1/2 carry. The
+   answer picks the design: (a) our stack sits behind Sony's socket and keeps every effect, or
+   (b) Cinder's engine feeds our encoder directly and the effects are Cinder's own (EQ only).
+4. **Phase 4a: an A2DP source that stays connected** (2–3 days, owner for listening). In one
+   process, still on the vhci bridge: keep link keys in `/data/cinder/bt/` and load them at start
+   (no pairing mode after the first time); reconnect to the last device; real music instead of
+   a tone (from step 3's choice); AVRCP for volume and the buttons. Opt-in switch, Sony's stack
+   stopped while it runs and started again after. Check: an album end to end, volume, pause from
+   the headphones, a walk out of range and back.
+5. **Phase 4b: codecs** (2 days). LDAC from Android's open encoder (Apache 2.0, its own folder and
+   licence like `cinder-aac/`), SBC (a small encoder of our own), AAC already done. Check: the
+   headphones report each codec; no drops at 990 kb/s LDAC in the next room.
+6. **Phase 4c: the kernel HCI driver** (2–3 days). Replace the vhci bridge with a module that
+   registers an `hci_dev` and calls STP directly, so no user process wakes for every packet.
+   Measure BTIF interrupts and battery against Sony's stack with the same headphones and codec.
+   Ships with the kernel option (partition 8 only; the little kernel is never touched).
+7. **Phase 4d: what Sony's stack does that ours must too** (a week, in pieces). Receiver mode
+   (A2DP sink), headphone battery level, NFC pairing, the BLE remote. Until each exists, the
+   switch hands that job back to Sony's stack.
+8. **Phase 1, battery** (owner: an hour a run, the player left alone). Make the tracker count
+   Bluetooth playback, then before/after readings for the engine, the index and our Bluetooth
+   stack. Runs fit in any night the owner does not need the player.
+9. **Phase 5, boot and memory** (after step 2). A day of 30-minute memory lines first; then which
+   Sony services Cinder never calls and whether the boot waits on them (partition 8 change).
+
+Phase 0's watcher (51.24) is passive: it needs a redial that loses AVRCP, which has not happened
+since it was built. It is checked whenever the owner's headphones redial.
 
 ## Limits this removes
 

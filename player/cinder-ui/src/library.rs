@@ -539,18 +539,41 @@ pub fn band_and_side(y_below: i32) -> ((i32, i32, i32, i32), (i32, i32, i32, i32
     ((x, y, w - h - 8, h), (x + w - h, y, h, h))
 }
 
+type Rect = (i32, i32, i32, i32);
+
+/// [`band_and_side`] with a second square button at the far right: `(band, side, add)`. The add
+/// button puts the band's tracks at the end of Up Next (owner, 11-19).
+fn band_side_add(y_below: i32) -> (Rect, Rect, Rect) {
+    let (x, y, w, h) = shuffle_band_rect(y_below);
+    (
+        (x, y, w - 2 * (h + 8), h),
+        (x + w - 2 * h - 8, y, h, h),
+        (x + w - h, y, h, h),
+    )
+}
+
 fn inside((bx, by, bw, bh): (i32, i32, i32, i32), x: i32, y: i32) -> bool {
     (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
 }
 
 /// The "Play album" band on the album drill-in.
 pub fn album_play_band() -> (i32, i32, i32, i32) {
-    band_and_side(ALBUM_BAND_Y).0
+    band_side_add(ALBUM_BAND_Y).0
+}
+
+/// The album page's add button: the whole album to the end of Up Next.
+pub fn album_add_button() -> Rect {
+    band_side_add(ALBUM_BAND_Y).2
+}
+
+/// True if `(x, y)` is on the album page's add button.
+pub fn hit_album_add(x: i32, y: i32) -> bool {
+    inside(album_add_button(), x, y)
 }
 
 /// The album page's Shuffle button, beside "Play album": this album, its tracks shuffled.
 pub fn album_shuffle_button() -> (i32, i32, i32, i32) {
-    band_and_side(ALBUM_BAND_Y).1
+    band_side_add(ALBUM_BAND_Y).1
 }
 
 /// True if `(x, y)` is on the album page's Shuffle button.
@@ -2939,6 +2962,7 @@ pub fn album_view(
         crate::i18n::text("In order · then shuffle"),
     );
     side_button(c, t, album_shuffle_button(), icons::shuffle);
+    side_button(c, t, album_add_button(), icons::plus);
     let top = album_tracks_top();
     let rh = ALBUM_TRACK_RH();
     let total = album.rows();
@@ -3043,13 +3067,21 @@ pub fn artist_content_top() -> i32 {
 /// The artist page's "Shuffle artist" band, and beside it the Random album button (one of their
 /// albums, picked at random, played in order). With one album there is nothing to pick from, so
 /// there is no button and the band takes the whole line instead of leaving a gap.
-pub fn artist_band(albums: usize) -> ((i32, i32, i32, i32), Option<(i32, i32, i32, i32)>) {
+/// The artist page's band line: `(band, random album, add)`. Random album only with two or more
+/// albums; the add button (all the artist's tracks to the end of Up Next) always.
+pub fn artist_band(albums: usize) -> (Rect, Option<Rect>, Rect) {
     if albums > 1 {
-        let (band, side) = band_and_side(ARTIST_BAND_Y);
-        (band, Some(side))
+        let (band, side, add) = band_side_add(ARTIST_BAND_Y);
+        (band, Some(side), add)
     } else {
-        (shuffle_band_rect(ARTIST_BAND_Y), None)
+        let (band, add) = band_and_side(ARTIST_BAND_Y);
+        (band, None, add)
     }
+}
+
+/// True if `(x, y)` is on the artist page's add button.
+pub fn hit_artist_add(x: i32, y: i32, albums: usize) -> bool {
+    inside(artist_band(albums).2, x, y)
 }
 
 /// True if `(x, y)` is inside the artist page's "Shuffle artist" band.
@@ -3330,9 +3362,11 @@ pub fn artist_view(
         crate::i18n::text("Shuffle artist"),
         &crate::ui_format!("All {} tracks · random order", page.tracks.len()),
     );
-    if let Some(r) = artist_band(page.albums.len()).1 {
+    let (_, dice, add) = artist_band(page.albums.len());
+    if let Some(r) = dice {
         side_button(c, t, r, icons::dice);
     }
+    side_button(c, t, add, icons::plus);
 
     let top = artist_content_top();
     c.set_clip_y(top, LIST_BOTTOM);

@@ -18,6 +18,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Add to Up Next from the album and artist pages.** A + button beside Shuffle (album) and the
+  dice (artist) puts the whole album, or all of the artist's songs, at the end of Up Next without
+  replacing what is playing.
+
 - **Cinder can play FLAC itself** (being tested, off by default: `own_engine` in
   `cinder_advanced.conf`). A queue that is all FLAC is decoded by Cinder and played through Sony's
   sound service, so Sony's effects, volume and Bluetooth still apply, and 32-bit FLAC, which Sony's
@@ -32,6 +36,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   instead of 800 ms, and the first frame arrives 0.5–0.9 s after Cinder starts.
 
 ### Fixed
+
+- **The player could hang with looping sound if Play was pressed just as it went to sleep.** A key
+  pressed in the second after a paused player starts to sleep now stops the sleep before it acts,
+  and the player no longer sleeps within 10 s of a key press. *Device-unverified.*
+
+- **Play works on the first press after the player has been asleep.** Sony's key driver drops the
+  press that wakes the player, so Play had to be pressed twice. Cinder now plays when a side key
+  wakes it. Which key it was can't be read, so Next, Prev or volume pressed to wake a paused
+  player also start playback. *Device-verified.*
+
+- **The side buttons no longer light the screen.** Play, skip and volume work with the screen
+  dark; Power or a touch lights it.
 
 - **▶ could stay silent after resuming.** If the player was paused on the same song that a
   saved queue resumes from, ▶ updated the list but never started playing.
