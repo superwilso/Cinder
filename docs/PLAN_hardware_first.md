@@ -368,8 +368,18 @@ In order; each builds and passes the harness before the next starts.
    close): **all six power-on commands and the inquiry command completed with status 0** — the core
    takes commands from a program that is not Sony's stack. No device answered a 10 s inquiry at
    1 a.m. **Radio proven 11-19:** with the owner's headphones in pairing mode, a 15 s inquiry got
-   an answer at −58 dBm (`GO`, exit 0). Next: load the Bluetooth modules and bridge `/dev/stpbt`
-   to an HCI device, then pair and stream from a stack of our own.
+   an answer at −58 dBm (`GO`, exit 0). **Linux's stack drives it (11-19):** `compat.ko`,
+   `bluetooth.ko` and `hci_vhci.ko` load clean (Core 2.19); `cinder-home/tools/btbridge.c` copies
+   HCI packets between `/dev/stpbt` and `/dev/vhci`, and the kernel's own start-up and inquiry run
+   over it. One quirk: the core lists a feature page 2 and refuses to read it (status 0x30, which
+   the kernel turns into `ENOSYS`); the bridge reports page 1 as the last. Then
+   `cinder-home/tools/btpair.c` (no BlueZ daemon: the kernel's management socket and L2CAP)
+   paired in 1.2 s, read the headphones' endpoints over AVDTP (SBC, AAC, LDAC), configured AAC,
+   and sent 5 s of a 440 Hz tone as RTP/LATM frames from Cinder's AAC encoder: 215 frames, none
+   lost, 131 kb/s at a media MTU of 679. Test pairings use a changed address (`CINDER_BT_ALT=1`):
+   the real one is paired with the owner's headphones under Sony's stack, and a new key would
+   break that. Next: a real source (Cinder's PCM, not a tone), AVRCP volume, reconnect without
+   pairing (keep the link key), and a kernel HCI driver instead of the vhci bridge.
 7. **A command channel for tests, no screen** (owner, 11-19) — first cut built and device-tested
    11-19: `tools/devctl.sh cmd state | play | pause | next | prev | 'seek MS' | 'repeat 0-3'` (several
    at once, one answer a line). Dev builds only; cinder-home reads `/tmp/cinder_cmd` (keyed on the
