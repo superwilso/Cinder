@@ -11938,6 +11938,99 @@ fn liked_toggle_current(r: &mut Render) -> libc::c_int {
 /// time on every position update.
 ///
 /// Returns 0 on success, -2 if the renderer isn't initialised.
+/// Dev: scan the music folders into Cinder's own library index (`cinder_db::index`, Phase 2 of
+/// docs/PLAN_hardware_first.md) on a thread of its own, then log how it compares with MTPDB:
+/// counts, time, and the first paths whose tags disagree. The UI does not read the index yet.
+/// The index lives on /data (ext4), which stays mounted while /contents is shared over USB.
+#[no_mangle]
+pub extern "C" fn cinder_index_scan() -> libc::c_int {
+    const INDEX: &str = "/data/cinder/library.db";
+    const ROOTS: [&str; 2] = ["/contents/MUSIC", "/contents_ext/MUSIC"];
+    let db = {
+        let guard = cell().lock().unwrap();
+        guard.as_ref().and_then(|r| r.db_path.clone())
+    };
+    let run = move || -> Result<(), Box<dyn std::error::Error>> {
+        let mtpdb = db.as_deref().map(cinder_db::Db::open).transpose()?;
+        let tracks = mtpdb
+            .as_ref()
+            .map(|d| d.tracks_album_order())
+            .transpose()?
+            .unwrap_or_default();
+        let albums = mtpdb
+            .as_ref()
+            .map(|d| d.albums().map(|a| a.len()))
+            .transpose()?
+            .unwrap_or(0);
+        let ids = tracks
+            .iter()
+            .map(|t| (t.filename.clone(), t.object_id))
+            .collect();
+        let c = cinder_db::index::open(INDEX)?;
+        let rep = cinder_db::index::scan(&c, &ROOTS, &ids)?;
+        let (tr, al, ar) = cinder_db::index::counts(&c)?;
+        let dis = cinder_db::index::disagreements(&c, &tracks)?;
+        eprintln!(
+            "cinder-ffi: index: {} files, {} read, {} gone, {} new ids in {} ms; {tr} tracks, {al} albums, {ar} artists; MTPDB {} tracks, {albums} albums; {} disagree",
+            rep.files, rep.read, rep.removed, rep.new_ids, rep.ms, tracks.len(), dis.len()
+        );
+        for d in dis.iter().take(12) {
+            eprintln!("cinder-ffi: index: {d}");
+        }
+        Ok(())
+    };
+    std::thread::Builder::new()
+        .name("cinder-index".into())
+        .spawn(move || {
+            if let Err(e) = run() {
+                eprintln!("cinder-ffi: index: scan failed: {e}");
+            }
+        })
+        .is_ok() as libc::c_int
+}
+
+/// One line for the shell's memory log: what the UI's own caches and model hold, in KB. Writes
+/// at most `cap` bytes (NUL-terminated); returns the length, or -1 before init.
+#[no_mangle]
+pub extern "C" fn cinder_mem_report(buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
+    if buf.is_null() || cap <= 0 {
+        return -1;
+    }
+    let line = {
+        let guard = cell().lock().unwrap();
+        let Some(r) = guard.as_ref() else { return -1 };
+        let img = |m: &std::collections::HashMap<i64, cinder_ui::art::Image>| {
+            m.values().map(|i| i.rgb.len()).sum::<usize>()
+        };
+        let lib = r.app.library();
+        let (glyph, glyphs, chain) = r.fonts.mem_report();
+        let np_art = r.art_full.as_ref().map_or(0, |i| i.rgb.len())
+            + r.art_thumb.as_ref().map_or(0, |i| i.rgb.len());
+        format!(
+            "thumbs={}KB/{} covers={}KB/{} pl_thumbs={}KB np_art={}KB scaled+grad={}KB glyphs={}KB/{} chain_fonts={} songs={} albums={} artists={}",
+            img(&lib.thumbs) / 1024,
+            lib.thumbs.len(),
+            img(&lib.covers) / 1024,
+            lib.covers.len(),
+            img(&lib.playlist_thumbs) / 1024,
+            np_art / 1024,
+            cinder_ui::art::cache_bytes() / 1024,
+            glyph / 1024,
+            glyphs,
+            chain,
+            lib.songs.len(),
+            lib.album_groups.len(),
+            lib.artists.len(),
+        )
+    };
+    let n = line.len().min(cap as usize - 1);
+    unsafe {
+        std::ptr::copy_nonoverlapping(line.as_ptr(), buf as *mut u8, n);
+        *buf.add(n) = 0;
+    }
+    n as libc::c_int
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_set_play_position(
     cur_ms: libc::c_int,

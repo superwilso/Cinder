@@ -2628,6 +2628,11 @@ impl App {
         self.album_view
     }
     #[doc(hidden)]
+    #[doc(hidden)]
+    pub fn lib_scroll_px_for_test(&self) -> i32 {
+        self.lib_scroll_px
+    }
+
     pub fn set_night_for_test(&mut self, n: bool) {
         self.night = n;
     }

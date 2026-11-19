@@ -28,6 +28,7 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -157,10 +158,16 @@ struct Engine {
     long long want_ms = 0;
     Cmd cmd = NONE;
     bool repeat_one = false;
+    int crossfade_ms = 0;   // 0 = gapless, the default
     // The audible song, for current_uri; under mu.
     int audible_idx = -1;
     bool active = false;    // a queue is loaded
     bool playing = false;
+    // A song the engine cannot play (not FLAC) was reached: PlayerService takes the queue from
+    // here. Set by the engine thread, acted on by the shell's thread (cinder_audio_engine_poll),
+    // because Sony's player is driven from that thread only.
+    int handover_idx = -1;
+    long long handover_ms = 0;
 };
 
 static Engine E;
@@ -171,11 +178,11 @@ static bool is_flac(const char* u) {
     return n > 5 && strcasecmp(u + n - 5, ".flac") == 0;
 }
 
-static bool takes(const char* const* uris, int count) {
-    if (!s_enabled || count <= 0) return false;
-    for (int i = 0; i < count; ++i)
-        if (!uris[i] || !is_flac(uris[i])) return false;
-    return true;
+// The engine takes a queue whose first song is FLAC; at the first song that is not, it hands the
+// queue to PlayerService (handover_idx). ponytail: one way only — PlayerService keeps a queue it
+// was handed, FLAC songs after it included. Hand back if long mixed queues need the engine.
+static bool takes(const char* const* uris, int count, int start) {
+    return s_enabled && start >= 0 && start < count && uris[start] && is_flac(uris[start]);
 }
 
 static void publish_pos(long long pos_ms, long long dur_ms) {
@@ -184,6 +191,15 @@ static void publish_pos(long long pos_ms, long long dur_ms) {
     g_cb_pos_ms.store(p, std::memory_order_relaxed);
     g_cb_dur_ms.store((int)dur_ms, std::memory_order_relaxed);
     g_cb_events.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Up to `frames` frames from `d` as interleaved stereo in `buf` (2 × frames ints): mono plays on
+// both sides.
+static long read_stereo(void* d, unsigned ch, int* buf, long frames) {
+    const long n = cinder_flac_read(d, buf, (size_t)frames);
+    if (n > 0 && ch == 1)
+        for (long i = n - 1; i >= 0; i--) buf[2 * i] = buf[2 * i + 1] = buf[i];
+    return n;
 }
 
 static void* run(void*) {
@@ -196,8 +212,14 @@ static void* run(void*) {
     void* dec = nullptr;
     int dec_idx = -1;
     unsigned rate = 0, ch = 0, bits = 0;
-    unsigned long long total = 0;
-    static int pcm[2048 * 2];
+    unsigned long long total = 0, dpos = 0;   // dpos: frames of this song decoded so far
+    // Crossfade: the next song's decoder, mixed in over this song's last `fade_len` frames.
+    void* dec2 = nullptr;
+    int dec2_idx = -1, fade_tried = -1;
+    unsigned ch2 = 0;
+    unsigned long long total2 = 0, d2pos = 0;
+    long long fade_len = 0, fade_done = 0;
+    static int pcm[2048 * 2], pcm2[2048 * 2];
     static unsigned char out[2048 * 2 * 4];
     // Timing: wf = frames written to the track since the last flush (frames, not ms: 2048 frames
     // is 46.44 ms and rounding each block would drift); t0 = when that started playing (wall
@@ -218,7 +240,8 @@ static void* run(void*) {
         while (songs.size() > 1 && songs[1].at_written_ms <= p) songs.pop_front();
         return songs.empty() ? Song{0, -1, 0, 0} : songs.front();
     };
-    auto close_dec = [&]() { if (dec) { cinder_flac_close(dec); dec = nullptr; dec_idx = -1; } };
+    auto close_dec2 = [&]() { if (dec2) { cinder_flac_close(dec2); dec2 = nullptr; dec2_idx = -1; } };
+    auto close_dec = [&]() { close_dec2(); if (dec) { cinder_flac_close(dec); dec = nullptr; dec_idx = -1; } };
     auto open_dec = [&](int idx, const std::string& u) -> bool {
         close_dec();
         dec = cinder_flac_open(u.c_str());
@@ -226,10 +249,23 @@ static void* run(void*) {
         cinder_flac_info(dec, &rate, &ch, &bits, &total);
         if (ch != 1 && ch != 2) { close_dec(); return false; }   // mono plays on both sides
         dec_idx = idx;
+        dpos = 0;
+        fade_tried = -1;
         return true;
     };
 
     std::unique_lock<std::mutex> lk(E.mu);
+    // Called with lk held and the track already closed: PlayerService takes the queue at `idx`.
+    auto hand_over = [&](int idx, long long ms) {
+        std::fprintf(stderr, "[cinder-audio] engine: #%d is not FLAC — PlayerService takes the queue\n", idx);
+        E.handover_idx = idx;
+        E.handover_ms = ms;
+        E.active = false;
+        E.playing = playing = false;
+        E.audible_idx = -1;
+        songs.clear();
+        E.cv.notify_all();
+    };
     for (;;) {
         // ── commands ──
         if (E.cmd != NONE) {
@@ -256,6 +292,7 @@ static void* run(void*) {
                 playing = false;
                 E.playing = false;
                 lk.unlock();
+                close_dec2();   // a crossfade in progress restarts as a plain song on resume
                 if (k.t) call0(k, 0x28);   // Pause
                 lk.lock();
                 continue;
@@ -265,11 +302,22 @@ static void* run(void*) {
                 const long long ms = E.want_ms;
                 const std::string u = idx >= 0 && idx < (int)E.uris.size() ? E.uris[idx] : std::string();
                 lk.unlock();
+                if (!u.empty() && !is_flac(u.c_str())) {
+                    close_dec();
+                    track_close(k);
+                    lk.lock();
+                    hand_over(idx, ms);
+                    continue;
+                }
+                close_dec2();
                 bool ok = !u.empty() && (dec_idx == idx || open_dec(idx, u));
                 if (ok && k.t && (k.rate != rate || k.bits != bits)) track_close(k);
                 if (ok && !k.t) ok = track_open(k, rate, bits);
                 else if (ok) track_flush(k);
-                if (ok) cinder_flac_seek(dec, (unsigned long long)(ms * rate / 1000));
+                if (ok) {
+                    cinder_flac_seek(dec, (unsigned long long)(ms * rate / 1000));
+                    dpos = (unsigned long long)(ms * rate / 1000);
+                }
                 lk.lock();
                 if (!ok) {
                     std::fprintf(stderr, "[cinder-audio] engine: cannot play %s\n", u.c_str());
@@ -293,16 +341,71 @@ static void* run(void*) {
         // ── one block ──
         const int qn = (int)E.uris.size();
         const bool rep1 = E.repeat_one;
+        // Crossfade: once this song is within `crossfade_ms` of its end, open the next one.
+        std::string next_u;
+        if (E.crossfade_ms > 0 && !rep1 && !dec2 && fade_tried != dec_idx && total && dec_idx + 1 < qn
+            && (long long)(total - dpos) <= (long long)E.crossfade_ms * rate / 1000) {
+            fade_tried = dec_idx;
+            next_u = E.uris[dec_idx + 1];
+        }
         lk.unlock();
-        long n = cinder_flac_read(dec, pcm, 2048);
+        if (!next_u.empty() && is_flac(next_u.c_str()) && (dec2 = cinder_flac_open(next_u.c_str()))) {
+            unsigned r2 = 0, b2 = 0;
+            cinder_flac_info(dec2, &r2, &ch2, &b2, &total2);
+            if (r2 != rate || b2 != bits || (ch2 != 1 && ch2 != 2)) {
+                close_dec2();   // another format: no fade, the usual change at the end
+            } else {
+                dec2_idx = dec_idx + 1;
+                d2pos = 0;
+                fade_len = (long long)(total - dpos);
+                fade_done = 0;
+                std::rename("/tmp/cinder_rg_next", "/tmp/cinder_rg");
+                songs.push_back(Song{written_ms(), dec2_idx, 0, (long long)(total2 * 1000 / r2)});
+            }
+        }
+        long n = read_stereo(dec, ch, pcm, 2048);
+        if (dec2) {
+            // Mix: the old song fades out as the new one fades in (linear gains).
+            // ponytail: linear, not equal-power; switch if the middle of a fade sounds dipped.
+            const long m = n > 0 ? n : 0;
+            long n2 = read_stereo(dec2, ch2, pcm2, m ? m : 2048);
+            if (n2 < 0) n2 = 0;
+            const long frames = m > n2 ? m : n2;
+            for (long i = 0; i < frames; i++) {
+                const double g = fade_len > 0 ? std::min(1.0, (double)(fade_done + i) / (double)fade_len) : 1.0;
+                for (int c = 0; c < 2; c++) {
+                    const double a = i < m ? pcm[2 * i + c] : 0, b = i < n2 ? pcm2[2 * i + c] : 0;
+                    pcm[2 * i + c] = (int)(a * (1.0 - g) + b * g);
+                }
+            }
+            fade_done += m;
+            dpos += (unsigned long long)m;
+            d2pos += (unsigned long long)n2;
+            if (n <= 0) {
+                // The old song is over: the next one carries on alone.
+                cinder_flac_close(dec);
+                dec = dec2;
+                dec_idx = dec2_idx;
+                ch = ch2;
+                total = total2;
+                dpos = d2pos;
+                dec2 = nullptr;
+                dec2_idx = -1;
+            }
+            n = frames;
+            if (n == 0) { lk.lock(); continue; }
+        } else if (n > 0) {
+            dpos += (unsigned long long)n;
+        }
         if (n <= 0) {
             // End of this song (or a damaged file): the next one, gapless if its format matches.
             int next = rep1 ? dec_idx : dec_idx + 1;
-            bool ok = false;
+            bool ok = false, other = false;
             while (next < qn) {
                 lk.lock();
                 const std::string u = next < (int)E.uris.size() ? E.uris[next] : std::string();
                 lk.unlock();
+                if (!u.empty() && !is_flac(u.c_str())) { other = true; break; }
                 if (!u.empty() && open_dec(next, u)) { ok = true; break; }
                 std::fprintf(stderr, "[cinder-audio] engine: skipping %s\n", u.c_str());
                 ++next;
@@ -319,24 +422,26 @@ static void* run(void*) {
             // The song after this one is now in the sound service — Sony's "reason 2" moment,
             // which is when ReplayGain's next gain becomes the current one (on_sequence).
             if (ok) std::rename("/tmp/cinder_rg_next", "/tmp/cinder_rg");
-            lk.lock();
             if (!ok) {
-                // End of the queue: let it play out, then free the track for everyone else.
-                lk.unlock();
+                // End of the queue, or a song PlayerService must play: let this one play out,
+                // then free the track for everyone else.
                 while (played() < written_ms()) usleep(20000);
                 close_dec();
                 track_close(k);
                 lk.lock();
+                if (other) {
+                    hand_over(next, 0);
+                    continue;
+                }
                 E.playing = playing = false;
                 E.active = false;
                 g_halted_at_ms.store(now_ms(), std::memory_order_relaxed);
                 continue;
             }
+            lk.lock();
             songs.push_back(Song{written_ms(), next, 0, dur_of()});
             continue;
         }
-        if (ch == 1)
-            for (long i = n - 1; i >= 0; i--) pcm[2 * i] = pcm[2 * i + 1] = pcm[i];
         unsigned char* o = out;
         for (long i = 0; i < n * 2; i++)
             for (unsigned b = 0; b < k.bytes; b++) *o++ = (unsigned char)(pcm[i] >> (8 * b));
@@ -352,11 +457,25 @@ static void* run(void*) {
         if (now - last_pub >= 250) {
             last_pub = now;
             const Song s = audible();
+            if (s.idx != E.audible_idx)
+                std::fprintf(stderr, "[cinder-audio] engine: %lld.%03lld now #%d (%lld ms) %s\n", now / 1000, now % 1000, s.idx, s.dur_ms,
+                             s.idx >= 0 && s.idx < (int)E.uris.size() ? E.uris[s.idx].c_str() : "?");
             E.audible_idx = s.idx;
             publish_pos(s.offset_ms + (played() - s.at_written_ms), s.dur_ms);
         }
     }
     return nullptr;
+}
+
+// For the shell's thread: a handover the engine asked for, with the queue to give PlayerService.
+static bool take_handover(std::vector<std::string>& uris, int& idx, long long& ms) {
+    std::lock_guard<std::mutex> g(E.mu);
+    if (E.handover_idx < 0) return false;
+    uris = E.uris;
+    idx = E.handover_idx;
+    ms = E.handover_ms;
+    E.handover_idx = -1;
+    return true;
 }
 
 static void ensure_thread() {
@@ -492,6 +611,11 @@ static int current_uri(char* buf, int cap) {
 } // namespace eng
 
 extern "C" {
+void cinder_audio_engine_crossfade(int ms) {
+    std::lock_guard<std::mutex> g(eng::E.mu);
+    eng::E.crossfade_ms = ms > 0 ? ms : 0;
+}
+
 void cinder_audio_engine_enable(int on) {
     eng::s_enabled = on != 0;
     std::fprintf(stderr, "[cinder-audio] engine: %s\n", on ? "ON for all-FLAC queues" : "off");

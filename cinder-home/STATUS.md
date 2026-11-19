@@ -1027,8 +1027,9 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   * **Held volume on Bluetooth** moves one step at a time: device-verified (51.26).
   * **Own FLAC engine** (`own_engine` in `cinder_advanced.conf`, off by default): Cinder decodes
     all-FLAC queues itself into Sony's sound service, keeping Sony's effects, volume and Bluetooth;
-    32-bit FLAC plays. Its track over the jack and Bluetooth, with EQ, is device-verified; playback
-    through the full engine (pause, seek, skip, gapless) is not yet (51.27).
+    32-bit FLAC plays. Its track over the jack and Bluetooth, with EQ, is device-verified, and so are
+    play, pause, seek, skip, repeat one and the song change through the full engine (51.28); album
+    skip, end of queue and the switch to an MP3 queue are not yet.
 
 - **New options, 2026-10-23 — code done, device-gated** (`docs/DEVICE_CHECKLIST.md` §39):
   * **ATRAC on any region** (`atrac`): verified by hand-install 10-22; installer path unrun.

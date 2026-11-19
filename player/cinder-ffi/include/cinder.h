@@ -465,6 +465,10 @@ int  cinder_scrub_action(void);
  * the real play/pause state. Takes priority over the local play-clock estimate and is what makes
  * the progress bar follow seeks and mid-track starts. `cur_ms` < 0 = no update yet (ignored);
  * `total_ms` <= 0 keeps the DB duration. 0 = ok, -2 = renderer not initialised. */
+/* One line of the UI's own memory (caches, glyphs, library), in KB. Returns its length, -1 before init. */
+int cinder_mem_report(char* buf, int cap);
+/* Dev: scan the music folders into Cinder's own index on a thread; logs how it compares with MTPDB. */
+int cinder_index_scan(void);
 int  cinder_set_play_position(int cur_ms, int total_ms, int playing);
 
 /* Enable the built-in scrobbler: appends an Audioscrobbler/1.1 `.scrobbler.log` at `path`

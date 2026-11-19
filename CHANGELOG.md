@@ -21,7 +21,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Cinder can play FLAC itself** (being tested, off by default: `own_engine` in
   `cinder_advanced.conf`). A queue that is all FLAC is decoded by Cinder and played through Sony's
   sound service, so Sony's effects, volume and Bluetooth still apply, and 32-bit FLAC, which Sony's
-  player can't decode, plays. Any other queue plays as before.
+  player can't decode, plays. A queue that starts with FLAC and reaches another format hands over
+  to Sony's player at that song. `crossfade=N` in the same file fades songs into each other over
+  N seconds (off by default, so albums stay gapless).
 
 ### Changed
 
@@ -42,6 +44,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   `preload` component Cinder now opens that channel itself a few seconds after the link comes up,
   with no hang-up; without it, Cinder checks 15 seconds after every connect and repairs the link
   straight away instead of waiting for you to press volume.
+- **Album covers appear straight away when you scroll the album grid quickly.** The grid used to
+  show coloured blocks that turned into covers one by one; it now shows each album's small cover
+  at once and sharpens it when the full one has loaded.
+- **The album grid scrolls smoothly at night again.** Night mode dimmed each cover pixel by pixel
+  with slow arithmetic; a drag frame took 43 ms on the player and now takes 13–16 ms.
 - **Holding a volume button with Bluetooth headphones moves them one step at a time again.** On
   headphones that claim absolute volume, the bar ran several steps ahead of what was sent, then
   jumped back.

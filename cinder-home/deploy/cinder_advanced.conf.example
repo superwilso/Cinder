@@ -28,6 +28,9 @@
 # tested). Sony's effects, volume and Bluetooth still apply; 32-bit FLAC plays. Other formats are
 # unchanged. Read at start.
 #own_engine
+# Fade from one song into the next over this many seconds (own_engine only; songs of the same
+# sample rate and bit depth). Off by default: albums stay gapless.
+#crossfade=4
 
 # ── Other ────────────────────────────────────────────────────────────────────────────────────
 # Do not write /contents/.scrobbler.log (for players that run another scrobbler).

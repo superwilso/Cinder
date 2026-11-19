@@ -350,6 +350,20 @@ pub struct FontSet {
 }
 
 impl FontSet {
+    /// For the memory line: (glyph-cache bitmap bytes, glyph-cache entries, device chain fonts
+    /// parsed). A parsed chain font is tens of megabytes (see `fallback`).
+    pub fn mem_report(&self) -> (usize, usize, usize) {
+        let g = self.glyph_cache.borrow();
+        let bytes = g.values().map(|(_, b)| b.len()).sum();
+        let chain = self
+            .fallbacks
+            .borrow()
+            .iter()
+            .filter(|s| matches!(s, Slot::Ready(_)))
+            .count();
+        (bytes, g.len(), chain)
+    }
+
     pub fn load() -> Self {
         let _ = std::thread::Builder::new()
             .name("cinder-fonts".into())

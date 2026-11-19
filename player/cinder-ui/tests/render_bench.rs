@@ -476,3 +476,112 @@ fn bench_derived_state() {
         let _ = small.clone().len();
     });
 }
+
+/// The album GRID while a finger scrolls it — the owner's "laggy when scrolling quickly" (11-18:
+/// the player's dev log showed 43 ms a drag frame on the grid, night on, against 7–8 ms on 11-03).
+/// Goes through `App::render`, the path the device takes, with the grid view chosen, the list
+/// moving every frame, day and night, with and without the 96 px grid covers.
+#[test]
+#[ignore]
+fn bench_grid_scroll() {
+    use cinder_ui::library::Tab;
+    use cinder_ui::model::{AlbumRow, ArtistGroup, Library, SongRow};
+
+    let mut album_groups = Vec::new();
+    let mut songs = Vec::new();
+    let mut aid = 0i64;
+    for a in 0..170 {
+        let artist = format!("Artist {a:03}");
+        let mut albums = Vec::new();
+        for _ in 0..2 {
+            aid += 1;
+            let name = format!("Album {aid:03}");
+            let track_list: Vec<SongRow> = (0..10)
+                .map(|i| SongRow {
+                    title: format!("{name} track {i}"),
+                    artist: artist.clone(),
+                    dur: "3:20".into(),
+                    art: name.clone(),
+                    object_id: aid * 100 + i,
+                    album_id: aid,
+                    ..Default::default()
+                })
+                .collect();
+            songs.extend(track_list.iter().cloned());
+            albums.push(AlbumRow {
+                name: name.clone(),
+                artist: artist.clone(),
+                year: "2019".into(),
+                tracks: 10,
+                art: name,
+                album_id: aid,
+                added: aid,
+                track_list,
+                ..Default::default()
+            });
+        }
+        album_groups.push(ArtistGroup { artist, albums });
+    }
+    let f = FontSet::load();
+    let levels = [0.5f32; 36];
+    let cover = cinder_ui::art::Image {
+        w: 96,
+        h: 96,
+        rgb: vec![90u8; 96 * 96 * 3],
+    };
+    for (covers, night) in [
+        (0u8, false),
+        (0, true),
+        (1, false),
+        (1, true),
+        (2, false),
+        (2, true),
+    ] {
+        let mut lib = Library {
+            songs: songs.clone(),
+            album_groups: album_groups.clone(),
+            ..Default::default()
+        };
+        if covers > 0 {
+            for id in 1..=aid {
+                if covers == 2 {
+                    lib.covers.insert(id, cover.clone());
+                }
+                lib.thumbs.insert(
+                    id,
+                    cinder_ui::art::Image {
+                        w: 48,
+                        h: 48,
+                        rgb: vec![90u8; 48 * 48 * 3],
+                    },
+                );
+            }
+        }
+        let mut app = cinder_ui::nav::App::new();
+        app.set_library(lib);
+        app.set_lib_views_str("list,grid,list,list");
+        app.open_library_for_test(Tab::Albums);
+        app.set_night_for_test(night);
+        let mut c = Canvas::new();
+        let n = 300;
+        let mut down = true;
+        time_it(
+            &format!(
+                "grid scroll, covers {}, night {}",
+                ["none", "thumbs only", "96 px"][covers as usize],
+                if night { "on " } else { "off" }
+            ),
+            n,
+            || {
+                app.scroll_px(if down { 60 } else { -60 });
+                app.render(&mut c, &f, &np(0, 0, 0, &levels));
+                if app.lib_scroll_px_for_test() > 20_000 {
+                    down = false;
+                }
+                if app.lib_scroll_px_for_test() <= 0 {
+                    down = true;
+                }
+            },
+        );
+    }
+}

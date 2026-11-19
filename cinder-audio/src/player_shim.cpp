@@ -389,7 +389,7 @@ void cinder_audio_shutdown(void) {
 int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
     if (!g_ctrl || !uris || count <= 0) return -1;
     if (start < 0 || start >= count) start = 0;
-    if (eng::takes(uris, count)) {
+    if (eng::takes(uris, count, start)) {
         release_for_engine();
         g_last_uris.assign(uris, uris + count);
         g_last_start = start;
@@ -706,6 +706,22 @@ int cinder_audio_seek_ms(int ms) {
                  ms, t1 - t0, t2 - t1, t3 - t2, t3 - t0);
     std::fflush(stderr);
     return rc;
+}
+
+// The engine reached a song it does not play (not FLAC): give PlayerService the queue from there.
+// Called from the shell's thread, which is the only one that drives Sony's player.
+int cinder_audio_engine_poll(void) {
+    std::vector<std::string> u;
+    int idx = 0;
+    long long ms = 0;
+    if (!eng::take_handover(u, idx, ms) || idx < 0 || idx >= (int)u.size()) return 0;
+    std::vector<const char*> p;
+    p.reserve(u.size());
+    for (const auto& s : u) p.push_back(s.c_str());
+    const int rc = cinder_audio_play_tracks(p.data(), (int)p.size(), idx);
+    if (rc == 0 && ms > 0) cinder_audio_seek_ms((int)ms);
+    std::fprintf(stderr, "[cinder-audio] engine: PlayerService took the queue at #%d rc=%d\n", idx, rc);
+    return 1;
 }
 
 /// Same, with the origin selectable. The `media_origin_t` VALUES are unverified (Begin=0/Current=1

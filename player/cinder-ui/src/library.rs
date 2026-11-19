@@ -329,7 +329,14 @@ fn grid_cover(c: &mut Canvas, t: &Theme, lib: &Library, album_id: i64, name: &st
                 art::scaled_cached(c, t, x, y, album_id, img, px, artdim(t))
             }
         }
-        _ => art::block_cached(c, t, x, y, px, px, name, artdim(t)),
+        // Not loaded yet (a fast scroll outruns the shell's few reads a frame): the list's 48 px
+        // thumbnail, always in memory, scaled up and cached. Soft for a moment, then the 96 px
+        // cover replaces it; before 2026-11-18 this was the gradient, so a fling showed colour
+        // blocks that turned into covers one by one — the "slow album covers" report.
+        _ => match lib.thumbs.get(&album_id).filter(|i| i.w > 0 && i.w == i.h) {
+            Some(th) => art::scaled_cached(c, t, x, y, album_id, th, px, artdim(t)),
+            None => art::block_cached(c, t, x, y, px, px, name, artdim(t)),
+        },
     }
 }
 
