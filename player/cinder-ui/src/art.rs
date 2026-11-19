@@ -248,52 +248,35 @@ impl Image {
 /// Blit a pre-scaled cover at (x0,y0). `opacity` blends toward `t.bg` exactly like `block`
 /// (night thumbs sit back at 0.32). The image is drawn 1:1 — scale at decode time.
 pub fn draw_image(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, opacity: f32) {
-    let (br, bg, bb) = (t.bg.r(), t.bg.g(), t.bg.b());
     let op = opacity.clamp(0.0, 1.0);
     // NIGHT DIM APPLIES TO PIXELS, NOT JUST TO THE PALETTE. Album art is decoded image data and
     // owes nothing to the theme's colours, so scaling the palette left covers at full brightness —
     // at the dimmest night step the UI went black and the artwork stayed blazing, which is exactly
     // backwards. Reported directly.
     //
-    // A 256-entry LOOKUP TABLE rather than a multiply per channel: a full cover is 230,400 pixels
-    // and three multiplies plus three divides each is real time on this CPU, where a table costs
-    // one load. Built only when the dim is actually on, so the day path is byte-for-byte the code
-    // it was before this existed and pays nothing.
-    let lut: Option<[u8; 256]> = if t.dim_pct >= 100 {
+    // Opacity (a blend toward `t.bg`) and the dim are folded into ONE 256-entry table per channel,
+    // built once per call: three loads a pixel. Until 2026-11-18 a cover below full opacity (every
+    // night thumb, at 0.32) did a float lerp with `round()` per channel per pixel — on the grid at
+    // night that tripled the whole frame (`bench_grid_scroll`: 673 µs against 226 on the host,
+    // 43 ms a drag frame on the player).
+    let dim = t.dim_pct.min(100);
+    let tables = if op >= 1.0 && dim >= 100 {
         None
     } else {
-        let mut l = [0u8; 256];
-        for (i, e) in l.iter_mut().enumerate() {
-            *e = ((i as u32) * t.dim_pct / 100) as u8;
-        }
-        Some(l)
-    };
-    if let Some(l) = lut {
-        for yy in 0..img.h {
-            let Some((skip, dst)) = c.row_run(y0 + yy as i32, x0, img.w) else {
-                continue;
-            };
-            let base = (yy * img.w + skip) * 3;
-            let Some(src) = img.rgb.get(base..) else {
-                continue;
-            };
-            if op >= 1.0 {
-                for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
-                    *d = ((l[s[0] as usize] as u32) << 16)
-                        | ((l[s[1] as usize] as u32) << 8)
-                        | l[s[2] as usize] as u32;
-                }
-            } else {
-                for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
-                    let r = l[lerp(br, s[0], op) as usize];
-                    let g = l[lerp(bg, s[1], op) as usize];
-                    let b = l[lerp(bb, s[2], op) as usize];
-                    *d = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
-                }
+        let table = |base: u8| {
+            let mut l = [0u8; 256];
+            for (i, e) in l.iter_mut().enumerate() {
+                let v = if op >= 1.0 {
+                    i as u8
+                } else {
+                    lerp(base, i as u8, op)
+                };
+                *e = (v as u32 * dim / 100) as u8;
             }
-        }
-        return;
-    }
+            l
+        };
+        Some((table(t.bg.r()), table(t.bg.g()), table(t.bg.b())))
+    };
     // Row at a time. The per-pixel `put` this replaced re-checked four bounds and recomputed an
     // index for each of a full cover's 230,400 pixels; `row_run` does the clip once per row and
     // hands back a slice, so the inner loop is just a pack-and-store the optimiser can unroll.
@@ -305,16 +288,18 @@ pub fn draw_image(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, opac
         let Some(src) = img.rgb.get(base..) else {
             continue;
         };
-        if op >= 1.0 {
-            for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
-                *d = ((s[0] as u32) << 16) | ((s[1] as u32) << 8) | s[2] as u32;
+        match &tables {
+            None => {
+                for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
+                    *d = ((s[0] as u32) << 16) | ((s[1] as u32) << 8) | s[2] as u32;
+                }
             }
-        } else {
-            for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
-                let r = lerp(br, s[0], op);
-                let g = lerp(bg, s[1], op);
-                let b = lerp(bb, s[2], op);
-                *d = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+            Some((lr, lg, lb)) => {
+                for (d, s) in dst.iter_mut().zip(src.as_chunks::<3>().0.iter()) {
+                    *d = ((lr[s[0] as usize] as u32) << 16)
+                        | ((lg[s[1] as usize] as u32) << 8)
+                        | lb[s[2] as usize] as u32;
+                }
             }
         }
     }
@@ -595,6 +580,15 @@ const CACHE_MAX_EDGE: i32 = 132;
 /// bounded at a few hundred KB — deliberately modest, for the allocator reason above. ~13 rows are
 /// visible at a time; the headroom covers a scroll without thrash.
 const GRAD_CACHE_MAX: usize = 64;
+
+/// Bytes held by this thread's gradient and scaled-art caches (the render thread's are the ones
+/// that matter). For the memory line.
+pub fn cache_bytes() -> usize {
+    fn sum<K>(m: &std::collections::HashMap<K, (u64, Image)>) -> usize {
+        m.values().map(|(_, i)| i.rgb.len()).sum()
+    }
+    GRAD_CACHE.with(|c| sum(&c.borrow())) + SCALED.with(|c| sum(&c.borrow()))
+}
 
 thread_local! {
     /// Value is `(last-used tick, baked pixels)` — the tick is what makes eviction keep the

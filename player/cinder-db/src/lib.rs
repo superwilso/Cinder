@@ -6,6 +6,8 @@
 //! object_ext_int (int props incl. DURATION, keyed by `akey`), schema (akey→prop_name),
 //! images (album art: othumb_id/mthumb_id → images.id → bmpfile | (value,dataoffset,datasize)).
 
+pub mod index;
+
 use rusqlite::{Connection, OpenFlags, Params, Result};
 
 #[derive(Debug, Clone)]

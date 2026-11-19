@@ -45,6 +45,7 @@
 #include <sys/socket.h>      // the USB-DAC -> LDAC bridge writes PCM to an abstract AF_UNIX socket
 #include <sys/un.h>
 #include <dlfcn.h>           // libasound is dlopen'd, NOT linked — see the LDAC bridge block
+#include <malloc.h>           // mallinfo, for the memory line
 
 // The render core: the Rust Cinder UI, built as a glibc C-ABI staticlib
 // (player/cinder-ffi -> libcinder_ffi.a). C ABI, so the renderer stays in Rust while
@@ -1027,6 +1028,35 @@ static void log_mirror(const char* path, long long& off, const char* prefix, con
     std::fclose(f);
 }
 
+// ── memory line (docs/PLAN_hardware_first.md, Phase 5) ──────────────────────────────────────
+// Once every 30 min, and on demand (`touch /tmp/cinder_mem.report` on a dev build): the process's
+// resident memory, malloc's view, and what the UI's caches and model hold. One line.
+void mem_log(const char* why) {
+    long rss = -1;
+    if (FILE* f = std::fopen("/proc/self/status", "r")) {
+        char l[128];
+        while (std::fgets(l, sizeof l, f)) {
+            std::sscanf(l, "VmRSS: %ld", &rss);
+        }
+        std::fclose(f);
+    }
+    const struct mallinfo mi = mallinfo();
+    char ui[400] = "";
+    cinder_mem_report(ui, sizeof ui);
+    char m[640];
+    std::snprintf(m, sizeof m, "mem (%s): rss=%ldKB heap=%dKB in_use=%dKB mmapped=%dKB %s", why,
+                  rss, mi.arena / 1024, mi.uordblks / 1024, mi.hblkhd / 1024, ui);
+    clog_(m);
+}
+
+void mem_log_tick() {
+    static long long next = 0;
+    const long long now = now_ms();
+    if (now < next) return;
+    if (next) mem_log("30 min");
+    next = now + 30LL * 60 * 1000;
+}
+
 void helper_log_mirror_tick() {
     static long long aac_off = 0, mono_off = 0;
     static const char* const kAac[] = {"encoder st", "link is", "behind ", nullptr};
@@ -1662,6 +1692,10 @@ void deferred_up() {
         // Cinder's own playback engine for all-FLAC queues (docs/PLAN_hardware_first.md, Phase 3):
         // opt-in while it is new, `own_engine` in /contents/cinder_advanced.conf.
         cinder_audio_engine_enable(adv_on("own_engine") ? 1 : 0);
+        {
+            char v[16];
+            if (adv_value("crossfade", v, sizeof v)) cinder_audio_engine_crossfade(std::atoi(v) * 1000);
+        }
     }
     // Sync the Settings "Battery care" toggle to the device's real Itawari state (guarded — the
     // PowerMgrServiceClient ctor connects to the power service). Unavailable (-1) leaves the UI default.
@@ -17031,6 +17065,8 @@ void* render_driver(void*) {
             }
             viz_analyzer_tick();              // analyzer runs only while its output is visible
             bt_trim_tick();                   // Bluetooth fine volume, applied off the press path
+            cinder_audio_engine_poll();       // the engine handing a non-FLAC song to PlayerService
+            mem_log_tick();                   // one memory line per 30 min (Phase 5)
             helper_log_mirror_tick();            // the AAC encoder's and the mono shim's lines, into this log (#43, #44)
             volume_limit_tick();              // the safe-listening cap, applied when it is flipped
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
@@ -17162,7 +17198,10 @@ void* render_driver(void*) {
                     seen = st.st_mtime;
                     return !stale;
                 };
-                static time_t settings_seen = 0, release_seen = 0;
+                static time_t settings_seen = 0, release_seen = 0, mem_seen = 0;
+                if (touched("/tmp/cinder_mem.report", mem_seen)) mem_log("asked");
+                static time_t index_seen = 0;
+                if (touched("/tmp/cinder_index.scan", index_seen)) cinder_index_scan();   // Phase 2, logs only
                 if (touched("/tmp/cinder_settings.reload", settings_seen)) {
                     cinder_settings_load("/contents/cinder_settings.conf");
                     fx_cache_drop();

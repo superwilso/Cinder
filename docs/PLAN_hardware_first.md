@@ -133,8 +133,26 @@ and playlists keep working untouched. Sony's scanner is no longer called by Cind
 4. What else reads MTPDB: Sony's stock UI after "boot to stock" (it rescans itself), and Sony's
    own MediaStoreService scans after USB (cannot be stopped from Cinder; it no longer matters).
 
-**Check.** Same track, album and artist counts as MTPDB on the owner's library; add/remove/rename
-over USB shows up in seconds; a forced reboot mid-scan loses nothing.
+**Built 2026-11-19 (night): the index, not yet the switch.** `cinder_db::index` (player/cinder-db/src/
+index.rs): walks `/contents/MUSIC` and `/contents_ext/MUSIC`, skips files whose size and mtime are
+unchanged, reads FLAC tags (STREAMINFO length, Vorbis comments; an ID3v2 tag in front is skipped),
+keeps each track's MTPDB id by path and gives new files ids above MTPDB's, drops rows for files that
+are gone. One small write per changed file, so a reboot mid-scan costs only that row. Lives in
+`/data/cinder/library.db` (ext4, mounted while `/contents` is shared over USB) rather than on
+`/contents`. Dev hook: `touch /tmp/cinder_index.scan` logs the comparison with MTPDB.
+
+On the owner's player: **4,914 tracks and 441 albums, identical to MTPDB, every id carried over**;
+first scan 43 s, a scan with nothing changed 3.3 s. 22 tracks differ, all deliberately: where a file
+repeats ARTIST (`Dead Calm` + `Masumi`) Sony keeps the last value and the index the first (the main
+artist), and Sony keeps a trailing space in a title that the index trims. Other formats are indexed
+by path with the file name as title (no ID3/MP4 reader yet; the owner's library has none).
+
+Next: the UI's `Library` built from the index instead of MTPDB (albums by album artist + album, ids
+unchanged so queue/playlists/likes/stats keep working, SensMe values joined from MTPDB by path),
+then a scan after USB and at boot instead of asking Sony's scanner, then ID3 and MP4 readers.
+
+**Check.** Same track, album and artist counts as MTPDB on the owner's library (passed for the
+index); add/remove/rename over USB shows up in seconds; a forced reboot mid-scan loses nothing.
 
 ## Phase 3 — Cinder decodes, Sony's sound service still plays
 
@@ -209,7 +227,19 @@ go through it. Mono plays on both sides; files with more than two channels are s
 the device build aborts on a Rust panic, the decoder was fuzzed with 35,000 damaged copies of the
 fixtures (`damaged_files_never_panic`, `CINDER_FLAC_FUZZ=N` for more); it found a seek underflow
 on truncated files, now fixed, and the predictors now wrap instead of overflowing. Installed on the
-owner's player with `own_engine` on; **playback through it is not yet tried** (checklist 51.27).
+owner's player with `own_engine` on. **Device test, 11-18 night (checklist 51.28):** play, pause, resume, seek, the resume position, repeat one, next, previous and an automatic song change (PCM never stops; Now Playing follows) pass. Not yet driven: album skip, 32-bit through the engine, end of queue.
+
+**Mixed queues and crossfade, built 2026-11-18 (night).** The engine now takes any queue whose
+first song is FLAC; at the first song that is not (reached by playing on, or by a skip), it plays
+out and hands the whole queue to PlayerService at that song (`cinder_audio_engine_poll`, on the
+shell's 1 s housekeeping, because Sony's player is driven from that thread only). One way only:
+PlayerService keeps the queue it was handed. Not device-tested: the owner's library is all FLAC
+(no other audio file on either store). Crossfade: `crossfade=N` (seconds) in
+`cinder_advanced.conf`, off by default; between songs of the same rate and depth the next song is
+opened N seconds before the end and mixed in with linear gains; repeat one, a pause or a seek
+cancel it. On the player with `crossfade=4`: the next song started during the old one with the PCM
+never stopping and Now Playing following; the exact 4 s lead is to be read from the timestamped
+`engine: … now #` line, and the owner's ear decides the curve.
 
 **Check.** The owner's library plays end to end with effects audibly on, over the jack and LDAC;
 the 32-bit file plays; gapless album shows no gap at the jack (capture rig).
@@ -232,9 +262,59 @@ sink (receiver mode), AVRCP both ways, NFC pairing, the BLE remote. Weeks, not d
 scan must find the headphones. Open: whether the chip needs vendor init commands beyond what the
 WMT driver does at power-on.
 
+**Read 2026-11-18 (kernel source and firmware, nothing run).** The MT8590 uses the built-in
+`conn_soc` driver: opening `/dev/stpbt` powers the Bluetooth core on through WMT
+(`mtk_wcn_wmt_func_on`) and closing it powers it off; `read`/`write` pass raw H4 bytes from STP's
+queue, so a bridge must split the stream into whole packets before handing each to `/dev/vhci`.
+The vendor init lives in `libbtdrv.so` (`BT_InitDevice` → `GORM_Init`): it reads the 64-byte NVRAM
+record `/data/BT_Addr` (address, voice, codec, radio, sleep, feature, TX power offset and coex
+fields, per its own log format) and sends vendor HCI commands built from it, starting with
+`GORMcmd_HCC_Set_Local_BD_Addr`.
+
+**The power-on commands, decoded 2026-11-18** (`bt_init_script_consys`, seven builders in
+`libbtdrv.so`; `persist.mtk.wcn.combo.chipid` selects the table; offsets are into the 64-byte
+`/data/BT_Addr` record, whose fields run address 6, voice 2, codec 4, radio 6, sleep 7, feature 2,
+TX power offset 3, coex 6):
+
+| # | HCI opcode | Parameters | What |
+|---|---|---|---|
+| 1 | `0x1009` then `0xFC1A` | 6 bytes, record 0x00 | read the chip's address, then set the one in the record |
+| 2 | `0xFC79` | 6 bytes, record 0x0C | radio settings |
+| 3 | `0xFC93` | 3 bytes, record 0x1B | TX power offset |
+| 4 | `0xFC7A` | 7 bytes, record 0x12 | sleep mode |
+| 5 | `0x0C03` | none | HCI Reset |
+| 6 | `0xFCBE` | `05` | firmware log on, only if `persist.bt.contdebuglog` is set |
+| 7 | `0xFC5F` | 42 bytes, fixed | firmware log setup, same condition |
+
+So a BlueZ bridge needs no firmware download and no undocumented handshake: open `/dev/stpbt`
+(WMT powers the core), send 1–5 built from `/data/BT_Addr`, then hand the stream to `/dev/vhci`.
+Commands 6–7 are optional.
+
+**Bridge for the spike only.** A `/dev/vhci` bridge puts a user process in the path of every
+packet (hundreds of wake-ups a second on LDAC). Shipping, the same job belongs in a small kernel
+module that registers an `hci_dev` and calls STP directly (`mtk_wcn_stp_send_data` /
+`_receive_data`, the functions `stp_chrdev_bt.c` wraps), with no user-space hop, which is fewer
+copies than Sony's own stack (`mtkbt` also reads `/dev/stpbt` from user space). It ships with the
+kernel option (partition 8). Battery: Bluetooth listening is dominated by BTIF interrupts (about
+500 a second), not the codec, so the bigger lever is fewer, larger transfers; measure the
+interrupt rate under BlueZ against Sony's before deciding. The voice, codec, feature and coex fields are not sent at power-on
+(Sony's stack may send them later, at SCO or coex time; the HCI trace would show it).
+
 ## Phase 5 — Boot time and memory
 
-**Measured.** Of `cinder-home`'s 115 MB, 94 MB is anonymous mappings and 14 MB heap; libraries
+**Measured 2026-11-18, an hour after boot:** 46 MB resident (34 MB anonymous), so most of the
+115 MB below grows with use (art, fonts, the library model), not at start.
+
+**The memory line, 2026-11-18.** `cinder-home` logs `mem (…)` every 30 minutes (and on
+`touch /tmp/cinder_mem.report`, dev builds): resident, malloc's heap, and the UI's own holdings
+(`cinder_mem_report`: thumbnails, covers, Now Playing art, scaled and gradient caches, glyphs,
+device fallback fonts parsed, library size). First reading, a minute after boot: resident 47 MB,
+heap 30 MB (27.8 MB in use) plus 5.7 MB mmapped; thumbnails 3 MB (441), Now Playing art 0.7 MB,
+glyphs 18 KB, no fallback font parsed; 4,914 songs, 268 albums. About 24 MB of the heap is not in
+those counters yet (library rows, parsed bundled fonts, Sony's client libraries). The 30-minute
+lines over a day of use show what grows toward the 115 MB below.
+
+**Measured earlier.** Of `cinder-home`'s 115 MB, 94 MB is anonymous mappings and 14 MB heap; libraries
 are small. The split inside the 94 MB needs Cinder's own counters (art caches, parsed fonts, the
 library model, frame buffers).
 

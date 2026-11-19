@@ -134,6 +134,11 @@ int  cinder_audio_dump_status(char *buf, int cap);
 // Cinder's own playback engine (src/engine.hpp): all-FLAC queues decoded by cinder-ffi and played
 // through Cinder's own track in Sony's sound service. Off until enabled.
 void cinder_audio_engine_enable(int on);
+/* Crossfade between songs of one format, in ms; 0 (the default) keeps songs gapless. */
+void cinder_audio_engine_crossfade(int ms);
+/* Call from the shell's loop: performs a handover to PlayerService the engine asked for (it reached
+   a song that is not FLAC). Returns 1 when it did. */
+int cinder_audio_engine_poll(void);
 
 #ifdef __cplusplus
 }
