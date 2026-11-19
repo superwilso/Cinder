@@ -367,7 +367,9 @@ In order; each builds and passes the harness before the next starts.
    off (nothing held the node; the kernel log shows WMT powering the core on at open and off at
    close): **all six power-on commands and the inquiry command completed with status 0** — the core
    takes commands from a program that is not Sony's stack. No device answered a 10 s inquiry at
-   1 a.m.; the radio path is proven only when something in pairing mode answers.
+   1 a.m. **Radio proven 11-19:** with the owner's headphones in pairing mode, a 15 s inquiry got
+   an answer at −58 dBm (`GO`, exit 0). Next: load the Bluetooth modules and bridge `/dev/stpbt`
+   to an HCI device, then pair and stream from a stack of our own.
 7. **A command channel for tests, no screen** (owner, 11-19) — first cut built and device-tested
    11-19: `tools/devctl.sh cmd state | play | pause | next | prev | 'seek MS' | 'repeat 0-3'` (several
    at once, one answer a line). Dev builds only; cinder-home reads `/tmp/cinder_cmd` (keyed on the
