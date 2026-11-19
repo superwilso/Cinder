@@ -154,10 +154,12 @@ fn vorbis_comments(b: &[u8], t: &mut Tags) {
                 .and_then(|n| n.trim().parse().ok())
                 .unwrap_or(0)
         };
-        // The first value of a repeated field wins, as Sony's scanner does.
+        // The LAST value of a repeated field wins and spaces are kept, as in Sony's scanner (MTPDB on
+        // the owner's player, 11-19: `ARTIST=Kelela` then `ARTIST=Fousheé` is listed as Fousheé, and
+        // a title's trailing space survives). Matching it keeps the Library the same on either source.
         let set = |f: &mut String| {
-            if f.is_empty() {
-                *f = v.trim().to_string();
+            if !v.is_empty() {
+                *f = v.to_string();
             }
         };
         match k.to_ascii_uppercase().as_str() {
@@ -207,10 +209,86 @@ fn id3_text(b: &[u8]) -> String {
     s.split('\0').next().unwrap_or("").trim().to_string()
 }
 
-/// MP3 tags: ID3v2.3/2.4 text frames (v2.2's three-letter frames too), ID3v1 at the end if there
-/// is no v2. ponytail: no length for MP3 (it needs the frame headers or a Xing header); MTPDB's
-/// length is kept for files it knows.
+/// MP3: the tags (below) and the length from the first MPEG Layer III frame.
 pub fn id3_tags<R: Read + Seek>(r: &mut R) -> Option<Tags> {
+    let t = id3_text_tags(r);
+    let mut h = [0u8; 10];
+    r.seek(SeekFrom::Start(0)).ok()?;
+    let start = match r.read_exact(&mut h) {
+        Ok(()) if &h[..3] == b"ID3" => {
+            let size = h[6..10]
+                .iter()
+                .fold(0u64, |a, b| (a << 7) | u64::from(*b & 0x7f));
+            10 + size + if h[5] & 0x10 != 0 { 10 } else { 0 }
+        }
+        _ => 0,
+    };
+    let ms = mp3_ms(r, start).unwrap_or(0);
+    if t.is_none() && ms == 0 {
+        return None;
+    }
+    let mut t = t.unwrap_or_default();
+    t.dur_ms = ms;
+    Some(t)
+}
+
+/// Length of an MPEG Layer III stream whose audio starts near `start`: the frame count in a Xing,
+/// Info or VBRI header when there is one, else the constant bitrate over the audio bytes.
+/// ponytail: Layers I/II (rare in a music library) report 0, as does a free-format bitrate.
+fn mp3_ms<R: Read + Seek>(r: &mut R, start: u64) -> Option<i64> {
+    let end = r.seek(SeekFrom::End(0)).ok()?;
+    r.seek(SeekFrom::Start(start)).ok()?;
+    let mut b = vec![0u8; 64 << 10];
+    let n = r.read(&mut b).ok()?;
+    let b = &b[..n];
+    // The first frame sync with a Layer III header that parses.
+    let (at, mpeg1, rate, kbps, mono) = (0..b.len().saturating_sub(4)).find_map(|i| {
+        let h = &b[i..i + 4];
+        if h[0] != 0xff || h[1] & 0xe0 != 0xe0 || h[1] & 0x06 != 0x02 {
+            return None;
+        }
+        let ver = (h[1] >> 3) & 3; // 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5
+        let (bi, si) = ((h[2] >> 4) as usize, ((h[2] >> 2) & 3) as usize);
+        if ver == 1 || bi == 0 || bi == 15 || si == 3 {
+            return None;
+        }
+        const V1: [u32; 15] = [
+            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+        ];
+        const V2: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+        let rate = [44100u32, 48000, 32000][si] >> [2, 0, 1, 0][ver as usize];
+        let kbps = if ver == 3 { V1[bi] } else { V2[bi] };
+        Some((i, ver == 3, rate, kbps, h[3] >> 6 == 3))
+    })?;
+    let spf: u64 = if mpeg1 { 1152 } else { 576 };
+    let side = match (mpeg1, mono) {
+        (true, false) => 32,
+        (true, true) | (false, false) => 17,
+        (false, true) => 9,
+    };
+    let be = |o: usize| {
+        b.get(o..o + 4)
+            .map(|x| u32::from_be_bytes([x[0], x[1], x[2], x[3]]))
+    };
+    let x = at + 4 + side;
+    let frames = match b.get(x..x + 4) {
+        Some(b"Xing") | Some(b"Info") if be(x + 4)? & 1 != 0 => be(x + 8),
+        _ if b.get(at + 36..at + 40) == Some(b"VBRI") => be(at + 50),
+        _ => None,
+    };
+    if let Some(f) = frames {
+        return Some((u64::from(f) * spf * 1000 / u64::from(rate)) as i64);
+    }
+    // Constant bitrate: the audio bytes (less an ID3v1 tag) at the first frame's bitrate.
+    let mut v1 = [0u8; 3];
+    let tag = r.seek(SeekFrom::End(-128)).is_ok() && r.read_exact(&mut v1).is_ok() && &v1 == b"TAG";
+    let audio = end.saturating_sub(start + at as u64 + if tag { 128 } else { 0 });
+    Some((audio * 8 / u64::from(kbps)) as i64)
+}
+
+/// MP3 tags: ID3v2.3/2.4 text frames (v2.2's three-letter frames too), ID3v1 at the end if there
+/// is no v2.
+fn id3_text_tags<R: Read + Seek>(r: &mut R) -> Option<Tags> {
     let mut t = Tags::default();
     let mut h = [0u8; 10];
     r.seek(SeekFrom::Start(0)).ok()?;
@@ -428,8 +506,26 @@ fn read_tags(path: &str) -> Tags {
             .file_stem()
             .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
     }
+    // Sony's scanner keeps 255 UTF-16 units of a name (a longer album title in MTPDB, 11-19).
+    for f in [
+        &mut t.title,
+        &mut t.artist,
+        &mut t.album,
+        &mut t.album_artist,
+        &mut t.genre,
+    ] {
+        let mut units = 0;
+        if let Some((i, _)) = f.char_indices().find(|(_, ch)| {
+            units += ch.len_utf16();
+            units > SONY_NAME_UNITS
+        }) {
+            f.truncate(i);
+        }
+    }
     t
 }
+
+const SONY_NAME_UNITS: usize = 255;
 
 /// Rollback journal, not WAL: one writer (the scan) and readers that open, read and close.
 pub fn open(path: &str) -> rusqlite::Result<Connection> {
@@ -441,6 +537,15 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             title TEXT, artist TEXT, album TEXT, album_artist TEXT, track INTEGER, disc INTEGER,
             year TEXT, genre TEXT, dur_ms INTEGER);",
     )?;
+    // A change to how tags are read re-reads every file at the next scan (ids kept): bump this.
+    // 2 = Sony's rules for repeated fields, spaces and 255-unit names, and MP3 lengths (11-19).
+    const RULES: i64 = 2;
+    let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if v < RULES {
+        c.execute_batch(&format!(
+            "UPDATE files SET mtime = -1; PRAGMA user_version = {RULES};"
+        ))?;
+    }
     Ok(c)
 }
 
@@ -701,12 +806,13 @@ mod tests {
     fn reads_flac_tags_and_length() {
         let f = flac_with(
             &[
-                "TITLE=Dreams",
-                "artist=Fleetwood Mac",
+                "TITLE=Dreams ",
+                "artist=Kelela",
                 "ALBUM=Rumours",
                 "TRACKNUMBER=2/11",
                 "DATE=1977",
-                "TITLE=dup",
+                "ARTIST=Fousheé",
+                "TITLE=",
             ],
             44100,
             44100 * 257,
@@ -714,7 +820,8 @@ mod tests {
         let t = flac_tags(&mut std::io::Cursor::new(f)).unwrap();
         assert_eq!(
             (t.title.as_str(), t.artist.as_str(), t.album.as_str()),
-            ("Dreams", "Fleetwood Mac", "Rumours")
+            // As Sony lists them: the last ARTIST, the trailing space, an empty repeat ignored.
+            ("Dreams ", "Fousheé", "Rumours")
         );
         assert_eq!((t.track, t.year.as_str(), t.dur_ms), (2, "1977", 257_000));
         assert!(flac_tags(&mut std::io::Cursor::new(
@@ -834,6 +941,56 @@ mod tests {
     }
 
     #[test]
+    fn mp3_length_from_xing_vbri_or_bitrate() {
+        // MPEG-1 Layer III, 128 kb/s, 44.1 kHz, stereo.
+        let hdr = [0xffu8, 0xfb, 0x90, 0x00];
+        let cbr = [&hdr[..], &[0u8; 159_996]].concat(); // 160,000 bytes at 128 kb/s = 10 s
+        assert_eq!(
+            id3_tags(&mut std::io::Cursor::new(cbr)).unwrap().dur_ms,
+            10_000
+        );
+        let mut xing = [&hdr[..], &[0u8; 2000]].concat();
+        xing[36..40].copy_from_slice(b"Xing");
+        xing[43] = 1; // flags: frame count present
+        xing[44..48].copy_from_slice(&1000u32.to_be_bytes()); // 1000 x 1152 / 44100
+        assert_eq!(
+            id3_tags(&mut std::io::Cursor::new(xing)).unwrap().dur_ms,
+            26_122
+        );
+        let mut vbri = [&hdr[..], &[0u8; 2000]].concat();
+        vbri[36..40].copy_from_slice(b"VBRI");
+        vbri[50..54].copy_from_slice(&500u32.to_be_bytes());
+        assert_eq!(
+            id3_tags(&mut std::io::Cursor::new(vbri)).unwrap().dur_ms,
+            13_061
+        );
+        // An ID3v2 tag in front is skipped; not an MP3 at all stays None.
+        let tagged = [
+            &b"ID3\x03\0\0\0\0\0\x0a"[..],
+            &[0u8; 10],
+            &hdr,
+            &[0u8; 15_996],
+        ]
+        .concat();
+        assert_eq!(
+            id3_tags(&mut std::io::Cursor::new(tagged)).unwrap().dur_ms,
+            1_000
+        );
+        assert!(id3_tags(&mut std::io::Cursor::new(vec![0u8; 500])).is_none());
+    }
+
+    #[test]
+    fn long_names_are_cut_where_sonys_scanner_cuts_them() {
+        let p = std::env::temp_dir().join(format!("cinder_long_{}.flac", std::process::id()));
+        let album = format!("ALBUM={}’{}", "a".repeat(250), "b".repeat(20));
+        std::fs::write(&p, flac_with(&["TITLE=t", &album], 44100, 44100)).unwrap();
+        let t = read_tags(p.to_str().unwrap());
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(t.album.encode_utf16().count(), 255);
+        assert!(t.album.ends_with("’bbbb"));
+    }
+
+    #[test]
     fn scan_is_incremental_keeps_mtpdb_ids_and_drops_gone_files() {
         let dir = std::env::temp_dir().join(format!("cinder_index_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -871,6 +1028,20 @@ mod tests {
 
         let r = scan(&c, &[root], &ids).unwrap();
         assert_eq!(r.read, 0, "nothing changed, nothing read");
+
+        // An index written under older tag rules is re-read once, every id kept.
+        let db = std::env::temp_dir().join(format!("cinder_index_v_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db);
+        let old = open(db.to_str().unwrap()).unwrap();
+        scan(&old, &[root], &ids).unwrap();
+        old.execute_batch("PRAGMA user_version = 1").unwrap();
+        drop(old);
+        let reopened = open(db.to_str().unwrap()).unwrap();
+        let r = scan(&reopened, &[root], &ids).unwrap();
+        assert_eq!((r.read, r.new_ids), (2, 0), "re-read, no new ids");
+        assert_eq!(scan(&reopened, &[root], &ids).unwrap().read, 0);
+        drop(reopened);
+        let _ = std::fs::remove_file(&db);
 
         // The Library's list: MTPDB's row for the file it knows (its album id kept, the index's
         // tags on it), and the new file after it with an album id of its own.

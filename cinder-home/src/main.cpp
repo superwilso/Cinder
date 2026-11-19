@@ -14143,12 +14143,16 @@ static void dev_command_tick() {
             const int rr = cinder_resume_load("/data/cinder/queue.conf", "/data/cinder/resume.conf");
             if (rr == 1) g_playing = false;
             std::snprintf(res, sizeof res, "restore: %s", rr == 1 ? "queue reloaded, paused" : "nothing to restore");
+        } else if (w == "shuffle" && got == 2) {
+            const int act = cinder_dev_shuffle((int)n);
+            if (act > 0) carry_out(act);
+            std::snprintf(res, sizeof res, "shuffle %lld: %s", n, act < 0 ? "already" : "changed");
         } else if (w == "repeat" && got == 2) {
             const int act = cinder_dev_set_repeat((int)n);
             if (act) carry_out(act);
             std::snprintf(res, sizeof res, "repeat %lld: %s", n, act ? "changed" : "already");
         } else {
-            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, find TEXT, album ID|TEXT [SONG], restore)", word);
+            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, shuffle 0|1, find TEXT, album ID|TEXT [SONG], restore)", word);
         }
         out += res;
         out += '\n';

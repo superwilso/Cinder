@@ -340,14 +340,20 @@ In order; each builds and passes the harness before the next starts.
 2. **The Library from the index** — built and on the owner's player 11-19 (`own_index`): 4,914
    songs, 441 albums, 268 artists from the index, the same as MTPDB; a scan after boot (5.3 s,
    nothing changed, no reload) and after USB storage, and the Library reloads when a scan changed
-   something. A root that is not mounted keeps its rows. Writes go 200 files to a transaction (a
+   something. A root that is not mounted keeps its rows. **Now identical to MTPDB** (0 of 4,914
+   differ, 11-19 evening): the 22 differences were Sony's own rules, which the index now follows: a
+   repeated field keeps its LAST value (`ARTIST=Kelela`, `ARTIST=Fousheé` lists as Fousheé), spaces
+   are kept, and a name stops at 255 UTF-16 units. A change of rules re-reads every file once
+   (`PRAGMA user_version`, ids kept; 4,914 files in 30 s). Writes go 200 files to a transaction (a
    first scan on `/contents` took 91 s one commit per file). Original plan: build
    `cinder_ui::Library` from `/contents/.cinder/library.db` (ids unchanged; SensMe, art keys and
    play counts joined by id), MTPDB stays the fallback when the index is missing or empty.
 3. **When to scan:** at boot after `/contents` mounts, and after USB storage is released; never
    during USB storage. Sony's scanner keeps running for SensMe only.
 4. **ID3 (MP3) and MP4 (M4A/ALAC) tag readers** — built 11-19 (ID3v2.2–2.4 and v1; MP4 `ilst` and
-   the `mvhd` length), fuzzed with 4,000 damaged buffers; MP3 length still comes from MTPDB.
+   the `mvhd` length), fuzzed with 4,000 damaged buffers. MP3 length (Layer III) from the Xing,
+   Info or VBRI frame count, else the constant bitrate; host-tested only (the owner's library is all
+   FLAC).
 5. **/data headroom** — done 11-19. `/data` (35 MB) cannot grow without rewriting the eMMC partition
    table, but `/db` (ext4, 94 MB, ~80 MB free, never shared over USB, already holding Cinder's MTPDB
    copy) has room: the album-art cache (16 MB for 441 albums, ~37 KB an album) and the index moved
@@ -369,7 +375,9 @@ In order; each builds and passes the harness before the next starts.
    `'find TEXT'` (album ids), `'album ID|TEXT [SONG]'` (SONG counts from 1), `restore`, and
    `devctl.sh queue save|restore DIR`, which puts a queue back with no reboot. Testing `restore`
    found a real fault: ▶ on a pending resume, with the service paused on the same song, edited the
-   list and never played (fixed). Still to add: shuffle, play one track by path.
+   list and never played (fixed). `'shuffle 0|1'` added after; one track by path was dropped,
+   `album NAME SONG` already plays any song. Behind a dark screen an answer can take over 5 s
+   (devctl waits 10).
 8. **Battery runs** (Phase 1) wait for the owner: an hour each, player left alone.
 
 ## Limits this removes
