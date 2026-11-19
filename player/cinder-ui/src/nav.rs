@@ -5676,6 +5676,9 @@ impl App {
                     // rect; the old literal range started 16px above where the band is drawn.)
                     // Shuffle, beside it: this album, its tracks shuffled. One album is one group,
                     // so it deals songs whatever Settings ▸ Shuffle says.
+                    if library::hit_album_add(x, y) {
+                        return self.enqueue_album_at(&album, y, QueueAt::Later);
+                    }
                     if library::hit_album_shuffle(x, y) {
                         let ids: Vec<i64> = album.track_list.iter().map(|s| s.object_id).collect();
                         if ids.is_empty() {
@@ -6873,6 +6876,22 @@ impl App {
         }
         if library::hit_artist_random_album(x, y, albums) {
             return self.play_random_album();
+        }
+        // The add button: every track on the page, in page order, to the end of Up Next.
+        if library::hit_artist_add(x, y, albums) {
+            let Some((name, rows)) = self.artist_page().map(|p| {
+                let rows: Vec<SongRow> = p.tracks.iter().map(|t| t.song.clone()).collect();
+                (p.name.to_string(), rows)
+            }) else {
+                return vec![];
+            };
+            if rows.is_empty() {
+                return vec![];
+            }
+            self.notify_format("Added to Up Next — {}", vec![("0", name)]);
+            self.queue_anim_y = y;
+            self.queue_anim_frames = QUEUE_ANIM_FRAMES;
+            return self.insert_rows(rows, QueueAt::Later);
         }
         // Resolve the hit and copy the result out — `page` borrows `self.lib`, and everything
         // below this line mutates `self`.
@@ -23676,7 +23695,7 @@ mod tests {
             "always the same album: {seen:?} of {names:?}"
         );
         // One album: no button, and the band runs the whole line instead of leaving its gap.
-        let (one, button) = library::artist_band(1);
+        let (one, button, _) = library::artist_band(1);
         assert!(button.is_none());
         assert!(one.2 > library::artist_band(2).0 .2);
         assert!(!library::hit_artist_random_album(x + w / 2, y + h / 2, 1));

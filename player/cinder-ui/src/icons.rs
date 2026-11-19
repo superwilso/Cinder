@@ -366,6 +366,14 @@ pub fn close(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     polyline(c, cx, cy, s, col, w, &[(18.0, 6.0), (6.0, 18.0)]);
 }
 
+/// A plus — "add to Up Next", the band's third button on the album and artist pages.
+pub fn plus(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
+    let w = stroke_w(s);
+    polyline(c, cx, cy, s, col, w, &[(12.0, 5.0), (12.0, 19.0)]);
+    polyline(c, cx, cy, s, col, w, &[(5.0, 12.0), (19.0, 12.0)]);
+}
+
 /// A magnifier — "search": a ring and a handle, stroked at the same weight as every other icon.
 pub fn search(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     let s = crate::scale::icon(s);
