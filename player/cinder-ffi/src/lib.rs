@@ -4238,6 +4238,18 @@ pub extern "C" fn cinder_dev_set_repeat(mode: libc::c_int) -> libc::c_int {
     23
 }
 
+/// Dev command channel (`cmd 'shuffle 0|1'`): press Now Playing's shuffle button if it is not
+/// already `on`. Returns -1 when it already was, else the action left for the shell (often 0).
+#[no_mangle]
+pub extern "C" fn cinder_dev_shuffle(on: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    if r.np.shuffle == (on != 0) {
+        return -1;
+    }
+    carry_action_now(r, &cinder_ui::nav::Action::ShuffleToggle).unwrap_or(0)
+}
+
 /// Dev command channel: play an album as a tap on its song would — `what` is an album id, or text
 /// found in an album's name (the first match). `track` counts from 1 (0 = the first song). Returns the action for the
 /// shell to carry out (the same as the tap's), or 0 when nothing matched. Replaces the queue.

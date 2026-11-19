@@ -474,6 +474,7 @@ void cinder_set_own_index(int on);
 /* Dev command channel (tools/devctl.sh cmd): set the repeat mode (0 off, 1 one, 2 all, 3 album);
    returns the action to carry out (23) or 0. And one line of state. */
 int cinder_dev_set_repeat(int mode);
+int cinder_dev_shuffle(int on);
 int cinder_dev_state(char* buf, int cap);
 /* Play an album (id, or text in its name) from song `track` (0-based), replacing the queue;
    returns the action to carry out, 0 if nothing matched. And albums matching text. */
