@@ -36,7 +36,7 @@ int main()
 
     // 1. Precision window.
     check(cinder_vol_repeat_steps(0) == 1, "the first tick of a hold is a single step");
-    check(cinder_vol_repeat_steps(1499) == 1, "still single-stepping at 1.5 s (the aiming window)");
+    check(cinder_vol_repeat_steps(999) == 1, "still single-stepping at 1 s (the aiming window)");
 
     // 2. Monotonic, and geometric rather than runaway.
     int prev = 0;

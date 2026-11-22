@@ -800,9 +800,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("playlist_page_own", &|c: &mut Canvas| {
                 if let Some(pl) = lib.playlists.first() {
+                    // Rows 3-4 glued to the row above: the bracket on the page.
                     let mine = cinder_ui::model::PlaylistRow {
                         user: true,
                         name: "Late Night On The Bus".into(),
+                        glued: (0..pl.track_list.len()).map(|i| i == 3 || i == 4).collect(),
                         ..pl.clone()
                     };
                     library::playlist_view(c, &theme, &fonts, &lib, &mine, 0, Some(1), None, false);
@@ -1330,13 +1332,15 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     );
                 }
             }),
-            // The playlist editor (5b): at rest with something to undo, and mid-drag.
+            // The playlist editor (5b): at rest with something to undo, rows 2-3 glued to the row
+            // above them (plan 1c), and mid-drag.
             ("playlist_edit", &|c: &mut Canvas| {
                 cinder_ui::playlist_edit::render(
                     c,
                     &theme,
                     &fonts,
                     &cinder_ui::playlist_edit::EditView {
+                        glued: (0..lib.songs.len()).map(|i| i == 2 || i == 3).collect(),
                         name: "Late Night On The Bus",
                         cover: "Automatic",
                         rows: lib.songs.iter().collect(),
@@ -1368,6 +1372,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         name: "Late Night On The Bus",
                         cover: "Automatic",
                         rows: lib.songs.iter().collect(),
+                        glued: Vec::new(),
                         scroll_px: 0,
                         drag: Some(d),
                         can_undo: false,

@@ -16,6 +16,9 @@
 //!   label     12 TRACKS                                      UNDO
 //!   rows      ≡  Title / artist                                 ×
 //!
+//! Tapping a row's title glues it to the row above (plan 1c): the two then always play together,
+//! in that order, however the playlist is shuffled. A bracket on the left edge joins glued rows.
+//!
 //! Every coordinate is a function here, read by the renderer AND the navigator's hit tests, so a
 //! row can never be drawn in one place and tapped in another.
 
@@ -84,6 +87,11 @@ pub fn hit_grip(x: i32) -> bool {
     x < GRIP_X1
 }
 
+/// Is `x` on a row's title — the glue toggle (between the ≡ and the ×)?
+pub fn hit_glue(x: i32) -> bool {
+    (GRIP_X1..REMOVE_X0).contains(&x)
+}
+
 /// The row whose × is under `(x, y)`.
 pub fn hit_remove(n: usize, scroll_px: i32, x: i32, y: i32) -> Option<usize> {
     if !(REMOVE_X0..REMOVE_X1).contains(&x) {
@@ -122,6 +130,8 @@ pub struct EditView<'a> {
     pub cover: &'a str,
     /// The rows in the working order.
     pub rows: Vec<&'a SongRow>,
+    /// `glued[i]`: `rows[i]` is glued to the row drawn above it.
+    pub glued: Vec<bool>,
     pub scroll_px: i32,
     /// A row being dragged, in this list's index space.
     pub drag: Option<RowDrag>,
@@ -129,10 +139,23 @@ pub struct EditView<'a> {
     pub sbar_active: bool,
 }
 
-fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, s: &SongRow, lifted: bool) {
+/// The glue bracket for a row of height `rh` at `y` glued to the one above: from the middle of the
+/// row above to the middle of this one, in the accent, with a tick at each end — a run of glued
+/// rows reads as one joined block. The editor and the playlist page both draw it.
+pub fn glue_bracket(c: &mut Canvas, t: &Theme, y: i32, rh: i32) {
+    let (x, top, mid) = (6, y - rh / 2, y + rh / 2);
+    fill_rect(c, x, top, 3, mid - top, t.acc);
+    fill_rect(c, x, top, 8, 3, t.acc);
+    fill_rect(c, x, mid - 3, 8, 3, t.acc);
+}
+
+fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, s: &SongRow, lifted: bool, glued: bool) {
     if lifted {
         fill_rect(c, 0, y, W as i32, RH(), t.row_sel);
         hline(c, y, t.acc);
+    }
+    if glued && !lifted {
+        glue_bracket(c, t, y, RH());
     }
     let cy = y + RH() / 2;
     icons::grip(
@@ -196,10 +219,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
         &kit::Row::new(crate::i18n::text("Cover")).trail(kit::Trail::Open(v.cover)),
     );
     let n = v.rows.len();
+    // The glue is a tap on a title, which nothing else on screen would suggest: say so here.
     let count = if n == 1 {
         crate::i18n::text("1 TRACK").to_string()
     } else {
-        crate::ui_format!("{n} TRACKS", n = n)
+        format!(
+            "{} · {}",
+            crate::ui_format!("{n} TRACKS", n = n),
+            crate::i18n::text("TAP A SONG TO GLUE")
+        )
     };
     kit::section_label(
         c,
@@ -244,7 +272,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
         if y + RH() <= LIST_TOP || y >= LIST_BOTTOM || Some(i) == lifted {
             continue;
         }
-        row(c, t, f, y, v.rows[i], false);
+        let glued = slot > 0 && v.glued.get(i).copied().unwrap_or(false);
+        row(c, t, f, y, v.rows[i], false, glued);
     }
     c.clear_clip();
     crate::library::scrollbar(
@@ -262,7 +291,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &EditView) {
         let y = d
             .float_top()
             .clamp(LIST_TOP - RH() / 2, LIST_BOTTOM - RH() / 2);
-        row(c, t, f, y, v.rows[i], true);
+        row(c, t, f, y, v.rows[i], true, false);
     }
 }
 

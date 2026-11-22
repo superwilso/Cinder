@@ -935,12 +935,27 @@ struct PlEdit {
     /// The order before each change, newest last — what UNDO pops.
     undo: Vec<Vec<usize>>,
     scroll_px: i32,
+    /// `glued[i]`: `rows[i]` is glued to whatever row is above it in `order` (plan 1c). Tapped on
+    /// and off on the row; it travels with the row when the row moves. `glued0` is as opened.
+    glued: Vec<bool>,
+    glued0: Vec<bool>,
 }
 
 impl PlEdit {
     /// Does the working order differ from the playlist as it was opened?
     fn changed(&self) -> bool {
-        self.order.len() != self.rows.len() || self.order.iter().enumerate().any(|(i, &o)| i != o)
+        self.order.len() != self.rows.len()
+            || self.order.iter().enumerate().any(|(i, &o)| i != o)
+            || self.glue_in_order() != self.glued0
+    }
+
+    /// Each row's glue in the working order; the top row has nothing above it to be glued to.
+    fn glue_in_order(&self) -> Vec<bool> {
+        self.order
+            .iter()
+            .enumerate()
+            .map(|(slot, &i)| slot > 0 && self.glued.get(i).copied().unwrap_or(false))
+            .collect()
     }
 
     /// Move the row at `from` to `to` (remove, then insert — the order the drag previewed).
@@ -1827,6 +1842,10 @@ pub struct App {
     pick_many_name: String,
     /// Folders ticked for "Add to playlist" on the current level (#56). Empty = not selecting.
     folder_sel: Vec<usize>,
+    /// The playing playlist's glue (plan 1c): `(a, b)` = song `b` is glued after song `a`. Set by
+    /// the shell when one of the user's playlists starts, cleared by any other play, and honoured
+    /// by every shuffle wherever the pair is still side by side.
+    glue_pairs: std::collections::HashSet<(i64, i64)>,
     pick_scroll_px: i32,
     track_pick_scroll_px: i32,
     /// The song order the track picker is showing (indices into `lib.songs`). Built once when the
@@ -1836,8 +1855,8 @@ pub struct App {
     cover_scroll_px: i32,
     /// The playlist editor's working state, while `Screen::PlaylistEdit` is open.
     pl_edit: Option<PlEdit>,
-    /// The order the editor's DONE produced, waiting for the shell to write it.
-    pl_edit_done: Option<(i64, Vec<i64>)>,
+    /// The order the editor's DONE produced, and each member's glue, waiting for the shell.
+    pl_edit_done: Option<(i64, Vec<i64>, Vec<bool>)>,
     /// The saved views (`views.rs`), in the order they were made. Each draws as a smart playlist
     /// at the top of the Library's Playlists tab. Persisted by the shell in `cinder_views.conf`.
     views: Vec<crate::views::SavedView>,
@@ -2369,6 +2388,7 @@ impl Default for App {
             pick_many: Vec::new(),
             pick_many_name: String::new(),
             folder_sel: Vec::new(),
+            glue_pairs: Default::default(),
             pick_scroll_px: 0,
             cover_scroll_px: 0,
             track_pick_scroll_px: 0,
@@ -3918,6 +3938,15 @@ impl App {
             push_ids(&mut s, &mut self.history.iter().map(|r| r.object_id));
             s.push('\n');
         }
+        // A user playlist's glue (`glue_pairs`), flattened as above,below pairs and sorted so the
+        // body only changes when the glue does.
+        if !self.glue_pairs.is_empty() {
+            let mut pairs: Vec<_> = self.glue_pairs.iter().copied().collect();
+            pairs.sort_unstable();
+            s.push_str("glue=");
+            push_ids(&mut s, &mut pairs.into_iter().flat_map(|(a, b)| [a, b]));
+            s.push('\n');
+        }
         s
     }
 
@@ -4094,6 +4123,24 @@ impl App {
     }
 
     /// The shell says whether the opt-in `search` component is installed.
+    pub fn glue_pairs(&self) -> std::collections::HashSet<(i64, i64)> {
+        self.glue_pairs.clone()
+    }
+
+    pub fn set_glue_pairs(&mut self, pairs: std::collections::HashSet<(i64, i64)>) {
+        self.glue_pairs = pairs;
+    }
+
+    /// For `ids` in play order: is each glued to the one before it? (`shuffle::deal_glued`.)
+    pub fn glue_mask(&self, ids: &[i64]) -> Vec<bool> {
+        if self.glue_pairs.is_empty() {
+            return Vec::new();
+        }
+        (0..ids.len())
+            .map(|i| i > 0 && self.glue_pairs.contains(&(ids[i - 1], ids[i])))
+            .collect()
+    }
+
     pub fn set_hold_play_next(&mut self, on: bool) {
         self.hold_play_next = on;
     }
@@ -7135,6 +7182,12 @@ impl App {
             order: (0..p.track_list.len()).collect(),
             undo: Vec::new(),
             scroll_px: 0,
+            glued: (0..p.track_list.len())
+                .map(|i| p.glued.get(i).copied().unwrap_or(false))
+                .collect(),
+            glued0: (0..p.track_list.len())
+                .map(|i| i > 0 && p.glued.get(i).copied().unwrap_or(false))
+                .collect(),
         });
         self.fling_v = 0.0;
         self.push(Screen::PlaylistEdit);
@@ -7161,6 +7214,7 @@ impl App {
                 .filter_map(|&i| e.rows.get(i).cloned())
                 .collect();
             let removed = e.rows.len() - rows.len();
+            let glued = e.glue_in_order();
             self.pl_edit = None;
             self.pop();
             if !changed {
@@ -7171,11 +7225,12 @@ impl App {
             if let Some(p) = self.lib.playlists.iter_mut().find(|p| p.id == id) {
                 p.tracks = p.tracks.saturating_sub(removed as u32);
                 p.track_list = rows;
+                p.glued = glued.clone();
                 p.edited = true;
             }
             self.playlist_track_idx = 0;
             self.playlist_scroll_px = 0;
-            self.pl_edit_done = Some((id, ids));
+            self.pl_edit_done = Some((id, ids, glued));
             self.notify(crate::i18n::text("Playlist saved"));
             return vec![Action::PlaylistSaveEdit(id)];
         }
@@ -7194,6 +7249,16 @@ impl App {
             }
             return vec![];
         }
+        // The middle of a row: glue it to the row above, or unglue it (plan 1c). Not the top row.
+        if pe::hit_glue(x) {
+            if let Some(slot) = pe::row_at(e.order.len(), e.scroll_px, y).filter(|&s| s > 0) {
+                let i = e.order[slot];
+                if let Some(g) = e.glued.get_mut(i) {
+                    *g = !*g;
+                }
+                return vec![];
+            }
+        }
         if let Some(row) = pe::hit_remove(e.order.len(), e.scroll_px, x, y) {
             // One tap, not the page's two: UNDO is right there in the label, and nothing is
             // written until DONE.
@@ -7205,7 +7270,7 @@ impl App {
 
     /// The order the playlist editor's DONE produced: `(playlist id, member object ids in the new
     /// order)`. Taken by the shell when it carries out `Action::PlaylistSaveEdit`.
-    pub fn take_playlist_edit(&mut self) -> Option<(i64, Vec<i64>)> {
+    pub fn take_playlist_edit(&mut self) -> Option<(i64, Vec<i64>, Vec<bool>)> {
         self.pl_edit_done.take()
     }
 
@@ -8165,6 +8230,74 @@ impl App {
     /// The shell's radio status (`netradio::parse_status`).
     pub fn set_radio_status(&mut self, text: &str) {
         self.radio_status = crate::netradio::parse_status(text);
+    }
+
+    /// Now Playing's two lines while sound comes from a live source (`live::*`, as the shell
+    /// reports it), built from what that source's page already knows. `dlna_title` is the DLNA
+    /// controller's own title for its link.
+    pub fn live_lines(&self, kind: u8, dlna_title: &str) -> (String, String) {
+        let text = crate::i18n::text;
+        // An ICY title is "Artist - Song".
+        let split = |t: &str| match t.split_once(" - ") {
+            Some((a, s)) if !s.trim().is_empty() => (s.trim().to_string(), a.trim().to_string()),
+            _ => (t.trim().to_string(), String::new()),
+        };
+        match kind {
+            live::RADIO => {
+                let station = self
+                    .radio_status
+                    .station
+                    .and_then(|i| self.radio_stations.get(i))
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| text("Internet radio").to_string());
+                match split(&self.radio_status.title) {
+                    (s, _) if s.is_empty() => (station, text("Internet radio").to_string()),
+                    (s, a) if a.is_empty() => (s, station),
+                    (s, a) => (s, format!("{a} · {station}")),
+                }
+            }
+            live::DLNA => {
+                let (s, a) = split(dlna_title);
+                let from = text("Play to this player").to_string();
+                match (s.is_empty(), a.is_empty()) {
+                    (true, _) => (from, String::new()),
+                    (false, true) => (s, from),
+                    (false, false) => (s, a),
+                }
+            }
+            live::AIRPLAY => (text("AirPlay").to_string(), String::new()),
+            live::FM => (
+                format!("{:.1} MHz", self.fm_khz as f32 / 1000.0),
+                text("FM radio").to_string(),
+            ),
+            live::RECEIVER => (
+                if self.rx_peer.is_empty() {
+                    text("Bluetooth").to_string()
+                } else {
+                    self.rx_peer.clone()
+                },
+                if self.rx_codec == 0 {
+                    String::new()
+                } else {
+                    crate::receiver::codec_label(self.rx_codec)
+                },
+            ),
+            live::USB_DAC => (
+                text("USB-DAC").to_string(),
+                self.usb_dac_fmt
+                    .map(|(rate, bits, _)| format!("{:.1} kHz · {bits}-bit", rate as f32 / 1000.0))
+                    .unwrap_or_default(),
+            ),
+            _ => (String::new(), String::new()),
+        }
+    }
+    /// Pick station `i` as a tap on it would (dev command channel). False when there is none.
+    pub fn pick_radio(&mut self, i: usize) -> bool {
+        let ok = i < self.radio_stations.len();
+        if ok {
+            self.radio_pick = Some(i);
+        }
+        ok
     }
     /// The station the last `RadioPlay` asked for: its index and URL. Taken once.
     pub fn take_radio(&mut self) -> Option<(usize, String)> {
@@ -10542,6 +10675,11 @@ impl App {
             self.pre_shuffle = Some(self.context.iter().map(|t| t.object_id).collect());
         }
         let cur = self.context_idx.min(self.context.len() - 1);
+        let ids: Vec<i64> = self.context.iter().map(|t| t.object_id).collect();
+        let glue = self.glue_mask(&ids);
+        if glue.contains(&true) {
+            return self.queue_shuffle_glued(cur, &glue);
+        }
         let playing = self.context.remove(cur);
         self.context.insert(0, playing);
         self.context_idx = 0;
@@ -10573,6 +10711,49 @@ impl App {
             .partition(|&i| i == 0 || i > cur || (own.is_some() && key(&rows[i]) == own));
         order.extend(heard);
         self.context = crate::shuffle::apply(std::mem::take(&mut self.context), &order);
+        self.notify(by.toast());
+        vec![Action::QueueChanged]
+    }
+
+    /// `queue_shuffle` for a list with glued runs (plan 1c). The playing song is NOT moved to the
+    /// top first — that would cut it off from its run — but dealt as the lead, and the rows before
+    /// it go last as heard, exactly as the plain path does, except that a run is never split.
+    fn queue_shuffle_glued(&mut self, cur: usize, glue: &[bool]) -> Vec<Action> {
+        let rows: Vec<crate::shuffle::Row> = self
+            .context
+            .iter()
+            .map(|t| crate::shuffle::Row {
+                album: crate::shuffle::album_key(t.album_id, t.object_id),
+                artist: crate::shuffle::artist_key(t.group_artist()),
+                disc: t.disc,
+                track: t.track,
+            })
+            .collect();
+        let (order, by) =
+            crate::shuffle::deal_glued(&rows, glue, self.shuffle_by, Some(cur), &mut self.rng);
+        // As the plain path: rows before the playing one were heard and go last, except its own
+        // album (or artist) in a grouped deal. Judged by each row's RUN HEAD, so no run is split;
+        // only the playing run's own heard rows leave it, which is what heard means.
+        let head: Vec<usize> = (0..rows.len())
+            .scan(0, |h, i| {
+                if !glue.get(i).copied().unwrap_or(false) {
+                    *h = i;
+                }
+                Some(*h)
+            })
+            .collect();
+        let key = |r: &crate::shuffle::Row| match by {
+            crate::shuffle::ShuffleBy::Songs | crate::shuffle::ShuffleBy::Spread => None,
+            crate::shuffle::ShuffleBy::Albums => Some(r.album),
+            crate::shuffle::ShuffleBy::Artists => Some(r.artist),
+        };
+        let own = key(&rows[head[cur]]);
+        let (mut order, heard): (Vec<usize>, Vec<usize>) = order.into_iter().partition(|&i| {
+            i >= cur || (head[i] != head[cur] && own.is_some() && key(&rows[head[i]]) == own)
+        });
+        order.extend(heard);
+        self.context = crate::shuffle::apply(std::mem::take(&mut self.context), &order);
+        self.context_idx = 0;
         self.notify(by.toast());
         vec![Action::QueueChanged]
     }
@@ -12821,6 +13002,11 @@ impl App {
                         name: &e.name,
                         cover: &self.cover_label(),
                         rows: e.order.iter().filter_map(|&i| e.rows.get(i)).collect(),
+                        glued: e
+                            .order
+                            .iter()
+                            .map(|&i| e.glued.get(i).copied().unwrap_or(false))
+                            .collect(),
                         scroll_px: e.scroll_px,
                         drag: self.row_drag,
                         can_undo: !e.undo.is_empty(),
@@ -15578,6 +15764,17 @@ fn tab_name(t: Tab) -> &'static str {
     }
 }
 /// Display title for a Screen, taken from the Menu table (falls back to the app name).
+/// What is making the sound when it is not the library (`cinder_set_live_source`, cinder.h's
+/// `CINDER_LIVE_*`). 0 = the library.
+pub mod live {
+    pub const RADIO: u8 = 1;
+    pub const DLNA: u8 = 2;
+    pub const AIRPLAY: u8 = 3;
+    pub const FM: u8 = 4;
+    pub const RECEIVER: u8 = 5;
+    pub const USB_DAC: u8 = 6;
+}
+
 fn screen_title(s: Screen) -> &'static str {
     match s {
         // The two places that are not Menu rows (see `MENU`), named as the Menu used to name them.
@@ -17122,6 +17319,41 @@ mod tests {
         a.set_play_context(rows, 0);
         a.push(Screen::UpNext);
         a
+    }
+
+    /// Glue comes back after a reboot: it is written with the queue.
+    #[test]
+    fn glue_is_saved_with_the_queue() {
+        let mut a = App::unlocked();
+        assert!(!a.playback_encode().contains("glue="));
+        a.set_glue_pairs([(5, 4), (2, 1)].into_iter().collect());
+        assert!(a.playback_encode().contains("glue=2,1,5,4\n"));
+    }
+
+    /// Plan 1c on Up Next's shuffle: a glued run stays whole and in order, and the playing song's
+    /// run is not cut off from it.
+    #[test]
+    fn up_next_shuffle_keeps_glued_runs_together() {
+        for seed in 0..200u64 {
+            let mut a = queued(8);
+            a.rng = crate::shuffle::Rng::new(seed + 1);
+            // NOW(9000) -> Q0(9001) glued; Q3(9004) -> Q4(9005) -> Q5(9006) glued.
+            a.set_glue_pairs(
+                [(9000, 9001), (9004, 9005), (9005, 9006)]
+                    .into_iter()
+                    .collect(),
+            );
+            assert_eq!(a.queue_shuffle(), vec![Action::QueueChanged]);
+            let ids: Vec<i64> = a.context.iter().map(|t| t.object_id).collect();
+            assert_eq!(&ids[..2], &[9000, 9001], "seed {seed}: {ids:?}");
+            let at = ids.iter().position(|&i| i == 9004).unwrap();
+            assert_eq!(
+                &ids[at..at + 3],
+                &[9004, 9005, 9006],
+                "seed {seed}: {ids:?}"
+            );
+            assert_eq!(ids.len(), 9);
+        }
     }
 
     /// Everything still to come, in play order.
@@ -21621,6 +21853,7 @@ mod tests {
     /// order; picking a playlist hands the whole list over once. Holding a song row still queues.
     #[test]
     fn holding_a_folder_adds_the_whole_tree_to_a_playlist() {
+        let _g = lock_scale();
         let mut a = own_and_sony();
         let song = |id: i64| SongRow {
             title: format!("S{id}"),
@@ -27616,6 +27849,35 @@ mod r4_tests {
         a.tap(x + w / 2, y + h / 2)
     }
 
+    /// Plan 1c in the editor: a tap on a title glues it to the row above and again unglues it; the
+    /// top row cannot be glued; DONE hands the glue over with the order.
+    #[test]
+    fn the_playlist_editor_glues_a_row_to_the_one_above() {
+        let _g = crate::text::scale_guard();
+        let (mut a, id) = on_own_playlist();
+        let n = ids(&a).len();
+        a.tap(EDIT.0, EDIT.1);
+        let mid = |i: usize| pe::row_top(i, 0) + pe::RH() / 2;
+        assert!(
+            a.tap(200, mid(0)).is_empty(),
+            "the top row has nothing above it"
+        );
+        a.tap(200, mid(2));
+        a.tap(200, mid(3));
+        a.tap(200, mid(3));
+        assert_eq!(a.tap(EDIT.0, EDIT.1), vec![Action::PlaylistSaveEdit(id)]);
+        let (_, order, glued) = a.take_playlist_edit().unwrap();
+        assert_eq!(order.len(), n);
+        let mut want = vec![false; n];
+        want[2] = true;
+        assert_eq!(glued, want);
+        assert_eq!(
+            a.playlist_row().map(|p| p.glued.clone()),
+            Some(want),
+            "the page shows it at once"
+        );
+    }
+
     /// The whole editor, by touch: EDIT, remove a row, drag a row, UNDO, DONE — and the action the
     /// shell gets carries exactly the order on screen.
     #[test]
@@ -27660,7 +27922,10 @@ mod r4_tests {
         assert_eq!(a.tap(EDIT.0, EDIT.1), vec![Action::PlaylistSaveEdit(id)]);
         assert_eq!(a.current(), Screen::Playlist, "DONE returns to the page");
         let want: Vec<i64> = [2usize, 3, 0, 4, 5].iter().map(|&i| before[i]).collect();
-        assert_eq!(a.take_playlist_edit(), Some((id, want.clone())));
+        assert_eq!(
+            a.take_playlist_edit(),
+            Some((id, want.clone(), vec![false; want.len()]))
+        );
         assert_eq!(ids(&a), want, "the page shows the saved order at once");
         assert!(a.playlist_row().unwrap().edited);
         assert_eq!(a.take_playlist_edit(), None, "taken once");

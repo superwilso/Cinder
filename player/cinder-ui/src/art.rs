@@ -165,6 +165,24 @@ impl Image {
     /// produced it.
     ///
     /// Upscaling and equal sizes keep the bilinear path, where there is no aliasing to fix.
+    /// Nearest-pixel scale: no filtering, a fraction of `scaled_to`'s cost. For a stand-in that is
+    /// on screen for a moment (the grid's 48 px placeholder while its cover loads).
+    pub fn scaled_nearest(&self, dw: usize, dh: usize) -> Image {
+        let mut rgb = Vec::with_capacity(dw * dh * 3);
+        if self.w > 0 && self.h > 0 {
+            for y in 0..dh {
+                let row = (y * self.h / dh.max(1)) * self.w;
+                for x in 0..dw {
+                    let i = (row + x * self.w / dw.max(1)) * 3;
+                    rgb.extend_from_slice(&self.rgb[i..i + 3]);
+                }
+            }
+        } else {
+            rgb.resize(dw * dh * 3, 0);
+        }
+        Image { w: dw, h: dh, rgb }
+    }
+
     pub fn scaled_to(&self, dw: usize, dh: usize) -> Image {
         let mut out = vec![0u8; dw * dh * 3];
         if self.w == 0 || self.h == 0 || dw == 0 || dh == 0 {
@@ -494,6 +512,7 @@ fn cached<K: std::hash::Hash + Eq + Ord + Copy>(
 ///
 /// The picture is in the key (a sample of its bytes) because an album's cover can be rebuilt under
 /// the same id; without it the old scaled copy would stay until it aged out.
+#[allow(clippy::too_many_arguments)]
 pub fn scaled_cached(
     c: &mut Canvas,
     t: &Theme,
@@ -503,6 +522,21 @@ pub fn scaled_cached(
     src: &Image,
     edge: i32,
     opacity: f32,
+) {
+    scaled_cached_with(c, t, x0, y0, id, src, edge, opacity, false);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scaled_cached_with(
+    c: &mut Canvas,
+    t: &Theme,
+    x0: i32,
+    y0: i32,
+    id: i64,
+    src: &Image,
+    edge: i32,
+    opacity: f32,
+    nearest: bool,
 ) {
     if edge <= 0 || edge > CACHE_MAX_EDGE {
         let e = edge.max(0) as usize;
@@ -516,13 +550,36 @@ pub fn scaled_cached(
         .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
             (h ^ *b as u64).wrapping_mul(0x100_0000_01b3)
         });
-    let key: ScaleKey = (id, edge, src.w, sample);
+    // A nearest-pixel copy is keyed apart (negative edge) from a filtered one of the same picture.
+    let key: ScaleKey = (id, if nearest { -edge } else { edge }, src.w, sample);
     SCALED.with(|cache| {
         let mut cache = cache.borrow_mut();
         let e = edge as usize;
-        let img = cached(&mut cache, key, || src.scaled_to(e, e));
+        let img = cached(&mut cache, key, || {
+            if nearest {
+                src.scaled_nearest(e, e)
+            } else {
+                src.scaled_to(e, e)
+            }
+        });
         draw_image(c, t, x0, y0, img, opacity);
     });
+}
+
+/// `scaled_cached` with a nearest-pixel scale: for a placeholder drawn for a moment, where a
+/// filtered upscale (~5 ms at 132 px on the player) would cost a frame for nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn scaled_cached_nearest(
+    c: &mut Canvas,
+    t: &Theme,
+    x0: i32,
+    y0: i32,
+    id: i64,
+    src: &Image,
+    edge: i32,
+    opacity: f32,
+) {
+    scaled_cached_with(c, t, x0, y0, id, src, edge, opacity, true);
 }
 
 /// Draw `img` at `size` × `size`, scaled once and kept: a style's inset cover (400 px, say) comes

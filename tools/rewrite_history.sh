@@ -114,6 +114,15 @@ if [ -n "${REDACT_FILE:-}" ]; then
     say "replacing text from $REDACT_FILE ($(grep -c '==>' "$REDACT_FILE") expressions)"
     args+=(--replace-text "$REDACT_FILE")
 fi
+# An address that must leave every commit and tag (an author's personal email, say). The mailmap maps
+# it to the one to keep (`<new@example> <old@example>` per line) and so names the address being
+# removed: like REDACT_FILE it lives OUTSIDE the repository and is passed in, never committed.
+if [ -n "${MAILMAP_FILE:-}" ]; then
+    [ -r "$MAILMAP_FILE" ] || die "MAILMAP_FILE=$MAILMAP_FILE is not readable"
+    case "$(cd "$(dirname "$MAILMAP_FILE")" && pwd)/" in "$ROOT"/*) die "MAILMAP_FILE must live outside the repository" ;; esac
+    say "rewriting addresses from $MAILMAP_FILE ($(grep -c '@' "$MAILMAP_FILE") lines)"
+    args+=(--mailmap "$MAILMAP_FILE")
+fi
 if ! (cd "$M" && "${FILTER[@]}" "${args[@]}") > "$WORK/filter-repo.log" 2>&1; then
     tail -20 "$WORK/filter-repo.log" >&2
     die "git-filter-repo failed — full log: $WORK/filter-repo.log"
@@ -164,6 +173,18 @@ while read -r oid; do
 done < "$WORK/strip-blobs.txt"
 [ "$survivors" -eq 0 ] || die "$survivors stripped blobs are still in the object store"
 echo "   stripped blobs: gone from the object store"
+if [ -n "${MAILMAP_FILE:-}" ]; then
+    # Every old address (the last <…> on each line) is gone from authors, committers and taggers.
+    left=0
+    while read -r old; do
+        [ -n "$old" ] || continue
+        n="$( { git -C "$M" log --all --format='%ae%n%ce'; git -C "$M" for-each-ref refs/tags --format='%(taggeremail:trim)'; } \
+              | grep -cixF "$old" || true)"
+        left=$((left + n))
+    done < <(grep -o '<[^>]*>[[:space:]]*$' "$MAILMAP_FILE" | tr -d '<> \t')
+    [ "$left" -eq 0 ] || die "$left commits or tags still carry an address the mailmap replaces"
+    echo "   mailmap: no commit or tag carries a replaced address"
+fi
 
 say "commit references in the docs"
 # Docs quote commit ids as evidence, deliberately and often; every one of them changes. Map each to

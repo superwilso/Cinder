@@ -733,6 +733,8 @@ struct Render {
     media_levels: Vec<Vec<media::Entry>>,
     /// Now Playing shows a server's song: which one (its place and cover address).
     media_np: Option<(usize, String)>,
+    /// Now Playing shows a live source (`cinder_set_live_source`): which, and since when.
+    live: Option<(u8, std::time::Instant)>,
     cast_ids: Vec<i64>,
     cast_shown: Option<usize>,
     cast_was_on: bool,
@@ -1054,6 +1056,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         media_server: None,
         media_levels: Vec::new(),
         media_np: None,
+        live: None,
         cast_ids: Vec::new(),
         cast_shown: None,
         cast_was_on: false,
@@ -2606,6 +2609,7 @@ fn build_library_with(
         .unwrap_or_default()
         .into_iter()
         .map(|p| cinder_ui::model::PlaylistRow {
+            glued: Vec::new(),
             id: p.id,
             // From Sony's database: browsable and playable, but not ours to edit.
             user: false,
@@ -3226,41 +3230,72 @@ pub extern "C" fn cinder_set_ipc_dead(dead: libc::c_int) {
     cinder_ui::chrome::set_ipc_dead(dead != 0);
 }
 
-/// How many 96 px grid covers one frame may read off the art cache. Each is a 27 KB file; a screen
-/// of the grid is 12 to 16 of them, so a fresh screen fills in over two or three frames instead of
-/// stalling the first one.
+/// How many grid covers one worker pass reads. Each is a 27 KB file; a screen of the grid is 12 to
+/// 16 of them, so a fresh screen fills in over two or three passes.
 const GRID_LOADS_PER_FRAME: usize = 6;
+
+/// Grid covers read off the art cache and scaled to the tile on a worker: at large text each is a
+/// 96 -> 132 px scale, ~5 ms on the player, and a fling brings a row of them in at once — the
+/// first-pass stutter of 11-22. The render thread only collects what the worker finished.
+static GRID_DONE: Mutex<Vec<(i64, Option<cinder_ui::art::Image>)>> = Mutex::new(Vec::new());
+static GRID_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Keep `Library::covers` holding what the grid on screen wants, and nothing else: load the missing
 /// ones nearest the screen first, drop the ones that scrolled away (all of them when the Library is
 /// not a grid, which is what gives the memory back). Polled like the drill-in cover — the cache
 /// lives on this side, and the UI only says which ids it would draw.
 fn load_grid_covers(r: &mut Render) {
+    use std::sync::atomic::Ordering::SeqCst;
     let wants = r.app.grid_cover_wants();
-    let mut loaded = 0;
-    for id in &wants {
-        if r.app.has_grid_cover(*id) || r.grid_miss.contains(id) {
-            continue;
-        }
-        // No key is not a miss. The keys arrive at post_up, seconds after the library: a player
-        // that starts on the album grid asked for every cover before then, filed each one as a
-        // miss, and never asked again, so the whole grid stayed gradients (2026-11-15).
-        let Some(key) = r.art_cache_keys.get(id).copied() else {
-            continue;
-        };
-        if loaded == GRID_LOADS_PER_FRAME {
-            r.grid_more = true;
-            break;
-        }
-        loaded += 1;
-        match art_cache::load_cover(key) {
-            Some(img) => r.app.put_grid_cover(*id, img),
+    for (id, img) in GRID_DONE.lock().unwrap().drain(..) {
+        match img {
+            Some(img) => r.app.put_grid_cover(id, img),
             None => {
-                r.grid_miss.insert(*id);
+                r.grid_miss.insert(id);
             }
         }
     }
+    // No key is not a miss. The keys arrive at post_up, seconds after the library: a player that
+    // starts on the album grid asked for every cover before then, filed each one as a miss, and
+    // never asked again, so the whole grid stayed gradients (2026-11-15).
+    let jobs: Vec<(i64, u64)> = wants
+        .iter()
+        .filter(|id| !r.app.has_grid_cover(**id) && !r.grid_miss.contains(id))
+        .filter_map(|id| r.art_cache_keys.get(id).map(|k| (*id, *k)))
+        .take(GRID_LOADS_PER_FRAME)
+        .collect();
+    if !jobs.is_empty() && !GRID_BUSY.swap(true, SeqCst) {
+        let px = cinder_ui::library::grid_tile_px() as usize;
+        let work = move || {
+            for (id, key) in jobs {
+                let img =
+                    art_cache::load_cover(key)
+                        .map(|i| if i.w == px { i } else { i.scaled_to(px, px) });
+                GRID_DONE.lock().unwrap().push((id, img));
+            }
+            GRID_BUSY.store(false, SeqCst);
+        };
+        if std::thread::Builder::new()
+            .name("cinder-grid-art".into())
+            .stack_size(256 * 1024)
+            .spawn(work)
+            .is_err()
+        {
+            GRID_BUSY.store(false, SeqCst);
+        }
+    }
+    // The grid is still filling in: keep painting until it has every cover it can get.
+    if !grid_complete(r, &wants) || GRID_BUSY.load(SeqCst) {
+        r.grid_more = true;
+    }
     r.app.keep_grid_covers(&wants);
+}
+
+/// True when every cover the grid wants is loaded, known missing, or has no key yet.
+fn grid_complete(r: &Render, wants: &[i64]) -> bool {
+    !wants.iter().any(|id| {
+        !r.app.has_grid_cover(*id) && !r.grid_miss.contains(id) && r.art_cache_keys.contains_key(id)
+    })
 }
 
 #[no_mangle]
@@ -4042,6 +4077,8 @@ fn drop_undecodable(
 }
 
 fn set_pending(r: &mut Render, seq: Vec<cinder_db::Track>, start: usize) {
+    // A new sequence forgets the last playlist's glue; a playlist play sets its own after this.
+    r.app.set_glue_pairs(Default::default());
     let before = seq.len();
     let (mut seq, start, chosen_dropped) = drop_undecodable(seq, start, &r.undecodable);
     if seq.len() < before {
@@ -4322,6 +4359,24 @@ pub extern "C" fn cinder_dev_find(
     n as libc::c_int
 }
 
+/// Dev command channel: pick internet radio station `idx` (`cinder_take_radio` then plays it), or
+/// set what FM's power switch says (`on` 0/1; `CINDER_ACT_FM_POWER` acts on it). 1 = done.
+#[no_mangle]
+pub extern "C" fn cinder_dev_radio(idx: libc::c_int) -> libc::c_int {
+    let mut ok = false;
+    write(|r| ok = r.app.pick_radio(idx.max(0) as usize));
+    ok as libc::c_int
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_dev_fm(on: libc::c_int) -> libc::c_int {
+    write(|r| {
+        r.app.fm_set_playing(on != 0);
+        r.fm_power = on != 0;
+    });
+    1
+}
+
 /// Dev command channel: one line of what is playing, for `tools/devctl.sh cmd state`.
 #[no_mangle]
 pub extern "C" fn cinder_dev_state(buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
@@ -4332,14 +4387,15 @@ pub extern "C" fn cinder_dev_state(buf: *mut c_char, cap: libc::c_int) -> libc::
         let guard = cell().lock().unwrap();
         let Some(r) = guard.as_ref() else { return -1 };
         format!(
-            "song={:?} artist={:?} pos={}ms dur={}ms playing={} repeat={} shuffle={}",
+            "song={:?} artist={:?} pos={}ms dur={}ms playing={} repeat={} shuffle={} live={}",
             r.np.title,
             r.np.artist,
             r.play_pos_ms,
             r.cur_duration_ms,
             r.np.playing as u8,
             r.np.repeat,
-            r.np.shuffle as u8
+            r.np.shuffle as u8,
+            r.live.map_or(0, |l| l.0)
         )
     };
     let n = line.len().min(cap as usize - 1);
@@ -4432,6 +4488,16 @@ fn deal_tracks(
     by: cinder_ui::shuffle::ShuffleBy,
     rng: &mut cinder_ui::shuffle::Rng,
 ) -> Vec<cinder_db::Track> {
+    deal_tracks_glued(seq, &[], by, rng)
+}
+
+/// [`deal_tracks`] keeping glued runs whole (`glue[i]`: glued to the track before; plan 1c).
+fn deal_tracks_glued(
+    seq: Vec<cinder_db::Track>,
+    glue: &[bool],
+    by: cinder_ui::shuffle::ShuffleBy,
+    rng: &mut cinder_ui::shuffle::Rng,
+) -> Vec<cinder_db::Track> {
     use cinder_ui::shuffle;
     let rows: Vec<shuffle::Row> = seq
         .iter()
@@ -4442,7 +4508,7 @@ fn deal_tracks(
             track: t.track_no as i32,
         })
         .collect();
-    let (order, _) = shuffle::deal(&rows, by, None, rng);
+    let (order, _) = shuffle::deal_glued(&rows, glue, by, None, rng);
     shuffle::apply(seq, &order)
 }
 
@@ -4785,18 +4851,27 @@ fn user_playlist_rows(
         .lists
         .iter()
         .map(|list| {
-            let track_list: Vec<cinder_ui::model::SongRow> = list
+            let members: Vec<(&cinder_db::Track, bool)> = list
                 .entries
                 .iter()
-                .filter_map(|entry| resolved.get(entry.uri.as_str()))
-                .map(song_row_of)
+                .filter_map(|entry| Some((resolved.get(entry.uri.as_str())?, entry.glued)))
                 .collect();
+            // Glue to "the member above" means the one above ON THE PAGE: a missing file between
+            // two glued members does not break them apart, and the first member has nothing above.
+            let glued: Vec<bool> = members
+                .iter()
+                .enumerate()
+                .map(|(i, (_, g))| *g && i > 0)
+                .collect();
+            let track_list: Vec<cinder_ui::model::SongRow> =
+                members.into_iter().map(|(t, _)| song_row_of(t)).collect();
             cinder_ui::model::PlaylistRow {
                 id: list.id,
                 name: list.name.clone(),
                 tracks: list.entries.len() as u32,
                 art: list.name.clone(),
                 track_list,
+                glued,
                 user: !list.read_only,
                 smart: false,
                 rules: String::new(),
@@ -4818,9 +4893,6 @@ fn user_playlist_rows(
         .collect()
 }
 
-/// Put one library track into one of our playlists. The PATH is what gets stored — object ids are
-/// re-issued whenever the database is rebuilt, and a playlist that forgets its tracks on a rescan
-/// would be worse than no playlist at all.
 /// The songs a folder hold picked (#56), as (path, label) for `Store::add_many`.
 fn picked_tracks(r: &mut Render) -> Vec<(String, String)> {
     let ids = r.app.take_pick_many();
@@ -4833,6 +4905,9 @@ fn picked_tracks(r: &mut Render) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Put one library track into one of our playlists. The PATH is what gets stored — object ids are
+/// re-issued whenever the database is rebuilt, and a playlist that forgets its tracks on a rescan
+/// would be worse than no playlist at all.
 fn add_track_to_playlist(r: &mut Render, playlist_id: i64, object_id: i64) {
     let track =
         r.db.as_ref()
@@ -4984,6 +5059,31 @@ fn playlist_entry_ids(r: &Render, id: i64) -> Vec<Option<i64>> {
 }
 
 /// The tracks of one of OUR playlists, in saved order, resolved to DB rows for playback.
+/// One of OUR playlists' glue as `(song above, glued song)` object-id pairs, for `App::glue_pairs`
+/// (plan 1c). "Above" skips members whose file is missing, as the page does. Empty for Sony's.
+fn playlist_glue(r: &Render, id: i64) -> std::collections::HashSet<(i64, i64)> {
+    let mut pairs = std::collections::HashSet::new();
+    let (Some(db), Some(list)) = (r.db.as_ref(), r.plists.get(id)) else {
+        return pairs;
+    };
+    if !list.entries.iter().any(|e| e.glued) {
+        return pairs;
+    }
+    let names: Vec<&str> = list.entries.iter().map(|e| e.uri.as_str()).collect();
+    let resolved = db.tracks_by_filenames(&names).unwrap_or_default();
+    let mut above: Option<i64> = None;
+    for e in &list.entries {
+        let Some(t) = resolved.get(e.uri.as_str()) else {
+            continue;
+        };
+        if let (true, Some(a)) = (e.glued, above) {
+            pairs.insert((a, t.object_id));
+        }
+        above = Some(t.object_id);
+    }
+    pairs
+}
+
 fn user_playlist_tracks(r: &Render, id: i64) -> Option<Vec<cinder_db::Track>> {
     let db = r.db.as_ref()?;
     let list = r.plists.get(id)?;
@@ -5702,18 +5802,60 @@ fn media_open(r: &mut Render, depth: usize, index: usize) {
 
 static MEDIA_ART: Mutex<Option<(String, cinder_ui::art::Image)>> = Mutex::new(None);
 
+/// Now Playing goes back to the library's song, paused, after something else had it.
+fn show_library_np(r: &mut Render) {
+    r.np.playing = false;
+    if let Some(t) = r.last_track.clone() {
+        apply_track(&mut r.np, &t);
+        r.art_key = None;
+        show_cover(r, t.object_id);
+    }
+    r.dirty = true;
+}
+
+/// Now Playing while a live source has the sound (internet radio, a DLNA controller's link,
+/// AirPlay, FM, the Bluetooth receiver, the USB DAC): its two lines, a gradient cover and the time
+/// since it started. `kind` 0 = the library again.
+fn live_np(r: &mut Render, kind: u8, playing: bool) {
+    if kind == 0 {
+        if r.live.take().is_some() {
+            show_library_np(r);
+        }
+        return;
+    }
+    if r.live.map(|l| l.0) != Some(kind) {
+        r.live = Some((kind, std::time::Instant::now()));
+        r.np.liked = false;
+        r.np.codec.clear();
+        r.np.badge.clear();
+        r.art_full = None;
+        r.art_thumb = None;
+        bake_gradient_art(r);
+        // Not a library song: no library cover may claim the slot.
+        r.art_key = Some(-1);
+    }
+    let (title, sub) = r.app.live_lines(kind, &renderer::title());
+    r.np.title = title;
+    r.np.artist = sub;
+    r.np.playing = playing;
+    // Time since it started; there is no end, so no bar and no countdown (set_progress would clamp
+    // the time to a zero duration).
+    let since = r
+        .live
+        .map(|l| l.1.elapsed().as_millis() as i64)
+        .unwrap_or(0);
+    r.np.elapsed = fmt_time(since);
+    r.np.remaining.clear();
+    r.np.progress = 0.0;
+    r.dirty = true;
+}
+
 /// Now Playing while a server's song plays: its title, artist, progress and cover. When the songs
 /// end, the library's song goes back.
 fn media_np(r: &mut Render) {
     let Some((song, i, _)) = media::now() else {
         if r.media_np.take().is_some() {
-            r.np.playing = false;
-            if let Some(t) = r.last_track.clone() {
-                apply_track(&mut r.np, &t);
-                r.art_key = None;
-                show_cover(r, t.object_id);
-            }
-            r.dirty = true;
+            show_library_np(r);
         }
         return;
     };
@@ -6501,8 +6643,10 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
             // The SAME list, from another row: keep what starting a new one would forget — the
             // order shuffle-off goes back to, and whether the list was built by hand.
             let kept = r.app.list_state();
+            let glue = r.app.glue_pairs();
             set_pending(r, seq, start);
             r.app.restore_list_state(kept);
+            r.app.set_glue_pairs(glue);
             8
         }
         Action::Seek(permille) => {
@@ -6536,6 +6680,8 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                     // turns shuffle on; this one is its mirror. See `play_in_order`.
                     play_in_order(r);
                     set_pending(r, seq, 0);
+                    let glue = playlist_glue(r, *playlist_id);
+                    r.app.set_glue_pairs(glue);
                     8
                 }
                 None => {
@@ -6557,6 +6703,8 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                     // Tapping a member plays the playlist from there, in playlist order.
                     play_in_order(r);
                     set_pending(r, seq, start);
+                    let glue = playlist_glue(r, *playlist_id);
+                    r.app.set_glue_pairs(glue);
                     8
                 }
                 None => {
@@ -6718,7 +6866,12 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                     // transport's shuffle and a saved view's band are. This band shuffled songs
                     // whatever the setting said (#53, plaquette, 2026-11-05).
                     let by = cinder_ui::shuffle::ShuffleBy::from_token(r.app.shuffle_by());
-                    seq = deal_tracks(seq, by, &mut rng());
+                    // Glued runs stay whole (plan 1c): the pairs, as a mask over the list in
+                    // playlist order, before the deal moves anything.
+                    let glue_pairs = playlist_glue(r, *playlist_id);
+                    r.app.set_glue_pairs(glue_pairs.clone());
+                    let glue = r.app.glue_mask(&pre);
+                    seq = deal_tracks_glued(seq, &glue, by, &mut rng());
                     // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
                     // the shuffle band on Albums / All Songs started a shuffled sequence but left
                     // the transport's shuffle indicator OFF, so the control said one thing and the
@@ -6726,6 +6879,7 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                     // on in plain order without anything having changed on screen.
                     r.np.shuffle = true;
                     set_pending(r, seq, 0);
+                    r.app.set_glue_pairs(glue_pairs);
                     r.app.note_pre_shuffle(pre);
                     8
                 }
@@ -6864,12 +7018,12 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
             // The editor's DONE. The order is in ids of what the page showed; the store works in
             // file entries, some of which the page never showed (their files are not in the
             // library right now) — `Store::reorder` keeps those where they were.
-            let (id, order) = r
+            let (id, order, glued) = r
                 .app
                 .take_playlist_edit()
-                .filter(|(id, _)| id == playlist_id)?;
+                .filter(|(id, _, _)| id == playlist_id)?;
             let resolved = playlist_entry_ids(r, id);
-            match r.plists.reorder(id, &resolved, &order) {
+            match r.plists.reorder(id, &resolved, &order, &glued) {
                 Ok(true) => eprintln!(
                     "cinder-ffi: playlist edit saved — {} members kept",
                     order.len()
@@ -7255,8 +7409,10 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
         Action::PowerOff => 25, // PowerMgrServiceClient::SetStatus(PowerOff)
         Action::ToggleLiked => {
             // Handled entirely in-process: the set and its file live here, so there is nothing for
-            // the shell to carry out.
-            liked_toggle_current(r);
+            // the shell to carry out. A live source is not a library song: nothing to like.
+            if r.live.is_none() {
+                liked_toggle_current(r);
+            }
             return None;
         }
         Action::SettingsReset => {
@@ -8302,6 +8458,13 @@ pub extern "C" fn cinder_set_usb_dac_format(
     chans: libc::c_uint,
 ) {
     write(|r| r.app.set_usb_dac_format(rate, bits, chans));
+}
+
+/// What is making the sound when it is not the library, once a second from the shell: `kind` is a
+/// `CINDER_LIVE_*` (0 = the library), `playing` 0 while that source is paused. Now Playing follows it.
+#[no_mangle]
+pub extern "C" fn cinder_set_live_source(kind: libc::c_int, playing: libc::c_int) {
+    write(|r| live_np(r, kind.clamp(0, 255) as u8, playing != 0));
 }
 
 /// llusbdac (the `llusbdac` component): `avail` = the module is installed, `loaded` = it is in the
@@ -10813,6 +10976,7 @@ pub extern "C" fn cinder_resume_load(
     // (2026-09-23): the picks still queued, and the one that was PLAYING. `App::playback_restore`
     // splices both back into the list where they would have played.
     let mut pick_id: Option<i64> = None;
+    let mut glue: Vec<i64> = Vec::new();
     for (k, v) in conf_lines(&seq_body) {
         match k {
             "ctx" => ctx_ids = id_list(v),
@@ -10821,6 +10985,7 @@ pub extern "C" fn cinder_resume_load(
             "idx" => idx = v.parse::<usize>().unwrap_or(0),
             "pick" => pick_id = v.parse::<i64>().ok(),
             "hist" => hist_ids = id_list(v),
+            "glue" => glue = id_list(v),
             _ => {}
         }
     }
@@ -10887,6 +11052,14 @@ pub extern "C" fn cinder_resume_load(
         queue.iter().map(song_row_of).collect(),
         pre,
         pick.as_ref().map(song_row_of),
+    );
+    // Glued songs stay glued after a reboot (Up Next's shuffle reads these pairs).
+    r.app.set_glue_pairs(
+        glue.as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[a, b]| (a, b))
+            .collect(),
     );
 
     // What to show, and what the first ▶ will hand PlayerService: the App's list from its playing
@@ -11679,6 +11852,9 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let art_plan = (!ART_DEFER.load(std::sync::atomic::Ordering::Relaxed))
         .then(|| art_cache_plan(&db))
         .flatten();
+    // A full read of the track table (~50 ms on 4,900 songs): done here, not under the lock.
+    let undecodable: std::collections::HashSet<String> =
+        db.undecodable_paths().into_iter().collect();
     let ms_parts = t_parts.elapsed().as_millis();
 
     // ── INSTALL. Everything above was local; this is the only part that needs the render state,
@@ -11722,7 +11898,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let t_sub = std::time::Instant::now();
     // Ids are this database's; a rebuilt one may give a missed id to an album with a cover.
     r.grid_miss.clear();
-    r.undecodable = db.undecodable_paths().into_iter().collect();
+    r.undecodable = undecodable;
     if !r.undecodable.is_empty() {
         eprintln!(
             "cinder-ffi: {} FLAC(s) wider than 24 bits will be skipped (the player's decoder stops \
@@ -12390,7 +12566,8 @@ pub extern "C" fn cinder_set_play_position(
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -2 };
     // A cast has the music: Now Playing follows the speaker (cast_tick), not the paused player.
-    if casting(r) {
+    // A live source has it the same way (live_np).
+    if casting(r) || r.live.is_some() {
         return 0;
     }
     let was_playing = r.np.playing;
@@ -12450,8 +12627,8 @@ pub extern "C" fn cinder_set_now_playing_uri(
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -2 };
     r.np.battery = battery.clamp(0, 100) as u8;
-    if casting(r) {
-        return 0; // the speaker's song stays on Now Playing (cast_tick)
+    if casting(r) || r.live.is_some() {
+        return 0; // the speaker's song (cast_tick) or the live source (live_np) stays on Now Playing
     }
     r.np.playing = playing != 0;
     r.dirty = true; // now-playing changed -> repaint
@@ -14020,6 +14197,57 @@ mod tests {
         }
     }
 
+    #[test]
+    /// Plan 1c: a glued pair in a playlist stays together, in order, through the playlist's own
+    /// shuffle band, by songs, every time — and only while that playlist is what plays.
+    fn a_glued_pair_survives_the_playlist_shuffle() {
+        let mut r = zappin_render();
+        r.db = Some(fixture_db());
+        let entry = |u: &str, glued: bool| playlists::Entry {
+            uri: u.into(),
+            glued,
+            ..Default::default()
+        };
+        r.plists = playlists::Store {
+            lists: vec![playlists::Playlist {
+                id: -1,
+                name: "Glued".into(),
+                entries: vec![
+                    entry("/music/harvest.flac", false),
+                    entry("/music/atlas.flac", false),
+                    entry("/music/box.flac", true),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        refresh_playlists(&mut r);
+        r.app.set_shuffle_by("songs");
+        for _ in 0..200 {
+            carry_action_now(&mut r, &cinder_ui::nav::Action::ShufflePlaylist(-1));
+            let a = r
+                .pending_play
+                .iter()
+                .position(|u| u == "/music/atlas.flac")
+                .unwrap();
+            assert_eq!(
+                r.pending_play.get(a + 1).map(String::as_str),
+                Some("/music/box.flac"),
+                "{:?}",
+                r.pending_play
+            );
+        }
+        assert!(
+            !r.app.glue_pairs().is_empty(),
+            "the playlist's glue is live"
+        );
+        carry_action_now(&mut r, &cinder_ui::nav::Action::PlayPlaylist(-1));
+        assert!(
+            !r.app.glue_pairs().is_empty(),
+            "playing it in order keeps it"
+        );
+    }
+
     /// #53: a playlist's Shuffle band, and "random playlist · shuffled", follow Settings ▸ Shuffle.
     /// With "albums", album 10's two songs stay together and in order; with "songs" they need not.
     #[test]
@@ -14987,10 +15215,63 @@ mod tests {
         let key = art_cache::key_of("/contents/MUSIC/a/01.flac");
         std::fs::write(dir.join(format!("{key:016x}.t96")), vec![7u8; 96 * 96 * 3]).unwrap();
         r.art_cache_keys.insert(id, key);
-        load_grid_covers(&mut r);
+        // The worker reads it; a later frame collects it.
+        let t0 = std::time::Instant::now();
+        while !r.app.has_grid_cover(id) && t0.elapsed() < std::time::Duration::from_secs(5) {
+            load_grid_covers(&mut r);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(r.app.has_grid_cover(id));
         std::env::remove_var("CINDER_ART_CACHE");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Internet radio, then FM, own Now Playing while they play; Like can't touch the hidden
+    /// library song, the library's player can't overwrite them, and the song comes back after.
+    #[test]
+    fn a_live_source_owns_now_playing_until_it_ends() {
+        use cinder_ui::nav::live;
+        let mut r = zappin_render();
+        let song = cinder_db::Track {
+            object_id: 7,
+            title: "Library song".into(),
+            artist: "Library artist".into(),
+            ..Default::default()
+        };
+        apply_track(&mut r.np, &song);
+        r.last_track = Some(song);
+        r.app
+            .set_radio_stations("Radio Paradise|https://stream.example/rp\n");
+        r.app
+            .set_radio_status("state=playing\nstation=0\ntitle=Massive Attack - Teardrop\nnote=\n");
+
+        live_np(&mut r, live::RADIO, true);
+        assert_eq!(r.np.title, "Teardrop");
+        assert_eq!(r.np.artist, "Massive Attack · Radio Paradise");
+        assert!(r.np.playing);
+        assert_eq!(r.art_key, Some(-1), "no library cover on a stream");
+        r.live = Some((
+            live::RADIO,
+            std::time::Instant::now() - std::time::Duration::from_secs(65),
+        ));
+        live_np(&mut r, live::RADIO, true);
+        assert_eq!(r.np.elapsed, "1:05", "the time since the stream started");
+
+        // A station with no titles shows its name; a pause shows paused.
+        r.app
+            .set_radio_status("state=playing\nstation=0\ntitle=\nnote=\n");
+        live_np(&mut r, live::RADIO, false);
+        assert_eq!(r.np.title, "Radio Paradise");
+        assert!(!r.np.playing);
+
+        r.app.fm_report_khz(98_500);
+        live_np(&mut r, live::FM, true);
+        assert_eq!(r.np.title, "98.5 MHz");
+
+        live_np(&mut r, 0, false);
+        assert_eq!(r.np.title, "Library song");
+        assert_eq!(r.np.artist, "Library artist");
+        assert!(r.live.is_none());
     }
 
     fn zappin_render() -> Render {
@@ -15081,6 +15362,7 @@ mod tests {
             media_server: None,
             media_levels: Vec::new(),
             media_np: None,
+            live: None,
             cast_ids: Vec::new(),
             cast_shown: None,
             cast_was_on: false,

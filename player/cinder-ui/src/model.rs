@@ -259,6 +259,9 @@ pub struct PlaylistRow {
     /// the drill-in page is a pure view and needs no DB access per frame. `tracks` is the DB's own
     /// count and can legitimately exceed this when a member file no longer resolves.
     pub track_list: Vec<SongRow>,
+    /// `glued[i]`: `track_list[i]` is glued to the member above it — the two always play together,
+    /// in this order, however the playlist is shuffled (plan 1c). Empty = nothing glued.
+    pub glued: Vec<bool>,
     /// True when this playlist's picture was CHOSEN — an `#EXTIMG:` line or a file dropped beside
     /// the `.m3u8` — rather than inherited from its first track.
     ///
@@ -762,6 +765,7 @@ impl Library {
             .iter()
             .enumerate()
             .map(|(pi, p)| PlaylistRow {
+                glued: Vec::new(),
                 id: pi as i64 + 1,
                 name: p.n.into(),
                 tracks: p.k,

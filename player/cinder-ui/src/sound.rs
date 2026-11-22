@@ -1505,6 +1505,8 @@ mod tests {
     /// On the jack the curve is in the DAC: the path names it there and drops the 10-band.
     #[test]
     fn the_dac_carries_the_jack_curve_in_the_path() {
+        // The wording follows the text size too (`scale::tight`), which other tests change.
+        let _g = crate::text::scale_guard();
         let s = Sound {
             eq_on_dac: true,
             ..loud()

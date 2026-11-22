@@ -322,6 +322,10 @@ fn view_icon(c: &mut Canvas, cx: f32, cy: f32, v: LibView, col: Rgb888) {
 fn grid_cover(c: &mut Canvas, t: &Theme, lib: &Library, album_id: i64, name: &str, x: i32, y: i32) {
     let px = grid_tile_px();
     match lib.covers.get(&album_id) {
+        // Already at the tile's size: the shell scaled it off the render thread.
+        Some(img) if img.w == px as usize && img.h == px as usize => {
+            art::draw_image(c, t, x, y, img, artdim(t))
+        }
         Some(img) if img.w == GRID_TILE as usize && img.h == GRID_TILE as usize => {
             if px == GRID_TILE {
                 art::draw_image(c, t, x, y, img, artdim(t))
@@ -334,7 +338,7 @@ fn grid_cover(c: &mut Canvas, t: &Theme, lib: &Library, album_id: i64, name: &st
         // cover replaces it; before 2026-11-18 this was the gradient, so a fling showed colour
         // blocks that turned into covers one by one — the "slow album covers" report.
         _ => match lib.thumbs.get(&album_id).filter(|i| i.w > 0 && i.w == i.h) {
-            Some(th) => art::scaled_cached(c, t, x, y, album_id, th, px, artdim(t)),
+            Some(th) => art::scaled_cached_nearest(c, t, x, y, album_id, th, px, artdim(t)),
             None => art::block_cached(c, t, x, y, px, px, name, artdim(t)),
         },
     }
@@ -4001,6 +4005,9 @@ pub fn playlist_view(
         }
         if now {
             fill_rect(c, 0, y, W as i32, PLAYLIST_TRACK_RH(), t.row_sel);
+        }
+        if i > 0 && sw.is_none() && pl.glued.get(i).copied().unwrap_or(false) {
+            crate::playlist_edit::glue_bracket(c, t, y, PLAYLIST_TRACK_RH());
         }
         text::draw(
             c,

@@ -80,6 +80,9 @@ pub struct Entry {
     pub uri: String,
     /// "Artist - Title" for the `#EXTINF` comment. Display only; never used for matching.
     pub label: String,
+    /// Glued to the entry above: the two always play together, in this order, however the
+    /// playlist is shuffled (`#CINDER-GLUE` before it in the file; plan 1c).
+    pub glued: bool,
 }
 
 /// Image extensions a playlist cover may use, lower-case. Exactly what `art_load::decode` can
@@ -243,6 +246,7 @@ impl Store {
         self.lists[index].entries.push(Entry {
             uri: uri.to_string(),
             label: label.to_string(),
+            glued: false,
         });
         write_file(&mut self.lists[index])?;
         Ok(true)
@@ -271,6 +275,7 @@ impl Store {
             list.entries.push(Entry {
                 uri: uri.clone(),
                 label: label.clone(),
+                glued: false,
             });
             added += 1;
         }
@@ -298,6 +303,7 @@ impl Store {
         id: i64,
         resolved: &[Option<i64>],
         order: &[i64],
+        glued: &[bool],
     ) -> std::io::Result<bool> {
         let Some(index) = self.index_of(id) else {
             return Ok(false);
@@ -315,10 +321,19 @@ impl Store {
                 slots.entry(*oid).or_default().push_back(i);
             }
         }
-        let kept: Vec<usize> = order
+        // With each kept member's glue (`glued[j]` belongs to `order[j]`; missing = not glued).
+        let kept_glue: Vec<(usize, bool)> = order
             .iter()
-            .filter_map(|oid| slots.get_mut(oid)?.pop_front())
+            .enumerate()
+            .filter_map(|(j, oid)| {
+                Some((
+                    slots.get_mut(oid)?.pop_front()?,
+                    glued.get(j).copied().unwrap_or(false),
+                ))
+            })
             .collect();
+        let glue_of: std::collections::HashMap<usize, bool> = kept_glue.iter().copied().collect();
+        let kept: Vec<usize> = kept_glue.into_iter().map(|(i, _)| i).collect();
         let is_kept: std::collections::HashSet<usize> = kept.iter().copied().collect();
         // Each unresolved entry's anchor: the nearest KEPT member before it, or None for the top.
         let mut leading: Vec<usize> = Vec::new();
@@ -344,10 +359,16 @@ impl Store {
                 next.extend(tail);
             }
         }
-        if next.iter().copied().eq(0..entries.len()) {
+        let new_entries: Vec<Entry> = next
+            .into_iter()
+            .map(|i| Entry {
+                glued: glue_of.get(&i).copied().unwrap_or(entries[i].glued),
+                ..entries[i].clone()
+            })
+            .collect();
+        if new_entries == *entries {
             return Ok(false);
         }
-        let new_entries: Vec<Entry> = next.into_iter().map(|i| entries[i].clone()).collect();
         self.lists[index].entries = new_entries;
         write_file(&mut self.lists[index])?;
         Ok(true)
@@ -538,6 +559,7 @@ fn parse_file(path: &Path) -> Option<Playlist> {
     let mut pending_label = String::new();
     let mut cover: Option<String> = None;
     let mut edited: Option<i64> = None;
+    let mut pending_glue = false;
 
     for line in body.lines() {
         let line = line.trim_end_matches(['\r', '\n']);
@@ -557,6 +579,10 @@ fn parse_file(path: &Path) -> Option<Playlist> {
             if !rest.is_empty() {
                 cover = Some(rest.replace('\\', "/").replace("%20", " "));
             }
+            continue;
+        }
+        if trimmed == GLUE_TAG {
+            pending_glue = true;
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix(EDITED_TAG) {
@@ -582,6 +608,8 @@ fn parse_file(path: &Path) -> Option<Playlist> {
         entries.push(Entry {
             uri: norm_uri,
             label: std::mem::take(&mut pending_label),
+            // The first member has nothing above it to be glued to.
+            glued: std::mem::take(&mut pending_glue) && !entries.is_empty(),
         });
     }
 
@@ -600,6 +628,10 @@ fn parse_file(path: &Path) -> Option<Playlist> {
 /// Every other m3u reader skips it as a comment. A PC tool that takes the playlist back writes
 /// the file without it, and the tag on the row goes with it. See `docs/PLAYLISTS.md`.
 const EDITED_TAG: &str = "#CINDER-EDITED:";
+
+/// `#CINDER-GLUE` on the line(s) before a member: glued to the member above (`Entry::glued`).
+/// A comment to every other m3u reader. See `docs/PLAYLISTS.md`.
+const GLUE_TAG: &str = "#CINDER-GLUE";
 
 /// Write `list` to its file, and stamp it as edited on the player: every caller is the player
 /// changing a playlist, which is exactly what the stamp records.
@@ -620,7 +652,11 @@ fn write_file(list: &mut Playlist) -> std::io::Result<()> {
     if let Some(cover) = &list.cover {
         body.push_str(&format!("#EXTIMG:{cover}\n"));
     }
-    for entry in &list.entries {
+    for (i, entry) in list.entries.iter().enumerate() {
+        if entry.glued && i > 0 {
+            body.push_str(GLUE_TAG);
+            body.push('\n');
+        }
         if !entry.label.is_empty() {
             body.push_str(&format!("#EXTINF:-1,{}\n", entry.label));
         }
@@ -654,7 +690,7 @@ pub fn sony_bookmarks(dir: impl AsRef<Path>) -> Vec<Playlist> {
                 .take(MAX_TRACKS)
                 .map(|uri| Entry {
                     uri: crate::shared::canonical(&uri),
-                    label: String::new(),
+                    ..Default::default()
                 })
                 .collect();
             (!entries.is_empty()).then(|| Playlist {
@@ -798,19 +834,19 @@ mod tests {
         // a, b, c resolve to ids 1, 2, 3; the two card tracks do not.
         let resolved = [Some(1), None, Some(2), Some(3), None];
         // Unchanged order: nothing written.
-        assert!(!store.reorder(id, &resolved, &[1, 2, 3]).unwrap());
+        assert!(!store.reorder(id, &resolved, &[1, 2, 3], &[]).unwrap());
         // c first, b removed.
-        assert!(store.reorder(id, &resolved, &[3, 1]).unwrap());
+        assert!(store.reorder(id, &resolved, &[3, 1], &[]).unwrap());
         let got = uris(&Store::open(&dir.0).lists[0]);
         assert_eq!(
             got,
             ["/x/c.flac", "/x/sd2.flac", "/x/a.flac", "/x/sd1.flac"]
         );
         // A stale description of the file (the wrong length) changes nothing.
-        assert!(!store.reorder(id, &[Some(1)], &[1]).unwrap());
+        assert!(!store.reorder(id, &[Some(1)], &[1], &[]).unwrap());
         // Remove everything shown: the card tracks are all that is left, in their order.
         let resolved = [Some(3), None, Some(1), None];
-        assert!(store.reorder(id, &resolved, &[]).unwrap());
+        assert!(store.reorder(id, &resolved, &[], &[]).unwrap());
         assert_eq!(
             uris(&Store::open(&dir.0).lists[0]),
             ["/x/sd2.flac", "/x/sd1.flac"]
@@ -829,7 +865,7 @@ mod tests {
         let mut store = Store::open(&dir.0);
         let id = store.lists[0].id;
         assert!(store
-            .reorder(id, &[Some(1), Some(2), Some(1)], &[2, 1, 1])
+            .reorder(id, &[Some(1), Some(2), Some(1)], &[2, 1, 1], &[])
             .unwrap());
         assert_eq!(
             uris(&Store::open(&dir.0).lists[0]),
@@ -957,6 +993,40 @@ mod tests {
         assert!(Store::open(&dir.0).lists.is_empty());
         // Deleting twice is not an error — the second call has nothing to do.
         store.delete(id).unwrap();
+    }
+
+    /// Glue (plan 1c) is saved by the editor's DONE as `#CINDER-GLUE`, read back, and cleared.
+    #[test]
+    fn glue_round_trips_through_the_file() {
+        let dir = Dir::new("glue");
+        let mut store = Store::open(&dir.0);
+        let id = store.create("Glued").unwrap();
+        let items: Vec<(String, String)> = ["/x/a.flac", "/x/b.flac", "/x/c.flac"]
+            .iter()
+            .map(|u| (u.to_string(), String::new()))
+            .collect();
+        store.add_many(id, &items).unwrap();
+        let resolved = [Some(1), Some(2), Some(3)];
+        // Glue b to a. A glue flag on the top row means nothing and is not written.
+        assert!(store
+            .reorder(id, &resolved, &[1, 2, 3], &[true, true, false])
+            .unwrap());
+        let body = std::fs::read_to_string(&store.get(id).unwrap().file).unwrap();
+        assert_eq!(body.matches(GLUE_TAG).count(), 1, "{body}");
+        let back = Store::open(&dir.0);
+        let glued: Vec<bool> = back.lists[0].entries.iter().map(|e| e.glued).collect();
+        assert_eq!(glued, [false, true, false]);
+        // Unchanged order and glue writes nothing; clearing the glue does.
+        let mut store = back;
+        assert!(!store
+            .reorder(id, &resolved, &[1, 2, 3], &[false, true, false])
+            .unwrap());
+        assert!(store
+            .reorder(id, &resolved, &[1, 2, 3], &[false; 3])
+            .unwrap());
+        assert!(!std::fs::read_to_string(&store.get(id).unwrap().file)
+            .unwrap()
+            .contains(GLUE_TAG));
     }
 
     #[test]
@@ -1154,6 +1224,7 @@ mod tests {
             ]
         );
         assert_eq!(list.entries[0].label, "Wunderhorse - Teal");
+        assert!(list.entries[1].glued, "Pink Moon is glued to Teal");
     }
 
     #[test]

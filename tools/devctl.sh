@@ -61,7 +61,7 @@ swipe)
 shot) shift; exec bash cinder-home/tools/screenshot.sh "$@" ;;
 set) shift; exec bash tools/devset.sh "$@" ;;
 cmd) shift
-     [ $# -gt 0 ] || { echo "cmd: state | play | pause | next | prev | seek MS | repeat 0-3 | shuffle 0|1 | find TEXT | album ID|TEXT [SONG] | restore" >&2; exit 2; }
+     [ $# -gt 0 ] || { echo "cmd: state | play | pause | toggle | next | prev | seek MS | repeat 0-3 | shuffle 0|1 | find TEXT | album ID|TEXT [SONG] | restore | reload | radio N (-1 stops) | fm 0|1 | wifi 0|1" >&2; exit 2; }
      # One command a line; the shell answers in cinder_cmd.out within its 1 s tick.
      body=$(printf '%s\n' "$@")
      # adb's shell writes 0600 root: cinder-home (uid 100) must be able to read it.

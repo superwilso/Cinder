@@ -482,6 +482,10 @@ int cinder_dev_state(char* buf, int cap);
    returns the action to carry out, 0 if nothing matched. And albums matching text. */
 int cinder_dev_play_album(const char* what, int track);
 int cinder_dev_find(const char* what, char* buf, int cap);
+/* Pick internet radio station `idx` (then cinder_take_radio plays it), and set FM's switch (then
+   CINDER_ACT_FM_POWER acts on it). 1 = done. */
+int cinder_dev_radio(int idx);
+int cinder_dev_fm(int on);
 /* 1 once after a scan changed the index (own_index on): reload the library. */
 int cinder_index_take_changed(void);
 int  cinder_set_play_position(int cur_ms, int total_ms, int playing);
@@ -912,6 +916,14 @@ int  cinder_get_profile_output(void);
    (from Sony's stream_info_t, the three words GetStatus fills in). rate 0 = not streaming, which
    clears the panel back to its generic line. Sets state only, raises no action. */
 void cinder_set_usb_dac_format(unsigned rate, unsigned bits, unsigned chans);
+
+/* What is making the sound when it is not the library, once a second: Now Playing shows it and
+ * the transport keys go to it. `playing` 0 while that source is paused. */
+enum {
+    CINDER_LIVE_NONE = 0, CINDER_LIVE_RADIO = 1, CINDER_LIVE_DLNA = 2, CINDER_LIVE_AIRPLAY = 3,
+    CINDER_LIVE_FM = 4, CINDER_LIVE_RECEIVER = 5, CINDER_LIVE_USB_DAC = 6,
+};
+void cinder_set_live_source(int kind, int playing);
 /* llusbdac: avail = module installed, loaded = in the kernel. get: 1 = engage loads it. */
 void cinder_set_usb_dac_low_latency(int avail, int loaded);
 int cinder_get_usb_dac_low_latency(void);

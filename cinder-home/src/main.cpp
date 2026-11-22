@@ -4211,8 +4211,15 @@ static void wifi_start(int act, const std::string& join = std::string()) {
     pthread_attr_destroy(&at);
 }
 
+static void radio_yield(const char* why);
+static void airplay_yield();
 static void wifi_act(int act) {
     g_wifi_slept_at = 0;   // the user's own choice from here on, not the idle sleep's
+    if (act == CINDER_ACT_WIFI_OFF) {
+        // End a stream before its network goes, rather than letting it starve (#59).
+        radio_yield("Wi-Fi is off");
+        airplay_yield();
+    }
     if (act == CINDER_ACT_WIFI_JOIN) {
         unsigned char buf[128];
         int n = cinder_take_wifi_join(buf, (int)sizeof buf);
@@ -12320,11 +12327,11 @@ static void radio_reap(pid_t p, int fd) {
     if (p > 0) { ::kill(p, SIGTERM); ::waitpid(p, nullptr, 0); }
 }
 
-// Read up to n bytes, waiting at most 1 s (so a stop is seen within a second). 0 = nothing yet,
-// -1 = the stream ended.
-static ssize_t radio_read(int fd, unsigned char* b, size_t n) {
+// Read up to n bytes, waiting at most `ms` (1 s by default, so a stop is seen within a second).
+// 0 = nothing yet, -1 = the stream ended.
+static ssize_t radio_read(int fd, unsigned char* b, size_t n, int ms = 1000) {
     struct pollfd pf = { fd, POLLIN, 0 };
-    int r = ::poll(&pf, 1, 1000);
+    int r = ::poll(&pf, 1, ms);
     if (r <= 0) return r == 0 ? 0 : -1;
     ssize_t k = ::read(fd, b, n);
     return k > 0 ? k : -1;
@@ -12782,7 +12789,7 @@ static void* radio_thread(void*) {
             // Paused: the download waits unread, the output (and the codec or Bluetooth) is free.
             if (g_radio_paused && g_radio_run) {
                 if (opened) { radio_out_close(out); opened = false; }
-                clog_("radio: paused by the network controller");
+                clog_("radio: paused");
                 while (g_radio_paused && g_radio_run) usleep(100000);
                 if (g_radio_run) clog_("radio: going on from the pause");
             }
@@ -12833,9 +12840,31 @@ static void* radio_thread(void*) {
         };
         // FLAC and WAV pull their bytes: `audio`, then the download, until it ends.
         bool ended = false;
+        // The network, once sound is playing: nothing for 50 ms feeds the output 50 ms of silence.
+        // Left unfed, the jack's hardware ring kept cycling its last second of audio until the
+        // underrun was noticed: the "loop machine" when Wi-Fi went off (#59).
+        unsigned starved = 0;
+        auto net_read = [&]() -> ssize_t {
+            if (!opened || g_radio_paused) return radio_read(fd, buf, sizeof buf);
+            ssize_t n = radio_read(fd, buf, sizeof buf, 50);
+            if (n != 0) {
+                if (n > 0 && starved >= 20) {
+                    char m[96];
+                    std::snprintf(m, sizeof m, "radio: the network is back after %u s of silence", starved / 20);
+                    clog_(m);
+                }
+                starved = 0;
+                return n;
+            }
+            static const short quiet[2 * 4800] = {};
+            if (++starved == 1) clog_("radio: nothing from the network — silence until it returns");
+            if (starved % 20 == 0) ++g_radio_waits;  // a second with nothing from the network
+            radio_out_write(out, quiet, std::min(out.src_rate / 20, 4800u));
+            return 0;
+        };
         auto more = [&]() -> bool {
             while (g_radio_run) {
-                ssize_t n = radio_read(fd, buf, sizeof buf);
+                ssize_t n = net_read();
                 if (n < 0) { ended = true; return false; }
                 if (n > 0) { take(buf, (size_t)n); return true; }
             }
@@ -12913,8 +12942,8 @@ static void* radio_thread(void*) {
             }
             audio.erase(audio.begin(), audio.begin() + (long)used);
             if (!g_radio_run) break;
-            ssize_t n = radio_read(fd, buf, sizeof buf);
-            if (n == 0) ++g_radio_waits;  // a second with nothing from the network
+            ssize_t n = net_read();
+            if (n == 0 && !opened) ++g_radio_waits;  // a second with nothing from the network
             if (n < 0) {
                 // A controller's link is one song: its end is the normal end, not a fault.
                 note = g_radio_station <= -2 ? "" : "The station stopped sending";
@@ -13426,8 +13455,55 @@ void apply_vol_curve() {
 // it), and so does the Winamp skin's stop.
 static int  g_seek_pending_ms = -1;
 
+// What is making the sound when it is not the library (cinder.h CINDER_LIVE_*), 0 = the library.
+// A media server's song (station -3) is left to the FFI, which already shows it.
+static int live_source(bool* playing) {
+    *playing = true;
+    if (g_radio_alive && g_radio_station >= -2) {
+        *playing = !g_radio_paused;
+        return g_radio_station == -2 ? CINDER_LIVE_DLNA : CINDER_LIVE_RADIO;
+    }
+    if (g_ap_out_open) return CINDER_LIVE_AIRPLAY;
+    if (g_fm_on) return CINDER_LIVE_FM;
+    if (g_rx_active) return CINDER_LIVE_RECEIVER;
+    // The cached flag, not gadget_in_dac_mode(): that runs getprop (~47 ms) and this is every second.
+    if (cinder_get_usb_dac() != 0) return CINDER_LIVE_USB_DAC;
+    return 0;
+}
+
+static void live_report() {
+    bool playing;
+    const int kind = live_source(&playing);
+    cinder_set_live_source(kind, playing ? 1 : 0);
+}
+
+// While a live source has the sound the transport keys are its own: Play/Pause pauses a stream
+// and ends AirPlay or FM; skips do nothing. They used to reach the hidden library, which stopped
+// the stream and resumed an album Now Playing was not showing.
+static bool live_transport(int act) {
+    if (act != CINDER_ACT_PLAYPAUSE && act != CINDER_ACT_NEXT && act != CINDER_ACT_PREV
+        && act != CINDER_ACT_NEXT_ALBUM && act != CINDER_ACT_PREV_ALBUM) return false;
+    bool playing;
+    const int kind = live_source(&playing);
+    if (!kind) return false;
+    if (act == CINDER_ACT_PLAYPAUSE) {
+        switch (kind) {
+            case CINDER_LIVE_RADIO: case CINDER_LIVE_DLNA:
+                g_radio_paused = playing ? 1 : 0;
+                clog_(playing ? "live: Play/Pause -> stream paused" : "live: Play/Pause -> stream going on");
+                break;
+            case CINDER_LIVE_AIRPLAY: clog_("live: Play/Pause -> AirPlay ended"); airplay_yield(); break;
+            case CINDER_LIVE_FM: clog_("live: Play/Pause -> FM off"); fm_off_now(); break;
+            default: break;   // the receiver and the USB DAC: the other device has the transport
+        }
+    }
+    live_report();
+    return true;
+}
+
 void carry_out(int act) {
     if (g_bringup_settled) post_up();   // the sound chain is in place before anything acts on it
+    if (live_transport(act)) return;
     zappin_clear_stale_handoff_for_action(act);
     if (g_zappin.owns_sequence && g_zappin.active
         && (act == CINDER_ACT_NEXT || act == CINDER_ACT_PREV)) {
@@ -14329,6 +14405,23 @@ static void dev_command_tick() {
             const int act = cinder_dev_shuffle((int)n);
             if (act > 0) carry_out(act);
             std::snprintf(res, sizeof res, "shuffle %lld: %s", n, act < 0 ? "already" : "changed");
+        } else if (w == "toggle") {
+            // The Play key exactly (a live source takes it), whatever g_playing says.
+            carry_out(CINDER_ACT_PLAYPAUSE);
+            std::snprintf(res, sizeof res, "toggle: ok");
+        } else if (w == "radio" && got == 2) {
+            radio_act(CINDER_ACT_RADIO_OPEN);   // the list, as opening the page reads it
+            const bool ok = n >= 0 && cinder_dev_radio((int)n);
+            if (ok) radio_play();
+            else radio_yield("");
+            std::snprintf(res, sizeof res, "radio %lld: %s", n, ok ? "starting" : "stopped (no such station)");
+        } else if (w == "fm" && got == 2) {
+            cinder_dev_fm((int)n);
+            carry_out(CINDER_ACT_FM_POWER);
+            std::snprintf(res, sizeof res, "fm %lld: ok", n);
+        } else if (w == "wifi" && got == 2) {
+            wifi_act(n ? CINDER_ACT_WIFI_ON : CINDER_ACT_WIFI_OFF);
+            std::snprintf(res, sizeof res, "wifi %lld: asked", n);
         } else if (w == "reload") {
             library_reload_async();
             std::snprintf(res, sizeof res, "reload: started in the background");
@@ -14337,7 +14430,7 @@ static void dev_command_tick() {
             if (act) carry_out(act);
             std::snprintf(res, sizeof res, "repeat %lld: %s", n, act ? "changed" : "already");
         } else {
-            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, shuffle 0|1, find TEXT, album ID|TEXT [SONG], restore, reload)", word);
+            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, shuffle 0|1, find TEXT, album ID|TEXT [SONG], restore, reload, toggle, radio N (-1 stops), fm 0|1, wifi 0|1)", word);
         }
         out += res;
         out += '\n';
@@ -16837,6 +16930,7 @@ void* render_driver(void*) {
             radio_tick();
             HK_MARK();
             airplay_tick(house_now);
+            live_report();              // Now Playing follows radio, AirPlay, FM, the receiver, the DAC
             // Music sent from the phone remote: rescan once uploads have stopped for 20 s, the same
             // campaign a USB storage session ends with. Never during one (it rescans itself).
             {

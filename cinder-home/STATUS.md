@@ -9,6 +9,10 @@ blocks are deltas on top of it. Last updated 2026-11-22.
 >   USB session; covers recorded a byte early load. Screen wake no longer waits on the sound chip
 >   (2 s → 0.04 s). Play from a dark screen 1.41 → 1.06 s to the stream. Folders: hold to select,
 >   ADD to a playlist (#56). Album grid at large text: worst frame 45 → ~17 ms. Rows 51.38–51.42.
+> - Glue in playlists (editor, playlist page bracket, kept across a restart; row 51.43). Now Playing
+>   follows a live source (internet radio, DLNA push, AirPlay, FM, BT receiver, USB DAC) and
+>   Play/Pause controls it (`cinder_set_live_source`; row 51.45). Internet radio plays silence, not
+>   a repeating second, when the network drops (#59, row 51.44). *Host-tested; not yet on a player.*
 
 
 > ## 2026-11-14 — Headphone EQ

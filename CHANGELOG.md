@@ -18,6 +18,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Glue songs together in a playlist.** In the playlist editor, tap a song to glue it to the one
+  above; a bracket joins them. Glued songs always play together and in order however the playlist
+  is shuffled. Saved in the playlist file as a comment line other players ignore, and kept across
+  a restart. The playlist's own page shows the bracket too. *Host-tested; device-unverified.*
+
+- **Now Playing shows whatever is playing.** Internet radio (station, song and artist), a song sent
+  with "Play to this player", AirPlay, FM (the frequency), the Bluetooth receiver (the phone and
+  codec) and the USB DAC (the format) now take over Now Playing and the mini-player while they play,
+  instead of the last library song, shown paused. Play/Pause acts on them: it pauses a stream and
+  ends AirPlay or FM; the skip buttons do nothing. The library's song comes back when they stop.
+  *Device-verified* for internet radio and FM; the others are untested on a player.
+
 - **Add folders to a playlist (#56).** In Folders, hold a folder to select it, tap more folders to
   select them too, then ADD: "Add to playlist" opens with every song in them and in the folders
   below them. Back cancels the selection. A new playlist made from one folder is named after it.
@@ -35,17 +47,26 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **Holding volume up or down gets going sooner.** The hold starts stepping after 0.25 s instead of
+  0.35 s and speeds up after one second instead of 1.5 s, so a full sweep takes about 4.6 s instead
+  of 5.6 s. A tap is still exactly one step.
+
 - **The first screen appears sooner still.** The player's fonts are now read in the background,
   and the first screen waits only for the ones it shows: the renderer is ready in about 50 ms
   instead of 800 ms, and the first frame arrives 0.5–0.9 s after Cinder starts.
 
 ### Fixed
 
+- **Internet radio no longer repeats the last second when Wi-Fi drops (#59).** When a station
+  stopped sending (Wi-Fi off, a weak signal), the headphone output kept replaying the last second of
+  sound until the stream ended. It now plays silence until the sound returns, and turning Wi-Fi off
+  ends the stream (and AirPlay) cleanly first. *Device-unverified.*
+
 - **The player no longer looks frozen after copying music to it (#57).** After a USB session the
   library is reloaded in the background instead of stopping the screen while it loads (about 7 s
   for a 28,000-song card, and again each time the scan found more). *Device-verified* on a
   4,900-song library: the reload runs in the background in 2.9 s and holds the screen for 0.14 s
-  at its end. *Device-unverified* on a large
+  at its end (a little less now). *Device-unverified* on a large
   card and on a Mac.
 
 - **Ejecting the player on the computer ends the USB session (#57).** "Eject" on a Mac or "Safely
@@ -70,7 +91,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 - **Smoother album grid with large text.** Scaling each cover up to the larger tiles took about a
   frame per cover as they scrolled in; it is about four times as fast now. *Device-verified:* the
-  slowest frame in a fling went from 45 ms to about 17 ms.
+  slowest frame in a fling went from 45 ms to about 17 ms. Covers are now also read and scaled
+  off the screen's thread, so the first scroll through the grid no longer stutters while they load.
+  *Device-unverified.*
 
 - **The player could hang with looping sound if Play was pressed just as it went to sleep.** A key
   pressed in the second after a paused player starts to sleep now stops the sleep before it acts,

@@ -175,6 +175,45 @@ pub fn apply<T>(v: Vec<T>, order: &[usize]) -> Vec<T> {
     order.iter().filter_map(|&i| old[i].take()).collect()
 }
 
+/// [`deal`] with GLUE: `glue[i]` says row `i` is glued to row `i - 1` (a playlist's "glue to the
+/// song above"). Each glued run is dealt as ONE unit, keyed by its first row, so it comes out whole
+/// and in order in every mode. A lead inside a run starts the run at the lead; the run's rows
+/// before it come straight after the rest of the run (callers move heard rows last anyway). An
+/// empty or all-false `glue` is exactly `deal`.
+pub fn deal_glued(
+    rows: &[Row],
+    glue: &[bool],
+    by: ShuffleBy,
+    lead: Option<usize>,
+    rng: &mut Rng,
+) -> (Vec<usize>, ShuffleBy) {
+    let glued = |i: usize| i > 0 && glue.get(i).copied().unwrap_or(false);
+    if !(0..rows.len()).any(glued) {
+        return deal(rows, by, lead, rng);
+    }
+    // Units: [start, end) runs of rows.
+    let mut units: Vec<(usize, usize)> = Vec::new();
+    for i in 0..rows.len() {
+        if glued(i) {
+            units.last_mut().expect("row 0 is never glued").1 = i + 1;
+        } else {
+            units.push((i, i + 1));
+        }
+    }
+    let heads: Vec<Row> = units.iter().map(|&(s, _)| rows[s]).collect();
+    let lead_unit = lead.and_then(|l| units.iter().position(|&(s, e)| (s..e).contains(&l)));
+    let (order, by) = deal(&heads, by, lead_unit, rng);
+    let mut out = Vec::with_capacity(rows.len());
+    for u in order {
+        let (s, e) = units[u];
+        match lead.filter(|_| Some(u) == lead_unit) {
+            Some(l) => out.extend((l..e).chain(s..l)),
+            None => out.extend(s..e),
+        }
+    }
+    (out, by)
+}
+
 /// Deal `rows` into a new order: a permutation of `0..rows.len()`.
 ///
 /// * **Songs** — Fisher-Yates over every row.
@@ -284,6 +323,43 @@ pub fn deal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Glued runs come out whole and in order, in every mode, over many deals (plan 1c).
+    #[test]
+    fn glued_runs_stay_whole_and_in_order() {
+        let rows = rows();
+        // 1-2-3 glued (album 1), 5-6 glued (album 2), 9-10 glued across into album 3's tail.
+        let mut glue = vec![false; rows.len()];
+        for i in [1, 2, 6, 10] {
+            glue[i] = true;
+        }
+        let runs: [&[usize]; 3] = [&[0, 1, 2], &[5, 6], &[9, 10]];
+        let mut rng = Rng::new(7);
+        for by in ShuffleBy::ALL {
+            for seed in 0..1000u64 {
+                rng = Rng::new(seed.wrapping_mul(2_654_435_761) ^ 7);
+                let (order, _) = deal_glued(&rows, &glue, by, None, &mut rng);
+                let mut sorted = order.clone();
+                sorted.sort_unstable();
+                assert_eq!(sorted, (0..rows.len()).collect::<Vec<_>>(), "a permutation");
+                for run in runs {
+                    let at = order.iter().position(|&i| i == run[0]).unwrap();
+                    assert_eq!(
+                        &order[at..at + run.len()],
+                        run,
+                        "{by:?} seed {seed}: {order:?}"
+                    );
+                }
+            }
+        }
+        // A lead inside a run starts there; the run's earlier rows follow the run.
+        let (order, _) = deal_glued(&rows, &glue, ShuffleBy::Songs, Some(1), &mut rng);
+        assert_eq!(&order[..3], &[1, 2, 0]);
+        // No glue: exactly `deal`.
+        let (a, _) = deal_glued(&rows, &[], ShuffleBy::Albums, None, &mut Rng::new(3));
+        let (b, _) = deal(&rows, ShuffleBy::Albums, None, &mut Rng::new(3));
+        assert_eq!(a, b);
+    }
 
     /// Three albums of four tracks, by two artists, in album order.
     fn rows() -> Vec<Row> {

@@ -26,7 +26,18 @@ liked list at `/contents`, which is the volume Windows mounts.
 #EXTIMG:/contents/Art/late-night.jpg ← the cover (optional) — see "Covers" below
 #EXTINF:-1,Wunderhorse - Teal        ← readable label; never used for matching
 /contents/MUSIC/Wunderhorse - Cub/06 - Wunderhorse - Teal.flac
+#CINDER-GLUE                         ← the next song is glued to this one (see "Glue")
+#EXTINF:-1,Wunderhorse - Leader of the Pack
+/contents/MUSIC/Wunderhorse - Cub/07 - Wunderhorse - Leader of the Pack.flac
 ```
+
+**Glue.** In the playlist editor, tap a song to glue it to the song above it (tap again to undo);
+a bracket joins glued songs. Glued songs always play together, in that order, however the playlist
+is shuffled — by songs, albums, artists or spread, from the playlist's Shuffle or from the shuffle
+button while it plays. It applies only while that playlist is what is playing, and it is kept when
+the player restarts in the middle of it. The playlist's page shows the same bracket. Other players
+skip `#CINDER-GLUE` as a comment; Flint keeps it when it takes a playlist back, and a PC tool that
+rewrites the file without it drops the glue.
 
 Consequences, all deliberate:
 

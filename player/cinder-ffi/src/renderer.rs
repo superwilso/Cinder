@@ -97,6 +97,11 @@ pub fn take() -> Option<Ask> {
     state().lock().unwrap().ask.take()
 }
 
+/// The title the controller gave its link (DIDL `dc:title`), for Now Playing.
+pub fn title() -> String {
+    state().lock().unwrap().title.clone()
+}
+
 /// What the renderer is doing, for the switch's second line ("" = the default text).
 pub fn note() -> String {
     state().lock().unwrap().note.clone()
