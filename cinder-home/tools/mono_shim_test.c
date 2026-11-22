@@ -336,6 +336,43 @@ int main(int argc, char** argv)
         }
     }
 
+    /* Cinder's own stack (Phase 4 (a)): with cinder_a2dp_target naming a socket, a connection to
+     * the transmitter lands there in SoundServiceFw — and at the transmitter anywhere else. */
+    {
+        char tp[512], own[64];
+        snprintf(own, sizeof own, "cinder.test.a2dp.%d", (int)getpid());
+        snprintf(tp, sizeof tp, "%s/cinder_a2dp_target", dir);
+        struct sockaddr_un o;
+        memset(&o, 0, sizeof o);
+        o.sun_family = AF_UNIX;
+        memcpy(o.sun_path + 1, own, strlen(own));
+        const socklen_t olen = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + strlen(own));
+        int ols = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        if (bind(ols, (struct sockaddr*)&o, olen) != 0 || listen(ols, 1) != 0) { perror("bind own"); return 2; }
+        int lsnb = fcntl(ls, F_GETFL);
+        fcntl(ls, F_SETFL, lsnb | O_NONBLOCK);
+        FILE* tf = fopen(tp, "w");
+        fprintf(tf, "%s\n", own);
+        fclose(tf);
+        int c3 = socket(AF_UNIX, SOCK_STREAM, 0);
+        const int cr = connect(c3, (struct sockaddr*)&a, alen);
+        nap(50);
+        int at_own = accept(ols, NULL, NULL), at_sony = accept(ls, NULL, NULL);
+        if (is_ssfw && expect_active)
+            check(cr == 0 && at_own >= 0 && at_sony < 0, "bt: with a target named, the transmitter connection reaches Cinder's stack");
+        else
+            check(cr == 0 && at_own < 0 && at_sony >= 0, "bt: in any other process the target is ignored");
+        unlink(tp);
+        int c4 = socket(AF_UNIX, SOCK_STREAM, 0);
+        const int cr4 = connect(c4, (struct sockaddr*)&a, alen);
+        nap(50);
+        int own2 = accept(ols, NULL, NULL), sony2 = accept(ls, NULL, NULL);
+        check(cr4 == 0 && own2 < 0 && sony2 >= 0, "bt: with no target the connection goes to Sony's transmitter");
+        fcntl(ls, F_SETFL, lsnb);
+        const int fds[] = {c3, c4, at_own, at_sony, own2, sony2, ols};
+        for (size_t k = 0; k < sizeof fds / sizeof fds[0]; k++) if (fds[k] >= 0) close(fds[k]);
+    }
+
     /* An fd that never connected to the transmitter is never touched. */
     int pair[2];
     socketpair(AF_UNIX, SOCK_STREAM, 0, pair);

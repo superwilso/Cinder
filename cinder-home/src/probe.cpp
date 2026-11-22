@@ -8084,7 +8084,96 @@ static int codec_probe(const char* verb) {
     return rc;
 }
 
+// --a2dp-listen NAME SECS (Phase 4, design (a)): stand in for Sony's transmitter on our own abstract
+// socket. With /tmp/cinder_a2dp_target naming NAME, the mono shim sends SoundServiceFw's A2DP HAL
+// here. Prints each handshake frame, then reads the PCM at real-time pace (as the transmitter's
+// encoder would, so the player does not race through the song) and reports bytes and level once a
+// second. The first 5 s go to /tmp/a2dp_capture.raw. Sends nothing back.
+static int a2dp_listen(const char* name, int secs) {
+    const size_t n = std::strlen(name);
+    if (n == 0 || n > 100) { std::printf("a2dp-listen: bad name\n"); return 2; }
+    sockaddr_un a{};
+    a.sun_family = AF_UNIX;
+    std::memcpy(a.sun_path + 1, name, n);
+    const socklen_t alen = (socklen_t)(offsetof(sockaddr_un, sun_path) + 1 + n);
+    const int ls = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (ls < 0 || ::bind(ls, (sockaddr*)&a, alen) != 0 || ::listen(ls, 1) != 0) {
+        std::printf("a2dp-listen: bind @%s failed: %s\n", name, std::strerror(errno));
+        return 2;
+    }
+    std::printf("a2dp-listen: @%s listening for %d s\n", name, secs);
+    std::fflush(stdout);
+    auto now_ms = []() { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000; };
+    const long long end = now_ms() + secs * 1000LL;
+    pollfd pf{ls, POLLIN, 0};
+    if (::poll(&pf, 1, secs * 1000) <= 0) { std::printf("a2dp-listen: nobody connected\n"); ::close(ls); return 1; }
+    const int c = ::accept(ls, nullptr, nullptr);
+    std::printf("a2dp-listen: connected (fd %d)\n", c);
+    auto read_all = [&](void* b, size_t len) -> bool {
+        size_t got = 0;
+        while (got < len) {
+            const ssize_t r = ::read(c, (char*)b + got, len - got);
+            if (r <= 0) return false;
+            got += (size_t)r;
+        }
+        return true;
+    };
+    unsigned rate = 0, chans = 0;
+    for (int frames = 0; frames < 8 && !rate; ++frames) {   // handshake frames until the type-1 config
+        uint32_t hdr[2];
+        if (!read_all(hdr, sizeof hdr)) { std::printf("a2dp-listen: closed during the handshake\n"); return 1; }
+        unsigned char pay[64] = {};
+        if (hdr[1] > sizeof pay) { std::printf("a2dp-listen: frame type %u length %u — too long, stopping\n", hdr[0], hdr[1]); return 1; }
+        if (hdr[1] && !read_all(pay, hdr[1])) return 1;
+        std::printf("a2dp-listen: frame type %u, %u bytes:", hdr[0], hdr[1]);
+        for (unsigned i = 0; i < hdr[1]; ++i) std::printf(" %02x", pay[i]);
+        std::printf("\n");
+        if (hdr[0] == 1 && hdr[1] == 28) {
+            std::memcpy(&chans, pay + 4, 4);
+            std::memcpy(&rate, pay + 24, 4);
+            std::printf("a2dp-listen: PCM config: %u Hz, %u ch, flag %u\n", rate, chans, pay[20]);
+        }
+    }
+    if (!rate || !chans || chans > 8) { std::printf("a2dp-listen: no usable config\n"); return 1; }
+    const long long bps = (long long)rate * chans * 2;
+    FILE* cap = std::fopen("/tmp/a2dp_capture.raw", "wb");
+    long long total = 0, sec_bytes = 0;
+    int peak = 0;
+    double sumsq = 0;
+    const long long t0 = now_ms();
+    long long next_report = t0 + 1000;
+    std::vector<int16_t> buf(4096);
+    while (now_ms() < end) {
+        // Real-time pace: never more than 100 ms ahead of the clock.
+        const long long due = (now_ms() - t0) * bps / 1000 + bps / 10;
+        if (total >= due) { usleep(5000); continue; }
+        const ssize_t r = ::read(c, buf.data(), buf.size() * 2);
+        if (r <= 0) { std::printf("a2dp-listen: the sound service closed the stream after %lld bytes\n", total); break; }
+        if (cap && total < bps * 5) std::fwrite(buf.data(), 1, (size_t)r, cap);
+        for (ssize_t i = 0; i < r / 2; ++i) {
+            const int v = buf[(size_t)i];
+            peak = std::max(peak, std::abs(v));
+            sumsq += (double)v * v;
+        }
+        total += r;
+        sec_bytes += r;
+        if (now_ms() >= next_report) {
+            const double rms = sec_bytes ? std::sqrt(sumsq / (sec_bytes / 2)) : 0;
+            std::printf("a2dp-listen: %lld bytes/s, peak %d, rms %.0f\n", sec_bytes, peak, rms);
+            std::fflush(stdout);
+            sec_bytes = 0; peak = 0; sumsq = 0;
+            next_report += 1000;
+        }
+    }
+    if (cap) std::fclose(cap);
+    std::printf("a2dp-listen: done, %lld bytes (%.1f s of audio)\n", total, (double)total / bps);
+    ::close(c);
+    ::close(ls);
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 3 && std::strcmp(argv[1], "--a2dp-listen") == 0) return a2dp_listen(argv[2], std::atoi(argv[3]));
     if (argc > 1 && std::strcmp(argv[1], "--scan") == 0) {
         // FLAT KEYWORD PARSE. Every argument after --scan is independent, so a config candidate and
         // a scan can be given in one line without the two branches disagreeing about which

@@ -384,7 +384,16 @@ marked; everything else runs with the player on the cable.
      bttransmitterservice` at our own listener while our stack is up (Sony's service keeps its name,
      untouched); and tell PathMgr A2DP is enabled (`InformDeviceEnabled` over pst, the client pattern
      `cinder-probe` already uses for PathMgr `SetPath`). Effects stay; volume needs care (VolumeService
-     treats device 5 as AVRCP absolute volume). **Owner decides (a) or (b).** First device test
+     treats device 5 as AVRCP absolute volume). **Owner chose (a), 11-22: keep the effects.**
+   - **Data path proven on the player, 11-22.** `libcinder_mono.so` now redirects the A2DP HAL's
+     `connect()` while `/tmp/cinder_a2dp_target` names an abstract socket (no file = no change; host
+     test in `tools/mono_shim_test.c`, also under qemu). With Sony's Bluetooth connected (so PathMgr
+     already routes to A2DP) and `cinder-probe --a2dp-listen cinder.a2dp 20` listening, Play sent the
+     sound service's stream to the probe: type-1 frame `02 00 00 00 … 10 00 00 00 44 ac 00 00`
+     (2 ch, flag 16, 44100 Hz), then 176 kB/s of PCM after Sony's effects (real stereo music in the
+     5 s capture), closed on pause. Target removed → the next Play went to Sony's transmitter again.
+     No pst calls were needed while Sony's link is up; with our own stack in its place,
+     `InformDeviceEnabled(A2DP, 1)` is what keeps PathMgr routing there. First device test
      (owner present, pst calls into core services): `InformDeviceEnabled(A2DP, 1)` with a probe
      listening on a test name behind the connect() wrap; expect the type-1 frame, then PCM.
 4. **Phase 4a: an A2DP source that stays connected** (2–3 days, owner for listening). In one

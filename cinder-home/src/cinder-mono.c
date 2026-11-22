@@ -75,6 +75,8 @@ static const char kAmbient[] = CINDER_MONO_DIR "/cinder_ambient";
 static const char kXfeed[] = CINDER_MONO_DIR "/cinder_crossfeed";
 static const char kRgain[] = CINDER_MONO_DIR "/cinder_rg";
 static const char kHpeq[] = CINDER_MONO_DIR "/cinder_hpeq";
+/* Names the abstract socket of Cinder's own Bluetooth stack (one line). See a2dp_target(). */
+static const char kA2dpTarget[] = CINDER_MONO_DIR "/cinder_a2dp_target";
 static const char kBtName[] = "pst::services::bttransmitterservice";
 
 /* ── how it is loaded, and how it gets out of the way ─────────────────────────────────────────
@@ -715,11 +717,44 @@ static int is_transmitter(const struct sockaddr* a, socklen_t len)
     return 1;
 }
 
+/* Cinder's own Bluetooth stack (docs/PLAN_hardware_first.md, Phase 4, design (a), owner 11-22):
+ * while kA2dpTarget names an abstract socket, the A2DP HAL's connection to Sony's transmitter goes
+ * there instead, so the PCM reaches our encoder after every one of Sony's effects. Sony's service
+ * keeps its own name, untouched. No file (the default) = no change. Names are [A-Za-z0-9:._-]. */
+static int a2dp_target(struct sockaddr_un* out, socklen_t* out_len)
+{
+    char name[100];
+    const int f = open(kA2dpTarget, O_RDONLY | O_CLOEXEC);
+    if (f < 0) return 0;
+    const ssize_t got = read(f, name, sizeof name - 1);
+    syscall(SYS_close, f);   /* not through the close() hook */
+    size_t n = got > 0 ? (size_t)got : 0;
+    while (n && (name[n - 1] == '\n' || name[n - 1] == '\r' || name[n - 1] == ' ')) n--;
+    if (!n) return 0;
+    for (size_t i = 0; i < n; i++) {
+        const char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+              || c == ':' || c == '.' || c == '_' || c == '-')) return 0;
+    }
+    memset(out, 0, sizeof *out);
+    out->sun_family = AF_UNIX;
+    memcpy(out->sun_path + 1, name, n);
+    *out_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
+    return 1;
+}
+
 int connect(int fd, const struct sockaddr* addr, socklen_t len)
 {
     RESOLVE(real_connect, "connect");
+    struct sockaddr_un own;
+    socklen_t own_len = 0;
+    if (g_active && is_transmitter(addr, len) && a2dp_target(&own, &own_len)) {
+        mlog("bt: fd %d: the transmitter connection goes to Cinder's stack (@%s)", fd, own.sun_path + 1);
+        addr = (const struct sockaddr*)&own;
+        len = own_len;
+    }
     const int r = real_connect ? real_connect(fd, addr, len) : (int)syscall(SYS_connect, fd, addr, len);
-    if (g_active && (r == 0 || errno == EINPROGRESS) && is_transmitter(addr, len)) {
+    if (g_active && (r == 0 || errno == EINPROGRESS) && (own_len || is_transmitter(addr, len))) {
         const int e = errno;
         pthread_mutex_lock(&g_bt_lock);
         bt_fd* slot = NULL;
