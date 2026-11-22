@@ -1945,8 +1945,8 @@ static void s_suspend_off_by_file(void) {
     check(std::strncmp(st, "mem", 3) != 0, "0 in /contents/cinder_suspend_s keeps the SoC out of early suspend");
 }
 
-// The CPU helper: kernel-default scheduler slices once, max 1040 MHz while the screen is dark on
-// the jack, restored when Power lights it. The opt-out file stops sched and cap outright.
+// The CPU helper: kernel-default scheduler slices once, max 1040 MHz while the screen is dark (jack or
+// Bluetooth), restored when Power lights it. The opt-out file stops sched and cap outright.
 static const char* kSched = "system:/system/vendor/cinder/bin/cinder-power sched";
 static const char* kCap   = "system:/system/vendor/cinder/bin/cinder-power cap";
 static const char* kUncap = "system:/system/vendor/cinder/bin/cinder-power uncap";

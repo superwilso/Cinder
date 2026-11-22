@@ -49,6 +49,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -720,12 +721,19 @@ static int is_transmitter(const struct sockaddr* a, socklen_t len)
 /* Cinder's own Bluetooth stack (docs/PLAN_hardware_first.md, Phase 4, design (a), owner 11-22):
  * while kA2dpTarget names an abstract socket, the A2DP HAL's connection to Sony's transmitter goes
  * there instead, so the PCM reaches our encoder after every one of Sony's effects. Sony's service
- * keeps its own name, untouched. No file (the default) = no change. Names are [A-Za-z0-9:._-]. */
+ * keeps its own name, untouched. No file (the default) = no change. Names are [A-Za-z0-9:._-].
+ * The stack rewrites the file each second; one older than 5 s is a stack that died, and is ignored
+ * (the same rule as cinder-pathwatch.c, which holds the route on Bluetooth for it). */
 static int a2dp_target(struct sockaddr_un* out, socklen_t* out_len)
 {
     char name[100];
     const int f = open(kA2dpTarget, O_RDONLY | O_CLOEXEC);
     if (f < 0) return 0;
+    struct stat st;
+    if (fstat(f, &st) != 0 || st.st_mtime < time(NULL) - 5) {
+        syscall(SYS_close, f);
+        return 0;
+    }
     const ssize_t got = read(f, name, sizeof name - 1);
     syscall(SYS_close, f);   /* not through the close() hook */
     size_t n = got > 0 ? (size_t)got : 0;

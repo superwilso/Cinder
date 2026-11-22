@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "../src/filter_chain.h"
@@ -362,6 +363,14 @@ int main(int argc, char** argv)
             check(cr == 0 && at_own >= 0 && at_sony < 0, "bt: with a target named, the transmitter connection reaches Cinder's stack");
         else
             check(cr == 0 && at_own < 0 && at_sony >= 0, "bt: in any other process the target is ignored");
+        /* A stack that died leaves the file behind; older than 5 s, it no longer counts. */
+        struct timeval old[2] = {{time(NULL) - 60, 0}, {time(NULL) - 60, 0}};
+        utimes(tp, old);
+        int c5 = socket(AF_UNIX, SOCK_STREAM, 0);
+        const int cr5 = connect(c5, (struct sockaddr*)&a, alen);
+        nap(50);
+        int own3 = accept(ols, NULL, NULL), sony3 = accept(ls, NULL, NULL);
+        check(cr5 == 0 && own3 < 0 && sony3 >= 0, "bt: a stale target is ignored");
         unlink(tp);
         int c4 = socket(AF_UNIX, SOCK_STREAM, 0);
         const int cr4 = connect(c4, (struct sockaddr*)&a, alen);
@@ -369,7 +378,7 @@ int main(int argc, char** argv)
         int own2 = accept(ols, NULL, NULL), sony2 = accept(ls, NULL, NULL);
         check(cr4 == 0 && own2 < 0 && sony2 >= 0, "bt: with no target the connection goes to Sony's transmitter");
         fcntl(ls, F_SETFL, lsnb);
-        const int fds[] = {c3, c4, at_own, at_sony, own2, sony2, ols};
+        const int fds[] = {c3, c4, c5, at_own, at_sony, own2, sony2, own3, sony3, ols};
         for (size_t k = 0; k < sizeof fds / sizeof fds[0]; k++) if (fds[k] >= 0) close(fds[k]);
     }
 

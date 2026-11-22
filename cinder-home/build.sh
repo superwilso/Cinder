@@ -118,6 +118,7 @@ CXXINC=(-nostdinc++ -isystem "$LIBCXX_V1" \
         -nostdinc -isystem "$CLANGRES/include" -isystem "$GCCINC" \
         -isystem "$DEVSYS/usr/include/arm-linux-gnueabihf" -isystem "$DEVSYS/usr/include" \
         -isystem "$KHDR")
+CXX_PIDS=()
 for src in "$HERE/src/main.cpp:$HERE/main.o" \
            "$AUDIO/src/player_shim.cpp:$HERE/player_shim.o" \
            "$AUDIO/src/effect_shim.cpp:$HERE/effect_shim.o" \
@@ -132,10 +133,13 @@ for src in "$HERE/src/main.cpp:$HERE/main.o" \
     # main.cpp keeps its clock in `long long` (now_ms): `long` is 32 bits here and wraps after
     # 24.8 days awake. Storing a time in a `long` again fails the build rather than the player.
     NARROW=(); [ "${src%%:*}" = "$HERE/src/main.cpp" ] && NARROW=(-Werror=shorten-64-to-32)
+    # All at once (same flags, same objects); any failure stops the build after they finish.
     $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
          -fPIC -O2 -Wall -std=c++14 -fno-rtti "${CHANNEL_DEF[@]}" "${INCLUDES[@]}" "${NARROW[@]}" \
-         -c "${src%%:*}" -o "${src##*:}"
+         -c "${src%%:*}" -o "${src##*:}" &
+    CXX_PIDS+=($!)
 done
+for p in "${CXX_PIDS[@]}"; do wait "$p" || { echo "FAIL: C++ compile"; exit 1; }; done
 
 echo "[3/4] compile glibc-2.23 compat shim (stat/* -> __xstat/*)…"
 $CC -Os -fPIC "${T32[@]}" "${SYS223[@]}" \
@@ -248,13 +252,23 @@ fi
 # way in (2026-07-26: a failed log redirect made sh exit without exec'ing → appmgr rebooted →
 # wbrt restore). This drives the generated launcher through every escape and failure mode in a
 # sandbox. Never ship without it green.
-echo "── recovery gate: launcher escape matrix ──"
-if ! LT_OUT="$(bash "$HERE/tools/test_launcher.sh" 2>&1)"; then
-    echo "$LT_OUT"
-    echo "FAIL: launcher recovery gate — a boot-escape path is broken. NOT packing."
-    exit 1
+# Its result depends only on the launcher's source (inside install_cinderhome.sh) and the test, so
+# a pass is remembered by their hash and re-run only when one changes (19 s, 11-22). CI runs it on
+# every push regardless.
+LT_STAMP="$HERE/build/.launcher_ok"
+LT_HASH="$(cat "$HERE/deploy/install_cinderhome.sh" "$HERE/tools/test_launcher.sh" | sha256sum | cut -c1-64)"
+if [ "$(cat "$LT_STAMP" 2>/dev/null)" = "$LT_HASH" ]; then
+    echo "── recovery gate: launcher escape matrix — passed before with this launcher, not re-run ──"
+else
+    echo "── recovery gate: launcher escape matrix ──"
+    if ! LT_OUT="$(bash "$HERE/tools/test_launcher.sh" 2>&1)"; then
+        echo "$LT_OUT"
+        echo "FAIL: launcher recovery gate — a boot-escape path is broken. NOT packing."
+        exit 1
+    fi
+    echo "$LT_OUT" | tail -1
+    mkdir -p "$HERE/build" && echo "$LT_HASH" > "$LT_STAMP"
 fi
-echo "$LT_OUT" | tail -1
 
 # ── stage the channel binaries into dist/<channel>/ (the two channels never clobber each other).
 # pack_upg.sh <channel> packs the matching install/uninstall .UPGs alongside them.
@@ -384,6 +398,15 @@ $CC -O2 -Wall -Werror -shared -fPIC "${T32[@]}" "${SYS223[@]}" -Wl,-soname,libci
 gate_glibc "$HERE/libcinder_btwatch.so"
 echo "built: $HERE/libcinder_btwatch.so ($(stat -c %s "$HERE/libcinder_btwatch.so") bytes)"
 
+# libcinder_pathwatch.so: holds PathMgr's route on Bluetooth while Cinder's own Bluetooth stack runs
+# (src/cinder-pathwatch.c, Phase 4a). Loaded into PathMgrServiceFw by cinder-hagowrap; ships with `preload`.
+echo "[6o] build libcinder_pathwatch.so (route hold for PathMgrServiceFw, glibc 2.23)…"
+$CC -O2 -Wall -Werror -shared -fPIC "${T32[@]}" "${SYS223[@]}" -Wl,-soname,libcinder_pathwatch.so \
+    -o "$HERE/libcinder_pathwatch.so" "$HERE/src/cinder-pathwatch.c" \
+    -nostdlib -L"$RAMLIB" -l:libc.so.6 -l:libdl.so.2 -l:libpthread.so.0 "$($CC -print-libgcc-file-name)"
+gate_glibc "$HERE/libcinder_pathwatch.so"
+echo "built: $HERE/libcinder_pathwatch.so ($(stat -c %s "$HERE/libcinder_pathwatch.so") bytes)"
+
 # cinder-aac/: AAC Bluetooth transmit and SBC XQ, the `bt-aac` component (deploy/components.conf).
 # Loaded into the Bluetooth service by cinder-hagowrap, so it needs the `preload` component on the
 # player. Its own build scripts, because the encoder (fdk-aac, fetched on first build) is C++.
@@ -410,6 +433,7 @@ cp -f "$HERE/libcinder_mono.so" "$DIST/libcinder_mono.so"
 cp -f "$HERE/libcinder_atrac.so" "$DIST/libcinder_atrac.so"
 cp -f "$HERE/libcinder_fmrec.so" "$DIST/libcinder_fmrec.so"
 cp -f "$HERE/libcinder_btwatch.so" "$DIST/libcinder_btwatch.so"
+cp -f "$HERE/libcinder_pathwatch.so" "$DIST/libcinder_pathwatch.so"
 cp -f "$HERE/cinder-hagowrap" "$DIST/cinder-hagowrap"
 cp -f "$HERE/deploy/cinder-guard.sh" "$DIST/cinder-guard.sh"
 cp -f "$HERE/deploy/cinder-preload.sh" "$DIST/cinder-preload.sh"

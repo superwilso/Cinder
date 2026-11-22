@@ -7,6 +7,7 @@
 //   btbridge [seconds]      needs compat.ko, bluetooth.ko, hci_vhci.ko loaded; Sony's BT off
 //   btbridge -w SECONDS     bridge only, for SECONDS (another tool drives hci0, e.g. btpair)
 //   CINDER_BT_ALT=1         use a different address (test pairings leave the real one alone)
+//   CINDER_BT_SNOOP=FILE    every packet both ways as btsnoop (Wireshark, analysis/tools/btsnoop_decode.py)
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -25,7 +26,25 @@
 #define HCIDEVDOWN _IOW('H', 202, int)
 #define HCIINQUIRY _IOR('H', 240, int)
 
-static int g_bt = -1, g_vhci = -1;
+static int g_bt = -1, g_vhci = -1, g_snoop = -1;
+static pthread_mutex_t g_snoop_mu = PTHREAD_MUTEX_INITIALIZER;
+
+// One btsnoop record (datalink 1002, H4). `in` = controller to host.
+static void snoop(const unsigned char* p, size_t n, int in) {
+    if (g_snoop < 0 || n == 0) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    const unsigned long long us = (unsigned long long)ts.tv_sec * 1000000ULL + (unsigned long long)ts.tv_nsec / 1000 + 0x00dcddb30f2f8000ULL;
+    const unsigned flags = (unsigned)in | (p[0] == 0x01 || p[0] == 0x04 ? 2u : 0u);
+    unsigned char h[24];
+    const unsigned v[4] = {(unsigned)n, (unsigned)n, flags, 0};
+    for (int i = 0; i < 4; i++) for (int k = 0; k < 4; k++) h[i * 4 + k] = (unsigned char)(v[i] >> (24 - 8 * k));
+    for (int k = 0; k < 8; k++) h[16 + k] = (unsigned char)(us >> (56 - 8 * k));
+    pthread_mutex_lock(&g_snoop_mu);
+    (void)!write(g_snoop, h, sizeof h);
+    (void)!write(g_snoop, p, n);
+    pthread_mutex_unlock(&g_snoop_mu);
+}
 static volatile int g_stop = 0;
 
 static long long now_ms(void) {
@@ -97,6 +116,7 @@ static void* up_thread(void* arg) {
                 printf("  done 0x%04x status 0x%02x\n", rx[4] | rx[5] << 8, rx[6]);
             if (rx[0] == 0x04 && rx[1] == 0x0f && len >= 7 && rx[3])
                 printf("  cmd status 0x%04x status 0x%02x\n", rx[5] | rx[6] << 8, rx[3]);
+            snoop(rx, (size_t)len, 1);
             if (write(g_vhci, rx, (size_t)len) != len) fprintf(stderr, "vhci write: %s\n", strerror(errno));
             memmove(rx, rx + len, have - (size_t)len);
             have -= (size_t)len;
@@ -118,6 +138,7 @@ static void* down_thread(void* arg) {
             printf("vhci: kernel registered hci%d\n", r >= 4 ? b[2] | b[3] << 8 : -1);
             continue;
         }
+        snoop(b, (size_t)r, 0);
         if (write(g_bt, b, (size_t)r) != r) fprintf(stderr, "stpbt write: %s\n", strerror(errno));
     }
     return NULL;
@@ -141,6 +162,10 @@ int main(int argc, char** argv) {
     int st = init_cmd(0xfc1a, addr, 6) | init_cmd(0xfc79, nv + 0x0c, 6) | init_cmd(0xfc93, nv + 0x1b, 3)
         | init_cmd(0xfc7a, nv + 0x12, 7);
     printf("power-on commands: %s\n", st == 0 ? "all status 0" : "one failed");
+    if (getenv("CINDER_BT_SNOOP")) {
+        g_snoop = open(getenv("CINDER_BT_SNOOP"), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (g_snoop >= 0) (void)!write(g_snoop, "btsnoop\0\0\0\0\1\0\0\x03\xea", 16);
+    }
     g_vhci = open("/dev/vhci", O_RDWR);
     if (g_vhci < 0) { printf("open /dev/vhci: %s (hci_vhci.ko loaded?)\n", strerror(errno)); return 1; }
     pthread_t a, b;

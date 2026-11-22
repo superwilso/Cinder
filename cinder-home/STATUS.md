@@ -12,7 +12,11 @@ blocks are deltas on top of it. Last updated 2026-11-22.
 > - Glue in playlists (editor, playlist page bracket, kept across a restart; row 51.43). Now Playing
 >   follows a live source (internet radio, DLNA push, AirPlay, FM, BT receiver, USB DAC) and
 >   Play/Pause controls it (`cinder_set_live_source`; row 51.45). Internet radio plays silence, not
->   a repeating second, when the network drops (#59, row 51.44). *Host-tested; not yet on a player.*
+>   a repeating second, when the network drops (#59, row 51.44). Radio, FM and #59 since passed on
+>   the player (51.44, 51.45); DLNA, AirPlay, receiver and USB DAC still open.
+> - Development only, nothing ships: Cinder's own Bluetooth stack (Phase 4a) played Sony's processed
+>   stream to headphones over Linux's stack, with their saved pairing, remote control and absolute
+>   volume (`cinder-home/tools/btsource_run.sh`; rows 51.46, 51.47). Sony's stack stays the default.
 
 
 > ## 2026-11-14 — Headphone EQ

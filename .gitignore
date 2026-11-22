@@ -81,6 +81,8 @@ cinder-home/*.o
 # Every linked output build.sh writes here; it copies them into dist/<channel>/, the committed copy.
 /cinder-home/cinder-*
 cinder-home/libcinder_*.so
+# The Phase 4 Bluetooth tools (cinder-home/tools/build_bt.sh).
+cinder-home/build/
 
 # Installer build output — built from dist/, published by CI; never committed.
 cinder-home/dist/*/cinder-installer*

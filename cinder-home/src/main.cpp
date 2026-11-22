@@ -3300,6 +3300,37 @@ int volume_limit_cap() {
     return g_avls_cap;
 }
 
+// Cinder's own Bluetooth stack (Phase 4a, cinder-home/tools/btsource.c) has the headphones while it
+// keeps /tmp/cinder_a2dp_target fresh. Sony's stack is off then, so its volume path goes nowhere:
+// one step of 8 (16 across the range) from the headphones' own level (/tmp/cinder_bt_volume_now),
+// written to /tmp/cinder_bt_volume, which btsource sends as AVRCP absolute volume. false = not
+// active (or the headphones have no absolute volume): the usual paths run.
+static bool own_bt_volume_step(bool up) {
+    struct stat st;
+    if (::stat("/tmp/cinder_a2dp_target", &st) != 0 || st.st_mtime < ::time(nullptr) - 5) return false;
+    FILE* f = std::fopen("/tmp/cinder_bt_volume_now", "r");
+    if (!f) return false;
+    int now = -1;
+    if (std::fscanf(f, "%d", &now) != 1) now = -1;
+    std::fclose(f);
+    if (now < 0 || now > 127) return false;
+    // A held key steps from its own last target: the headphones' answer lags the presses.
+    static int last_want = -1;
+    static long long last_at = 0;
+    if (last_want >= 0 && now_ms() - last_at < 2000) now = last_want;
+    const int want = up ? std::min(127, now + 8) : std::max(0, now - 8);
+    last_want = want;
+    last_at = now_ms();
+    if (FILE* o = std::fopen("/tmp/cinder_bt_volume", "w")) {
+        std::fprintf(o, "%d\n", want);
+        std::fclose(o);
+    }
+    char m[96];
+    std::snprintf(m, sizeof m, "bt-vol: own stack %d -> %d/127", now, want);
+    clog_(m);
+    return true;
+}
+
 void apply_volume() {
     if (!g_vol_read) load_vol_cfg();
     if (!g_vol.valid) return;
@@ -13707,7 +13738,9 @@ void carry_out(int act) {
             // kept apart end to end (separate UI fields, separate persisted keys). On Bluetooth the
             // codec master is left exactly where the jack had it, so unplugging headphones doesn't
             // dump the headphone level into your ears.
-            if (cinder_get_bt_route()) {
+            if (own_bt_volume_step(act == CINDER_ACT_VOLUP)) {
+                // Cinder's own Bluetooth stack has the headphones (Phase 4a): see own_bt_volume_step.
+            } else if (cinder_get_bt_route()) {
                 // Not coalesced the way the amixer path is. That optimisation exists because an
                 // amixer write costs a fork+exec of /bin/sh; this is a single IPC message, and on
                 // the step fallback the calls are RELATIVE, so dropping one during a ramp loses a
@@ -14422,6 +14455,12 @@ static void dev_command_tick() {
             cinder_dev_fm((int)n);
             carry_out(CINDER_ACT_FM_POWER);
             std::snprintf(res, sizeof res, "fm %lld: ok", n);
+        } else if (w == "bt" && got == 2) {
+            // Sony's Bluetooth through Cinder's own switch, so the reconnect ladder agrees with it
+            // (Phase 4a tests stop Sony's stack while Cinder's own one has the radio).
+            cinder_set_bt_on(n ? 1 : 0);
+            carry_out(CINDER_ACT_BT_TOGGLE);
+            std::snprintf(res, sizeof res, "bt %lld: asked", n);
         } else if (w == "wifi" && got == 2) {
             wifi_act(n ? CINDER_ACT_WIFI_ON : CINDER_ACT_WIFI_OFF);
             std::snprintf(res, sizeof res, "wifi %lld: asked", n);
@@ -14433,7 +14472,7 @@ static void dev_command_tick() {
             if (act) carry_out(act);
             std::snprintf(res, sizeof res, "repeat %lld: %s", n, act ? "changed" : "already");
         } else {
-            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, shuffle 0|1, find TEXT, album ID|TEXT [SONG], restore, reload, toggle, next_album, prev_album, radio N (-1 stops), fm 0|1, wifi 0|1)", word);
+            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, shuffle 0|1, find TEXT, album ID|TEXT [SONG], restore, reload, toggle, next_album, prev_album, radio N (-1 stops), fm 0|1, wifi 0|1, bt 0|1)", word);
         }
         out += res;
         out += '\n';
@@ -17343,9 +17382,11 @@ void* render_driver(void*) {
                 HK_MARK();
                 usb_after_resume_tick();
                 // CPU: kernel-default scheduler slices once per boot, and 1040 MHz max while the
-                // screen is dark on the jack — the clock stage 1 pins anyway, applied from the first
-                // dark second instead of the 60th. Not on Bluetooth: LDAC encode load at 1040 has
-                // not been measured. Uncapped within a tick of the screen lighting. See cpu_tune.
+                // screen is dark — the clock stage 1 pins anyway, applied from the first dark second
+                // instead of the 60th. Bluetooth too since 11-22: the 11-10 codec runs measured LDAC
+                // at 24% of a core with the clock already at 1040 (AAC 29%), so 1300 buys nothing
+                // but its 28% more energy per cycle (1300 mV against 1150). Uncapped within a tick
+                // of the screen lighting. See cpu_tune.
                 HK_MARK();
                 static bool sched_done = false;
                 if (!sched_done) {
@@ -17354,14 +17395,14 @@ void* render_driver(void*) {
                         clog_("cpu: scheduler slices back to kernel defaults (6 / 0.75 / 1 ms)");
                 }
                 static int capped = 0;
-                const int want_cap = (!g_screen_on && on_jack_now) ? 1 : 0;
+                const int want_cap = !g_screen_on ? 1 : 0;
                 if (want_cap != capped) {
                     capped = want_cap;
                     if (cpu_tune(want_cap ? "cap" : "uncap")) {
                         static int said = 0;
                         if (said < 3) {
                             ++said;
-                            clog_(want_cap ? "cpu: screen dark on the jack -> max 1040 MHz"
+                            clog_(want_cap ? "cpu: screen dark -> max 1040 MHz"
                                            : "cpu: screen lit -> max clock restored");
                         }
                     }

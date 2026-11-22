@@ -271,6 +271,14 @@ jobs:
       # nothing written without a request, a playable header mid-recording, refusals not retried.
       - name: FM recorder (WAV writer)
         run: bash cinder-home/tools/test_fmrec.sh
+      # The Bluetooth route hold (src/cinder-pathwatch.c, PathMgr's preload) against a stand-in for
+      # Sony's library: on for a fresh target, off when it goes stale, Sony's own setting untouched.
+      - name: Bluetooth route hold (PathMgr preload)
+        run: bash cinder-home/tools/test_pathwatch.sh
+      # Cinder's own Bluetooth stack answers the headphones' service directory (bt_ctl.h): answers
+      # that parse, the right records per search, continuation pieces that reassemble.
+      - name: Bluetooth service directory (SDP answers)
+        run: bash cinder-home/tools/test_bt_ctl.sh
       # The custom volume curve (src/vol_curve.h): interpolation, refusal of a curve that goes
       # down, and every step a whole row of Sony's table. Sony's table itself is not in CI, so the
       # trailer check runs locally (test_volcurve.sh finds the extracted firmware).

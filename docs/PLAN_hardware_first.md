@@ -402,6 +402,35 @@ marked; everything else runs with the player on the cable.
    a tone (from step 3's choice); AVRCP for volume and the buttons. Opt-in switch, Sony's stack
    stopped while it runs and started again after. Check: an album end to end, volume, pause from
    the headphones, a walk out of range and back.
+
+   **Built 11-22 (first slice, device test pending):**
+   - *The route.* PathMgr has no IPC call that sets the A2DP flag; only ConnMgr's listener does, on
+     Sony's stack's word. `cinder-pathwatch.c` (preload, PathMgrServiceFw.so) stands in front of
+     `PathMgrServiceServiceImpl::Start()` (a PLT call inside Sony's library) to learn the object,
+     then holds the flag with Sony's own `InformDeviceEnabled(A2DP, 1)` while
+     `/tmp/cinder_a2dp_target` is fresh, and releases it when it goes stale. The mono shim's
+     redirect ignores a target older than 5 s too, so a stack that died holds nothing.
+   - *The link.* `cinder-home/tools/btsource.c` loads the key Sony's stack saved for the headphones
+     (`/data/Bluetooth/devdb/devdb`: 0x80-byte records, address, trusted, key, key type 5) into the
+     kernel with pairing off: a wrong key fails the link and cannot create a pairing that replaces
+     Sony's. It connects AVDTP with the player's real address, reconnects every 5 s while the
+     headphones are away, takes the redirected stream (rate and channels from the type-1 frame),
+     and sends AAC at the real-time pace, suspending on pause.
+   - *Remote control (11-22 later).* The buds asked for SDP and, refused, never opened AVRCP.
+     `cinder-home/tools/bt_ctl.h` answers SDP (A2DP source, AVRCP target, AVRCP controller with
+     category 2) and AVRCP: their buttons go to Cinder's command channel, absolute volume is read and
+     set. Cinder's volume keys step it while the target is fresh (`own_bt_volume_step`, via
+     `/tmp/cinder_bt_volume`). With absolute volume the stream plays at 0 dB (the buds apply the
+     volume, as under Sony's stack); without it, −20 dB (`/tmp/cinder_bt_gain` live).
+   - *Capture.* `btbridge` writes every packet as btsnoop with `CINDER_BT_SNOOP` (the runner sets it;
+     `btsource_run.sh snoop DIR`).
+   - *Run it.* `cinder-home/tools/build_bt.sh`, then `cinder-home/tools/btsource_run.sh
+     start ADDR | gain DB | log | stop` (Sony's Bluetooth off and on again through Cinder's switch,
+     the dev command `bt 0|1`). Host test: `cinder-home/tools/test_pathwatch.sh`.
+   - *Next in 4a:* Cinder's screen and route follow the own stack (today it believes the jack is in
+     use: the jack's EQ profile, no Bluetooth panel), accepting the headphones' own reconnect,
+     answering their AVDTP commands properly (a general reject today), the opt-in switch, one
+     process instead of btbridge + btsource.
 5. **Phase 4b: codecs** (2 days). LDAC from Android's open encoder (Apache 2.0, its own folder and
    licence like `cinder-aac/`), SBC (a small encoder of our own), AAC already done. Check: the
    headphones report each codec; no drops at 990 kb/s LDAC in the next room.

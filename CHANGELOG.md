@@ -16,6 +16,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **Bluetooth playback with the screen dark holds the CPU at 1040 MHz**, as the jack already did.
+  1300 MHz costs about 28% more energy per cycle, and LDAC needs about a quarter of a core at 1040.
+  *Device-unverified* (listening check: an album on LDAC with the screen off).
+
 ## [0.4.4] — 2026-11-22
 
 ### Added
