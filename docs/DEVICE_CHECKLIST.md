@@ -303,7 +303,7 @@ state the desk cannot produce. Detail: CHANGELOG `[Unreleased]`.
 
 ## Open from 2026-09-18 — SensMe channels, and the battery gauge
 
-Came out of `001a920` and [`AUDIT_2026-09-18.md`](AUDIT_2026-09-18.md). **Everything here is
+Came out of `228190c` and [`AUDIT_2026-09-18.md`](AUDIT_2026-09-18.md). **Everything here is
 device-unverified**: the host side is proven by 599 tests and 48 harness scenarios, and none of that
 can see a scanner, a cell or a screen. 14.1–14.3 need a PC with a tagger on it; 14.4–14.6 need
 only time on battery, or none at all.

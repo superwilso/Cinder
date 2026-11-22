@@ -314,9 +314,9 @@ mod tests {
     /// the releases before it do not, so an edge tester is only told about a real release.
     #[test]
     fn an_edge_build_waits_for_its_own_release() {
-        assert!(!is_newer("v0.3.21", "0.3.22-edge.4cccb66"));
-        assert!(is_newer("v0.3.22", "0.3.22-edge.4cccb66"));
-        assert!(is_newer("v0.3.23", "0.3.22-edge.4cccb66"));
+        assert!(!is_newer("v0.3.21", "0.3.22-edge.a5c643b"));
+        assert!(is_newer("v0.3.22", "0.3.22-edge.a5c643b"));
+        assert!(is_newer("v0.3.23", "0.3.22-edge.a5c643b"));
     }
 
     #[test]

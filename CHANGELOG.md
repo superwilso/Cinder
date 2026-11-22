@@ -2688,7 +2688,7 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
   
 ## [0.3.6] — 2026-09-14
 
-*Tagged (`368d7d4`) but never pushed or published. v0.3.7 is the first release carrying these
+*Tagged (`fce68fb`) but never pushed or published. v0.3.7 is the first release carrying these
 changes, so its links compare against that commit rather than a tag GitHub does not have.*
 
 ## [0.3.5] — 2026-09-14
@@ -4373,8 +4373,8 @@ First tagged release.
 [0.3.10]: https://github.com/superwilso/Cinder/compare/v0.3.9...v0.3.10-rc1
 [0.3.9]: https://github.com/superwilso/Cinder/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/superwilso/Cinder/compare/v0.3.7...v0.3.8
-[0.3.7]: https://github.com/superwilso/Cinder/compare/368d7d4...v0.3.7
-[0.3.6]: https://github.com/superwilso/Cinder/compare/v0.3.5...368d7d4
+[0.3.7]: https://github.com/superwilso/Cinder/compare/fce68fb...v0.3.7
+[0.3.6]: https://github.com/superwilso/Cinder/compare/v0.3.5...fce68fb
 [0.3.5]: https://github.com/superwilso/Cinder/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/superwilso/Cinder/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/superwilso/Cinder/compare/v0.3.2...v0.3.3

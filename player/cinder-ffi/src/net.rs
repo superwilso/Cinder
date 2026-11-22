@@ -1354,7 +1354,7 @@ mod tests {
             "numbers, not text"
         );
         assert_eq!(newer("v0.4.0", "0.4.1-rc2"), Some(false));
-        assert_eq!(newer("v0.4.1-rc1", "0.4.1-edge.a20907a"), Some(true));
+        assert_eq!(newer("v0.4.1-rc1", "0.4.1-edge.3377295"), Some(true));
         let body =
             "{\n  \"url\": \"x\",\n  \"tag_name\": \"v0.3.23\",\n  \"name\": \"Cinder 0.3.23\"\n}";
         assert_eq!(tag_name(body).as_deref(), Some("v0.3.23"));
