@@ -8,6 +8,16 @@
 #   tools/devctl.sh shot [out.png]                         cinder-home/tools/screenshot.sh
 #   tools/devctl.sh state                                  playing?, codec, screen, suspend
 #   tools/devctl.sh log [N]                                last N lines of cinderhome.log
+#   tools/devctl.sh wait PATTERN [SECONDS] [AFTER]        block until cinderhome.log has a line matching
+#                                                          PATTERN (grep -E) after line AFTER (default: now);
+#                                                          exit 1 on timeout (default 60 s). adb shell's own
+#                                                          exit code is always 0, so `until adb shell grep` never waits
+#   tools/devctl.sh latency [KEY]                          press KEY (default play) and time it ON the player:
+#                                                          press -> first PCM stream RUNNING, /proc/uptime (10 ms)
+#   tools/devctl.sh wake                                   light the screen if it is dark (Power only then — a
+#                                                          blind Power press toggles it OFF on a lit screen)
+#   tools/devctl.sh stalls [N]                             dev build: the last N render-loop stalls
+#                                                          (> 50 ms, screen on) and slow housekeeping
 #   tools/devctl.sh sh 'CMD'                               run CMD, exit with ITS code (adb shell's is always 0)
 #   tools/devctl.sh probe ARGS...                          push and run cinder-probe (dev build)
 #   tools/devctl.sh hci on|off|pull DIR                    Sony's HCI trace (btsnoop) in /tmp
@@ -82,6 +92,28 @@ state)
          grep -E "bt-sound:|screen: |suspend: (idle|Power|screen)|bt-codec:" /contents/cinderhome.log | tail -4
          echo "aac: $(cat /tmp/cinder_aac_status 2>/dev/null)"; tail -2 /tmp/cinder_aac.log' ;;
 log) sh_ "tail -${2:-30} /contents/cinderhome.log" ;;
+wait)
+    pat="$2"; secs="${3:-60}"
+    from="${4:-$(adb shell 'wc -l < /contents/cinderhome.log' | tr -d '\r ')}"
+    end=$(( $(date +%s) + secs ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+        hit="$(adb shell "tail -n +$((from + 1)) /contents/cinderhome.log" 2>/dev/null | tr -d '\r' | grep -aE -m1 -- "$pat")" || true
+        [ -n "$hit" ] && { echo "$hit"; exit 0; }
+        sleep 1
+    done
+    echo "wait: no line matching '$pat' within ${secs} s" >&2; exit 1 ;;
+latency)
+    case "${2:-play}" in play) c=28 ;; next) c=106 ;; prev) c=105 ;; *) echo "latency: play|next|prev" >&2; exit 2 ;; esac
+    sh_ "t0=\$(cut -d' ' -f1 /proc/uptime); sendevent $KEYS 1 $c 1; sendevent $KEYS 0 0 0; sendevent $KEYS 1 $c 0; sendevent $KEYS 0 0 0
+         i=0; while [ \$i -lt 1000 ]; do grep -l RUNNING /proc/asound/card0/pcm*p/sub0/status >/dev/null 2>&1 && break; i=\$((i+1)); done
+         t1=\$(cut -d' ' -f1 /proc/uptime); echo \"press at \$t0, stream RUNNING at \$t1 (\$(grep -l RUNNING /proc/asound/card0/pcm*p/sub0/status 2>/dev/null | head -1))\"" ;;
+wake)
+    last="$(adb shell 'grep -a "input: touch \(WAKE\|SLEEP\)" /contents/cinderhome.log | tail -1' | tr -d '\r')"
+    case "$last" in *SLEEP*) ;; *) echo "screen: already on"; exit 0 ;; esac
+    from="$(adb shell 'wc -l < /contents/cinderhome.log' | tr -d '\r ')"
+    "$0" key power >/dev/null
+    "$0" wait 'touch WAKE' 10 "$from" >/dev/null && echo "screen: woken" ;;
+stalls) sh_ "grep -a \"stall: \" /contents/cinderhome.log | tail -${2:-30}" ;;
 sh)
     # Sony's adbd predates adb's shell protocol, so `adb shell` exits 0 whatever the command did.
     # Ask the player for the code on a last line of its own, then strip it. The command runs in a

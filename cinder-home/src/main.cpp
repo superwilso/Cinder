@@ -1264,6 +1264,86 @@ void* lib_open_thread(void*) {
     return nullptr;
 }
 
+// ── A library reload at RUNTIME, off the render thread (#57) ───────────────────────────────────
+// After a USB session, a reclaim or a scan that changed the store, the library is rebuilt. Inline,
+// that froze the screen for the whole build: 7 s on a 28,000-track card, again for every scan
+// round that moved the store, so a big library looked hung for minutes after "eject". The boot
+// open stays synchronous (see deferred_up for the two bad boots); these all run once bring-up is
+// done, when cpufloor holds 1040 MHz with the screen on and the second core comes up under load.
+// cinder_db_open builds without cinder-ffi's lock and swaps under it, which is what makes this safe.
+#ifdef CINDER_DEV
+// DEV: where a slow housekeeping tick spent its time. HK_MARK() closes a segment; the slowest one
+// is named by the source line it ends on, in the `stall: housekeeping` line.
+static long long g_hk_mark = 0, g_hk_worst = 0;
+static int g_hk_worst_line = 0;
+#define HK_MARK() do { const long long t_ = now_ms(); if (t_ - g_hk_mark > g_hk_worst) { \
+    g_hk_worst = t_ - g_hk_mark; g_hk_worst_line = __LINE__; } g_hk_mark = t_; } while (0)
+#else
+#define HK_MARK() do {} while (0)
+#endif
+// ── The codec's wake, off the render thread ─────────────────────────────────────────────────────
+// Out of standby is the driver's resume_core: ~0.7 s of I2C writes and settle delays under its
+// global mutex (cxd3778gf_put_standby). Every screen wake on the jack, and the first second of
+// every Play from idle, paid it here as a frozen screen (11-22, `stall: housekeeping 746 ms`).
+static volatile bool g_codec_waking = false;
+static void* codec_wake_thread(void*) {
+    const long long t0 = now_ms();
+    cinder_codec_set_standby(0);
+    char m[64];
+    std::snprintf(m, sizeof m, "codec: awake from standby in %lld ms", now_ms() - t0);
+    clog_(m);
+    g_codec_waking = false;
+    return nullptr;
+}
+static void codec_wake_async() {
+    if (g_codec_waking) return;
+    g_codec_waking = true;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_t th;
+    if (pthread_create(&th, &at, codec_wake_thread, nullptr) != 0) {
+        cinder_codec_set_standby(0);
+        g_codec_waking = false;
+    }
+    pthread_attr_destroy(&at);
+}
+
+static volatile bool g_reload_busy = false;
+static volatile bool g_reload_again = false;   // asked again mid-build: the store moved again
+
+static void* library_reload_thread(void*) {
+    sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
+    pthread_sigmask(SIG_BLOCK, &sa, nullptr);
+    setpriority(PRIO_PROCESS, 0, 10);
+    do {
+        g_reload_again = false;
+        const long long t0 = now_ms();
+        const int rc = db_open_guarded(DB_LIVE);
+        char m[96];
+        std::snprintf(m, sizeof m, "library: reloaded in the background in %lld ms (rc=%d)", now_ms() - t0, rc);
+        clog_(m);
+    } while (g_reload_again);
+    g_reload_busy = false;
+    return nullptr;
+}
+
+static void library_reload_async() {
+    if (g_reload_busy) { g_reload_again = true; return; }
+    g_reload_busy = true;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_t th;
+    const bool spawned = pthread_create(&th, &at, library_reload_thread, nullptr) == 0;
+    pthread_attr_destroy(&at);
+    if (!spawned) {
+        clog_("library: reload thread would not start — reloading inline");
+        db_open_guarded(DB_LIVE);
+        g_reload_busy = false;
+    }
+}
+
 // ── ONE SCROBBLER PER PLAY ──────────────────────────────────────────────────────────────────────
 // `unknown321/scrobbler` appends to the same `.scrobbler.log` Cinder writes (the rationale is at the
 // call in deferred_up). This finds it by its PROCESS, not by its install: `/init.scrobbler.rc` only
@@ -2298,12 +2378,19 @@ static void load_cpufloor_cfg() {
 // opt-in playing floor while playing. Called on every screen change and transport change; writes
 // only when the answer changes. Best-effort: the node is 0666 on this device, but a write failure
 // here must never be more than a log line.
+// PLAY FROM A DARK SCREEN, FASTER (11-22). The screen-off floor is the bottom step (598 MHz), and
+// a press there measured 1.41 s to a running stream with the codec in standby, 0.49 s with it
+// awake. So a Play intent lifts the floor for kPlayBoostMs and starts the codec's wake at once
+// instead of on the next housekeeping tick. The housekeeping block drops the boost when it expires.
+static long long g_play_boost_until = 0;
+static const long long kPlayBoostMs = 3000;
 static void cpu_floor_update() {
     if (!g_cpufloor_read) load_cpufloor_cfg();
     if (g_cpufloor_orig < 0) return;
     int want = g_cpufloor_orig;
     if (g_screen_on && SCREEN_FLOOR_KHZ > want) want = SCREEN_FLOOR_KHZ;
     if (g_cpufloor_playing && g_cpufloor_khz > want) want = g_cpufloor_khz;
+    if (now_ms() < g_play_boost_until && SCREEN_FLOOR_KHZ > want) want = SCREEN_FLOOR_KHZ;
     if (want == g_cpufloor_written) return;
     // Recorded BEFORE the write, so a node that will not open is reported once per change of
     // answer, not on every call (CI caught ~1 line a second on a runner whose cpufreq is 0644).
@@ -2340,6 +2427,10 @@ static void set_transport(bool playing) {
     g_playing = playing;
     g_user_paused = !playing;
     g_transport_at = now_ms();
+    if (playing) {
+        g_play_boost_until = now_ms() + kPlayBoostMs;
+        if (cinder_get_bt_route() == 0) codec_wake_async();   // the jack: the codec is in the path
+    }
     apply_cpu_floor(playing);
 }
 
@@ -3777,12 +3868,13 @@ void apply_dac_eq() {
 bool g_nc_on = false;
 const int JACK_5PIN = 3;   // `jack status se`: none, 3pin, 4pin, 5pin, antenna
 
+static int jack_se_cached();   // with the jack state, below
 void nc_tick() {
     static int last_plug = -1;
     static char applied[48] = "";
     static bool loaded = false;
     static int load_tries = 0;
-    const bool plug = cinder_codec_get_jack_se() == JACK_5PIN;
+    const bool plug = jack_se_cached() == JACK_5PIN;
     if ((int)plug != last_plug) {
         struct stat st;
         cinder_set_nc_plug(plug, ::stat("/system/usr/share/audio_dac/ambient480_nw500n.bin", &st) == 0);
@@ -4754,6 +4846,12 @@ const char kStateNode[]   = "/sys/power/state";
 const char kWakeLock[]    = "/sys/power/wake_lock";
 const char kWakeUnlock[]  = "/sys/power/wake_unlock";
 bool g_ram_released = false;   // stage 2: our wakelock is released and the kernel may be suspending
+// Where the resume counter stood, and when (monotonic, so suspended time does not count), as the
+// wakelock went. The loop watches the counter every pass for kResumeWatchMs instead of once a
+// second, so a key that wakes the player is acted on in ~0.1 s, not up to a second later.
+long      g_ram_rc = -1;
+long long g_ram_at_ms = 0;
+const long long kResumeWatchMs = 5000;
 const char kResumeCount[] = "/sys/devices/platform/icx_pm_helper/resume_count";
 const char kSpmR12[]      = "/sys/devices/platform/icx_pm_helper/spm_r12";
 const char kLockName[]    = "cinder";
@@ -5135,6 +5233,8 @@ static void soc_suspend_tick(bool idle, bool ram_idle) {
     clog_("suspend: idle and off the cable -> releasing the wakelock (suspend to RAM; Power wakes it)");
     resume_as_device(true);
     g_ram_released = true;
+    g_ram_rc = read_node_long(kResumeCount);
+    g_ram_at_ms = now_ms();
     write_node(kWakeUnlock, kLockName);
 }
 
@@ -10242,6 +10342,22 @@ static bool g_msc_seen_usb = false; // saw the cable while in MSC → unplug end
 // medium is already gone by then, and all the exit does is remount /contents and restore the log.
 static int  g_msc_gone = 0;         // consecutive ticks with no cable WHILE in MSC
 static const int MSC_UNPLUG_TICKS = 3;
+// EJECT ENDS THE SESSION (#57). "Eject" on a Mac or "Safely remove" on Windows sends SCSI START STOP
+// UNIT, and the gadget closes that LUN's file. Once every LUN this session backed reads empty, the
+// computer is done with the player: leave mass storage then, as an unplug would, rather than sit in
+// the modal until the cable comes out (which is all that ended a session before, and nobody knew).
+static bool g_msc_was_backed = false; // LUN0 seen backed this session (not the bind race at entry)
+static int  g_msc_ejected = 0;        // consecutive ticks with every LUN empty, cable in
+static bool msc_lun_backed(const char* node) {
+    char cur[128] = {};
+    if (FILE* f = std::fopen(node, "r")) {
+        if (!std::fgets(cur, sizeof cur, f)) cur[0] = 0;
+        std::fclose(f);
+    }
+    for (const char* c = cur; *c; ++c)
+        if (*c != ' ' && *c != '\t' && *c != '\n') return true;
+    return false;
+}
 // Did the WATCHER ask for this exit, rather than the user? Only the user's own Back/Turn Off may
 // latch the refusal below — latching it for a cable the watcher merely thought had gone is how one
 // bad sample turned into "auto-MSC stays off until you physically unplug".
@@ -10639,6 +10755,8 @@ void enter_usb_msc() {
     g_msc_active = true;
     g_msc_seen_usb = false;
     g_msc_gone = 0;
+    g_msc_was_backed = false;
+    g_msc_ejected = 0;
 }
 // ── the library store's fingerprint ─────────────────────────────────────────────────────────────
 //
@@ -10676,7 +10794,7 @@ void exit_usb_msc() {
     cinder_resume_rearm();   // the service lost the sequence with the player; ▶ hands it back
     if (contents_mounted()) {
         clog_("usb-msc: exited (/contents remounted; log restored)");
-        db_open_guarded(DB_LIVE);
+        library_reload_async();
         if (adv_on("own_index")) cinder_index_scan();   // new music from the PC (Phase 2)
         // Re-seed the watcher: this reload has already happened, and leaving the pre-MSC
         // signature in place would make the next poll do the whole ~3,500-track rebuild again.
@@ -10737,7 +10855,7 @@ static void reclaim_contents() {
         clog_(m);
         // The PC may have rewritten anything under there, and the library was read from it.
         viz_conf_invalidate();
-        db_open_guarded(DB_LIVE);
+        library_reload_async();
         // cinder_db_open IS the full rebuild; re-seed the watcher so its next poll does not do
         // the whole ~3,500-track pass again for a reload that has already happened.
         g_db_sig = db_signature();
@@ -11312,6 +11430,21 @@ void fm_release_capture() {
 // screen, and stopping the tuner from here would fight the FM screen's own power button.
 const char* const JACK_SWITCH = "/sys/class/switch/cxd3778gf_h2w/state";
 static int g_jack_last = -1;   // -1 = not yet observed
+
+// The plug TYPE ("jack status se": 3-pin, 5-pin NC…) without the codec mutex every second. Both
+// the NC tick and the jack tick read it each housekeeping pass, and the ioctl waits on the driver's
+// global mutex — held ~0.9 s by the driver's own work after a wake from standby, which froze the
+// screen on every wake (11-22, `stall: housekeeping 901 ms` in jack_watch_tick). The type can only
+// change with the jack switch, so read it for 3 s after a switch edge (the driver settles it after
+// its debounce) and keep the answer otherwise.
+static int jack_se_cached() {
+    static int se = -1, seen_jack = -2;
+    static long long reread_until = 0;
+    const long long t = now_ms();
+    if (g_jack_last != seen_jack) { seen_jack = g_jack_last; reread_until = t + 3000; }
+    if ((se < 0 || t < reread_until) && !g_codec_waking) se = cinder_codec_get_jack_se();
+    return se;
+}
 const char* const ANTENNA_SWITCH = "/sys/class/switch/cxd3778gf_antenna/state";
 static int g_antenna_last = -1;
 
@@ -11399,7 +11532,7 @@ void jack_watch_tick() {
     if (now < 0) return;                       // no such node on this unit: feature simply absent
     const int prev = g_jack_last;
     g_jack_last = now;
-    nc_probe_tick(cinder_codec_get_jack_se(), prev >= 0 && prev != now);
+    nc_probe_tick(jack_se_cached(), prev >= 0 && prev != now);
     if (prev < 0) {                            // first read of the boot: seed only, never act
         char m[96];
         std::snprintf(m, sizeof m, "jack: %s at startup (state=%d)",
@@ -14196,12 +14329,15 @@ static void dev_command_tick() {
             const int act = cinder_dev_shuffle((int)n);
             if (act > 0) carry_out(act);
             std::snprintf(res, sizeof res, "shuffle %lld: %s", n, act < 0 ? "already" : "changed");
+        } else if (w == "reload") {
+            library_reload_async();
+            std::snprintf(res, sizeof res, "reload: started in the background");
         } else if (w == "repeat" && got == 2) {
             const int act = cinder_dev_set_repeat((int)n);
             if (act) carry_out(act);
             std::snprintf(res, sizeof res, "repeat %lld: %s", n, act ? "changed" : "already");
         } else {
-            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, shuffle 0|1, find TEXT, album ID|TEXT [SONG], restore)", word);
+            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, shuffle 0|1, find TEXT, album ID|TEXT [SONG], restore, reload)", word);
         }
         out += res;
         out += '\n';
@@ -16104,6 +16240,22 @@ void* render_driver(void*) {
         }
 
         long long frame_start = now_ms();
+#ifdef CINDER_DEV
+        // DEV: a render-loop pass that kept the screen from updating for > 50 ms, screen on. The
+        // measuring stick for the scroll work and for anything moved off this thread (#57).
+        // Read with `tools/devctl.sh stalls`.
+        {
+            static long long prev = 0;
+            static bool prev_on = false;
+            if (prev && prev_on && g_screen_on && frame_start - prev > 50) {
+                char m[64];
+                std::snprintf(m, sizeof m, "stall: loop pass %lld ms", frame_start - prev);
+                clog_(m);
+            }
+            prev = frame_start;
+            prev_on = g_screen_on;
+        }
+#endif
 
         // ── INPUT IS READ BEFORE THE PAINT ────────────────────────────────────────────────────
         // It used to run *after* cinder_render_tick(), and that cost a whole frame on every single
@@ -16639,24 +16791,48 @@ void* render_driver(void*) {
         // would have delayed the sleep timer and the USB-host debounce by that much.
         static long long last_house_ms = 0;
         long long house_now = now_ms();
+        // Back from RAM? One sysfs read, only in the few seconds after the wakelock went (see
+        // g_ram_rc); the resume branch itself lives in the housekeeping block.
+        if (socsusp::g_ram_released && house_now - socsusp::g_ram_at_ms < socsusp::kResumeWatchMs
+            && socsusp::read_node_long(socsusp::kResumeCount) != socsusp::g_ram_rc)
+            g_house_due = true;
         if (g_house_due || house_now - last_house_ms >= 1000) {
             g_house_due = false;
             last_house_ms = house_now;
+            [[maybe_unused]] const long long hk_t0 = now_ms();
+            if (g_play_boost_until && house_now >= g_play_boost_until) {
+                g_play_boost_until = 0;
+                cpu_floor_update();
+            }
+#ifdef CINDER_DEV
+            g_hk_mark = hk_t0; g_hk_worst = 0; g_hk_worst_line = 0;
+#endif
             cinder_clock_tick();
             // A library that first opened after post_up (bring-up stalled past its grace) left its
             // covers waiting; one mutex and a None otherwise.
+            HK_MARK();
             if (g_post_up_done) cinder_art_cache_start();
+            HK_MARK();
             write_running_version();
             // Night schedule: at Starts and Ends the UI flips Night and hands back the same
             // action the switch does, so the backlight follows it.
+            HK_MARK();
             if (int na = cinder_night_tick()) carry_out_input(na);
+            HK_MARK();
             sd_watch_tick(house_now);   // self-paced to 5 s; see its note
+            HK_MARK();
             dsd_native_tick(house_now);  // self-paced to 2 s; sends only while the switch is or was on
+            HK_MARK();
             mono_shim_poll();           // one access() on tmpfs; logs and repaints only on a change
+            HK_MARK();
             ambient_tick();             // a compare unless the play state or a setting moved
+            HK_MARK();
             hci_log_tick();             // one stat() while the Bluetooth debug log runs; else nothing
+            HK_MARK();
             wifi_tick(house_now);
+            HK_MARK();
             radio_tick();
+            HK_MARK();
             airplay_tick(house_now);
             // Music sent from the phone remote: rescan once uploads have stopped for 20 s, the same
             // campaign a USB storage session ends with. Never during one (it rescans itself).
@@ -16674,20 +16850,26 @@ void* render_driver(void*) {
                     rescan_campaign_arm();
                 }
             }       // one access() at boot; then results, and a poll while on
+            HK_MARK();
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             // Track info > ALBUM SOUND: a new album may have brought its preset (or put the
             // sound from before back). The FFI raised profile_apply during the poll; applied here,
             // outside its guard, since guards do not nest. One call that returns 0 otherwise.
+            HK_MARK();
             apply_profile_if_switched("album sound");
+            HK_MARK();
             run_guarded("pump: headphone unplug", 4, jack_watch_tick);
             // FM signal meter. Register reads only — no Sony service call, no ALSA — so it is far
             // cheaper than the poll above it and safe on the same tick.
+            HK_MARK();
             run_guarded("pump: FM signal", 4, fm_signal_fn);
             fm_rec_tick();
             // Scrobble writes /contents — skip while it's handed to the PC (stale mountpoint).
+            HK_MARK();
             if (!g_msc_active) cinder_scrobble_tick(g_playing ? 1 : 0);
             // g_playing changes on its own (a track ends, the sleep timer pauses), and the screen
             // transitions are not the only way into "dark + idle" — so re-evaluate here too.
+            HK_MARK();
             apply_pump_interval();
             // Put the DAC to sleep once the device has been genuinely idle for a while.
             //
@@ -16729,13 +16911,19 @@ void* render_driver(void*) {
                 // direction: cinder_audio_is_playing() is derived from the position having moved
                 // recently, so it only reads 0 once playback has genuinely stopped, and a one-tick
                 // flicker costs a single increment that the next tick resets.
+                HK_MARK();
                 alarm_tick();   // before anything decides the player is idle: an alarm wake must not sleep again
+                HK_MARK();
                 const Audible src = audible_now();   // every source, one definition (see Audible)
+                HK_MARK();
                 hago_tick(src.library);   // the wrapper's trial: five of these in a row is the proof
 #ifdef CINDER_DEV
+                HK_MARK();
                 dev_adb_keepalive();
+                HK_MARK();
                 dev_diagnostics();
 #endif
+                HK_MARK();
                 const bool audible = src.any();
                 const bool idle = !g_screen_on && !audible;
 
@@ -16753,6 +16941,7 @@ void* render_driver(void*) {
                 //     button after an idle-off switches the radio on again, and the reconnect
                 //     ladder brings the headphones back 10–15 s later. So it sleeps rather than
                 //     turning off, which is what makes it fit to be on by default.
+                HK_MARK();
                 {
                     static int bt_idle_secs = 0;
                     static long long bt_slept_at = 0;   // the idle-off fired; 0 = the user's state
@@ -16795,6 +16984,7 @@ void* render_driver(void*) {
                 // phone remote) holds it for ten minutes of dark screen AND ten minutes since its
                 // last connection, not forever: switched on and left unused, it kept the player
                 // awake, Wi-Fi and SoC both, until the battery was flat (11-17).
+                HK_MARK();
                 {
                     static int wifi_idle_secs = 0;
                     if (g_wifi_slept_at && (g_screen_on || g_last_input_ms > g_wifi_slept_at)) {
@@ -16883,6 +17073,7 @@ void* render_driver(void*) {
                 //
                 // Still JACK ONLY (the WCN reason above stands until an A2DP run is done), and
                 // opt-OUT with /contents/cinder_no_suspend_playing, checked every tick.
+                HK_MARK();
                 const bool suspend_while_playing =
                     !adv_on("no_suspend_playing");
                 const bool on_jack_now = cinder_get_bt_route() == 0;
@@ -16989,6 +17180,7 @@ void* render_driver(void*) {
                 // only library music and a soundscape leave the codec out of the path on Bluetooth.
                 // (USB-DAC -> LDAC does too, but a PCM open wakes the codec and a standby written
                 // under a stream is the fault this fixes, so it errs toward leaving it on.)
+                HK_MARK();
                 const bool on_bt = cinder_get_bt_route() != 0;
                 const bool codec_in_path = src.radio || src.receiver || src.usb_dac
                                            || ((src.library || src.ambient) && !on_bt);
@@ -16998,17 +17190,20 @@ void* render_driver(void*) {
                 // DAC and the headphone amplifier were put to standby nine times in twenty
                 // minutes and were awake for most of the first eleven, driving an empty jack.
                 // When the codec is not in the path it is not in the path with the screen on.
-                const bool codec_idle = !codec_in_path && (!g_screen_on || on_bt);
+                // Nor with the jack EMPTY (11-22): the screen lighting was waking the DAC and amp to
+                // drive nothing, a 0.7 s driver wake each time. A plug-in or a Play wakes it.
+                const bool codec_idle = !codec_in_path && (!g_screen_on || on_bt || g_jack_last == 0);
                 // 3 s ON BLUETOOTH, NOT 30. The 30 s is for the jack, where a pause between tracks
                 // must not switch the amp off and on; on Bluetooth the codec is not in the path. And
                 // it has to land before stage 1 (5 s): the driver ignores the standby control during
                 // early suspend, so a codec awake when stage 1 began stayed awake until the screen
                 // next lit — the whole of a 3-minute LDAC run, measured 11-10 (a link repair had
                 // woken it 16 s before stage 1).
+                HK_MARK();
                 static bool said_refused = false;
                 if (codec_idle) {
                     if (idle_secs < 100000) ++idle_secs;
-                    if (!we_slept && idle_secs >= (on_bt ? 3 : 30) && !g_nc_on) {
+                    if (!we_slept && idle_secs >= (on_bt ? 3 : 30) && !g_nc_on && !g_codec_waking) {
                         if (cinder_codec_set_standby(1) == 0) {
                             we_slept = true;
                             said_refused = false;
@@ -17027,7 +17222,7 @@ void* render_driver(void*) {
                     // costs one ioctl on the transition out of idle, not per tick.
                     if (we_slept) {
                         we_slept = false;
-                        cinder_codec_set_standby(0);
+                        codec_wake_async();
                     }
                 }
                 // The SoC suspend uses the STRICTER `idle`, not `codec_idle`: BT playback lets the
@@ -17038,16 +17233,20 @@ void* render_driver(void*) {
                 // Stage 2's own, stricter test — Sony's interlocks (see soc_suspend_tick).
                 // …and 10 s since the last key: stage 1's dwell ignores presses, so a pause 3 s
                 // before the dwell ran out went straight to RAM (11-19, the hang above).
+                HK_MARK();
                 const bool ram_idle = idle && now_ms() - g_last_input_ms >= 10000 && !wifi_serving && !g_nc_on && cinder_get_bt_route() == 0 && !g_bt_user_pending
                     && !g_rx_active && !g_msc_active && !g_wifi_updating
                     && socsusp::read_node_long("/sys/class/power_supply/usb/online") == 0
                     && socsusp::read_node_long("/sys/class/power_supply/dc/online") <= 0;
+                HK_MARK();
                 soc_suspend_tick(soc_idle, ram_idle);   // `idle` unless the opt-in flag is set; see above
+                HK_MARK();
                 usb_after_resume_tick();
                 // CPU: kernel-default scheduler slices once per boot, and 1040 MHz max while the
                 // screen is dark on the jack — the clock stage 1 pins anyway, applied from the first
                 // dark second instead of the 60th. Not on Bluetooth: LDAC encode load at 1040 has
                 // not been measured. Uncapped within a tick of the screen lighting. See cpu_tune.
+                HK_MARK();
                 static bool sched_done = false;
                 if (!sched_done) {
                     sched_done = true;
@@ -17067,9 +17266,12 @@ void* render_driver(void*) {
                         }
                     }
                 }
+                HK_MARK();
                 hp_amp_tick();
+                HK_MARK();
                 nc_tick();
             }
+            HK_MARK();
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");
                 set_transport(false);
@@ -17180,6 +17382,7 @@ void* render_driver(void*) {
             //    one bad sample used to end a file copy.
             // Somebody else's unmount, noticed and undone. Ahead of the auto-MSC chain below so a
             // volume that is missing gets answered before anything is decided about the cable.
+            HK_MARK();
             if (!g_msc_active) {
                 if (contents_mounted()) {
                     g_contents_gone = 0;
@@ -17194,9 +17397,23 @@ void* render_driver(void*) {
                     run_watchdog_only("usb-msc: reclaim /contents", 60, reclaim_contents);
                 }
             }
+            HK_MARK();
             if (g_msc_active) {
                 g_usb_hi = 0;
-                if (usb_connected()) {
+                const bool lun0 = msc_lun_backed("/sys/class/android_usb/android0/f_mass_storage/lun/file");
+                const bool all_ejected = g_msc_was_backed && !lun0 &&
+                    !msc_lun_backed("/sys/class/android_usb/android0/f_mass_storage/lun1/file");
+                if (lun0) g_msc_was_backed = true;
+                g_msc_ejected = all_ejected ? g_msc_ejected + 1 : 0;
+                if (usb_connected() && g_msc_ejected >= MSC_UNPLUG_TICKS) {
+                    g_msc_ejected = 0;
+                    clog_("usb-msc: the computer ejected the drive — ending the session "
+                          "(auto-MSC is off until unplug)");
+                    // Not g_msc_watch_exit: this IS "left with the cable in", so the latch below
+                    // keeps auto-MSC from handing the drive straight back to the computer.
+                    int act = cinder_input(CINDER_BTN_BACK);
+                    if (act != CINDER_ACT_NONE) carry_out(act);
+                } else if (usb_connected()) {
                     g_msc_seen_usb = true;
                     g_msc_gone = 0;
                     // A host tool (flash.sh's unmount, Windows "safely remove") EJECTS the medium
@@ -17204,7 +17421,8 @@ void* render_driver(void*) {
                     // reader with no medium (the "worked once, then 0B" symptom across back-to-back
                     // flash.sh calls). /contents is still unmounted here, so re-insert it: ensure_msc_lun
                     // is a no-op while the LUN stays backed and re-binds the instant it goes empty.
-                    ensure_msc_lun();
+                    // Not while EVERY drive is ejected: that is the computer finishing (above).
+                    if (!all_ejected) ensure_msc_lun();
                 }
                 else if (g_msc_seen_usb && ++g_msc_gone >= MSC_UNPLUG_TICKS) {
                     g_msc_gone = 0;
@@ -17217,7 +17435,7 @@ void* render_driver(void*) {
                     g_msc_watch_exit = false;
                 }
             } else if (usb_data_host() && !dev_skip_auto_msc() && !cinder_get_usb_dac()
-                       && !g_msc_user_off) {
+                       && !g_msc_user_off && !g_reload_busy) {
                 // USB-DAC EXCLUDES auto-MSC, and that is why plain DAC mode never worked.
                 // `sys.sony.config=uac` reconfigures the gadget to `audio_func,adb`, which
                 // enumerates — so `usb_data_host()` goes true within ~2 s and this branch handed
@@ -17249,21 +17467,30 @@ void* render_driver(void*) {
             // only raises this when the track has just changed, which is the one moment
             // SetTrackSequence is free: the position is already ~0, so the reset it causes is
             // invisible. Applying it any other time restarts the music (measured on device).
+            HK_MARK();
             if (cinder_take_queue_flush()) {
                 run_guarded("queue: flush at track boundary", 10, []() {
                     play_pending_sequence("queue", PendingSequenceMode::RestoreIfSame);
                 });
             }
+            HK_MARK();
             viz_analyzer_tick();              // analyzer runs only while its output is visible
+            HK_MARK();
             bt_trim_tick();                   // Bluetooth fine volume, applied off the press path
+            HK_MARK();
             cinder_audio_engine_poll();       // the engine handing a non-FLAC song to PlayerService
+            HK_MARK();
             if (!g_msc_active && cinder_index_take_changed()) {
                 clog_("housekeeping: Cinder's index changed -> reloading library and playlists");
-                db_open_guarded(DB_LIVE);
+                library_reload_async();
             }
+            HK_MARK();
             mem_log_tick();                   // one memory line per 30 min (Phase 5)
+            HK_MARK();
             helper_log_mirror_tick();            // the AAC encoder's and the mono shim's lines, into this log (#43, #44)
+            HK_MARK();
             volume_limit_tick();              // the safe-listening cap, applied when it is flipped
+            HK_MARK();
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
             // Screenshot-on-demand: drop /tmp/cinder_screenshot.req and the next frame is written
             // to /tmp/cinder_screen.png. A polled flag file (no new IPC
@@ -17283,6 +17510,7 @@ void* render_driver(void*) {
             // allows exactly one track of a type, cinder-home holds it, and a probe run alongside
             // therefore never gets audio to interrupt. The position either side is logged so the
             // answer is in the log rather than in someone's judgement of what they heard.
+            HK_MARK();
             if (::access("/tmp/cinder_reissue.req", F_OK) == 0) {
                 ::unlink("/tmp/cinder_reissue.req");
                 int c0 = -1, t0 = -1;
@@ -17415,6 +17643,7 @@ void* render_driver(void*) {
                 }
             }
 #endif
+            HK_MARK();
             if (::access("/tmp/cinder_screenshot.req", F_OK) == 0) {
                 ::unlink("/tmp/cinder_screenshot.req");
                 cinder_request_screenshot("/tmp/cinder_screen.png");
@@ -17430,6 +17659,14 @@ void* render_driver(void*) {
             // readable over USB-MSC without a reboot. The host reads the raw block device, which
             // lags the device's live rw mount until a sync — hence the earlier 0-byte/short reads.
             if (n % 120 == 0) ::sync();
+            // DEV: the 1 Hz block runs on this thread, so a slow tick is a dropped frame mid-fling.
+            if (g_screen_on && now_ms() - hk_t0 > 3) {
+                HK_MARK();
+                char m[96];
+                std::snprintf(m, sizeof m, "stall: housekeeping %lld ms (worst %lld ms, ending at main.cpp:%d)",
+                              now_ms() - hk_t0, g_hk_worst, g_hk_worst_line);
+                clog_(m);
+            }
 #endif
         }
         // Battery gauge: every ~10 s, wall-clock paced for the same reason as the housekeeping block
@@ -17545,7 +17782,7 @@ void* render_driver(void*) {
                     }
                 } else {
                     clog_("housekeeping: the library database changed -> reloading library and playlists");
-                    db_open_guarded(DB_LIVE);
+                    library_reload_async();
                 }
             }
             if (sig != 0) g_db_sig = sig;
@@ -17657,6 +17894,16 @@ void* render_driver(void*) {
                                     g_vol_pending, g_vol_write_ms,
                                     VOL_REPEAT_DELAY_MS, VOL_REPEAT_EVERY_MS, VOL_WRITE_EVERY_MS),
                 now_ms());
+            // …NOR PAST THE KEY-WAKE REPLAY. Same class as the volume deadline: the press that
+            // woke the player was dropped, so no event will cut this poll short, and the replay
+            // landed on the next 1 s housekeeping tick — Play 1.04 s after the resume, not 0.15 s
+            // (owner log, 11-21).
+            if (g_keywake_pending && g_keywake_due_ms - now_ms() < left)
+                left = (long)(g_keywake_due_ms - now_ms());
+            // And 100 ms passes while a RAM suspend may be under way, so the resume is seen at
+            // once (the poll's timeout freezes with the kernel and runs on after it).
+            if (socsusp::g_ram_released && now_ms() - socsusp::g_ram_at_ms < socsusp::kResumeWatchMs
+                && left > 100) left = 100;
         }
         if (left < 1) left = 1;
         if (g_evn > 0 && g_bringup_settled) {

@@ -16,6 +16,9 @@
 #                                          #   boot guard and mono shim (deploy/cinder-preload.sh)
 #   tools/cinder-install.sh --fast-boot    # also the `fast-boot` component: Sony's boot-time
 #                                          #   firmware checks skipped (deploy/cinder-fastboot.sh)
+#   tools/cinder-install.sh --keep-escape  # a dev player whose owner keeps the cable escape off:
+#                                          #   refuse unless bootcount reads 0 and no library scan
+#                                          #   is running, then put cable_escape_off back after
 #   tools/cinder-install.sh --rollback     # restore previous binary from /data/cinder/
 #   tools/cinder-install.sh --logs         # tail /contents/cinderhome.log
 #   tools/cinder-install.sh --status       # device + install health check
@@ -61,6 +64,7 @@ MODE="install"
 FULL=0
 PRELOAD=0
 FASTBOOT=0
+KEEP_ESCAPE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-build) DO_BUILD=0; shift;;
@@ -69,6 +73,7 @@ while [ $# -gt 0 ]; do
         --full)     FULL=1; shift;;
         --preload)  PRELOAD=1; shift;;
         --fast-boot) FASTBOOT=1; shift;;
+        --keep-escape) KEEP_ESCAPE=1; shift;;
         --logs)     MODE="logs"; shift;;
         --status)   MODE="status"; shift;;
         --rollback) MODE="rollback"; shift;;
@@ -598,6 +603,15 @@ restore_cable_escape() {
 # script being killed, or it is not much of an escape.
 trap 'restore_cable_escape; exit 143' INT TERM
 trap restore_cable_escape EXIT
+# --keep-escape: the two checks that come before any reboot of a player someone is using. A latched
+# bootcount boots to stock, and a reboot mid-scan corrupts /db/MTPDB.dat (0 tracks).
+if [ "$KEEP_ESCAPE" = 1 ]; then
+    BC="$(adb shell 'cat /data/cinder/bootcount 2>/dev/null' | tr -d '\r')"
+    [ -z "$BC" ] || [ "$BC" = 0 ] || die "bootcount reads $BC, not 0 — the reboot would land on stock; look first"
+    if adb shell 'tail -n 40 /contents/cinderhome.log' 2>/dev/null | grep -a 'rescan:' | tail -1 | grep -qv 'finished\|stopped\|spent'; then
+        die "a library rescan campaign looks active (last rescan: line) — wait for it to finish"
+    fi
+fi
 info "cable pass: the next boot ignores the cable once (the launcher spends it)…"
 adb shell "echo 1 > $CABLE_PASS; sync" >/dev/null 2>&1 || warn "could not set $CABLE_PASS — this boot will land on STOCK if a cable is attached"
 
@@ -616,6 +630,11 @@ if adb wait-for-device >/dev/null 2>&1; then
     # might itself hang.
     restore_cable_escape
     trap - EXIT
+    if [ "$KEEP_ESCAPE" = 1 ]; then
+        adb shell "echo 1 > $CABLE_FLAG; chown system:system $CABLE_FLAG; chmod 644 $CABLE_FLAG; sync" >/dev/null 2>&1 \
+            && ok "cable_escape_off put back (--keep-escape)" \
+            || warn "could not put $CABLE_FLAG back — do it by hand"
+    fi
     # `|| true`: adb is often back before the launcher has started the app, the grep then matches
     # nothing, and under `set -euo pipefail` that ended the script with rc=1 and no message after a
     # good install (2026-09-16). "Not seen yet" is the warning below, not a failure.

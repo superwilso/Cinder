@@ -4821,6 +4821,18 @@ fn user_playlist_rows(
 /// Put one library track into one of our playlists. The PATH is what gets stored — object ids are
 /// re-issued whenever the database is rebuilt, and a playlist that forgets its tracks on a rescan
 /// would be worse than no playlist at all.
+/// The songs a folder hold picked (#56), as (path, label) for `Store::add_many`.
+fn picked_tracks(r: &mut Render) -> Vec<(String, String)> {
+    let ids = r.app.take_pick_many();
+    let Some(db) = r.db.as_ref() else {
+        return Vec::new();
+    };
+    ids.into_iter()
+        .filter_map(|id| db.track_by_object_id(id).ok().flatten())
+        .map(|t| (t.filename.clone(), format!("{} - {}", t.artist, t.title)))
+        .collect()
+}
+
 fn add_track_to_playlist(r: &mut Render, playlist_id: i64, object_id: i64) {
     let track =
         r.db.as_ref()
@@ -4880,19 +4892,44 @@ fn adv_on_in(text: &str, key: &str) -> bool {
 /// album plus one per playlist, and it would also throw away the scroll position of the screen
 /// the user is editing on.
 fn refresh_playlists(r: &mut Render) {
-    let mut rows = merge_playlist_rows(
-        user_playlist_rows(&r.plists, r.db.as_ref()),
-        &r.db_playlists,
-    );
+    let parts = playlist_parts(&r.plists, r.db.as_ref(), &r.db_playlists);
+    install_playlist_parts(r, parts);
+}
+
+/// The playlist rows and their pictures, built from values alone — no render state — so a library
+/// reload can build them BEFORE it takes the lock (they were ~0.7 s of a background reload's
+/// swap-in, a frozen screen at its end; #57).
+struct PlaylistParts {
+    rows: Vec<cinder_ui::model::PlaylistRow>,
+    thumbs: std::collections::HashMap<i64, cinder_ui::art::Image>,
+    pics: Vec<cinder_ui::model::CoverPicture>,
+    worn: std::collections::HashMap<i64, usize>,
+}
+
+fn playlist_parts(
+    plists: &playlists::Store,
+    db: Option<&cinder_db::Db>,
+    db_playlists: &[cinder_ui::model::PlaylistRow],
+) -> PlaylistParts {
+    let mut rows = merge_playlist_rows(user_playlist_rows(plists, db), db_playlists);
     // The two cover passes, in the order they depend on each other: the automatic cover needs the
     // finished rows (it reads the first member that actually resolved), and the picture covers are
     // independent of them.
     auto_playlist_covers(&mut rows);
-    r.app.set_playlists(rows);
-    r.app.library_mut().playlist_thumbs = playlist_cover_images(&r.plists);
-    let (pics, worn) = cover_pictures(&r.plists);
-    r.app.library_mut().cover_pictures = pics;
-    r.app.library_mut().playlist_pictures = worn;
+    let (pics, worn) = cover_pictures(plists);
+    PlaylistParts {
+        rows,
+        thumbs: playlist_cover_images(plists),
+        pics,
+        worn,
+    }
+}
+
+fn install_playlist_parts(r: &mut Render, p: PlaylistParts) {
+    r.app.set_playlists(p.rows);
+    r.app.library_mut().playlist_thumbs = p.thumbs;
+    r.app.library_mut().cover_pictures = p.pics;
+    r.app.library_mut().playlist_pictures = p.worn;
     r.dirty = true;
 }
 
@@ -6791,6 +6828,31 @@ fn carry_action_now(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::
                 eprintln!("cinder-ffi: playlist delete: {e}");
             }
             refresh_playlists(r);
+            return None;
+        }
+        Action::PlaylistAddPicked(playlist_id) => {
+            let tracks = picked_tracks(r);
+            match r.plists.add_many(*playlist_id, &tracks) {
+                Ok(n) => eprintln!("cinder-ffi: folder added to a playlist — {n} songs"),
+                Err(e) => eprintln!("cinder-ffi: folder to playlist: {e}"),
+            }
+            refresh_playlists(r);
+            return None;
+        }
+        Action::PlaylistCreateWithPicked => {
+            let name = r.app.text_input().to_string();
+            let tracks = picked_tracks(r);
+            match r.plists.create(&name) {
+                Ok(id) => {
+                    if let Err(e) = r.plists.add_many(id, &tracks) {
+                        eprintln!("cinder-ffi: folder to new playlist: {e}");
+                    }
+                    refresh_playlists(r);
+                    r.app.open_playlist_by_id(id);
+                    eprintln!("cinder-ffi: playlist created from a folder: {name:?}");
+                }
+                Err(e) => eprintln!("cinder-ffi: playlist create {name:?}: {e}"),
+            }
             return None;
         }
         Action::PlaylistAddTrack(playlist_id, object_id) => {
@@ -10980,16 +11042,32 @@ pub extern "C" fn cinder_resume_flush() {
 /// is a few MB of sequential reads off ext4, and the decoding — 365 ms per album — happens on the
 /// spawned thread, which takes the lock only to hand over each finished thumbnail.
 fn start_art_cache(r: &mut Render, db_path: &str) {
-    if !art_cache::ensure_dir() {
+    let Some(plan) = r.db.as_ref().and_then(art_cache_plan) else {
         return;
+    };
+    art_cache_install(r, plan, db_path);
+}
+
+/// What the cover cache will show and build, worked out from the database and the cache files
+/// alone — no render state, so a library reload does it BEFORE taking the lock (the thumbnail
+/// reads were ~0.3 s of a background reload's frozen swap-in; #57).
+struct ArtPlan {
+    sources: Vec<(i64, i64, u64)>,
+    cached: std::collections::HashMap<i64, cinder_ui::art::Image>,
+    todo: Vec<(i64, i64, u64)>,
+    missing_48: usize,
+}
+
+fn art_cache_plan(db: &cinder_db::Db) -> Option<ArtPlan> {
+    if !art_cache::ensure_dir() {
+        return None;
     }
-    let sources = match r.db.as_ref().map(|db| db.album_cover_sources()) {
-        Some(Ok(v)) => v,
-        Some(Err(e)) => {
+    let sources = match db.album_cover_sources() {
+        Ok(v) => v,
+        Err(e) => {
             eprintln!("cinder-ffi: art cache: album source query failed: {e}");
-            return;
+            return None;
         }
-        None => return,
     };
     // Anything already on disk shows up on this first frame. The cache is addressed by the cover's
     // SOURCE PATH, not by album_id — Sony renumbers album ids on every rescan, and a cache keyed on
@@ -11002,7 +11080,7 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
     // (`art_load::folder_cover`). Keyed by the FOLDER, which the database already knows — so the
     // key needs no disk access at boot, when the music is not mounted yet — with a suffix no audio
     // path can end in, so it can never collide with an embedded cover's key.
-    if let Some(db) = r.db.as_ref() {
+    {
         let bare = db.albums_without_cover().unwrap_or_default();
         if !bare.is_empty() {
             let ids: Vec<i64> = bare.iter().map(|(_, oid)| *oid).collect();
@@ -11019,23 +11097,39 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
             }
         }
     }
-    r.art_cache_keys = sources.iter().map(|(aid, _, k)| (*aid, *k)).collect();
-    // A cover that missed before these keys existed gets its chance now.
-    r.grid_miss.clear();
-    art_cache::set_live_keys(sources.iter().map(|(_, _, k)| *k));
     let cached = art_cache::load_all(sources.iter().map(|(aid, _, k)| (*aid, *k)));
-    let have = cached.len();
-    r.app.library_mut().thumbs = cached;
     let mut todo: Vec<(i64, i64, u64)> = sources
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|(_, _, k)| !art_cache::is_cached(*k))
         .collect();
     // Albums with no row thumbnail first; the ones that only lack a 96 wait for space (#46).
     todo.sort_by_cached_key(|(_, _, k)| art_cache::has_thumb(*k));
-    let mut missing_48 = todo
+    let missing_48 = todo
         .iter()
         .filter(|(_, _, k)| !art_cache::has_thumb(*k))
         .count();
+    Some(ArtPlan {
+        sources,
+        cached,
+        todo,
+        missing_48,
+    })
+}
+
+fn art_cache_install(r: &mut Render, plan: ArtPlan, db_path: &str) {
+    let ArtPlan {
+        sources,
+        cached,
+        todo,
+        mut missing_48,
+    } = plan;
+    r.art_cache_keys = sources.iter().map(|(aid, _, k)| (*aid, *k)).collect();
+    // A cover that missed before these keys existed gets its chance now.
+    r.grid_miss.clear();
+    art_cache::set_live_keys(sources.iter().map(|(_, _, k)| *k));
+    let have = cached.len();
+    r.app.library_mut().thumbs = cached;
     eprintln!(
         "cinder-ffi: art cache: {have} cached, {} to decode (~{} s of background work)",
         todo.len(),
@@ -11572,6 +11666,14 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
         }
     }
 
+    let t_parts = std::time::Instant::now();
+    let parts = playlist_parts(&plists, Some(&db), &lib.playlists);
+    // Boot defers the cover cache to post_up (ART_DEFER); a reload plans it here, off the lock.
+    let art_plan = (!ART_DEFER.load(std::sync::atomic::Ordering::Relaxed))
+        .then(|| art_cache_plan(&db))
+        .flatten();
+    let ms_parts = t_parts.elapsed().as_millis();
+
     // ── INSTALL. Everything above was local; this is the only part that needs the render state,
     // and it is all moves and assignments. ───────────────────────────────────────────────────────
     let t_phase = std::time::Instant::now();
@@ -11638,8 +11740,9 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let ms_views = t_sub.elapsed().as_millis();
     let t_sub = std::time::Instant::now();
     // WAS 3,802 ms OF THE BOOT — 83% of the whole dead time, in this one call. See
-    // `user_playlist_rows`, which now batches its filename resolution; it is 133 ms here.
-    refresh_playlists(r);
+    // `user_playlist_rows`, which now batches its filename resolution. Built above, outside the
+    // lock (`ms_parts`); only the moves are here.
+    install_playlist_parts(r, parts);
     let ms_refresh = t_sub.elapsed().as_millis();
     r.liked = liked;
     r.liked_path = Some(likes::INTERNAL_LIKED_PATH.to_string());
@@ -11653,13 +11756,16 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let t_phase = std::time::Instant::now();
     if ART_DEFER.swap(false, std::sync::atomic::Ordering::Relaxed) {
         *ART_PENDING.lock().unwrap() = Some(p.clone());
+    } else if let Some(plan) = art_plan {
+        art_cache_install(r, plan, &p);
     } else {
         start_art_cache(r, &p);
     }
     let ms_art = t_phase.elapsed().as_millis();
     eprintln!(
         "cinder-ffi: cinder_db_open {} ms = db_open {ms_dbopen} + build {ms_build} + playlists \
-         {ms_plists} + likes {ms_liked} + import {ms_import} + lock {ms_lock} + install \
+         {ms_plists} + likes {ms_liked} + import {ms_import} + playlist rows {ms_parts} + lock \
+         {ms_lock} + install \
          {ms_install} (set_library {ms_set}, undecodable {ms_undec}, views {ms_views}, playlists \
          {ms_refresh}) + artcache {ms_art}",
         t_open.elapsed().as_millis()

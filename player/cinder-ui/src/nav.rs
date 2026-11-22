@@ -204,6 +204,8 @@ pub enum KbPurpose {
     /// whole reason the user is here, and losing it would mean naming a playlist and then having
     /// to find the track again.
     NewPlaylistWith(i64),
+    /// Made from "Add to playlist" for a FOLDER: create it holding `App::take_pick_many()`.
+    NewPlaylistWithPicked,
     /// Rename the playlist with this id.
     Rename(i64),
     /// Filter the "Add tracks" list. Unlike the others this commits no Action — the query is
@@ -512,6 +514,10 @@ pub enum Action {
     PlaylistCreate,
     /// Create it and add this track (object id) in one step.
     PlaylistCreateWith(i64),
+    /// Create it holding every song of `App::take_pick_many()` (a folder and its subfolders, #56).
+    PlaylistCreateWithPicked,
+    /// `(playlist id)` — add every song of `App::take_pick_many()` to it (#56).
+    PlaylistAddPicked(i64),
     /// Create it (named `App::text_input()`) holding Up Next: the playing track and everything
     /// after it, in play order (`App::queue_to_save`).
     PlaylistCreateFromQueue,
@@ -1815,6 +1821,10 @@ pub struct App {
     kb_purpose: KbPurpose,
     /// The track "Add to playlist" is about (object id; 0 = nothing).
     pick_track: i64,
+    /// …or the songs of a folder and everything below it, when the picker was opened by holding a
+    /// folder row (#56). Empty = the single-track picker. With its name, for the picker's header.
+    pick_many: Vec<i64>,
+    pick_many_name: String,
     pick_scroll_px: i32,
     track_pick_scroll_px: i32,
     /// The song order the track picker is showing (indices into `lib.songs`). Built once when the
@@ -2351,6 +2361,8 @@ impl Default for App {
             kb_page: 0,
             kb_purpose: KbPurpose::NewPlaylist,
             pick_track: 0,
+            pick_many: Vec::new(),
+            pick_many_name: String::new(),
             pick_scroll_px: 0,
             cover_scroll_px: 0,
             track_pick_scroll_px: 0,
@@ -7274,6 +7286,8 @@ impl App {
             // A name to accept rather than to type: the album when the list is one album, else
             // "Up Next". Typing on this keyboard is the slow part.
             KbPurpose::SaveQueue => self.queue_save_name(),
+            // The folder's name: a playlist made from one folder is usually named after it.
+            KbPurpose::NewPlaylistWithPicked => self.pick_many_name.clone(),
             KbPurpose::ViewName => self
                 .view_edit
                 .as_ref()
@@ -7360,9 +7374,39 @@ impl App {
     /// Open "Add to playlist" for one track.
     pub fn open_playlist_pick(&mut self, object_id: i64) {
         self.pick_track = object_id;
+        self.pick_many.clear();
         self.pick_scroll_px = 0;
         self.fling_v = 0.0;
         self.push(Screen::PlaylistPick);
+    }
+
+    /// Open "Add to playlist" for a whole folder: its songs and every subfolder's, in browse order
+    /// (#56). Holding several folders in turn and picking the same playlist adds them all.
+    fn open_playlist_pick_folder(&mut self, dir: usize) {
+        let mut ids = Vec::new();
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            let Some(f) = self.lib.folders.get(d) else {
+                continue;
+            };
+            ids.extend(f.tracks.iter().map(|t| t.object_id));
+            stack.extend(f.subdirs.iter().rev());
+        }
+        if ids.is_empty() {
+            self.notify(crate::i18n::text("No songs in this folder"));
+            return;
+        }
+        self.pick_many_name = self.lib.folders[dir].name.clone();
+        self.pick_many = ids;
+        self.pick_track = 0;
+        self.pick_scroll_px = 0;
+        self.fling_v = 0.0;
+        self.push(Screen::PlaylistPick);
+    }
+
+    /// The folder's songs for `PlaylistAddPicked` / `PlaylistCreateWithPicked`, once.
+    pub fn take_pick_many(&mut self) -> Vec<i64> {
+        std::mem::take(&mut self.pick_many)
     }
 
     /// Open "Add tracks" for the playlist that is open.
@@ -7647,8 +7691,10 @@ impl App {
         // Naming a playlist FROM the "add to playlist" picker answers the picker's question too,
         // so the picker goes with it. Otherwise Back from the new playlist's page would drop the
         // user into a chooser they have already finished with.
-        if matches!(purpose, KbPurpose::NewPlaylistWith(_))
-            && self.current() == Screen::PlaylistPick
+        if matches!(
+            purpose,
+            KbPurpose::NewPlaylistWith(_) | KbPurpose::NewPlaylistWithPicked
+        ) && self.current() == Screen::PlaylistPick
         {
             self.pop();
         }
@@ -7658,6 +7704,7 @@ impl App {
             KbPurpose::TrackSearch | KbPurpose::LibrarySearch => vec![],
             KbPurpose::NewPlaylist => vec![Action::PlaylistCreate],
             KbPurpose::NewPlaylistWith(object_id) => vec![Action::PlaylistCreateWith(object_id)],
+            KbPurpose::NewPlaylistWithPicked => vec![Action::PlaylistCreateWithPicked],
             KbPurpose::Rename(id) => {
                 // The editor's Name row shows the new name at once; the shell renames the file.
                 if let Some(e) = self.pl_edit.as_mut().filter(|e| e.id == id) {
@@ -8272,8 +8319,22 @@ impl App {
         let targets = self.user_playlists();
         match crate::playlist_pick::hit_row(targets.len() + 1, self.pick_scroll_px, y) {
             Some(0) => {
-                self.open_keyboard(KbPurpose::NewPlaylistWith(self.pick_track));
+                self.open_keyboard(if self.pick_many.is_empty() {
+                    KbPurpose::NewPlaylistWith(self.pick_track)
+                } else {
+                    KbPurpose::NewPlaylistWithPicked
+                });
                 vec![]
+            }
+            Some(index) if !self.pick_many.is_empty() => {
+                let (id, name, _) = targets[index - 1].clone();
+                let n = self.pick_many.len();
+                self.pop();
+                self.notify_format(
+                    "Added {n} songs to {name}",
+                    vec![("n", n.to_string()), ("name", name)],
+                );
+                vec![Action::PlaylistAddPicked(id)]
             }
             Some(index) => {
                 let (id, name, _) = targets[index - 1].clone();
@@ -9361,6 +9422,15 @@ impl App {
     pub fn hold(&mut self, x: i32, y: i32) -> Option<Vec<Action>> {
         if self.locked || self.overlay_open() || self.confirm.is_some() {
             return None;
+        }
+        // A FOLDER row: add the whole folder to a playlist (#56). Its songs rows still Play next.
+        if self.current() == Screen::Folders {
+            if let Some(crate::folders::Row::Dir(i)) =
+                crate::folders::row_at(&self.lib, self.folder_cur(), y, self.folder_scroll_px)
+            {
+                self.open_playlist_pick_folder(i);
+                return Some(vec![]);
+            }
         }
         if self.current() == Screen::UpNext || !self.row_swipes(y) {
             return None;
@@ -12740,13 +12810,20 @@ impl App {
                     .iter()
                     .filter(|p| !p.user && !p.smart)
                     .count();
-                let track = self
-                    .lib
-                    .songs
-                    .iter()
-                    .find(|s| s.object_id == self.pick_track)
-                    .map(|s| s.title.clone())
-                    .unwrap_or_default();
+                let track = if self.pick_many.is_empty() {
+                    self.lib
+                        .songs
+                        .iter()
+                        .find(|s| s.object_id == self.pick_track)
+                        .map(|s| s.title.clone())
+                        .unwrap_or_default()
+                } else {
+                    crate::ui_format!(
+                        "{name} · {n} songs",
+                        name = self.pick_many_name,
+                        n = self.pick_many.len()
+                    )
+                };
                 crate::playlist_pick::render_targets(
                     c,
                     &theme,
@@ -21478,6 +21555,53 @@ mod tests {
             Screen::PlaylistPick,
             "picking a playlist closes the picker"
         );
+    }
+
+    /// #56: holding a FOLDER row opens "Add to playlist" for every song in it and below, in browse
+    /// order; picking a playlist hands the whole list over once. Holding a song row still queues.
+    #[test]
+    fn holding_a_folder_adds_the_whole_tree_to_a_playlist() {
+        let mut a = own_and_sony();
+        let song = |id: i64| SongRow {
+            title: format!("S{id}"),
+            object_id: id,
+            ..Default::default()
+        };
+        let folder =
+            |name: &str, tracks: Vec<SongRow>, subdirs: Vec<usize>| crate::model::FolderRow {
+                name: name.into(),
+                tracks,
+                subdirs,
+                ..Default::default()
+            };
+        a.lib.folders = vec![
+            folder("Music", vec![], vec![1, 3]),
+            folder("Artist", vec![song(10), song(11)], vec![2]),
+            folder("Album", vec![song(12)], vec![]),
+            folder("Empty", vec![], vec![]),
+        ];
+        a.push(Screen::Folders);
+        a.folder_stack = vec![0];
+        let row = |r: usize| crate::folders::row_top(r, 0) + 10;
+        assert_eq!(a.hold(240, row(0)), Some(vec![]));
+        assert_eq!(a.current(), Screen::PlaylistPick);
+        let row1 = crate::playlist_pick::TOP + crate::playlist_pick::ROW_H + 4;
+        assert_eq!(a.tap(240, row1), vec![Action::PlaylistAddPicked(-42)]);
+        assert_eq!(
+            a.take_pick_many(),
+            vec![10, 11, 12],
+            "folder, then its subfolder"
+        );
+        assert_eq!(a.current(), Screen::Folders, "back where the hold was");
+
+        // An empty folder says so instead of opening a picker with nothing to add.
+        assert_eq!(a.hold(240, row(1)), Some(vec![]));
+        assert_eq!(a.current(), Screen::Folders);
+
+        // A new playlist from the picker is named after the folder and takes the songs too.
+        a.hold(240, row(0));
+        assert_eq!(a.tap(240, crate::playlist_pick::TOP + 4), vec![]);
+        assert_eq!(a.text_input(), "Artist");
     }
 
     #[test]

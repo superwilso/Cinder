@@ -258,11 +258,14 @@ impl Store {
         };
         let list = &mut self.lists[index];
         let mut added = 0;
+        // A set, not a scan per item: a whole folder tree (#56) can be thousands of songs.
+        let mut have: std::collections::HashSet<String> =
+            list.entries.iter().map(|e| e.uri.clone()).collect();
         for (uri, label) in items {
             if list.entries.len() >= MAX_TRACKS {
                 break;
             }
-            if uri.trim().is_empty() || list.entries.iter().any(|e| &e.uri == uri) {
+            if uri.trim().is_empty() || !have.insert(uri.clone()) {
                 continue;
             }
             list.entries.push(Entry {

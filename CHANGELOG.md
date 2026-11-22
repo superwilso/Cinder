@@ -18,6 +18,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Add a whole folder to a playlist (#56).** In Folders, hold a folder: "Add to playlist" opens
+  for every song in it and in the folders below it. Hold more folders and pick the same playlist
+  to add several. A new playlist made this way is named after the folder until you change it.
+
 - **Add to Up Next from the album and artist pages.** A + button beside Shuffle (album) and the
   dice (artist) puts the whole album, or all of the artist's songs, at the end of Up Next without
   replacing what is playing.
@@ -36,6 +40,33 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   instead of 800 ms, and the first frame arrives 0.5–0.9 s after Cinder starts.
 
 ### Fixed
+
+- **The player no longer looks frozen after copying music to it (#57).** After a USB session the
+  library is reloaded in the background instead of stopping the screen while it loads (about 7 s
+  for a 28,000-song card, and again each time the scan found more). *Device-verified* on a
+  4,900-song library: the reload runs in the background in 2.9 s and holds the screen for 0.14 s
+  at its end. *Device-unverified* on a large
+  card and on a Mac.
+
+- **Ejecting the player on the computer ends the USB session (#57).** "Eject" on a Mac or "Safely
+  remove" on Windows used to leave the player on its USB screen until the cable came out. Ejecting
+  every drive it offered now returns it to Cinder, and it stays out of USB mode until the cable is
+  unplugged. *Device-unverified.*
+
+- **Covers missing on some MP3s now show (#57).** For some files the library recorded where the
+  cover starts one byte too early, so the picture never loaded (582 albums in one report). Cinder
+  now finds the start of the picture itself.
+
+- **Waking the screen no longer freezes it for about two seconds.** Waking the headphone
+  amplifier from standby, and reading the headphone type while it woke, both waited on the sound
+  chip on the screen's own thread. That now happens in the background, and with nothing in the
+  jack the amplifier is no longer woken at all. *Device-verified:* 2 s to 0.04 s.
+
+- **Play starts sooner with the screen off.** A press now starts waking the headphone amplifier at
+  once and runs the processor at full speed for three seconds. From a pause long enough for the
+  amplifier to sleep, the music starts about 0.35 s sooner (1.41 s to 1.06 s to the stream, on
+  the jack). After the player has slept fully, a side key is acted on in about 0.1 s instead of up
+  to two. *Device-verified* for the first; *device-unverified* for the second.
 
 - **The player could hang with looping sound if Play was pressed just as it went to sleep.** A key
   pressed in the second after a paused player starts to sleep now stops the sleep before it acts,

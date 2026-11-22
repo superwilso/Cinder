@@ -372,6 +372,7 @@
 >   to PlayerService on the first ▶. Verified on device: 13-track context restored at index 1, 7 s in.
 > - **Folder browse** — the real file tree (322 dirs across both volumes on the reference device).
 >   Back means "up one level"; empty branches pruned; folder rows count the whole subtree.
+>   Holding a folder row adds the whole subtree to a playlist (#56, 11-22; host-tested, device 51.42).
 > - **Track info**, **genre filter**, **Hi-Res filter**, **reset settings**, **sound presets**.
 > - **L/R balance** — a continuous drag slider (0..100, centre detent + snap, CENTRE reset). The
 >   mixer unit is the HALF-decibel: the first curve put the outer stop at 88 raw = **−44 dB**, which

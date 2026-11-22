@@ -40,7 +40,9 @@ fn load_db(db: &cinder_db::Db, object_id: i64) -> Option<Image> {
     let art = match db.art_for_object(object_id) {
         Ok(Some(a)) => a,
         Ok(None) => {
-            eprintln!("[cinder-ffi] art: obj={object_id} no images row");
+            if first_failure(object_id) {
+                eprintln!("[cinder-ffi] art: obj={object_id} no images row");
+            }
             return None;
         }
         Err(e) => {
@@ -50,21 +52,49 @@ fn load_db(db: &cinder_db::Db, object_id: i64) -> Option<Image> {
     };
     let bmp = art.bmpfile.as_deref().unwrap_or("");
     let bmp_exists = !bmp.is_empty() && std::fs::metadata(bmp).is_ok();
-    let magic = if !art.source_path.is_empty() && art.data_size > 0 {
-        read_file_range(&art.source_path, art.data_offset.max(0) as u64, 4)
-            .map(|b| format!("{:02X}{:02X}{:02X}{:02X}", b[0], b[1], b[2], b[3]))
-            .unwrap_or_else(|| "unreadable".into())
-    } else {
-        "-".into()
-    };
-    eprintln!(
-        "[cinder-ffi] art: obj={object_id} bmpfile={bmp:?} exists={bmp_exists} blob_len={} \
-         src={:?} off={} size={} magic={magic}",
-        art.blob.as_ref().map_or(0, |b| b.len()),
-        art.source_path,
-        art.data_offset,
-        art.data_size
-    );
+    let img = load_shapes(&art, bmp, bmp_exists);
+    // ONE LINE PER FAILURE, ONCE PER TRACK. This printed on every load, which the cover builder
+    // makes for every album and repeats for every miss across its retry rounds: 17,000 lines in
+    // one boot on a 28,000-track library (#57), each an fflush to the vfat log.
+    if img.is_none() && first_failure(object_id) {
+        let magic = if !art.source_path.is_empty() && art.data_size > 0 {
+            read_file_range(&art.source_path, art.data_offset.max(0) as u64, 4)
+                .map(|b| format!("{:02X}{:02X}{:02X}{:02X}", b[0], b[1], b[2], b[3]))
+                .unwrap_or_else(|| "unreadable".into())
+        } else {
+            "-".into()
+        };
+        eprintln!(
+            "[cinder-ffi] art: obj={object_id} bmpfile={bmp:?} exists={bmp_exists} blob_len={} \
+             src={:?} off={} size={} magic={magic} — no cover",
+            art.blob.as_ref().map_or(0, |b| b.len()),
+            art.source_path,
+            art.data_offset,
+            art.data_size
+        );
+    }
+    img
+}
+
+/// True the first time `object_id` fails; later failures of the same track stay quiet.
+fn first_failure(object_id: i64) -> bool {
+    static SAID: std::sync::Mutex<Option<std::collections::HashSet<i64>>> =
+        std::sync::Mutex::new(None);
+    SAID.lock()
+        .map(|mut g| g.get_or_insert_with(Default::default).insert(object_id))
+        .unwrap_or(true)
+}
+
+/// The scanner's offset for an embedded picture can land a byte or two before it: 582 covers on
+/// one library (#57) read `00 FF D8 FF`, the second NUL of an ID3 UTF-16 description's terminator
+/// counted as picture. Skip up to 16 bytes to the JPEG/PNG signature.
+fn skip_to_image(b: &[u8]) -> usize {
+    (0..b.len().min(16))
+        .find(|&i| image_mime(&b[i..]).is_some())
+        .unwrap_or(0)
+}
+
+fn load_shapes(art: &cinder_db::Art, bmp: &str, bmp_exists: bool) -> Option<Image> {
     // Path 1: pre-rendered bitmap file.
     if bmp_exists {
         if let Some(img) = read_file_range(bmp, 0, 0).and_then(|b| decode(&b)) {
@@ -81,12 +111,13 @@ fn load_db(db: &cinder_db::Db, object_id: i64) -> Option<Image> {
     }
     // Path 3: embedded blob in the source file at (offset, size).
     if !art.source_path.is_empty() && art.data_size > 0 {
+        // +16 so a picture that starts late still ends inside the window.
         let bytes = read_file_range(
             &art.source_path,
             art.data_offset.max(0) as u64,
-            art.data_size as u64,
+            art.data_size as u64 + 16,
         )?;
-        return decode(&bytes);
+        return decode(&bytes[skip_to_image(&bytes)..]);
     }
     None
 }
@@ -116,9 +147,10 @@ fn image_mime(magic: &[u8]) -> Option<&'static str> {
 pub fn cover_ref(db: &cinder_db::Db, object_id: i64) -> Option<CoverRef> {
     if let Ok(Some(a)) = db.art_for_object(object_id) {
         if !a.source_path.is_empty() && a.data_size > 0 && (a.data_size as u64) <= MAX_BLOB {
-            let off = a.data_offset.max(0) as u64;
-            if let Some(mime) = read_file_range(&a.source_path, off, 4).and_then(|m| image_mime(&m))
-            {
+            let head = read_file_range(&a.source_path, a.data_offset.max(0) as u64, 20);
+            let skip = head.as_deref().map_or(0, skip_to_image);
+            let off = a.data_offset.max(0) as u64 + skip as u64;
+            if let Some(mime) = head.and_then(|m| image_mime(&m[skip..])) {
                 return Some(CoverRef {
                     path: a.source_path,
                     off,
@@ -704,6 +736,17 @@ mod tests {
         // Covers are read out of a FLAC at a recorded offset and length; a wrong length is the
         // realistic corruption, not random bytes. It must return None, not a partial image.
         assert!(decode(&TINY_JPEG_RGB[..TINY_JPEG_RGB.len() / 2]).is_none());
+    }
+
+    #[test]
+    fn a_picture_recorded_a_byte_early_still_decodes() {
+        // #57: the scanner's offset landed on the NUL before FF D8 FF.
+        let mut b = vec![0u8];
+        b.extend_from_slice(TINY_JPEG_RGB);
+        assert_eq!(skip_to_image(&b), 1);
+        assert!(decode(&b[skip_to_image(&b)..]).is_some());
+        assert_eq!(skip_to_image(TINY_JPEG_RGB), 0);
+        assert_eq!(skip_to_image(&[0u8; 64]), 0, "no signature = unchanged");
     }
 
     #[test]
