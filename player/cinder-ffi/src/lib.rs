@@ -12570,6 +12570,12 @@ pub extern "C" fn cinder_set_play_position(
     if casting(r) || r.live.is_some() {
         return 0;
     }
+    // A restored queue waits for its first Play (`resume_pending`); until then a paused service's
+    // position belongs to whatever it last held, and saving it would move the restored place (seen
+    // 11-22 after `devctl.sh queue restore`: the resume point jumped to the old track's 1:41).
+    if r.resume_pending.is_some() && playing == 0 {
+        return 0;
+    }
     let was_playing = r.np.playing;
     r.np.playing = playing != 0;
     if total_ms > 0 {

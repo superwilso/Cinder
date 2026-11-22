@@ -343,7 +343,12 @@ The order: finish what is nearly finished, then answer the one question that dec
 Bluetooth stack is built, then build it in steps that each stand alone. Owner-only steps are
 marked; everything else runs with the player on the cable.
 
-1. **Finish Phase 3 on the player** (about 1 h, no owner). Drive album skip, end of queue and
+1. **Finish Phase 3 on the player** (about 1 h, no owner). *11-22:* through the engine (marker
+   `/contents/cinder_own_engine`), an all-FLAC album starts, Next steps through it, Next on the last
+   song does nothing (as Sony's player), the queue ends cleanly at the end; **gapless passes on the
+   rig** (a DJ-mix join: no 1 ms window under −36 dB, music −26, floor −47). Repeat-album was
+   inconclusive (the jack was unplugged at that moment, and one `now #9` line named the next file):
+   re-run it. Still open: the 32-bit FLAC. Drive album skip, end of queue and
    repeat-album through the engine with `devctl.sh cmd`; play a 32-bit FLAC through the engine
    (needs one 32-bit file the owner agrees to add, or a path in `/tmp` the dev channel can play).
    Then the gapless check on the capture rig (owner plugs the jack lead in).
@@ -359,6 +364,29 @@ marked; everything else runs with the player on the cable.
    process own the socket name with Sony's Bluetooth stopped; what frame types 0/1/2 carry. The
    answer picks the design: (a) our stack sits behind Sony's socket and keeps every effect, or
    (b) Cinder's engine feeds our encoder directly and the effects are Cinder's own (EQ only).
+
+   **Answered 11-22 (read-only: decompilations + one `/proc/net/unix` read on the player):**
+   - *Who decides.* `BtTransmitterService` reports AvSrc status → `ConnMgrServiceFw`
+     (`AvsrcListener`: status 4 or 5 = connected) → `PathMgrServiceFw::InformDeviceEnabled(device,
+     enabled)` sets a per-device flag (`this+0x78+dev*4`) → `ResolveOutputDevice` /
+     `GetSuitableMediaPlayDevice` rank 5 (A2DP) over 4 (UAC), 3, 1/2 (headphones) → the sound
+     service's `RendererDmpMaster` maps the output device to a HAL (`GetMapDevToAudioHal`) and builds
+     `libaudiohal-a2dpsnksingletrack` → `AudioHalOutA2dpSnk::SetOutputParam` connects the socket
+     (`IpcSocketClient::Open`: `[u32 1][u32 28][28 B]`, then PCM). So the sound service sends to the
+     socket **only while PathMgr has A2DP enabled**, and PathMgr learns that from Sony's stack.
+   - *Who owns the name.* `@pst::services::bttransmitterservice` is bound and listening with
+     Bluetooth **off** (`bt_on=0`, read 11-22): Sony's service binds it when it starts, not on a
+     connection. Our process cannot take the name while Sony's service runs.
+   - *Frames.* type 0 = no payload, 1 = 28-byte PCM config (+4 channels, +20 a flag, +24 rate Hz;
+     switches the fd to raw S16 PCM), 2 = 12 bytes (not yet decoded). Unknown type = close.
+   - **So (a) is reachable with what Cinder already has:** `libcinder_mono.so` is already loaded in
+     SoundServiceFw — wrap `connect()` there and point the A2DP HAL's `\0pst::services::
+     bttransmitterservice` at our own listener while our stack is up (Sony's service keeps its name,
+     untouched); and tell PathMgr A2DP is enabled (`InformDeviceEnabled` over pst, the client pattern
+     `cinder-probe` already uses for PathMgr `SetPath`). Effects stay; volume needs care (VolumeService
+     treats device 5 as AVRCP absolute volume). **Owner decides (a) or (b).** First device test
+     (owner present, pst calls into core services): `InformDeviceEnabled(A2DP, 1)` with a probe
+     listening on a test name behind the connect() wrap; expect the type-1 frame, then PCM.
 4. **Phase 4a: an A2DP source that stays connected** (2–3 days, owner for listening). In one
    process, still on the vhci bridge: keep link keys in `/data/cinder/bt/` and load them at start
    (no pairing mode after the first time); reconnect to the last device; real music instead of

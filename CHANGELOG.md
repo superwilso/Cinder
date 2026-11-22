@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-11-22
+
 ### Added
 
 - **Glue songs together in a playlist.** In the playlist editor, tap a song to glue it to the one
@@ -60,7 +62,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Internet radio no longer repeats the last second when Wi-Fi drops (#59).** When a station
   stopped sending (Wi-Fi off, a weak signal), the headphone output kept replaying the last second of
   sound until the stream ended. It now plays silence until the sound returns, and turning Wi-Fi off
-  ends the stream (and AirPlay) cleanly first. *Device-unverified.*
+  ends the stream (and AirPlay) cleanly first. *Device-verified.*
 
 - **The player no longer looks frozen after copying music to it (#57).** After a USB session the
   library is reloaded in the background instead of stopping the screen while it loads (about 7 s
@@ -4353,7 +4355,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.4-rc1...HEAD
+[0.4.4]: https://github.com/superwilso/Cinder/compare/v0.4.3...v0.4.4-rc1
 [0.4.3]: https://github.com/superwilso/Cinder/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/superwilso/Cinder/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/superwilso/Cinder/compare/v0.4.0...v0.4.1

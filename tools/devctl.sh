@@ -3,6 +3,7 @@
 # buttons and touches are injected with sendevent, so Cinder reads them as if pressed.
 #
 #   tools/devctl.sh key play|next|prev|volup|voldn|power   one press
+#   tools/devctl.sh hold voldn|volup|play|next|prev MS     hold a key MS milliseconds (ramp tests)
 #   tools/devctl.sh tap X Y                                screen coordinates, 480x800
 #   tools/devctl.sh swipe X0 Y0 X1 Y1                      one drag
 #   tools/devctl.sh shot [out.png]                         cinder-home/tools/screenshot.sh
@@ -48,6 +49,13 @@ key)
     esac
     n=$KEYS; [ "$c" = 116 ] && n=$PWR
     sh_ "sendevent $n 1 $c 1; sendevent $n 0 0 0; sendevent $n 1 $c 0; sendevent $n 0 0 0" ;;
+hold)   # hold a key for MS milliseconds (volume ramp tests): devctl.sh hold voldn 2000
+    case "${2:-}" in
+        play) c=28 ;; next) c=106 ;; prev) c=105 ;; volup) c=115 ;; voldn) c=114 ;;
+        *) echo "hold: play|next|prev|volup|voldn MS" >&2; exit 2 ;;
+    esac
+    ms="${3:?hold KEY MS}"
+    sh_ "sendevent $KEYS 1 $c 1; sendevent $KEYS 0 0 0; usleep $((ms * 1000)) 2>/dev/null || sleep $(awk "BEGIN{print $ms/1000}"); sendevent $KEYS 1 $c 0; sendevent $KEYS 0 0 0" ;;
 tap)
     x=$(( $2 * 2 )) y=$(( $3 * 2 ))
     sh_ "sendevent $TOUCH 1 330 1; sendevent $TOUCH 3 48 40; sendevent $TOUCH 3 50 40; sendevent $TOUCH 3 53 $x; sendevent $TOUCH 3 54 $y; sendevent $TOUCH 0 2 0; sendevent $TOUCH 0 0 0; sendevent $TOUCH 3 48 0; sendevent $TOUCH 0 2 0; sendevent $TOUCH 1 330 0; sendevent $TOUCH 0 0 0" ;;
@@ -61,7 +69,7 @@ swipe)
 shot) shift; exec bash cinder-home/tools/screenshot.sh "$@" ;;
 set) shift; exec bash tools/devset.sh "$@" ;;
 cmd) shift
-     [ $# -gt 0 ] || { echo "cmd: state | play | pause | toggle | next | prev | seek MS | repeat 0-3 | shuffle 0|1 | find TEXT | album ID|TEXT [SONG] | restore | reload | radio N (-1 stops) | fm 0|1 | wifi 0|1" >&2; exit 2; }
+     [ $# -gt 0 ] || { echo "cmd: state | play | pause | toggle | next | prev | next_album | prev_album | seek MS | repeat 0-3 | shuffle 0|1 | find TEXT | album ID|TEXT [SONG] | restore | reload | radio N (-1 stops) | fm 0|1 | wifi 0|1" >&2; exit 2; }
      # One command a line; the shell answers in cinder_cmd.out within its 1 s tick.
      body=$(printf '%s\n' "$@")
      # adb's shell writes 0600 root: cinder-home (uid 100) must be able to read it.

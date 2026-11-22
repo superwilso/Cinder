@@ -2,8 +2,8 @@
 # Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
-tag v0.4.3
-1bb4390ed6ace2f9784bcebb99251a135a933584c67744fc100de24f474bcf5e  cinder-home/dist/stable/cinder-home
+tag v0.4.4-rc1
+0a72af051083db64f4ca003237cea20a5c2803d88bfd6bd311738afe62dd4698  cinder-home/dist/stable/cinder-home
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
 5e06b895af633962064290a3ab4ed956f64239aa5433ccb3e3b9e0b6e3b37401  cinder-home/dist/stable/cinder-power
 9dc63ca6de6b5bf421507684c4cf8bfde9e6c634efd1eb9a82c7b19a1b4e0d2a  cinder-home/dist/stable/cinder-msc
@@ -14,7 +14,7 @@ f7682696f4f1c200c5ceb9ae04b82aac7ca5a7515ba3ff76db8f92cf61624898  cinder-home/di
 8e88f2ad3304175dae9b7ac79c04afbb68c8b3b4399f1117ef4f53327ebe4272  cinder-home/dist/stable/cinder-signature.sh
 a01c243ee55fe108bcb52876b6dba5fb267d33e612b2ef66267b893282bb3d82  cinder-home/dist/stable/cinder-chain.sh
 f5969a11974b8132c98b144344dbd255da5004da2c91ed4e62097c4747dab625  cinder-home/dist/stable/libcinder_mono.so
-382f446ee2b8c017c4414820ac6a160aef7c30ba904dffad11ed17cf5ec35dc3  cinder-home/dist/stable/cinder-hagowrap
+bed67440b62447f56b4c870aba15925a34d5569cc5beb24c6dd04bca5a3748a2  cinder-home/dist/stable/cinder-hagowrap
 b611167da5eb741790f91b796514ce491e91bb163bf1762e72d7e4cf7a730210  cinder-home/dist/stable/cinder-guard.sh
 4c33563bd44109c5fa070084a8408521698495aad1d21843afa8641617e414af  cinder-home/dist/stable/cinder-preload.sh
 ebb1a6a13fbc7489428420cf286d6748ef83da0356f9447818c68652c83292e3  cinder-home/dist/stable/cinder-fastboot.sh
@@ -22,6 +22,7 @@ ebb1a6a13fbc7489428420cf286d6748ef83da0356f9447818c68652c83292e3  cinder-home/di
 dff7193abb824377177c6b67056ab226c6e43c9b1d16e438c2402c7ab24c5a0b  cinder-home/dist/stable/libfdk-aac-enc.so
 7b454471067f2eb93e5c5e76bf250b7bf7a7a4bdd8f5d231c17179a70275647e  cinder-home/dist/stable/libcinder_atrac.so
 d98635e0dc3f61c2cc610d14faedd6f8f53416045d2f7494643bda2ce70fe4f0  cinder-home/dist/stable/libcinder_fmrec.so
+701390d16df6539a256995cf2ff831603f5835c2f4277c813be38a6476957e31  cinder-home/dist/stable/libcinder_btwatch.so
 bb4cb3d23c2da3c22e22d53f1204fde941b337d5c383af43afd95c4df014adbd  cinder-home/dist/stable/cinder-wifi
 63de1256fb666bdf1327cc2520881d804a2983f8158961246be9157b88ab9ca7  cinder-home/dist/stable/wifi-compat.ko
 b1ee734ededfbf5d840a83a21a310fdea0682aee71ea9972a1ce500d7a5e0b8f  cinder-home/dist/stable/wifi-cfg80211.ko
@@ -42,11 +43,11 @@ c5709c627ae98e90c14c5f6ee25d521d004cafc0facf77281b1afe08819f0137  cinder-home/di
 44e984d7bf960303b6502b6378a9f745d19554b739d089e46f300995d9c9c64c  cinder-home/dist/stable/wifi-dhcp.sh
 8978519a680a5b5b82cccf767e50dd713ef44de1680eb4e5489a6668a2ba3c86  cinder-home/dist/stable/wifi-cinder_radio.txt
 907374353e2b8b563f3edf97283cd298fb5dccf12618770f5775fb19209c32ce  cinder-home/dist/stable/cinder_components.conf
-362e6fc4a171c17dc409cc6e35ffb94e2a73d07daffb0546944bf5b0035e63db  cinder-home/dist/stable/cinder_home_install.upg
+71f3932dd84f1d3b863c32c34398a5999003bf9f1b1352cf191a59d90d034182  cinder-home/dist/stable/cinder_home_install.upg
 b15b431ec8531a2a48a1832e2c1e83fdbf96890146e25be16a4adcc04b5c5adf  cinder-home/dist/stable/cinder_home_uninstall.upg
-22efa01fda6b498eb58b45888c85622040e28eb1b10b42060efe78180910fbf6  cinder-home/dist/stable/cinder_home_install.nw-wm1a.upg
+4e71501189b15e7088b1854b48565ea345b7546150066762538e08c753d9b0aa  cinder-home/dist/stable/cinder_home_install.nw-wm1a.upg
 cc75f5170f5477eb4520017df35561ae8d844bf96dd412e7d58db95a13da18b2  cinder-home/dist/stable/cinder_home_uninstall.nw-wm1a.upg
-86cb172083c1fbcf9128fb7c46dd2502340c9c472c4756d511ef934ca0b5a145  cinder-home/dist/dev/cinder-home
+4737761bb9843f71142d12cd172ed84ebab1a5839c283f8d71957f4a7823f3a6  cinder-home/dist/dev/cinder-home
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/dev/cinder-umount
 5e06b895af633962064290a3ab4ed956f64239aa5433ccb3e3b9e0b6e3b37401  cinder-home/dist/dev/cinder-power
 9dc63ca6de6b5bf421507684c4cf8bfde9e6c634efd1eb9a82c7b19a1b4e0d2a  cinder-home/dist/dev/cinder-msc
@@ -57,7 +58,7 @@ f7682696f4f1c200c5ceb9ae04b82aac7ca5a7515ba3ff76db8f92cf61624898  cinder-home/di
 8e88f2ad3304175dae9b7ac79c04afbb68c8b3b4399f1117ef4f53327ebe4272  cinder-home/dist/dev/cinder-signature.sh
 a01c243ee55fe108bcb52876b6dba5fb267d33e612b2ef66267b893282bb3d82  cinder-home/dist/dev/cinder-chain.sh
 f5969a11974b8132c98b144344dbd255da5004da2c91ed4e62097c4747dab625  cinder-home/dist/dev/libcinder_mono.so
-382f446ee2b8c017c4414820ac6a160aef7c30ba904dffad11ed17cf5ec35dc3  cinder-home/dist/dev/cinder-hagowrap
+bed67440b62447f56b4c870aba15925a34d5569cc5beb24c6dd04bca5a3748a2  cinder-home/dist/dev/cinder-hagowrap
 b611167da5eb741790f91b796514ce491e91bb163bf1762e72d7e4cf7a730210  cinder-home/dist/dev/cinder-guard.sh
 4c33563bd44109c5fa070084a8408521698495aad1d21843afa8641617e414af  cinder-home/dist/dev/cinder-preload.sh
 ebb1a6a13fbc7489428420cf286d6748ef83da0356f9447818c68652c83292e3  cinder-home/dist/dev/cinder-fastboot.sh
@@ -65,6 +66,7 @@ ebb1a6a13fbc7489428420cf286d6748ef83da0356f9447818c68652c83292e3  cinder-home/di
 dff7193abb824377177c6b67056ab226c6e43c9b1d16e438c2402c7ab24c5a0b  cinder-home/dist/dev/libfdk-aac-enc.so
 7b454471067f2eb93e5c5e76bf250b7bf7a7a4bdd8f5d231c17179a70275647e  cinder-home/dist/dev/libcinder_atrac.so
 d98635e0dc3f61c2cc610d14faedd6f8f53416045d2f7494643bda2ce70fe4f0  cinder-home/dist/dev/libcinder_fmrec.so
+701390d16df6539a256995cf2ff831603f5835c2f4277c813be38a6476957e31  cinder-home/dist/dev/libcinder_btwatch.so
 bb4cb3d23c2da3c22e22d53f1204fde941b337d5c383af43afd95c4df014adbd  cinder-home/dist/dev/cinder-wifi
 63de1256fb666bdf1327cc2520881d804a2983f8158961246be9157b88ab9ca7  cinder-home/dist/dev/wifi-compat.ko
 b1ee734ededfbf5d840a83a21a310fdea0682aee71ea9972a1ce500d7a5e0b8f  cinder-home/dist/dev/wifi-cfg80211.ko
@@ -85,8 +87,8 @@ c5709c627ae98e90c14c5f6ee25d521d004cafc0facf77281b1afe08819f0137  cinder-home/di
 44e984d7bf960303b6502b6378a9f745d19554b739d089e46f300995d9c9c64c  cinder-home/dist/dev/wifi-dhcp.sh
 8978519a680a5b5b82cccf767e50dd713ef44de1680eb4e5489a6668a2ba3c86  cinder-home/dist/dev/wifi-cinder_radio.txt
 b68dc33c3fe3f6fbf98cfbf2719388a887a27c374a3332e6dbcc72c04c46fd97  cinder-home/dist/dev/cinder_components.conf
-362e6fc4a171c17dc409cc6e35ffb94e2a73d07daffb0546944bf5b0035e63db  cinder-home/dist/dev/cinder_home_install.upg
+71f3932dd84f1d3b863c32c34398a5999003bf9f1b1352cf191a59d90d034182  cinder-home/dist/dev/cinder_home_install.upg
 b15b431ec8531a2a48a1832e2c1e83fdbf96890146e25be16a4adcc04b5c5adf  cinder-home/dist/dev/cinder_home_uninstall.upg
-22efa01fda6b498eb58b45888c85622040e28eb1b10b42060efe78180910fbf6  cinder-home/dist/dev/cinder_home_install.nw-wm1a.upg
+4e71501189b15e7088b1854b48565ea345b7546150066762538e08c753d9b0aa  cinder-home/dist/dev/cinder_home_install.nw-wm1a.upg
 cc75f5170f5477eb4520017df35561ae8d844bf96dd412e7d58db95a13da18b2  cinder-home/dist/dev/cinder_home_uninstall.nw-wm1a.upg
-9220f945c0a79971168637a73157429b9e2e4ec2f065522940b0973b7a07d620  cinder-home/dist/dev/cinder-probe
+ed12f4b9d45910b8b0bc640af26f1bc8d156231b83d7afb54dfd2fbbf4bb47d3  cinder-home/dist/dev/cinder-probe

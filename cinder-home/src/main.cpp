@@ -14405,6 +14405,9 @@ static void dev_command_tick() {
             const int act = cinder_dev_shuffle((int)n);
             if (act > 0) carry_out(act);
             std::snprintf(res, sizeof res, "shuffle %lld: %s", n, act < 0 ? "already" : "changed");
+        } else if (w == "next_album" || w == "prev_album") {
+            carry_out(w == "next_album" ? CINDER_ACT_NEXT_ALBUM : CINDER_ACT_PREV_ALBUM);
+            std::snprintf(res, sizeof res, "%s: ok", word);
         } else if (w == "toggle") {
             // The Play key exactly (a live source takes it), whatever g_playing says.
             carry_out(CINDER_ACT_PLAYPAUSE);
@@ -14430,7 +14433,7 @@ static void dev_command_tick() {
             if (act) carry_out(act);
             std::snprintf(res, sizeof res, "repeat %lld: %s", n, act ? "changed" : "already");
         } else {
-            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, shuffle 0|1, find TEXT, album ID|TEXT [SONG], restore, reload, toggle, radio N (-1 stops), fm 0|1, wifi 0|1)", word);
+            std::snprintf(res, sizeof res, "unknown: %s (state, play, pause, next, prev, seek MS, repeat 0-3, shuffle 0|1, find TEXT, album ID|TEXT [SONG], restore, reload, toggle, next_album, prev_album, radio N (-1 stops), fm 0|1, wifi 0|1)", word);
         }
         out += res;
         out += '\n';
