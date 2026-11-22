@@ -14827,12 +14827,15 @@ static void reorder_hold_tick() {
         if (g_screen_on) cinder_render_tick();
         return;
     }
-    // Opt-in: a hold on a song row is Play next. The UI has already queued it and shown the toast;
-    // it returns an action code (or NONE) for the shell, and -1 when there was no song to queue.
-    const int act = adv_on("hold_play_next") ? cinder_hold(hx, hy) : -1;
+    // A hold on a folder row is "Add to playlist" (#56), always; on a song row it is Play next,
+    // opt-in. The UI has already done it and shown the toast; it returns an action code (or NONE)
+    // for the shell, and -1 when the row answers no hold. This used to skip cinder_hold entirely
+    // without the switch, which is how the folder hold never fired on the owner's player (11-22).
+    cinder_set_hold_play_next(adv_on("hold_play_next") ? 1 : 0);
+    const int act = cinder_hold(hx, hy);
     if (act >= 0) {
         g_hold_queued = true;
-        clog_("touch: long press -> play next");
+        clog_("touch: long press acted (folder -> playlist, or song -> play next)");
         if (act != CINDER_ACT_NONE) carry_out_input(act);
         if (g_screen_on) cinder_render_tick();
     } else {

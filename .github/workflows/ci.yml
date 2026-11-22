@@ -161,6 +161,11 @@ jobs:
       - name: Shared code is reused, not copied
         run: python3 tools/reuse_check.py --self-test && python3 tools/reuse_check.py
 
+      # cinder.h is hand-written and the shell trusts it: a Rust signature change used to link fine
+      # and break at run time. Every prototype against the Rust export of the same name.
+      - name: cinder.h matches the Rust exports
+        run: python3 tools/check_ffi_header.py --self-test && python3 tools/check_ffi_header.py
+
       # The pure-logic rules that decide whether the device pauses, reconnects, reboots, notices new
       # music or believes its own battery gauge. Every *_selftest.cpp, globbed — the same script
       # build.sh and .githooks/pre-push run.

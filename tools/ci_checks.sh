@@ -27,6 +27,7 @@ for d in player installer rescue; do
     [ "$QUICK" = 1 ] || step "$d: test" bash -c "cd $d && cargo test -q --release"
 done
 step "host syntax" tools/host_syntax_check.sh
+step "ffi header" bash -c "python3 tools/check_ffi_header.py --self-test && python3 tools/check_ffi_header.py"
 step "reuse" bash -c "python3 tools/reuse_check.py --self-test && python3 tools/reuse_check.py"
 step "selftests" bash cinder-home/tools/selftests.sh
 command -v shellcheck >/dev/null && step "shell lint" tools/shell_check.sh

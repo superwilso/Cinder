@@ -360,10 +360,12 @@ int  cinder_reorder_begin(int x, int y);
    is a long press (held still past the hold interval). The grab handle stays immediate; this is
    how reordering is reached from the rest of the row. */
 int  cinder_reorder_begin_hold(int x, int y);
-/* A long press that lifted nothing: on a song row, Play next (as a leftward swipe). Returns -1 when
- * nothing was queued, else the action code to carry out (CINDER_ACT_NONE included). The shell offers
- * it only with `hold_play_next` in cinder_advanced.conf. */
+/* A long press that lifted nothing: on a folder row, "Add to playlist" for the folder (#56); on a
+ * song row, Play next (as a leftward swipe) when cinder_set_hold_play_next(1). Returns -1 when
+ * nothing happened, else the action code to carry out (CINDER_ACT_NONE included). */
 int  cinder_hold(int x, int y);
+/* `hold_play_next` in cinder_advanced.conf; the shell sets it before every cinder_hold. */
+void cinder_set_hold_play_next(int on);
 void cinder_reorder_track(int dy_px);
 void cinder_reorder_release(void);
 /* SCROLLBAR drag — grab the bar at the right edge and drag it, as the Sony UI does. Same contract

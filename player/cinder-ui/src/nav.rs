@@ -1825,6 +1825,8 @@ pub struct App {
     /// folder row (#56). Empty = the single-track picker. With its name, for the picker's header.
     pick_many: Vec<i64>,
     pick_many_name: String,
+    /// Folders ticked for "Add to playlist" on the current level (#56). Empty = not selecting.
+    folder_sel: Vec<usize>,
     pick_scroll_px: i32,
     track_pick_scroll_px: i32,
     /// The song order the track picker is showing (indices into `lib.songs`). Built once when the
@@ -2048,6 +2050,9 @@ pub struct App {
     /// Is the opt-in `search` component installed? Set once by the shell at startup; without it
     /// the Library header has no search button.
     search_enabled: bool,
+    /// `hold_play_next` in cinder_advanced.conf: a hold on a SONG row is Play next. Folder rows
+    /// answer a hold whatever this says (#56). The shell sets it before every hold.
+    hold_play_next: bool,
     search_query: String,
     /// Matching songs as ABSOLUTE indices into `lib.songs`, like `track_pick_order`.
     search_order: Vec<crate::search::Hit>,
@@ -2363,6 +2368,7 @@ impl Default for App {
             pick_track: 0,
             pick_many: Vec::new(),
             pick_many_name: String::new(),
+            folder_sel: Vec::new(),
             pick_scroll_px: 0,
             cover_scroll_px: 0,
             track_pick_scroll_px: 0,
@@ -2456,6 +2462,7 @@ impl Default for App {
             lyrics_pos_ms: 0,
             lyrics_follow: true,
             search_enabled: false,
+            hold_play_next: false,
             search_query: String::new(),
             search_order: Vec::new(),
             search_scroll_px: 0,
@@ -4087,6 +4094,10 @@ impl App {
     }
 
     /// The shell says whether the opt-in `search` component is installed.
+    pub fn set_hold_play_next(&mut self, on: bool) {
+        self.hold_play_next = on;
+    }
+
     pub fn set_search_enabled(&mut self, on: bool) {
         self.search_enabled = on;
     }
@@ -4344,6 +4355,11 @@ impl App {
             self.fling_v = 0.0;
             return;
         }
+        // Back while selecting folders cancels the selection, and nothing else.
+        if self.current() == Screen::Folders && !self.folder_sel.is_empty() {
+            self.folder_sel.clear();
+            return;
+        }
         if self.current() == Screen::Folders && !self.folder_stack.is_empty() {
             // …EXCEPT BACK OUT OF THE LEVEL `open_folders` SKIPPED ON THE WAY IN. With one storage
             // volume the root list is a single row you would always have to tap through, so
@@ -4389,6 +4405,7 @@ impl App {
     /// you always have to tap through, so that level is skipped — it only appears when a microSD
     /// is present and there is a genuine choice to make.
     pub fn open_folders(&mut self) {
+        self.folder_sel.clear();
         self.folder_stack.clear();
         self.folder_scroll_saved.clear();
         self.folder_scroll_px = 0;
@@ -4625,10 +4642,20 @@ impl App {
     }
 
     /// Descend into `i`, remembering where we were so Back can restore it.
+    fn folder_toggle(&mut self, i: usize) {
+        match self.folder_sel.iter().position(|&s| s == i) {
+            Some(at) => {
+                self.folder_sel.remove(at);
+            }
+            None => self.folder_sel.push(i),
+        }
+    }
+
     fn folder_enter(&mut self, i: usize) {
         if i >= self.lib.folders.len() {
             return;
         }
+        self.folder_sel.clear();
         self.folder_scroll_saved.push(self.folder_scroll_px);
         self.folder_stack.push(i);
         self.folder_scroll_px = 0;
@@ -4652,7 +4679,20 @@ impl App {
         self.start_play_list(ids, i)
     }
 
-    fn tap_folders(&mut self, y: i32) -> Vec<Action> {
+    fn tap_folders(&mut self, x: i32, y: i32) -> Vec<Action> {
+        // SELECTING (#56): ADD takes every ticked folder to the picker; a folder row ticks or
+        // unticks; song rows do nothing until the selection is added or Back cancels it.
+        if !self.folder_sel.is_empty() {
+            if crate::chrome::header_action_hit(x, y) {
+                let sel = std::mem::take(&mut self.folder_sel);
+                self.open_playlist_pick_folders(&sel);
+            } else if let Some(crate::folders::Row::Dir(i)) =
+                crate::folders::row_at(&self.lib, self.folder_cur(), y, self.folder_scroll_px)
+            {
+                self.folder_toggle(i);
+            }
+            return vec![];
+        }
         match crate::folders::row_at(&self.lib, self.folder_cur(), y, self.folder_scroll_px) {
             Some(crate::folders::Row::Dir(i)) => {
                 self.folder_enter(i);
@@ -5655,7 +5695,7 @@ impl App {
                 }
                 _ => vec![],
             },
-            Screen::Folders => self.tap_folders(y),
+            Screen::Folders => self.tap_folders(x, y),
             Screen::Books => {
                 if !self.lib.books.is_empty() && crate::chrome::mode_hit(x, y) {
                     self.books_to_music();
@@ -7380,23 +7420,39 @@ impl App {
         self.push(Screen::PlaylistPick);
     }
 
-    /// Open "Add to playlist" for a whole folder: its songs and every subfolder's, in browse order
-    /// (#56). Holding several folders in turn and picking the same playlist adds them all.
-    fn open_playlist_pick_folder(&mut self, dir: usize) {
+    /// Open "Add to playlist" for whole folders: each one's songs and every subfolder's, in browse
+    /// order, folders in the order they were ticked (#56).
+    fn open_playlist_pick_folders(&mut self, dirs: &[usize]) {
         let mut ids = Vec::new();
-        let mut stack = vec![dir];
-        while let Some(d) = stack.pop() {
-            let Some(f) = self.lib.folders.get(d) else {
-                continue;
-            };
-            ids.extend(f.tracks.iter().map(|t| t.object_id));
-            stack.extend(f.subdirs.iter().rev());
+        let mut seen = std::collections::HashSet::new();
+        for &dir in dirs {
+            let mut stack = vec![dir];
+            while let Some(d) = stack.pop() {
+                let Some(f) = self.lib.folders.get(d) else {
+                    continue;
+                };
+                ids.extend(
+                    f.tracks
+                        .iter()
+                        .map(|t| t.object_id)
+                        .filter(|id| seen.insert(*id)),
+                );
+                stack.extend(f.subdirs.iter().rev());
+            }
         }
         if ids.is_empty() {
             self.notify(crate::i18n::text("No songs in this folder"));
             return;
         }
-        self.pick_many_name = self.lib.folders[dir].name.clone();
+        self.pick_many_name = match dirs {
+            [one] => self
+                .lib
+                .folders
+                .get(*one)
+                .map(|f| f.name.clone())
+                .unwrap_or_default(),
+            _ => crate::ui_format!("{n} folders", n = dirs.len()),
+        };
         self.pick_many = ids;
         self.pick_track = 0;
         self.pick_scroll_px = 0;
@@ -9423,16 +9479,19 @@ impl App {
         if self.locked || self.overlay_open() || self.confirm.is_some() {
             return None;
         }
-        // A FOLDER row: add the whole folder to a playlist (#56). Its songs rows still Play next.
+        // A FOLDER row: start (or add to) a selection for "Add to playlist" (#56). Song rows
+        // still Play next.
         if self.current() == Screen::Folders {
             if let Some(crate::folders::Row::Dir(i)) =
                 crate::folders::row_at(&self.lib, self.folder_cur(), y, self.folder_scroll_px)
             {
-                self.open_playlist_pick_folder(i);
+                if !self.folder_sel.contains(&i) {
+                    self.folder_sel.push(i);
+                }
                 return Some(vec![]);
             }
         }
-        if self.current() == Screen::UpNext || !self.row_swipes(y) {
+        if !self.hold_play_next || self.current() == Screen::UpNext || !self.row_swipes(y) {
             return None;
         }
         Some(self.swipe(-1, x, y))
@@ -11958,6 +12017,7 @@ impl App {
                 self.folder_cur(),
                 self.folder_scroll_px,
                 self.sbar_active(),
+                &self.folder_sel,
             ),
             Screen::Books => crate::audiobooks::render(
                 c,
@@ -21575,31 +21635,45 @@ mod tests {
                 ..Default::default()
             };
         a.lib.folders = vec![
-            folder("Music", vec![], vec![1, 3]),
+            folder("Music", vec![], vec![1, 3, 4]),
             folder("Artist", vec![song(10), song(11)], vec![2]),
             folder("Album", vec![song(12)], vec![]),
             folder("Empty", vec![], vec![]),
+            folder("Other", vec![song(20), song(10)], vec![]),
         ];
         a.push(Screen::Folders);
         a.folder_stack = vec![0];
         let row = |r: usize| crate::folders::row_top(r, 0) + 10;
-        assert_eq!(a.hold(240, row(0)), Some(vec![]));
-        assert_eq!(a.current(), Screen::PlaylistPick);
+        let header = crate::chrome::STATUS_H + 10;
         let row1 = crate::playlist_pick::TOP + crate::playlist_pick::ROW_H + 4;
-        assert_eq!(a.tap(240, row1), vec![Action::PlaylistAddPicked(-42)]);
-        assert_eq!(
-            a.take_pick_many(),
-            vec![10, 11, 12],
-            "folder, then its subfolder"
-        );
-        assert_eq!(a.current(), Screen::Folders, "back where the hold was");
 
-        // An empty folder says so instead of opening a picker with nothing to add.
-        assert_eq!(a.hold(240, row(1)), Some(vec![]));
+        // A hold starts a selection — answered with `hold_play_next` OFF, the default: on the
+        // player it was never asked until the shell stopped gating every hold on that switch.
+        assert!(!a.hold_play_next);
+        assert_eq!(a.hold(240, row(0)), Some(vec![]));
+        assert_eq!(a.current(), Screen::Folders, "selecting, not picking yet");
+        // A tap ticks another folder (not entering it); a second tap unticks; Other is ticked.
+        assert!(a.tap(240, row(1)).is_empty());
+        assert!(a.tap(240, row(1)).is_empty());
+        assert!(a.tap(240, row(2)).is_empty());
+        assert_eq!(a.folder_sel, vec![1, 4]);
+        // ADD: both trees, ticked order, a song in two folders once.
+        assert!(a.tap(400, header).is_empty());
+        assert_eq!(a.current(), Screen::PlaylistPick);
+        assert!(a.folder_sel.is_empty());
+        assert_eq!(a.tap(240, row1), vec![Action::PlaylistAddPicked(-42)]);
+        assert_eq!(a.take_pick_many(), vec![10, 11, 12, 20]);
+        assert_eq!(a.current(), Screen::Folders, "back where the selection was");
+
+        // Back cancels a selection without leaving the level.
+        a.hold(240, row(0));
+        a.press(Button::Back);
+        assert!(a.folder_sel.is_empty());
         assert_eq!(a.current(), Screen::Folders);
 
-        // A new playlist from the picker is named after the folder and takes the songs too.
+        // One folder: a new playlist from the picker is named after it.
         a.hold(240, row(0));
+        a.tap(400, header);
         assert_eq!(a.tap(240, crate::playlist_pick::TOP + 4), vec![]);
         assert_eq!(a.text_input(), "Artist");
     }
@@ -23327,6 +23401,12 @@ mod tests {
         a.stack = vec![Screen::Library];
         a.lib_tab = Tab::Songs;
         let row_y = library::list_top(Tab::Songs) + library::row_h(Tab::Songs) / 2;
+        assert_eq!(
+            a.hold(240, row_y),
+            None,
+            "opt-in: off, a song hold does nothing"
+        );
+        a.set_hold_play_next(true);
         assert_eq!(a.hold(240, row_y), Some(vec![Action::QueueChanged]));
         assert_eq!(upq(&a).len(), 1);
         assert!(

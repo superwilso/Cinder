@@ -127,6 +127,9 @@ fn name_style(t: &Theme, dir: bool) -> TextStyle {
     )
 }
 
+/// `selected`: the folders ticked for "Add to playlist" (#56). Non-empty = selecting: the header
+/// becomes "N selected" with ADD, and those rows are highlighted.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     c: &mut Canvas,
     t: &Theme,
@@ -135,13 +138,19 @@ pub fn render(
     dir: Option<usize>,
     scroll_px: i32,
     sbar_active: bool,
+    selected: &[usize],
 ) {
     let scroll = scroll_px.clamp(0, max_scroll_px(lib, dir));
     c.fill(t.bg);
     // The path is long, so it goes in the header's right slot where it is already ellipsised
     // against the title rather than over the rows.
     let sub = subtitle(lib, dir);
-    let y0 = crate::chrome::header(c, t, f, title(lib, dir), (!sub.is_empty()).then_some(sub));
+    let y0 = if selected.is_empty() {
+        crate::chrome::header(c, t, f, title(lib, dir), (!sub.is_empty()).then_some(sub))
+    } else {
+        let title = crate::ui_format!("{n} selected", n = selected.len());
+        crate::chrome::header_action(c, t, f, &title, crate::i18n::text("ADD"))
+    };
     c.set_clip_y(y0, LIST_BOTTOM);
 
     let all = rows(lib, dir);
@@ -170,9 +179,14 @@ pub fn render(
                 let Some(fr) = lib.folders.get(*i) else {
                     continue;
                 };
-                // A folder glyph, so the two row kinds are distinguishable without reading — the
-                // chevron alone reads as "drill in" on a track row too.
-                icons::library(c, 34.0, cy as f32, 20.0, t.acc);
+                if selected.contains(i) {
+                    fill_rect(c, 0, y, W as i32, ROW_H() - 1, t.row_sel);
+                    icons::plus(c, 34.0, cy as f32, 20.0, t.acc);
+                } else {
+                    // A folder glyph, so the two row kinds are distinguishable without reading —
+                    // the chevron alone reads as "drill in" on a track row too.
+                    icons::library(c, 34.0, cy as f32, 20.0, t.acc);
+                }
                 let ns = name_style(t, true);
                 text::draw(
                     c,
@@ -233,7 +247,6 @@ pub fn render(
         content_h(lib, dir),
         sbar_active,
     );
-    let _ = W;
 }
 
 #[cfg(test)]

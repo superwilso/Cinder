@@ -177,29 +177,32 @@ impl Image {
         if dw <= self.w && dh <= self.h && (dw < self.w || dh < self.h) {
             return self.area_scaled(dw, dh);
         }
+        // Bilinear in 8-bit fixed point, column terms worked out once: a 96 -> 132 grid cover cost
+        // ~19 ms on the player in f32 with a libm `round` per channel, a whole frame per tile as a
+        // fling brought it on screen (11-22). Within two levels of the f32 version (see the test).
         let sx = self.w as f32 / dw as f32;
         let sy = self.h as f32 / dh as f32;
-        for y in 0..dh {
+        let cols: Vec<(usize, usize, u32)> = (0..dw)
+            .map(|x| {
+                let fx = ((x as f32 + 0.5) * sx - 0.5).max(0.0);
+                let x0 = (fx as usize).min(self.w - 1);
+                let wx = ((fx - x0 as f32) * 256.0 + 0.5) as u32;
+                (x0 * 3, (x0 + 1).min(self.w - 1) * 3, wx)
+            })
+            .collect();
+        let stride = self.w * 3;
+        for (y, orow) in out.chunks_exact_mut(dw * 3).enumerate() {
             let fy = ((y as f32 + 0.5) * sy - 0.5).max(0.0);
             let y0 = (fy as usize).min(self.h - 1);
             let y1 = (y0 + 1).min(self.h - 1);
-            let ty = fy - y0 as f32;
-            for x in 0..dw {
-                let fx = ((x as f32 + 0.5) * sx - 0.5).max(0.0);
-                let x0 = (fx as usize).min(self.w - 1);
-                let x1 = (x0 + 1).min(self.w - 1);
-                let tx = fx - x0 as f32;
-                let o = (y * dw + x) * 3;
+            let wy = ((fy - y0 as f32) * 256.0 + 0.5) as u32;
+            let r0 = &self.rgb[y0 * stride..(y0 + 1) * stride];
+            let r1 = &self.rgb[y1 * stride..(y1 + 1) * stride];
+            for (o, &(x0, x1, wx)) in orow.as_chunks_mut::<3>().0.iter_mut().zip(&cols) {
                 for ch in 0..3 {
-                    let p00 = self.rgb[(y0 * self.w + x0) * 3 + ch] as f32;
-                    let p01 = self.rgb[(y0 * self.w + x1) * 3 + ch] as f32;
-                    let p10 = self.rgb[(y1 * self.w + x0) * 3 + ch] as f32;
-                    let p11 = self.rgb[(y1 * self.w + x1) * 3 + ch] as f32;
-                    let v = p00 * (1.0 - tx) * (1.0 - ty)
-                        + p01 * tx * (1.0 - ty)
-                        + p10 * (1.0 - tx) * ty
-                        + p11 * tx * ty;
-                    out[o + ch] = v.round().clamp(0.0, 255.0) as u8;
+                    let top = r0[x0 + ch] as u32 * (256 - wx) + r0[x1 + ch] as u32 * wx;
+                    let bot = r1[x0 + ch] as u32 * (256 - wx) + r1[x1 + ch] as u32 * wx;
+                    o[ch] = ((top * (256 - wy) + bot * wy + 32768) >> 16) as u8;
                 }
             }
         }
@@ -649,6 +652,64 @@ pub fn gradient_image(t: &Theme, w: i32, h: i32, name: &str, opacity: f32) -> Im
 
 #[cfg(test)]
 mod tests {
+    /// The fixed-point upscale (11-22) stays within two levels of the f32 loop it replaced (on noise,
+    /// its worst case; nobody can see that).
+    #[test]
+    fn upscale_is_within_a_level_of_the_float_loop() {
+        fn old(src: &Image, dw: usize, dh: usize) -> Vec<u8> {
+            let mut out = vec![0u8; dw * dh * 3];
+            let sx = src.w as f32 / dw as f32;
+            let sy = src.h as f32 / dh as f32;
+            for y in 0..dh {
+                let fy = ((y as f32 + 0.5) * sy - 0.5).max(0.0);
+                let y0 = (fy as usize).min(src.h - 1);
+                let y1 = (y0 + 1).min(src.h - 1);
+                let ty = fy - y0 as f32;
+                for x in 0..dw {
+                    let fx = ((x as f32 + 0.5) * sx - 0.5).max(0.0);
+                    let x0 = (fx as usize).min(src.w - 1);
+                    let x1 = (x0 + 1).min(src.w - 1);
+                    let tx = fx - x0 as f32;
+                    let o = (y * dw + x) * 3;
+                    for ch in 0..3 {
+                        let p = |yy: usize, xx: usize| src.rgb[(yy * src.w + xx) * 3 + ch] as f32;
+                        let v = p(y0, x0) * (1.0 - tx) * (1.0 - ty)
+                            + p(y0, x1) * tx * (1.0 - ty)
+                            + p(y1, x0) * (1.0 - tx) * ty
+                            + p(y1, x1) * tx * ty;
+                        out[o + ch] = v.round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+            out
+        }
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for (w, h, dw, dh) in [
+            (96, 96, 132, 132),
+            (48, 48, 132, 132),
+            (48, 48, 60, 60),
+            (7, 5, 40, 33),
+            (96, 96, 96, 140),
+        ] {
+            let rgb = (0..w * h * 3)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as u8
+                })
+                .collect();
+            let src = Image { w, h, rgb };
+            let new = src.scaled_to(dw, dh).rgb;
+            let worst = new
+                .iter()
+                .zip(old(&src, dw, dh))
+                .map(|(a, b)| (*a as i32 - b as i32).abs())
+                .max();
+            assert!(worst <= Some(2), "{w}x{h} -> {dw}x{dh}: off by {worst:?}");
+        }
+    }
+
     use super::*;
 
     /// The baked gradient must be pixel-identical to the drawn one. They share `grad_row`, and this

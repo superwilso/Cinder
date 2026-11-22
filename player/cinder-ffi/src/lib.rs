@@ -8221,6 +8221,13 @@ pub extern "C" fn cinder_set_bt_on(on: libc::c_int) {
     write(|r| r.app.set_bt_on(on != 0));
 }
 
+/// `hold_play_next` from cinder_advanced.conf, set by the shell before every hold: Play next on a
+/// song row needs it; a folder row's "Add to playlist" (#56) does not.
+#[no_mangle]
+pub extern "C" fn cinder_set_hold_play_next(on: libc::c_int) {
+    write(|r| r.app.set_hold_play_next(on != 0));
+}
+
 /// Library search is an opt-in component. The shell calls this at startup when the installer left
 /// `/data/cinder/search_on`; without it the Library header draws no search button.
 #[no_mangle]

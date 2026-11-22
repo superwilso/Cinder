@@ -1,4 +1,15 @@
-# Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
+# Cinder — status & flash/verify guide
+
+Newest first: each dated block below is what changed then. The full audit was 2026-07-26; later
+blocks are deltas on top of it. Last updated 2026-11-22.
+
+> ## 2026-11-22 — USB sessions, screen wake, Play from a dark screen, folders to playlists
+>
+> - Library reloads after USB, a reclaim or a scan run off the render thread (#57); Eject ends the
+>   USB session; covers recorded a byte early load. Screen wake no longer waits on the sound chip
+>   (2 s → 0.04 s). Play from a dark screen 1.41 → 1.06 s to the stream. Folders: hold to select,
+>   ADD to a playlist (#56). Album grid at large text: worst frame 45 → ~17 ms. Rows 51.38–51.42.
+
 
 > ## 2026-11-14 — Headphone EQ
 >
@@ -372,7 +383,8 @@
 >   to PlayerService on the first ▶. Verified on device: 13-track context restored at index 1, 7 s in.
 > - **Folder browse** — the real file tree (322 dirs across both volumes on the reference device).
 >   Back means "up one level"; empty branches pruned; folder rows count the whole subtree.
->   Holding a folder row adds the whole subtree to a playlist (#56, 11-22; host-tested, device 51.42).
+>   Hold a folder row to select folders (tap more, ADD) and add their subtrees to a playlist (#56,
+>   11-22; host-tested, device 51.42).
 > - **Track info**, **genre filter**, **Hi-Res filter**, **reset settings**, **sound presets**.
 > - **L/R balance** — a continuous drag slider (0..100, centre detent + snap, CENTRE reset). The
 >   mixer unit is the HALF-decibel: the first curve put the outer stop at 88 raw = **−44 dB**, which

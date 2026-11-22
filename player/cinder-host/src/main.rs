@@ -1551,10 +1551,10 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // Folder browse: the root (two subdirectories) and one directory of tracks, because
             // the two row kinds are what the layout has to keep apart.
             ("folders_root", &|c: &mut Canvas| {
-                cinder_ui::folders::render(c, &theme, &fonts, &lib, Some(0), 0, false)
+                cinder_ui::folders::render(c, &theme, &fonts, &lib, Some(0), 0, false, &[])
             }),
             ("folders_dir", &|c: &mut Canvas| {
-                cinder_ui::folders::render(c, &theme, &fonts, &lib, Some(1), 0, false)
+                cinder_ui::folders::render(c, &theme, &fonts, &lib, Some(1), 0, false, &[])
             }),
             // SensMe: the channel list, and one channel open. Both, because the two levels have
             // different geometry — the channel page gives its first 80 px to the PLAY | SHUFFLE

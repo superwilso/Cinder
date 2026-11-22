@@ -18,9 +18,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
-- **Add a whole folder to a playlist (#56).** In Folders, hold a folder: "Add to playlist" opens
-  for every song in it and in the folders below it. Hold more folders and pick the same playlist
-  to add several. A new playlist made this way is named after the folder until you change it.
+- **Add folders to a playlist (#56).** In Folders, hold a folder to select it, tap more folders to
+  select them too, then ADD: "Add to playlist" opens with every song in them and in the folders
+  below them. Back cancels the selection. A new playlist made from one folder is named after it.
 
 - **Add to Up Next from the album and artist pages.** A + button beside Shuffle (album) and the
   dice (artist) puts the whole album, or all of the artist's songs, at the end of Up Next without
@@ -66,7 +66,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   once and runs the processor at full speed for three seconds. From a pause long enough for the
   amplifier to sleep, the music starts about 0.35 s sooner (1.41 s to 1.06 s to the stream, on
   the jack). After the player has slept fully, a side key is acted on in about 0.1 s instead of up
-  to two. *Device-verified* for the first; *device-unverified* for the second.
+  to two. *Device-verified.*
+
+- **Smoother album grid with large text.** Scaling each cover up to the larger tiles took about a
+  frame per cover as they scrolled in; it is about four times as fast now. *Device-verified:* the
+  slowest frame in a fling went from 45 ms to about 17 ms.
 
 - **The player could hang with looping sound if Play was pressed just as it went to sleep.** A key
   pressed in the second after a paused player starts to sleep now stops the sleep before it acts,
