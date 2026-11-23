@@ -16,16 +16,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-11-22
+
 ### Added
 
 - **Holding the Library scrollbar shows the letter you are at**, in a large square in the middle of
   the list, as Sony's player does. On every sort that has the A–Z rail (Z–A artist sorts included).
   *Host-tested; device-tested on Songs.*
-
-## [0.4.4] — 2026-11-22
-
-### Added
-
 - **Styles now dress the settings screens and the Library too.** Nocturne (and Clock) and Terminal
   (and Cassette and Winamp) restyle the rows, section labels, choice chips, switches, the main
   button, the header and the Now Playing bar, not only Now Playing; in the Library, the list type,
