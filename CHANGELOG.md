@@ -16,6 +16,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Holding the Library scrollbar shows the letter you are at**, in a large square in the middle of
+  the list, as Sony's player does. On every sort that has the A–Z rail (Z–A artist sorts included).
+  *Host-tested; device-tested on Songs.*
+
 ## [0.4.4] — 2026-11-22
 
 ### Added

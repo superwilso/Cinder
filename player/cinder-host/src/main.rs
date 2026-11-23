@@ -1197,6 +1197,30 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     false,
                 )
             }),
+            // The scrollbar held: wide accent thumb, and the letter at the top of the list.
+            ("library_songs_sbar_letter", &|c: &mut Canvas| {
+                let offs = library::az_offsets(Tab::Songs, &lib, 0, 0, None);
+                let scroll = 0; // the sample list is too short to scroll
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Songs,
+                    0,
+                    scroll,
+                    0,
+                    0,
+                    None,
+                    &lib,
+                    None,
+                    true,
+                    0,
+                    false,
+                );
+                if let Some(l) = library::az_letter_at_scroll(&offs, scroll) {
+                    library::az_bubble(c, &theme, &fonts, Tab::Songs, l);
+                }
+            }),
             ("library_playlists", &|c: &mut Canvas| {
                 library::render(
                     c,

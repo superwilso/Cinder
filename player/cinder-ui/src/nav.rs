@@ -2081,6 +2081,9 @@ pub struct App {
     queue_after_memo: Option<((usize, usize, usize), Option<u32>)>,
     /// Memoised A-Z rail map, keyed on (tab, songs sort, albums order). See `az_present_memo`.
     az_memo: Option<((u8, usize, usize), [bool; 27])>,
+    /// Each rail letter's offset, taken when the scrollbar is grabbed on a Library tab, so the drag
+    /// can show which letter it is at (`library::az_bubble`). None when no drag or no rail.
+    sbar_az: Option<[Option<i32>; 27]>,
     /// Does the queue still follow playback? True until the user scrolls it themselves; reset on
     /// every entry to the screen. This is the whole of "the queue follows the current song".
     queue_follow: bool,
@@ -2490,6 +2493,7 @@ impl Default for App {
             search_order: Vec::new(),
             search_scroll_px: 0,
             az_memo: None,
+            sbar_az: None,
             queue_after_memo: None,
         }
     }
@@ -10018,6 +10022,17 @@ impl App {
         }
         self.fling_v = 0.0;
         self.sbar = Some((self.sbar_scroll(), y));
+        self.sbar_az = (self.current() == Screen::Library
+            && library::az_key_for(self.lib_tab, self.lib_sort, self.album_sort).is_some())
+        .then(|| {
+            library::az_offsets(
+                self.lib_tab,
+                &self.lib,
+                self.lib_sort,
+                self.album_sort,
+                self.album_expanded,
+            )
+        });
         true
     }
 
@@ -10067,6 +10082,7 @@ impl App {
 
     pub fn sbar_release(&mut self) {
         self.sbar = None;
+        self.sbar_az = None;
     }
 
     /// Is a scrollbar drag in progress? The renderer widens and accents the thumb while it is, so
@@ -12073,6 +12089,13 @@ impl App {
                     self.lib_sort,
                     self.album_sort,
                 );
+                if let Some(l) = self
+                    .sbar_az
+                    .as_ref()
+                    .and_then(|o| library::az_letter_at_scroll(o, self.lib_scroll_px))
+                {
+                    crate::library::az_bubble(c, &theme, fonts, self.lib_tab, l);
+                }
             }
             Screen::Album => {
                 let flat = self.lib.albums_flat();

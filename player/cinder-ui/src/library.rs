@@ -1239,8 +1239,21 @@ pub fn az_scroll_for(
     album_sort: usize,
     album_expanded: Option<usize>,
 ) -> Option<i32> {
-    let key = az_key_for(tab, sort, album_sort)?;
     let max = max_scroll_px(tab, lib, album_sort, album_expanded);
+    az_row_px(tab, lib, letter, sort, album_sort, album_expanded).map(|px| px.clamp(0, max))
+}
+
+/// Where the first row of `letter` sits in the list, NOT clamped to the scroll range — the letter
+/// box needs the real position, or every letter near the end would read as the last one.
+fn az_row_px(
+    tab: Tab,
+    lib: &Library,
+    letter: u8,
+    sort: usize,
+    album_sort: usize,
+    album_expanded: Option<usize>,
+) -> Option<i32> {
+    let key = az_key_for(tab, sort, album_sort)?;
     let top_px = match tab {
         Tab::Albums => {
             let flat = lib.albums_flat();
@@ -1297,7 +1310,59 @@ pub fn az_scroll_for(
             row_top_px(tab, lib, i, album_sort, album_expanded)
         }
     };
-    Some(top_px.clamp(0, max))
+    Some(top_px)
+}
+
+/// Every rail letter's jump offset, for the scrollbar drag's letter box. Costs 27 library scans,
+/// so it is taken ONCE when the bar is grabbed (`App::sbar_begin`), never per frame.
+pub fn az_offsets(
+    tab: Tab,
+    lib: &Library,
+    sort: usize,
+    album_sort: usize,
+    album_expanded: Option<usize>,
+) -> [Option<i32>; 27] {
+    let mut out = [None; 27];
+    for (o, &l) in out.iter_mut().zip(AZ_LETTERS) {
+        *o = az_row_px(tab, lib, l, sort, album_sort, album_expanded);
+    }
+    out
+}
+
+/// The letter at the top of the list at `scroll`: the one whose first row is the furthest one at or
+/// above it. Works on a descending sort too, since it compares offsets, not letter order.
+pub fn az_letter_at_scroll(offsets: &[Option<i32>; 27], scroll: i32) -> Option<u8> {
+    let mut best: Option<(i32, usize)> = None;
+    for (i, o) in offsets.iter().enumerate() {
+        if let Some(px) = *o {
+            if px <= scroll && best.is_none_or(|(b, _)| px >= b) {
+                best = Some((px, i));
+            }
+        }
+    }
+    best.map(|(_, i)| AZ_LETTERS[i])
+}
+
+/// The big letter shown while the scrollbar is held, as Sony's list does: a square in the
+/// accent, centred on the list.
+pub fn az_bubble(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, letter: u8) {
+    const S: i32 = 96;
+    let top = list_top(tab);
+    let x = (W as i32 - AZ_W - S) / 2;
+    let y = top + (LIST_BOTTOM - top - S) / 2;
+    c.begin_layer(); // drawn over the list on purpose (see `Canvas::begin_layer`)
+    fill_rect(c, x, y, S, S, t.acc);
+    let label = (letter as char).to_string();
+    let st = lib_sty(t, Family::Sans, Weight::Bold, 60.0, t.acc_ink, 0.0);
+    let w = text::measure(f, &label, &st) as i32;
+    text::draw(
+        c,
+        f,
+        (x + (S - w) / 2) as f32,
+        (y + S / 2 + 21) as f32,
+        &label,
+        &st,
+    );
 }
 
 /// Which field the A–Z rail indexes for a tab under its ACTIVE ordering — or `None` when that
@@ -5160,6 +5225,27 @@ mod tests {
     /// The rail's brightness and the jump must never disagree: a bright letter that goes nowhere,
     /// or a faint one that does jump, is worse than either being wrong on its own. `az_present`
     /// (one pass, drawn) and `az_scroll_for` (per letter, tapped) are separate code, so pin them.
+    #[test]
+    fn the_held_scrollbar_names_the_letter_at_the_top() {
+        let mut o = [None; 27];
+        o[1] = Some(0); // A
+        o[3] = Some(400); // C
+        o[5] = Some(900); // E
+        o[6] = Some(1300); // F, below the last scroll position
+        assert_eq!(az_letter_at_scroll(&o, 0), Some(b'A'));
+        assert_eq!(az_letter_at_scroll(&o, 399), Some(b'A'));
+        assert_eq!(az_letter_at_scroll(&o, 400), Some(b'C'));
+        // At the bottom of the list the top row is an E, even though F's rows are still on screen.
+        assert_eq!(az_letter_at_scroll(&o, 1000), Some(b'E'));
+        assert_eq!(az_letter_at_scroll(&[None; 27], 50), None);
+        // A descending list (ARTIST Z-A): Z first, A last — still the row at the top.
+        let mut d = [None; 27];
+        d[26] = Some(0);
+        d[1] = Some(700);
+        assert_eq!(az_letter_at_scroll(&d, 300), Some(b'Z'));
+        assert_eq!(az_letter_at_scroll(&d, 700), Some(b'A'));
+    }
+
     #[test]
     fn az_rail_agrees_with_the_jump() {
         let l = lib();
