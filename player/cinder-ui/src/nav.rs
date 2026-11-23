@@ -1320,6 +1320,11 @@ pub struct App {
     /// work they would lose. Reordering and removing do not set it: they edit what is there rather
     /// than build something new.
     hand_added: bool,
+    /// WHICH songs were added by hand, so the question is asked only while one of them is still to
+    /// come. The flag alone stayed set after the added song had played, so starting anything new
+    /// still asked about an Up Next that was only the album's own rest (owner, 11-23). Empty with
+    /// `hand_added` set = not known (a list restored from an old file): any upcoming row counts.
+    added_ids: Vec<i64>,
     /// Whether the transport's shuffle is on, as last drawn. The shell owns the flag; the UI only
     /// needs it so the MIX chip can turn shuffle ON rather than scramble the list behind an icon
     /// that still says "in order".
@@ -2147,6 +2152,7 @@ impl Default for App {
             rng: crate::shuffle::Rng::new(0x9E3779B97F4A7C15),
             queue_keep: false,
             hand_added: false,
+            added_ids: Vec::new(),
             shuffle_on: false,
             sbar: None,
             fling_v: 0.0,
@@ -2755,7 +2761,7 @@ impl App {
         let keep = (
             std::mem::take(&mut self.context),
             self.context_idx,
-            self.hand_added,
+            (self.hand_added, std::mem::take(&mut self.added_ids)),
             self.pre_shuffle.take(),
             std::mem::take(&mut self.pins),
             self.locked,
@@ -2769,7 +2775,8 @@ impl App {
             palette_skipped,
             context: keep.0,
             context_idx: keep.1,
-            hand_added: keep.2,
+            hand_added: keep.2 .0,
+            added_ids: keep.2 .1,
             pre_shuffle: keep.3,
             pins: keep.4,
             locked: keep.5,
@@ -2929,7 +2936,7 @@ impl App {
     fn start_play_now(&mut self, act: Action) -> Vec<Action> {
         // Only a HAND-BUILT list is worth interrupting for: an album the user merely started is
         // not work they would lose by starting another.
-        if !self.hand_added || self.upcoming_len() == 0 {
+        if !self.hand_added || !self.added_still_to_come() {
             return vec![act];
         }
         self.pending_play = Some(act);
@@ -4023,6 +4030,7 @@ impl App {
         // after the context row they interrupted — so the first boot on the new build resumes on
         // the same song with the same things coming next.
         let spliced = pick.is_some() || !queue.is_empty();
+        self.added_ids = pick.iter().chain(&queue).map(|r| r.object_id).collect();
         if spliced {
             let at = if ctx.is_empty() { 0 } else { idx + 1 };
             let had_pick = pick.is_some();
@@ -10331,6 +10339,7 @@ impl App {
             return vec![];
         }
         self.hand_added = true;
+        self.added_ids.extend(rows.iter().map(|r| r.object_id));
         if self.context.is_empty() {
             // Nothing has played yet: the list starts here. It does not start PLAYING — adding to
             // a queue is not a transport control — but the next ▶ plays it (cinder-ffi arms that
@@ -10473,6 +10482,7 @@ impl App {
         // One track left has no order to go back to.
         self.pre_shuffle = None;
         self.hand_added = false;
+        self.added_ids.clear();
         self.queue_scroll_px = self
             .queue_scroll_px
             .min(self.up_next_layout().max_scroll_px());
@@ -10495,6 +10505,7 @@ impl App {
         self.queue_keep = false;
         // The kept rows are still the user's own list, so the next replace still asks.
         self.hand_added = !kept.is_empty();
+        self.added_ids = kept.iter().map(|r| r.object_id).collect();
         self.context_idx = start.min(rows.len().saturating_sub(1));
         self.context = rows;
         self.context.extend(kept);
@@ -10515,16 +10526,31 @@ impl App {
     /// What `set_play_context` would forget that a jump WITHIN the list must keep: the un-shuffle
     /// order and whether the list was built by hand. The shell reads it before re-issuing the same
     /// list from another row (`Action::PlayContextAt`) and hands it back afterwards.
-    pub fn list_state(&self) -> (Option<Vec<i64>>, bool) {
-        (self.pre_shuffle.clone(), self.hand_added)
+    pub fn list_state(&self) -> (Option<Vec<i64>>, bool, Vec<i64>) {
+        (
+            self.pre_shuffle.clone(),
+            self.hand_added,
+            self.added_ids.clone(),
+        )
     }
 
     /// Put `list_state` back. The un-shuffle order is kept only if it still describes the list —
     /// a row whose file has gone drops out of the re-issued list, and a stale order would put the
     /// rest back in the wrong places.
-    pub fn restore_list_state(&mut self, (pre, hand): (Option<Vec<i64>>, bool)) {
+    pub fn restore_list_state(&mut self, (pre, hand, added): (Option<Vec<i64>>, bool, Vec<i64>)) {
         self.pre_shuffle = pre.filter(|p| p.len() == self.context.len());
         self.hand_added = hand;
+        self.added_ids = added;
+    }
+
+    /// Is a song the user added still waiting in Up Next? Once every added song has played, what
+    /// is left is the album or playlist they started, which is not worth a question.
+    fn added_still_to_come(&self) -> bool {
+        let rest = self.context.get(self.context_idx + 1..).unwrap_or(&[]);
+        if self.added_ids.is_empty() {
+            return !rest.is_empty();
+        }
+        rest.iter().any(|r| self.added_ids.contains(&r.object_id))
     }
 
     /// The play sequence and our position in it. The shell reads these to build what it hands
@@ -13112,11 +13138,9 @@ impl App {
                         .map(|s| s.title.clone())
                         .unwrap_or_default()
                 } else {
-                    crate::ui_format!(
-                        "{name} · {n} songs",
-                        name = self.pick_many_name,
-                        n = self.pick_many.len()
-                    )
+                    // The count only: a folder name with it was cut at the caption's width (11-23),
+                    // and the name is already the new playlist's suggested name.
+                    crate::ui_format!("{n} songs", n = self.pick_many.len())
                 };
                 crate::playlist_pick::render_targets(
                     c,
@@ -13124,6 +13148,7 @@ impl App {
                     fonts,
                     crate::i18n::text("Add to playlist"),
                     &track,
+                    !self.pick_many.is_empty(),
                     &rows,
                     sony,
                     self.pick_scroll_px,
@@ -18902,6 +18927,35 @@ mod tests {
             a.start_play_list(vec![1, 2, 3, 4, 5], 0),
             vec![Action::PlayListAt(0)]
         );
+    }
+
+    /// Owner, 11-23: add one song, let it play, then start something new — no "Play this now?",
+    /// because what is left in Up Next is only the album's own rest. While the added song is still
+    /// to come, it asks.
+    #[test]
+    fn the_up_next_question_ends_once_the_added_songs_have_played() {
+        use crate::confirm::Ask;
+        let row = |id: i64| SongRow {
+            object_id: id,
+            ..Default::default()
+        };
+        let mut a = unlocked();
+        a.set_play_context(vec![row(1), row(2), row(3), row(4)], 0);
+        a.insert_rows(vec![row(9)], QueueAt::Next); // 1, 9, 2, 3, 4
+        assert!(a.start_play_now(Action::PlayIndex(50)).is_empty());
+        assert_eq!(a.confirm, Some(Ask::QueueOnPlay), "9 is still to come");
+        a.confirm = None;
+        a.pending_play = None;
+        a.context_idx = 2; // 9 played; 2 is playing, 3 and 4 are the album's own rest
+        assert_eq!(
+            a.start_play_now(Action::PlayIndex(50)),
+            vec![Action::PlayIndex(50)]
+        );
+        assert_eq!(a.confirm, None);
+        // Added at the end: still asks all the way until it plays.
+        a.insert_rows(vec![row(7)], QueueAt::Later);
+        a.context_idx = 3;
+        assert!(a.start_play_now(Action::PlayIndex(50)).is_empty());
     }
 
     /// Removing the SECOND copy of a song from Up Next forgets that copy's place in the un-shuffle

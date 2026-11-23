@@ -2819,9 +2819,10 @@ pub fn render(
                     sel_mark(c, t, f, y, rh);
                 }
                 if let Some(photo) = lib.artist_photos.get(&ar.name) {
-                    // A photo stands where the cover stack would, centred in its width.
+                    // A photo stands where the front cover would, in the same column as every
+                    // other row's (centred in the stack's width it read as out of line, 11-23).
                     let s = list_thumb_px();
-                    let x = 22 + ART_STACK_OFFSET / 2;
+                    let x = 22;
                     if photo.w == s as usize {
                         art::draw_image(c, t, x, cy - s / 2, photo, artdim(t));
                     } else {

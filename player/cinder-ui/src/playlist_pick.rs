@@ -76,6 +76,7 @@ pub fn render_targets(
     f: &FontSet,
     title: &str,
     track: &str,
+    many: bool,
     targets: &[Target],
     sony_count: usize,
     scroll_px: i32,
@@ -107,7 +108,11 @@ pub fn render_targets(
                 f,
                 26.0,
                 (cy + 19) as f32,
-                crate::i18n::text("NAME IT, THEN ADD THIS TRACK"),
+                crate::i18n::text(if many {
+                    "NAME IT, THEN ADD THESE SONGS"
+                } else {
+                    "NAME IT, THEN ADD THIS TRACK"
+                }),
                 &sty(Family::Mono, Weight::Regular, 11.0, t.acc_ink, 0.14),
             );
         } else {

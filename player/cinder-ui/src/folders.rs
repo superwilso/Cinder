@@ -188,17 +188,20 @@ pub fn render(
                     icons::library(c, 34.0, cy as f32, 20.0, t.acc);
                 }
                 let ns = name_style(t, true);
+                let cs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.12);
+                let cl = count_label(fr);
+                let w = text::measure(f, &cl, &cs);
+                // The name stops short of the count: a fixed 300 px ran "Paolo Nutini - These
+                // Streets" into "10 TRACKS" (11-23).
+                let room = (440.0 - w - 12.0 - 62.0).min(300.0);
                 text::draw(
                     c,
                     f,
                     62.0,
                     (cy + 6) as f32,
-                    &crate::widgets::fit(f, &fr.name, &ns, 300.0),
+                    &crate::widgets::fit(f, &fr.name, &ns, room),
                     &ns,
                 );
-                let cs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.12);
-                let cl = count_label(fr);
-                let w = text::measure(f, &cl, &cs);
                 text::draw(c, f, 440.0 - w, (cy + 5) as f32, &cl, &cs);
                 icons::chevron(c, 452.0, cy as f32, 9.0, t.faint);
             }

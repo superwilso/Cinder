@@ -3,6 +3,8 @@
 #
 #   ./build.sh                     -> out/zImage, out/modules/*.ko, out/System.map
 #   ./build.sh STOCK_BOOT.img      -> also out/boot.img: that image's ramdisk with the new kernel
+#   UNDERVOLT_MV=1090 ./build.sh   -> a TEST kernel in out/undervolt-1090/ with the 1040/747.5/598 MHz
+#                                     step at that voltage (patch 0010); never flash it, boot it from RAM
 #
 # Source: Sony's linux-kernel-3.10.26 for the NW-A57 (the A50 series' kernel), configured with
 # BBDMP5_linux_debug_defconfig, which equals the player's /proc/config.gz line for line. Toolchain
@@ -22,6 +24,14 @@ TARBALL="$KWORK/linux-kernel-3.10.26.tar.gz"
 TARBALL_SHA=3aef2bdcc4ecd43ab9fed0f038fa384e2515c58851573908dc8b1743febb1609
 export PATH="$KWORK/bin:$PATH"
 W="$HERE/work"; K="$W/kernel"; OUT="$HERE/out"
+UV="${UNDERVOLT_MV:-}"
+if [ -n "$UV" ]; then
+    # MediaTek's validated low corner is 1090 mV; below 1050 no source of theirs goes.
+    [[ "$UV" =~ ^1[01][0-9]{2}$ ]] && [ "$UV" -ge 1050 ] && [ "$UV" -le 1150 ] \
+        || { echo "UNDERVOLT_MV must be 1050..1150" >&2; exit 2; }
+    OUT="$OUT/undervolt-$UV"
+fi
+mkdir -p "$OUT"
 mkdir -p "$W" "$OUT/modules"
 echo "$TARBALL_SHA  $TARBALL" | sha256sum -c --status \
     || { echo "no Sony kernel tarball at $TARBALL (run cinder-llusbdac/build.sh, or set KWORK)" >&2; exit 1; }
@@ -53,7 +63,7 @@ MK=(make -C "$K" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf-
     # check compares the release's kernel byte for byte with the maintainer's build.
     "KBUILD_BUILD_TIMESTAMP=Wed Jan  1 00:00:00 UTC 2025" KBUILD_BUILD_VERSION=1
     # __DATE__ and __TIME__ pinned too (half a dozen of Sony's drivers print them), with patch 0009.
-    "KCFLAGS=-I$K/drivers/staging/android/ion -I$K/drivers/misc/mediatek/lcm -Wno-builtin-macro-redefined -D__DATE__='\"2025-01-01\"' -D__TIME__='\"00:00:00\"'")
+    "KCFLAGS=-I$K/drivers/staging/android/ion -I$K/drivers/misc/mediatek/lcm -Wno-builtin-macro-redefined -D__DATE__='\"2025-01-01\"' -D__TIME__='\"00:00:00\"' -DCINDER_DVFS_V2=${UV:-1150}")
 "${MK[@]}" BBDMP5_linux_debug_defconfig >/dev/null
 # LZO instead of Sony's XZ: the bootloader hands over to a kernel that unpacks in 1.3 s, not 2.7 s
 # (measured 2026-11-15, patch 0006's log line against bootprof.lk_t). Needs lzop (apt install lzop).

@@ -549,6 +549,7 @@
   "Every track removed. DONE saves it empty.": "已移除全部曲目，点按完成将保存空列表。",
   "+  NEW PLAYLIST": "新建播放列表",
   "NAME IT, THEN ADD THIS TRACK": "先命名，再添加此曲目",
+  "NAME IT, THEN ADD THESE SONGS": "先命名，再添加歌曲",
   "{added} ADDED": "已添加 {added} 首",
   "TAP TO ADD": "点按添加",
   "Search titles, artists, albums": "搜索标题、歌手或专辑",

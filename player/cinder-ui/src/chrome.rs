@@ -591,7 +591,16 @@ fn header_impl(
     if min_x > 0.0 {
         title_right = title_right.min(min_x - 16.0);
     }
-    let title = crate::widgets::fit(f, title, &ts, (title_right - TITLE_X).max(0.0));
+    let room = (title_right - TITLE_X).max(0.0);
+    // A title a little too wide steps down in size (to 85 %) before it loses letters: Terminal's
+    // mono title cut "Library" to "Libra…" beside the view button (11-23). Anything wider than
+    // that is the user's own text and is fitted with "…" as before.
+    let mut ts = ts;
+    let w = text::measure(f, title, &ts);
+    if w > room && w * 0.85 <= room {
+        ts.size *= room / w;
+    }
+    let title = crate::widgets::fit(f, title, &ts, room);
     let title_end = text::draw(c, f, TITLE_X, 70.0, &title, &ts);
     if let Some(r) = right {
         // Clamp the caption to the space right of the title (never let it overlap the title).

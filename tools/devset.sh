@@ -12,6 +12,9 @@
 # Both are written; the dev build notices /tmp/cinder_settings.reload's new time, loads the file as
 # at boot and re-applies sound and EQ. A stable build has no adb, so this is dev-only.
 # Before the first change the current file is kept as /data/cinder/cinder_settings.conf.devbak.
+# That backup belongs to ONE session: `restore` deletes it, and one older than this boot is replaced
+# on the next change. Without that, a backup left from 11-19 was "restored" on 11-23 over four days
+# of the owner's own changes (volume, Clear Bass, FM stations, pins).
 set -eu
 SET=/contents/cinder_settings.conf MIRROR=/data/cinder/cinder_settings.conf
 ADV=/contents/cinder_advanced.conf BAK=/data/cinder/cinder_settings.conf.devbak
@@ -54,9 +57,13 @@ check_changes() { for a in "$@"; do is_change "$a" || { echo "not KEY=VALUE or -
 
 case "${1:-}" in
 restore)
-    adb shell "[ -s $BAK ]" || { echo "no backup at $BAK"; exit 1; }
-    adb shell "cat $BAK > $SET; cat $BAK > $MIRROR; touch /tmp/cinder_settings.reload"
-    echo "restored settings from $BAK" ;;
+    # adb shell's own exit code is always 0 on this player, so each test answers on stdout.
+    case $(adb shell "if ! [ -s $BAK ]; then echo none; elif [ $BAK -ot /proc/1 ]; then echo old; else echo ok; fi" | tr -d '\r') in
+        none) echo "no backup at $BAK"; exit 1 ;;
+        old) echo "backup at $BAK is from before this boot — not restoring it"; exit 1 ;;
+    esac
+    adb shell "cat $BAK > $SET; cat $BAK > $MIRROR; touch /tmp/cinder_settings.reload; rm $BAK"
+    echo "restored settings from $BAK (backup removed)" ;;
 adv)
     shift; pull "$ADV"
     if is_filter "$@"; then grep -v '^#' "$T/f" | grep -i -- "${1:-}" || echo "(nothing)"; exit 0; fi
@@ -66,7 +73,7 @@ adv)
     pull "$SET"
     if is_filter "$@"; then grep -i -- "${1:-}" "$T/f" || echo "(nothing)"; exit 0; fi
     check_changes "$@"
-    adb shell "[ -s $BAK ] || cat $SET > $BAK"
+    adb shell "{ [ -s $BAK ] && ! [ $BAK -ot /proc/1 ]; } || cat $SET > $BAK"
     edit "$@"; push "$SET" "$MIRROR"
     adb shell "touch /tmp/cinder_settings.reload"
     echo "set; a dev build applies it within a second" ;;

@@ -577,6 +577,7 @@ fn simplifiedchinese(source: &str) -> Option<&'static str> {
         "Music and files are unavailable until you're done." => Some("传输期间，音乐和本机文件暂不可用。"),
         "Music free" => Some("音乐可用空间"),
         "NAME IT, ADD TRACKS" => Some("先命名，再添加曲目"),
+        "NAME IT, THEN ADD THESE SONGS" => Some("先命名，再添加歌曲"),
         "NAME IT, THEN ADD THIS TRACK" => Some("先命名，再添加此曲目"),
         "NEW PLAYLIST" => Some("新建列表"),
         "NEXT" => Some("下一首"),

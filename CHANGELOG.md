@@ -16,6 +16,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Play this now?" no longer asks once the songs you added have played.** Adding a song to Up
+  Next and letting it play left the question switched on, so starting anything new asked about an
+  Up Next that held only the rest of the album.
+- Adding folders to a playlist: the New playlist band says "these songs", not "this track", and
+  the header shows the song count instead of a cut-off folder name.
+- Folders: a long folder name stops before its track count instead of running into it.
+- Artists tab: an artist photo lines up with the covers on the other rows.
+- A header title a little too wide for its space is drawn slightly smaller before it is cut
+  ("Library" in the Terminal style read "Libra…").
+
 ## [0.4.4] — 2026-11-22
 
 ### Added

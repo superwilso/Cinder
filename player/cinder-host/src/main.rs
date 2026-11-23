@@ -894,6 +894,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     &fonts,
                     "Add to playlist",
                     "Atlas Hands",
+                    false,
                     &targets,
                     3,
                     0,

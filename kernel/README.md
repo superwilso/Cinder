@@ -47,6 +47,7 @@ the ones the patches remove and two the compilers handle differently.
 | 0007 | The touch panel's 0.6 s power-up runs beside the other drivers instead of in front of them: userspace starts 0.3 s sooner (2.57 s, was 2.88 s). The panel keeps its input number, which Sony's own app is given. |
 | 0008 | Sony's USB unplug check (`khubd_poll`) looks every 100 ms only while a high-speed device is plugged into the player as a host, and once a second otherwise. That is 9 fewer wakeups a second almost all the time: measured on a player with the screen off, 87 to 79 a second during playback and 46 to 39 when paused. |
 | 0009 | Two builds of the same source give the same image. The Mali GPU driver wrote the build machine's git revision, commit date and clock into its version string; with `__DATE__` and `__TIME__` pinned in `build.sh`, the release check can compare the kernel byte for byte. |
+| 0010 | The voltage of the 1040, 747.5 and 598 MHz steps can be set at build time (`UNDERVOLT_MV`, below). Unset, build.sh passes Sony's 1150 mV and the image is byte for byte the same. |
 
 ## czram.ko: working swap on the stock kernel
 
@@ -97,6 +98,18 @@ codec tables no longer block it, writing the backlight's `duty` no longer crashe
 the built-in zram0 read back 34,036 pages with no kernel error. With `MTK_CM4_SUPPORT=yes` set, music played
 for 15 minutes through the low-power playback path with no stall and no kernel error, and the
 kernel printed no error a normal boot does not also print.
+
+### An undervolt test kernel
+
+```sh
+UNDERVOLT_MV=1090 ./build.sh     # out/undervolt-1090/zImage; nothing in out/ changes
+```
+
+The CPU runs 1040, 747.5 and 598 MHz at 1150 mV. MediaTek's source has a validated low-voltage
+corner (`HQA_LV_1_09V`) that runs the same three steps at 1090 mV, and a 1050 mV step it enables
+only with other power chips. `UNDERVOLT_MV` accepts 1050–1150. Such a kernel is only ever booted
+from RAM as above, never flashed or shipped: chips differ, so a voltage that holds on one player
+proves nothing about another.
 
 ## Installing on the player
 

@@ -1,0 +1,17 @@
+Make the 1040 / 747.5 / 598 MHz voltage a build setting (CINDER_DVFS_V2). build.sh always passes it:
+1150 mV, Sony's, unless UNDERVOLT_MV is set for a test kernel. One line changed, so no __LINE__ moves and
+the default image stays byte for byte the same.
+
+diff --git a/arch/arm/mach-mt8590/mt_cpufreq.c b/arch/arm/mach-mt8590/mt_cpufreq.c
+index 4ba753de..4f79a212 100644
+--- a/arch/arm/mach-mt8590/mt_cpufreq.c
++++ b/arch/arm/mach-mt8590/mt_cpufreq.c
+@@ -141,7 +141,7 @@ static struct early_suspend mt_cpufreq_early_suspend_handler =
+     #ifdef CPUFREQ_SDIO_TRANSFER
+     #define DVFS_V2_0   (1185)  // mV
+     #endif
+-    #define DVFS_V2     (1150)  // mV
++    #define DVFS_V2     (CINDER_DVFS_V2)  // mV: Sony's 1150 unless build.sh UNDERVOLT_MV (patch 0010)
+     #ifdef MT_DVFS_LOW_VOLTAGE_SUPPORT
+     #define DVFS_V3     (1050)  // mV
+     #endif
