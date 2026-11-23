@@ -353,6 +353,20 @@ impl crate::style::Look for Terminal {
     fn primary_button(&self, c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str) -> i32 {
         kit_button(c, t, f, y, label)
     }
+    fn lib_sel(&self, c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32) {
+        (ROW.sel)(c, t, f, y, h)
+    }
+    fn lib_rule(&self, c: &mut Canvas, t: &Theme, y: i32) {
+        // Dashes, not the kit's dots: this runs once per row while a list flings (3 px in 6, 64
+        // fills against the dotted rule's 240).
+        for x in (KL..KR).step_by(6) {
+            fill_rect(c, x, y, 3, 1, t.line);
+        }
+    }
+    fn lib_playing(&self, c: &mut Canvas, t: &Theme, x: i32, cy: i32) {
+        // A block cursor.
+        fill_rect(c, x - 4, cy - 7, 8, 14, t.acc);
+    }
     fn lib_type(&self, _fam: Family, _w: Weight) -> (Family, Weight) {
         (Family::Mono, Weight::Regular)
     }

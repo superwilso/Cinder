@@ -264,6 +264,28 @@ fn dotted_rect(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col: Rgb888) {
 /// Terminal's kit, Clock Nocturne's). Use it inside the `impl Look`.
 macro_rules! kit_from {
     ($base:expr) => {
+        fn lib_sel(
+            &self,
+            c: &mut crate::canvas::Canvas,
+            t: &crate::theme::Theme,
+            f: &crate::text::FontSet,
+            y: i32,
+            h: i32,
+        ) {
+            crate::style::Look::lib_sel(&$base, c, t, f, y, h)
+        }
+        fn lib_rule(&self, c: &mut crate::canvas::Canvas, t: &crate::theme::Theme, y: i32) {
+            crate::style::Look::lib_rule(&$base, c, t, y)
+        }
+        fn lib_playing(
+            &self,
+            c: &mut crate::canvas::Canvas,
+            t: &crate::theme::Theme,
+            x: i32,
+            cy: i32,
+        ) {
+            crate::style::Look::lib_playing(&$base, c, t, x, cy)
+        }
         fn lib_type(
             &self,
             fam: crate::text::Family,

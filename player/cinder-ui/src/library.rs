@@ -426,7 +426,7 @@ fn compact_row(
         fill_rect(c, 0, y, W as i32, rh, t.row_sel);
     }
     let base = (y + rh / 2 + 6) as f32;
-    let mst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0);
+    let mst = lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.faint, 0.0);
     let tw = if trail.is_empty() {
         0.0
     } else {
@@ -1699,7 +1699,7 @@ fn artdim(t: &Theme) -> f32 {
 }
 
 /// The 4 now-playing indicator bars (FBars n=4).
-fn tiny_bars(c: &mut Canvas, x: i32, cy: i32, acc: Rgb888) {
+pub(crate) fn tiny_bars(c: &mut Canvas, x: i32, cy: i32, acc: Rgb888) {
     let hs = [10, 14, 7, 12];
     for (i, h) in hs.iter().enumerate() {
         fill_rect(c, x + i as i32 * 5, cy + 7 - h, 3, *h, acc);
@@ -2161,7 +2161,7 @@ pub fn az_render(
         let cy = top + (i as i32 * h) / n + h / (2 * n);
         let col = if present[i] { t.dim } else { t.faint };
         let label = (ch as char).to_string();
-        let st = sty(Family::Mono, Weight::Regular, 11.0, col, 0.0);
+        let st = lib_sty(t, Family::Mono, Weight::Regular, 11.0, col, 0.0);
         let w = text::measure(f, &label, &st) as i32;
         text::draw(c, f, (x - w / 2) as f32, (cy + 4) as f32, &label, &st);
     }
@@ -2216,7 +2216,8 @@ fn draw_empty_note(c: &mut Canvas, t: &Theme, f: &FontSet, top: i32, tab: Tab, l
     let Some((line, hint)) = empty_note(tab, lib) else {
         return;
     };
-    let ls = sty(
+    let ls = lib_sty(
+        t,
         Family::Sans,
         Weight::SemiBold,
         crate::scale::ROW,
@@ -2231,7 +2232,7 @@ fn draw_empty_note(c: &mut Canvas, t: &Theme, f: &FontSet, top: i32, tab: Tab, l
         &crate::widgets::fit(f, &line, &ls, 436.0),
         &ls,
     );
-    let hs = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
+    let hs = lib_sty(t, Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
     text::draw(
         c,
         f,
@@ -2283,6 +2284,28 @@ pub fn controls_x1(search: bool) -> i32 {
 
 pub fn hit_search(x: i32, y: i32) -> bool {
     (SORT_HIT_TOP..crate::chrome::HEADER_BOTTOM).contains(&y) && (SEARCH_X0..SEARCH_X1).contains(&x)
+}
+
+/// [`sty`] in the style's type ([`crate::style::Look::lib_type`]): every list text goes through
+/// this or [`body_label`], so a style's type reaches the whole Library.
+fn lib_sty(t: &Theme, fam: Family, w: Weight, size: f32, col: Rgb888, track: f32) -> TextStyle {
+    let (fam, w) = t.style.look().lib_type(fam, w);
+    sty(fam, w, size, col, track)
+}
+
+/// The chosen row's mark ([`crate::style::Look::lib_sel`]).
+fn sel_mark(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32) {
+    t.style.look().lib_sel(c, t, f, y, h)
+}
+
+/// The rule under a row ([`crate::style::Look::lib_rule`]).
+fn row_rule(c: &mut Canvas, t: &Theme, y: i32) {
+    t.style.look().lib_rule(c, t, y)
+}
+
+/// The playing row's mark at `(x, cy)` ([`crate::style::Look::lib_playing`]).
+fn playing_mark(c: &mut Canvas, t: &Theme, x: i32, cy: i32) {
+    t.style.look().lib_playing(c, t, x, cy)
 }
 
 pub fn render(
@@ -2375,7 +2398,7 @@ pub fn render(
                     continue;
                 }
                 if now {
-                    fill_rect(c, 0, y, W as i32, rh, t.row_sel);
+                    sel_mark(c, t, f, y, rh);
                 }
                 thumb(
                     c,
@@ -2408,7 +2431,7 @@ pub fn render(
                     &ast,
                 );
                 if now {
-                    tiny_bars(c, 386, cy, t.acc);
+                    playing_mark(c, t, 386, cy);
                 }
                 right(
                     c,
@@ -2416,9 +2439,9 @@ pub fn render(
                     452.0,
                     (cy + 4) as f32,
                     &sgn.dur,
-                    &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0),
+                    &lib_sty(t, Family::Mono, Weight::Regular, 13.0, t.faint, 0.0),
                 );
-                hline(c, y + rh, t.line);
+                row_rule(c, t, y + rh);
                 if sw.is_some() {
                     c.clear_offset_x();
                 }
@@ -2467,7 +2490,7 @@ pub fn render(
                 match *row {
                     AlbumsRow::Group { flat: fi } => {
                         let label = flat[fi].artist.to_uppercase();
-                        let gst = sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.16);
+                        let gst = lib_sty(t, Family::Mono, Weight::Regular, 13.0, t.dim, 0.16);
                         text::draw(
                             c,
                             f,
@@ -2544,7 +2567,7 @@ pub fn render(
                             swipe_reveal(c, t, f, y, ALBUM_ROW_H(), dx, SwipeIntent::Queue);
                         }
                         if now {
-                            fill_rect(c, 0, y, W as i32, ALBUM_ROW_H(), t.row_sel);
+                            sel_mark(c, t, f, y, ALBUM_ROW_H());
                         }
                         thumb(
                             c,
@@ -2588,7 +2611,7 @@ pub fn render(
                         // Accordion caret (right): points down when open, right when closed.
                         let caret = if expanded { t.acc } else { t.faint };
                         icons::chevron(c, 452.0, cy as f32, 13.0, caret);
-                        hline(c, y + ALBUM_ROW_H(), t.line);
+                        row_rule(c, t, y + ALBUM_ROW_H());
                         if sw.is_some() {
                             c.clear_offset_x();
                         }
@@ -2610,7 +2633,7 @@ pub fn render(
                                 84.0,
                                 (cy + 4) as f32,
                                 &num,
-                                &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
+                                &lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
                             );
                             let cst = body_label(t, Family::Sans, Weight::Regular, 17.0, t.ink);
                             text::draw(
@@ -2627,9 +2650,9 @@ pub fn render(
                                 452.0,
                                 (cy + 4) as f32,
                                 &sgn.dur,
-                                &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
+                                &lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
                             );
-                            hline(c, y + ALBUM_CHILD_H, t.line);
+                            row_rule(c, t, y + ALBUM_CHILD_H);
                             if sw.is_some() {
                                 c.clear_offset_x();
                             }
@@ -2651,7 +2674,7 @@ pub fn render(
                 if let Some(fi) = under {
                     fill_rect(c, 0, band_y, W as i32 - az_w(), ALBUM_HDR_H, t.bg);
                     let label = flat[fi].artist.to_uppercase();
-                    let gst = sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.16);
+                    let gst = lib_sty(t, Family::Mono, Weight::Regular, 13.0, t.dim, 0.16);
                     text::draw(
                         c,
                         f,
@@ -2660,7 +2683,7 @@ pub fn render(
                         &crate::widgets::fit(f, &label, &gst, 436.0),
                         &gst,
                     );
-                    hline(c, band_y + ALBUM_HDR_H - 1, t.line);
+                    row_rule(c, t, band_y + ALBUM_HDR_H - 1);
                 }
             }
             c.clear_clip();
@@ -2728,7 +2751,7 @@ pub fn render(
                     continue;
                 }
                 if now {
-                    fill_rect(c, 0, y, W as i32, rh, t.row_sel);
+                    sel_mark(c, t, f, y, rh);
                 }
                 if let Some(photo) = lib.artist_photos.get(&ar.name) {
                     // A photo stands where the cover stack would, centred in its width.
@@ -2768,7 +2791,7 @@ pub fn render(
                 );
                 stroke_rect(c, 414, cy - 20, 40, 40, t.line, 1);
                 icons::shuffle(c, 434.0, cy as f32, 15.0, t.dim);
-                hline(c, y + rh, t.line);
+                row_rule(c, t, y + rh);
                 y += rh;
             }
             c.clear_clip();
@@ -2838,7 +2861,7 @@ pub fn render(
                 let now = idx == current;
                 let cy = y + rh / 2;
                 if now {
-                    fill_rect(c, 0, y, W as i32, rh, t.row_sel);
+                    sel_mark(c, t, f, y, rh);
                 }
                 if pl.smart {
                     // SMART rows lead with the diamond in the accent (handoff 5g) instead of a
@@ -2861,7 +2884,8 @@ pub fn render(
                 // An EDITED tag (handoff 5g) sits before the chevron on a list changed on the
                 // player, and the name gives way to it.
                 let tag_w = if pl.edited {
-                    let tst = sty(
+                    let tst = lib_sty(
+                        t,
                         Family::Mono,
                         Weight::Regular,
                         crate::scale::CAPTION,
@@ -2909,7 +2933,7 @@ pub fn render(
                     &sst,
                 );
                 icons::chevron(c, 456.0, cy as f32, 14.0, t.faint);
-                hline(c, y + rh, t.line);
+                row_rule(c, t, y + rh);
                 y += rh;
             }
             c.clear_clip();
@@ -2958,7 +2982,7 @@ pub fn album_view(
         50.0,
         66.0,
         crate::i18n::text("ALBUM"),
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2),
+        &lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.faint, 0.2),
     );
     // THE RIGHT SLOT: the album's rating, when any of its tracks is rated. A readout, not a
     // control — it is the mean of the track ratings, which are set on Track information — so it
@@ -2967,7 +2991,8 @@ pub fn album_view(
     let mut rating_x = RATING_SLOT_X;
     if delete {
         // The same words and style as `chrome::header_action`, so `header_action_hit` is its target.
-        let st = sty(
+        let st = lib_sty(
+            t,
             Family::Mono,
             Weight::Regular,
             crate::scale::CAPTION,
@@ -2992,8 +3017,8 @@ pub fn album_view(
     // A title too long for one line gets two, a size smaller, and the lines under it move down
     // (it was cut after about 20 characters, and Big view made that most album names).
     let room = (W as f32) - 150.0;
-    let tst = sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01);
-    let st2 = sty(Family::Sans, Weight::ExtraBold, 20.0, t.ink, -0.01);
+    let tst = lib_sty(t, Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01);
+    let st2 = lib_sty(t, Family::Sans, Weight::ExtraBold, 20.0, t.ink, -0.01);
     let artist_y = if text::measure(f, &album.name, &tst) <= room {
         text::draw(c, f, 132.0, 110.0, &album.name, &tst);
         134.0
@@ -3006,7 +3031,7 @@ pub fn album_view(
     };
     // Fitted like the title above it. It was drawn raw, and a long artist credit (an orchestra and
     // its conductor, a "feat." list) ran off the panel (`tests/ui_overflow.rs`, hostile library).
-    let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
+    let ast = lib_sty(t, Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
     text::draw(
         c,
         f,
@@ -3036,7 +3061,7 @@ pub fn album_view(
     if let Some(secs) = total {
         meta = format!("{} · {}", meta, fmt_total(secs).to_uppercase());
     }
-    let mst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
+    let mst = lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
     text::draw(
         c,
         f,
@@ -3082,7 +3107,7 @@ pub fn album_view(
             swipe_reveal(c, t, f, y, rh, dx, SwipeIntent::Queue);
         }
         if now {
-            fill_rect(c, 0, y, W as i32, rh, t.row_sel);
+            sel_mark(c, t, f, y, rh);
         }
         // track number
         let num = format!("{}", idx + 1);
@@ -3092,7 +3117,8 @@ pub fn album_view(
             28.0,
             (cy + 4) as f32,
             &num,
-            &sty(
+            &lib_sty(
+                t,
                 Family::Mono,
                 Weight::Regular,
                 13.0,
@@ -3111,7 +3137,7 @@ pub fn album_view(
             &tst,
         );
         if now {
-            tiny_bars(c, 386, cy, t.acc);
+            playing_mark(c, t, 386, cy);
         }
         right(
             c,
@@ -3119,9 +3145,9 @@ pub fn album_view(
             452.0,
             (cy + 4) as f32,
             dur,
-            &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0),
+            &lib_sty(t, Family::Mono, Weight::Regular, 13.0, t.faint, 0.0),
         );
-        hline(c, y + rh, t.line);
+        row_rule(c, t, y + rh);
         if sw.is_some() {
             c.clear_offset_x();
         }
@@ -3427,10 +3453,10 @@ pub fn artist_view(
         50.0,
         66.0,
         crate::i18n::text("ARTIST"),
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2),
+        &lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.faint, 0.2),
     );
 
-    let nst = sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
+    let nst = lib_sty(t, Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
     let name = crate::widgets::fit(f, page.name, &nst, W as f32 - 44.0);
     text::draw(c, f, 22.0, 104.0, &name, &nst);
     let stats = format!(
@@ -3445,7 +3471,7 @@ pub fn artist_view(
         22.0,
         126.0,
         &stats,
-        &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1),
+        &lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.dim, 0.1),
     );
     band_in(
         c,
@@ -3481,11 +3507,11 @@ pub fn artist_view(
                     22.0,
                     (y + 24) as f32,
                     &crate::ui_format!("ALBUMS · {}", page.albums.len()),
-                    &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+                    &lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
                 );
             }
             ArtistRowKind::SongsSection => {
-                let cap = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18);
+                let cap = lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.faint, 0.18);
                 text::draw(
                     c,
                     f,
@@ -3501,7 +3527,7 @@ pub fn artist_view(
                     } else {
                         crate::i18n::text("SHOW ALL")
                     };
-                    let act = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18);
+                    let act = lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.acc, 0.18);
                     let w = text::measure(f, word, &act);
                     text::draw(c, f, W as f32 - 22.0 - w, (y + 30) as f32, word, &act);
                 }
@@ -3513,7 +3539,7 @@ pub fn artist_view(
                     22.0,
                     (y + 24) as f32,
                     crate::i18n::text("MOST PLAYED"),
-                    &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
+                    &lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
                 );
             }
             ArtistRowKind::Top(i) => {
@@ -3556,9 +3582,9 @@ pub fn artist_view(
                     452.0,
                     (cy + 4) as f32,
                     &n,
-                    &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06),
+                    &lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.faint, 0.06),
                 );
-                hline(c, y + ARTIST_TRACK_RH(), t.line);
+                row_rule(c, t, y + ARTIST_TRACK_RH());
                 if sw.is_some() {
                     c.clear_offset_x();
                 }
@@ -3614,7 +3640,7 @@ pub fn artist_view(
                     crate::kit::stars(c, t, 436 - 5 * 14, cy + 11, 12, 14, r, false);
                 }
                 icons::chevron(c, 452.0, cy as f32, 13.0, t.faint);
-                hline(c, y + ARTIST_ALBUM_RH(), t.line);
+                row_rule(c, t, y + ARTIST_ALBUM_RH());
                 if sw.is_some() {
                     c.clear_offset_x();
                 }
@@ -3631,7 +3657,7 @@ pub fn artist_view(
                     swipe_reveal(c, t, f, y, ARTIST_TRACK_RH(), dx, SwipeIntent::Queue);
                 }
                 if now {
-                    fill_rect(c, 0, y, W as i32, ARTIST_TRACK_RH(), t.row_sel);
+                    sel_mark(c, t, f, y, ARTIST_TRACK_RH());
                 }
                 text::draw(
                     c,
@@ -3639,7 +3665,8 @@ pub fn artist_view(
                     26.0,
                     (cy + 4) as f32,
                     &format!("{}", i + 1),
-                    &sty(
+                    &lib_sty(
+                        t,
                         Family::Mono,
                         Weight::Regular,
                         12.0,
@@ -3672,9 +3699,9 @@ pub fn artist_view(
                     452.0,
                     (cy + 4) as f32,
                     &sgn.dur,
-                    &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
+                    &lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
                 );
-                hline(c, y + ARTIST_TRACK_RH(), t.line);
+                row_rule(c, t, y + ARTIST_TRACK_RH());
                 if sw.is_some() {
                     c.clear_offset_x();
                 }
@@ -3780,8 +3807,8 @@ fn playlist_band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
     fill_rect(c, sx, py + 10, 1, ph - 20, t.acc_ink);
 
     let cy = py + ph / 2;
-    let lst = sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0);
-    let sst = sty(Family::Mono, Weight::Regular, 11.0, t.acc_ink, 0.06);
+    let lst = lib_sty(t, Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0);
+    let sst = lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.acc_ink, 0.06);
     // PLAY half: the play glyph leads, the way the album page's band does.
     icons::play(c, (px + 20) as f32, cy as f32, 18.0, t.acc_ink);
     let lw = (pw - 52) as f32;
@@ -3866,8 +3893,8 @@ fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet, hide: i32) {
     // A `+` drawn from two bars — `icons` has no plus.
     fill_rect(c, 44, cy - 1, 22, 2, t.acc);
     fill_rect(c, 54, cy - 11, 2, 22, t.acc);
-    let lst = sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc, 0.04);
-    let sst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.14);
+    let lst = lib_sty(t, Family::Sans, Weight::ExtraBold, 19.0, t.acc, 0.04);
+    let sst = lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.faint, 0.14);
     let lw = (NEW_SPLIT_X - 92) as f32;
     text::draw(
         c,
@@ -3974,7 +4001,7 @@ pub fn playlist_view(
         50.0,
         66.0,
         eyebrow,
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2),
+        &lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.faint, 0.2),
     );
     // EDIT in the right slot, in the accent because it is an action (spec 2.1). On a list Cinder
     // owns it opens the member editor (5b); on a smart one, its rules (5c). Sony's get none.
@@ -3985,7 +4012,8 @@ pub fn playlist_view(
             458.0,
             66.0,
             crate::i18n::text("EDIT"),
-            &sty(
+            &lib_sty(
+                t,
                 Family::Mono,
                 Weight::Regular,
                 crate::scale::CAPTION,
@@ -4006,7 +4034,7 @@ pub fn playlist_view(
         }
     }
     let text_x = (PLAYLIST_COVER.0 + PLAYLIST_COVER.2 + 14) as f32;
-    let nst = sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
+    let nst = lib_sty(t, Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
     let name = crate::widgets::fit(f, &pl.name, &nst, W as f32 - text_x - 22.0);
     text::draw(c, f, text_x, 104.0, &name, &nst);
     // The DB's own count, not the resolved length: a member whose file is gone still counts in
@@ -4023,7 +4051,7 @@ pub fn playlist_view(
     } else {
         crate::ui_format!("{} OF {} TRACKS AVAILABLE", pl.track_list.len(), pl.tracks)
     };
-    let stst = sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1);
+    let stst = lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.dim, 0.1);
     text::draw(
         c,
         f,
@@ -4044,7 +4072,7 @@ pub fn playlist_view(
                 (bx + bw / 2) as f32,
                 (by + bh / 2 + 6) as f32,
                 label,
-                &sty(Family::Sans, Weight::SemiBold, 15.0, t.acc, 0.04),
+                &lib_sty(t, Family::Sans, Weight::SemiBold, 15.0, t.acc, 0.04),
             );
         }
     }
@@ -4052,14 +4080,15 @@ pub fn playlist_view(
     let top = playlist_content_top(pl);
     c.set_clip_y(top, LIST_BOTTOM);
     if pl.track_list.is_empty() {
-        let st = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
+        let st = lib_sty(t, Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
         text::draw(
             c,
             f,
             22.0,
             (top + 40) as f32,
             crate::i18n::text("Nothing in this playlist."),
-            &sty(
+            &lib_sty(
+                t,
                 Family::Sans,
                 Weight::SemiBold,
                 crate::scale::ROW,
@@ -4094,7 +4123,7 @@ pub fn playlist_view(
             swipe_reveal(c, t, f, y, PLAYLIST_TRACK_RH(), dx, SwipeIntent::Queue);
         }
         if now {
-            fill_rect(c, 0, y, W as i32, PLAYLIST_TRACK_RH(), t.row_sel);
+            sel_mark(c, t, f, y, PLAYLIST_TRACK_RH());
         }
         if i > 0 && sw.is_none() && pl.glued.get(i).copied().unwrap_or(false) {
             crate::playlist_edit::glue_bracket(c, t, y, PLAYLIST_TRACK_RH());
@@ -4105,7 +4134,8 @@ pub fn playlist_view(
             26.0,
             (cy + 4) as f32,
             &format!("{}", i + 1),
-            &sty(
+            &lib_sty(
+                t,
                 Family::Mono,
                 Weight::Regular,
                 12.0,
@@ -4150,9 +4180,9 @@ pub fn playlist_view(
             452.0,
             (cy + 4) as f32,
             &sgn.dur,
-            &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
+            &lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
         );
-        hline(c, y + PLAYLIST_TRACK_RH(), t.line);
+        row_rule(c, t, y + PLAYLIST_TRACK_RH());
         if sw.is_some() {
             c.clear_offset_x();
         }
@@ -5422,7 +5452,7 @@ pub fn genre_render(
             }
         };
         if on {
-            fill_rect(c, 0, y, W as i32, GENRE_RH(), t.row_sel);
+            sel_mark(c, t, f, y, GENRE_RH());
             fill_rect(c, 0, y, 4, GENRE_RH(), t.acc);
         }
         let cy = y + GENRE_RH() / 2;
@@ -5441,7 +5471,7 @@ pub fn genre_render(
             &crate::widgets::fit(f, &name, &ns, 320.0),
             &ns,
         );
-        let cs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06);
+        let cs = lib_sty(t, Family::Mono, Weight::Regular, 12.0, t.faint, 0.06);
         let cl = format!("{count}");
         let w = text::measure(f, &cl, &cs);
         text::draw(c, f, 452.0 - w, (cy + 5) as f32, &cl, &cs);

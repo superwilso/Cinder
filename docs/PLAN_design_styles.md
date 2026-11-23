@@ -58,10 +58,12 @@ screen in every style. How to add a style: [`STYLES.md`](STYLES.md). Next is ste
 
 ## Step 6 in detail: the Library (researched 11-22)
 
-**Built 11-23, the light half:** `lib_type`, `lib_tabs`, `lib_band` and `lib_side_button`, with
+**Built 11-23:** `lib_type` (every list text: rows, group headings, grid captions, the A–Z rail, the
+empty state), `lib_tabs`, `lib_band`, `lib_side_button`, `lib_sel`, `lib_rule`, `lib_playing`, with
 Cinder's drawing as the defaults (every Cinder preview unmoved) and Nocturne and Terminal dressed.
-Still to come from the table below: `lib_row` (the playing mark and rules), `lib_group`, `lib_tile`,
-`lib_rail`, `lib_empty`, and a fling measured per style on the player.
+Narrow hooks at the existing draw sites instead of the `lib_row` refactor below: the same reach, no
+moved code. Host bench, Songs list per frame: Cinder 288 µs, Nocturne 198, Terminal 238 (Terminal's
+row rules are dashes, 64 fills). Left: a fling measured per style on the player (`devctl.sh stalls`).
 
 The Library already draws through a handful of helpers in `player/cinder-ui/src/library.rs`, so it
 can follow the kit's pattern: each helper becomes a `Look` method with Cinder's drawing as its

@@ -11,10 +11,20 @@ name: payload
 # release.yml calls this on every tag and ships what it builds (cinder-payload.tar.gz in the
 # artifact `cinder-payload-ci`); the run fails, and so does the release, unless all of it matches.
 # Run it by hand to check a tree before cutting a release.
+#
+# On a pull request that touches the device code it runs with --build-only: the payload must still
+# build and pass the ARM checks, but it is new, so it is not compared with the release manifest.
 
 on:
   workflow_dispatch:
   workflow_call:
+  pull_request:
+    paths:
+      - "cinder-home/src/**"
+      - "cinder-home/build.sh"
+      - "cinder-home/tools/**"
+      - "player/cinder-ffi/**"
+      - "tools/ci_build_payload.sh"
 
 permissions:
   contents: read
@@ -69,7 +79,7 @@ jobs:
       - name: Build and compare
         id: build
         working-directory: /home/sony/sony
-        run: bash tools/ci_build_payload.sh
+        run: bash tools/ci_build_payload.sh ${{ github.event_name == 'pull_request' && '--build-only' || '' }}
 
       - name: Keep the payload
         if: always()

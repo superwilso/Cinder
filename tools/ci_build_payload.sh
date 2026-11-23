@@ -4,6 +4,9 @@
 #
 #   tools/ci_build_payload.sh            set up, build both channels, pack the .UPGs, compare
 #   tools/ci_build_payload.sh --setup    only install the toolchains (for a cache step)
+#   tools/ci_build_payload.sh --build-only   everything but the comparison: for a pull request,
+#                                        whose payload is new by definition, so the manifest
+#                                        (the last release's) can never match it
 #
 # WHERE IT MUST RUN. The payload carries absolute paths: Rust's panic locations name the cargo
 # registry and the toolchain's rust-src, and the Wi-Fi builds name their work folders. A build
@@ -20,6 +23,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
 SETUP_ONLY=; [ "${1:-}" = --setup ] && SETUP_ONLY=1
+BUILD_ONLY=; [ "${1:-}" = --build-only ] && BUILD_ONLY=1
 step() { echo; echo "── $* ──"; }
 [ "$REPO" = /home/sony/sony ] && [ "$HOME" = /home/sony ] \
     || echo "WARN: not at /home/sony/sony with HOME=/home/sony — the build will not match the manifest byte for byte"
@@ -129,5 +133,9 @@ done
 bash tools/check_arm_payload.sh cinder-home/dist/dev
 
 # ── 4. the comparison ─────────────────────────────────────────────────────────────────────────
+if [ -n "$BUILD_ONLY" ]; then
+    echo "build-only: payload built and checked for ARM; no comparison with the release manifest"
+    exit 0
+fi
 step "compare with PAYLOAD.sha256"
 bash tools/verify_payload_manifest.sh --with-dev

@@ -114,6 +114,20 @@ pub trait Look: Sync {
     fn lib_type(&self, fam: Family, w: Weight) -> (Family, Weight) {
         (fam, w)
     }
+    /// The chosen (playing or cursor) row's mark across `y..y + h`. Cinder: a wash.
+    fn lib_sel(&self, c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32) {
+        let _ = f;
+        crate::widgets::fill_rect(c, 0, y, crate::canvas::W as i32, h, t.row_sel)
+    }
+    /// The rule under a list row, at `y`. Drawn once per row while a list flings: keep it to a few
+    /// fills (a dotted line is 240).
+    fn lib_rule(&self, c: &mut Canvas, t: &Theme, y: i32) {
+        crate::widgets::hline(c, y, t.line)
+    }
+    /// The playing row's mark, centred on `(x, cy)`. Cinder: three small bars.
+    fn lib_playing(&self, c: &mut Canvas, t: &Theme, x: i32, cy: i32) {
+        crate::library::tiny_bars(c, x, cy, t.acc)
+    }
     /// The tab strip at `y0`: each tab's `(x, measured width, label, active)`, labels `size` px.
     /// Returns the y of its bottom rule, `y0 + 34`.
     fn lib_tabs(

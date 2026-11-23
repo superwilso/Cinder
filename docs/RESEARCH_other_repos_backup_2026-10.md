@@ -19,6 +19,16 @@ unless the licence below says otherwise and the file is credited.
 | [`unknown321/nw-installer`](https://github.com/unknown321/nw-installer) | GPLv3 with the Commons Clause (its LICENSE applies the Commons Clause to GPLv3, as wbrt's does) | README: "Generic service installer for Walkman NW-A50Series". Packs your files and a `run.sh` into `userdata.tar.gz` and builds `.UPG` installers with `make` and Docker, plus a Windows installer target. Overlaps what `cinder-installer` does; read for facts, not code. |
 | Head-Fi [custom firmware thread](https://head-fi.org/threads/sony-walkman-custom-firmware-non-android.943661/page-545) | n/a | **Not verified.** The page returned a Head-Fi security checkpoint when fetched, so its contents were not read. A web search snippet suggested users post A50 findings there. Check it by hand before relying on it. |
 
+### Added 2026-11-23 (from each README; nothing run)
+
+| Repo | Licence | What it gives Cinder |
+|---|---|---|
+| [`farukuruc/Patchman`](https://github.com/farukuruc/Patchman) | None stated (all rights reserved by default) | Patches Sony's own UI on Walkman One 3.02 for the NW-A55. Features: album length and a Play button on album pages, time left in the play queue (blank rather than wrong when a length is missing), artist photos from `ARTIST-PHOTOS/<Album Artist>.jpg` (percent-escaped names, JPEG over PNG, cropped square), album years and four album orders inside an artist, an Equalizer APO PEQ, a cassette screen on HOLD, an "Audio Path" page. **Facts only.** Cinder took the ideas for the album length, the queue time, and artist photos (read from its folder too). |
+| [`RedHatOnTop/walkman-a55`](https://github.com/RedHatOnTop/walkman-a55) | GPL-3.0 (kernel modules GPL-2.0) | Android 5.1 (LineageOS 12.1 userland) in a container beside Walkman OS, chosen by a boot picker run from Sony's `bootswitcher.sh` hook; Sony's kernel untouched; Mali r4p0 and the MT8590 Wi-Fi on backports 3.17 as modules from Sony's GPL tree, and a guard for the stock kernel's swap bug (the zram bug Cinder also found). Alpha, one player. Nothing to take; a cross-check of the kernel facts. |
+| [`0Re0-8192/a55droid`](https://github.com/0Re0-8192/a55droid) | None stated | Experimental AOSP 5.1.1 booted once from recovery; display, touch, keys, ADB, Wi-Fi proof of concept; Bluetooth not yet. Nothing to take. |
+| [`unlimish/rockbox-nwa30`](https://github.com/unlimish/rockbox-nwa30) | GPLv2 (a Rockbox fork) | Unofficial Rockbox on the NW-A30 (MT8127, same CXD3778GF codec family). Facts it states: `hw:0,1` is the FM path (44.1 kHz S16 only), master volume is an index into a four-register table, the A-series amp is fixed high-gain, `icx_pm_helper`'s boot-reason flags are world-readable. All already known to Cinder. Bluetooth is left to stock. |
+| [`RedHatOnTop/walkman-manager`](https://github.com/RedHatOnTop/walkman-manager) | GPL-3.0 | Linux desktop manager: live player state over adb, music both ways, SensMe through Sony's own Music Center under Wine, and installing walkman-a55. Overlaps Flint; nothing to take. |
+
 ## Staying clean of wbrt
 
 wbrt is GPLv3 with the Commons Clause. Cinder is PolyForm Noncommercial, so none of wbrt's code,

@@ -147,6 +147,12 @@ struct Framebuffer {
     opened: std::time::Instant,
     /// Cleared to force the next blit to write every row regardless of the shadow.
     shadow_valid: bool,
+    /// The last blit rewrote most of the screen (a fling, a transition): the next one writes page 0
+    /// only. See `blit`, "WHILE A LIST MOVES".
+    moving: bool,
+    /// Pages 1.. are behind page 0 and are brought up to date from the shadow when the screen goes
+    /// still.
+    others_stale: bool,
     /// One-shot efficiency sample, so the win is a measured number in the log rather than a claim.
     stat_frames: u32,
     stat_rows: u64,
@@ -244,6 +250,8 @@ impl Framebuffer {
             last_full: std::time::Instant::now(),
             opened: std::time::Instant::now(),
             shadow_valid: true,
+            moving: false,
+            others_stale: false,
             stat_frames: 0,
             stat_rows: 0,
             stat_done: false,
@@ -299,6 +307,16 @@ impl Framebuffer {
         // bounds the worst case at half a compare on top of the write it was always doing.
         let mut compare = !force_full;
         let mut wrote = 0usize;
+        // WHILE A LIST MOVES, PAGE 0 ONLY. `flip` pins the pan to page 0, so after the opening
+        // window pages 1 and 2 are insurance for whoever else pans (the boot animation), not what
+        // the panel shows. Writing all three costs ~5 ms of a ~16 ms fling frame; page 0 alone is
+        // a third of it. The other pages are caught up from the shadow on the first frame that is
+        // not moving, so they are never behind for longer than the fling itself.
+        let pages_now = if self.moving && !force_full {
+            1
+        } else {
+            self.pages
+        };
         #[cfg(feature = "dev")]
         let t_copy = std::time::Instant::now();
 
@@ -320,7 +338,7 @@ impl Framebuffer {
             // row fits exactly, but if a unit ever reports a geometry where `pages*H` overruns
             // `yres_virtual`, an unchecked offset would write off the end of the mmap. An
             // out-of-range row is skipped rather than written — worst case a clipped frame.
-            for page in 0..self.pages {
+            for page in 0..pages_now {
                 let dst_row = (page * H + y) * self.stride;
                 if dst_row + copy_bytes > self.map_len {
                     break;
@@ -339,6 +357,34 @@ impl Framebuffer {
         if force_full {
             self.shadow_valid = true;
             self.last_full = std::time::Instant::now();
+        }
+        // A frame that wrote every page wrote only its CHANGED rows there, so only a forced full
+        // write (every row, every page) or the catch-up below makes the other pages current.
+        if pages_now < self.pages {
+            self.others_stale = true;
+        } else if force_full {
+            self.others_stale = false;
+        }
+        self.moving = wrote * 2 > H;
+        // Still again, with pages behind: copy the shadow (what page 0 holds) into them. They are
+        // not on the panel, so this needs no flip.
+        if self.others_stale && !self.moving {
+            self.others_stale = false;
+            for page in 1..self.pages {
+                for y in 0..H {
+                    let dst_row = (page * H + y) * self.stride;
+                    if dst_row + copy_bytes > self.map_len {
+                        break;
+                    }
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            self.shadow.as_ptr().add(y * W) as *const u8,
+                            base.add(dst_row),
+                            copy_bytes,
+                        );
+                    }
+                }
+            }
         }
 
         // Report the actual ratio once, then never again. Only frames that took the partial path
@@ -371,7 +417,7 @@ impl Framebuffer {
             scroll_timing::blit(
                 t_flip.duration_since(t_copy).as_micros() as u64,
                 t_flip.elapsed().as_micros() as u64,
-                self.pages,
+                pages_now,
             );
         }
     }

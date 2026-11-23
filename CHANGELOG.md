@@ -23,8 +23,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Styles now dress the settings screens and the Library too.** Nocturne (and Clock) and Terminal
   (and Cassette and Winamp) restyle the rows, section labels, choice chips, switches, the main
   button, the header and the Now Playing bar, not only Now Playing; in the Library, the list type,
-  the tabs and the shuffle/Play bands (album, artist and playlist pages too). Every tap target
-  stays where it was.
+  the tabs, the shuffle/Play bands, the chosen and playing marks and the rules between rows (album,
+  artist and playlist pages too). Every tap target stays where it was.
   Making your own style is one file now: see `docs/STYLES.md`. *Host-tested (previews, and every
   screen in every style at every text size); device-unverified.*
 
@@ -75,6 +75,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **The first screen appears sooner still.** The player's fonts are now read in the background,
   and the first screen waits only for the ones it shows: the renderer is ready in about 50 ms
   instead of 800 ms, and the first frame arrives 0.5–0.9 s after Cinder starts.
+
+- **Lists scroll with less work per frame:** while a list moves, only the page the screen shows is
+  written (about 3 ms less per frame); the other two catch up when it stops. *Host-built;
+  device-unverified.*
 
 ### Fixed
 

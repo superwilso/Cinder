@@ -28,14 +28,21 @@ drawing as its default, so a style overrides only what it redesigns.
 | `np_bar` | The Now Playing bar at the foot of browsing screens | Library, Settings, everything with the bar |
 | `lib_type` | The (family, weight) of the Library's list text; the size stays | Songs, Albums, Artists, Playlists, album/artist/playlist pages |
 | `lib_tabs` | The Library's tab strip | The Library |
+| `lib_sel`, `lib_rule`, `lib_playing` | A list row's chosen mark, the rule under it, the playing mark | Every Library list and page |
 | `lib_band`, `lib_side_button` | The shuffle or Play band, and the square button beside it | The Library, album, artist and playlist pages |
 
-What stays the same in every style: the status bar, the Library's covers, grid tiles, A–Z rail and
-row rules, and screens that draw their own controls (Sound's A/B switch and paths, for example).
+What stays the same in every style: the status bar, the Library's covers and scrollbar, and screens
+that draw their own controls (Sound's A/B switch and paths, for example). The Library's grid
+captions, group headings, A–Z rail and empty state follow `lib_type`.
 
 The Library is the screen that scrolls, so its hooks are cheap by rule: `lib_type` is a lookup per
 row, and nothing a style draws in the Library may cost more per row than Cinder's own drawing (no
-dotted rules between rows: a dotted line is 240 single-pixel fills).
+dotted rules between rows: a dotted line is 240 single-pixel fills). `render_bench` times the Songs
+list in every style:
+
+```sh
+cargo test -p cinder-ui --release --test render_bench -- --ignored --nocapture
+```
 
 ## The one rule: draw inside the boxes
 

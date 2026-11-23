@@ -335,6 +335,15 @@ impl crate::style::Look for Nocturne {
     fn primary_button(&self, c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str) -> i32 {
         kit_button(c, t, f, y, label)
     }
+    fn lib_sel(&self, c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32) {
+        (ROW.sel)(c, t, f, y, h)
+    }
+    fn lib_rule(&self, c: &mut Canvas, t: &Theme, y: i32) {
+        (ROW.rule)(c, t, y)
+    }
+    fn lib_playing(&self, c: &mut Canvas, t: &Theme, x: i32, cy: i32) {
+        ring(c, x, cy, 8, t.acc, true);
+    }
     fn lib_type(&self, fam: Family, w: Weight) -> (Family, Weight) {
         (
             fam,

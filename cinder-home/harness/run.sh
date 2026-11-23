@@ -100,6 +100,7 @@ else
 fi
 
 fails=0
+failed=""
 for s in $scenarios; do
     # Each scenario boots the app, and main.cpp's bring-up is one-shot static state — so each
     # scenario gets its own process, not just its own reset.
@@ -109,12 +110,15 @@ for s in $scenarios; do
     timeout 120 "$OUT/harness" "$s" || {
         [ $? -eq 124 ] && echo "$s: FAILED"   # timed out; the harness names its own failures
         fails=$((fails + 1))
+        failed="$failed $s"
     }
     echo
 done
 
 if [ "$fails" -ne 0 ]; then
-    echo "harness: $fails scenario(s) FAILED"
+    # Named here too: CI keeps the log's tail, and an unnamed failure that will not reproduce
+    # (11-23, once in a full ci_checks run) cannot be chased.
+    echo "harness: $fails scenario(s) FAILED:$failed"
     exit 1
 fi
 echo "harness: all scenarios passed"

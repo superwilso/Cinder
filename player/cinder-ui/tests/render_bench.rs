@@ -236,6 +236,32 @@ fn bench_library_tabs() {
             )
         });
     }
+    // Per style: a style's rows must cost no more than Cinder's (docs/STYLES.md).
+    for style in cinder_ui::style::Style::ALL {
+        let ts = Theme { style, ..t };
+        time_it(
+            &format!("library songs, style {}", style.token()),
+            n,
+            || {
+                library::render(
+                    &mut c,
+                    &ts,
+                    &f,
+                    Tab::Songs,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
+            },
+        );
+    }
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Artists, "artists")] {
         time_it(&format!("az_render {name}"), n, || {
             library::az_render(
