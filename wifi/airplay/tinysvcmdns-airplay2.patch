@@ -41,3 +41,39 @@
    return 0;
  }
  
+--- a/tinysvcmdns.c
++++ b/tinysvcmdns.c
+@@ -537,11 +537,23 @@
+   struct rr_data_txt *txt_rec;
+   assert(rr_txt->type == RR_TXT);
+ 
++  // Cinder: a TXT string may be 255 bytes, not a name label's 63. create_label() returned NULL
++  // for AirPlay 2's 67-byte "pk=" key, and encoding that NULL crashed the responder on the first
++  // query (the receiver vanished from iPhones). Too long to send at all: leave it out.
++  if (txt == NULL || strlen(txt) > 255)
++    return;
++  size_t len = strlen(txt);
++  uint8_t *label = malloc(len + 2);
++  if (label == NULL)
++    die("can not allocate memory for a TXT string in tinysvcmdns.");
++  label[0] = (uint8_t)len;
++  memcpy(label + 1, txt, len + 1);
++
+   txt_rec = &rr_txt->data.TXT;
+ 
+   // is current data filled?
+   if (txt_rec->txt == NULL) {
+-    txt_rec->txt = create_label(txt);
++    txt_rec->txt = label;
+     return;
+   }
+ 
+@@ -553,7 +565,7 @@
+   txt_rec->next = malloc(sizeof(struct rr_data_txt));
+ 
+   txt_rec = txt_rec->next;
+-  txt_rec->txt = create_label(txt);
++  txt_rec->txt = label;
+   txt_rec->next = NULL;
+ }
+ 

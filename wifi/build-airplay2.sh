@@ -101,9 +101,12 @@ if [ ! -f "$W/nqptp-1.2.4/nqptp" ]; then
 fi
 
 echo "== shairport-sync 5.5.2 for AirPlay 2"
+# A changed patch means a fresh source tree (the patch only applies once).
+cmp -s "$HERE/airplay/tinysvcmdns-airplay2.patch" "$W/.tinysvcmdns.patch" || rm -rf "$W/shairport-sync-5.5.2"
 if [ ! -d "$W/shairport-sync-5.5.2" ]; then
     tar xf "$SRC/shairport-sync-5.5.2.tar.gz" -C "$W"
     ( cd "$W/shairport-sync-5.5.2" && patch -p1 < "$HERE/airplay/tinysvcmdns-airplay2.patch" )
+    cp "$HERE/airplay/tinysvcmdns-airplay2.patch" "$W/.tinysvcmdns.patch"
 fi
 # Linked against build-userland.sh's OpenSSL: built again whenever that changes version.
 # …and when the built one predates the metadata pipe (the sender's song on Now Playing, 2026-11-23).
