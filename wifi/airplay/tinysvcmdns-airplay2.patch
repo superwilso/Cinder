@@ -77,3 +77,70 @@
    txt_rec->next = NULL;
  }
  
+--- a/audio_stdout.c
++++ b/audio_stdout.c
+@@ -40,6 +40,44 @@
+ static int warned = 0;
+ static unsigned int bytes_per_frame = 0;
+ 
++// Cinder: how much audio is queued after this pipe, so AirPlay 2 can keep time. Without a delay()
++// the player never learns it is running behind until it throws audio away (heard as speed-ups).
++// Cinder, which reads the pipe, writes its own queue (frames on the jack plus any in hand) and
++// when it was true into this file; the queue drains at the output rate from then on. Missing (no
++// Cinder, or not on the jack): only what is still in the pipe counts.
++#include <stdint.h>
++#include <sys/ioctl.h>
++#include <time.h>
++struct cinder_queue {
++  uint32_t seq;   // equal to seq2 when the record is whole
++  uint32_t frames;
++  int64_t at_ns;  // CLOCK_MONOTONIC
++  uint32_t seq2;
++  uint32_t rate;
++};
++static int cinder_fd = -1;
++
++static int delay(long *the_delay) {
++  long frames = 0;
++  int in_pipe = 0;
++  if (bytes_per_frame && ioctl(fd, FIONREAD, &in_pipe) == 0 && in_pipe > 0)
++    frames += in_pipe / bytes_per_frame;
++  if (cinder_fd < 0)
++    cinder_fd = open("/tmp/cinder_airplay_queue", O_RDONLY | O_CLOEXEC);
++  struct cinder_queue q;
++  if (cinder_fd >= 0 && pread(cinder_fd, &q, sizeof q, 0) == (ssize_t)sizeof q && q.seq == q.seq2 &&
++      q.rate) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    const int64_t now = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
++    const int64_t drained = now > q.at_ns ? (now - q.at_ns) * q.rate / 1000000000 : 0;
++    if ((int64_t)q.frames > drained)
++      frames += (long)((int64_t)q.frames - drained);
++  }
++  *the_delay = frames;
++  return 0;
++}
++
+ static int play(void *buf, int samples, __attribute__((unused)) int sample_type,
+                 __attribute__((unused)) uint32_t timestamp,
+                 __attribute__((unused)) uint64_t playtime) {
+@@ -63,7 +101,9 @@
+   // get settings from settings file, passing in defaults for format_set, rate_set and channel_set
+   // Note, these options may be in the "general" stanza or the named stanza
+ #ifdef CONFIG_AIRPLAY_2
+-  parse_audio_options("stdout", (1 << SPS_FORMAT_S32_LE), (1 << SPS_RATE_48000), (1 << 2));
++  // Cinder: its reader plays stdout as 16-bit 44.1 kHz stereo, what AirPlay sends; the AirPlay 2
++  // default (32-bit 48 kHz) converted every song on the way and Cinder heard it as noise.
++  parse_audio_options("stdout", (1 << SPS_FORMAT_S16_LE), (1 << SPS_RATE_44100), (1 << 2));
+ #else
+   parse_audio_options("stdout", (1 << SPS_FORMAT_S16_LE), (1 << SPS_RATE_44100), (1 << 2));
+ #endif
+@@ -100,7 +140,7 @@
+                              .stop = NULL,
+                              .is_running = NULL,
+                              .flush = NULL,
+-                             .delay = NULL,
++                             .delay = &delay,
+                              .stats = NULL,
+                              .play = &play,
+                              .volume = NULL,

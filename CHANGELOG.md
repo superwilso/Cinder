@@ -25,7 +25,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   wakes about ten times less often. The research behind it is `analysis/RE_lowest_power_wired.md`.
   *Host-tested; device-unverified.*
 - **AirPlay shows the song.** Now Playing shows the title, artist and cover the sending phone or
-  computer names, instead of just "AirPlay". Both receivers (AirPlay and AirPlay 2) now pass the
+  computer names, instead of just "AirPlay", and the song's own time and length when the
+  sender gives them. Both receivers (AirPlay and AirPlay 2) now pass the
   sender's song details to Cinder. *Host-tested; device-unverified.*
 
 ### Fixed
@@ -37,7 +38,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   paired, asking the system for random numbers in a way the player's kernel does not offer. It
   now reads them the older way. And when the first song arrived, Cinder itself closed (the player
   went back to Sony's app) if nothing had played on the jack since it started; the audio output
-  now gets ready on its own. *Device-verified: listed on an iPhone; playing is being tested.*
+  now gets ready on its own. AirPlay 2 also converted every song to a format Cinder heard as
+  noise, and with the screen dark the jack's amplifier was switched off 30 s into a song (internet
+  radio too); both are fixed. The sender's cover no longer holds up the sound when a new song
+  starts, which was making AirPlay stutter. *Device-verified: plays from an iPhone on the jack
+  with no underruns.*
 - **"Play this now?" no longer asks once the songs you added have played.** Adding a song to Up
   Next and letting it play left the question switched on, so starting anything new asked about an
   Up Next that held only the rest of the album.

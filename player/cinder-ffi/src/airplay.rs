@@ -34,19 +34,38 @@ pub extern "C" fn cinder_set_airplay_meta(
     }
 }
 
-/// The sender's cover (JPEG or PNG bytes). Decoded here, off the render thread; a NULL or a file
-/// that will not decode clears it.
+/// Which cover is the latest: a decode that finishes after a newer cover arrived is thrown away.
+static ART_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The sender's cover (JPEG or PNG bytes), copied and decoded on a thread of its own: the caller is
+/// cinder-home's AirPlay reader, which also feeds the jack, and a big cover decoded at the
+/// screen-off clock outlasted the jack's 250 ms buffer (a glitch at every new song). A NULL or a
+/// file that will not decode clears it.
 ///
 /// # Safety
 /// `data` must point to `len` readable bytes, or be NULL.
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_airplay_art(data: *const u8, len: c_int) {
-    let img = if data.is_null() || len <= 0 {
-        None
-    } else {
-        // SAFETY: the caller guarantees `len` readable bytes at `data`.
-        crate::art_load::decode(unsafe { std::slice::from_raw_parts(data, len as usize) })
-    };
+    use std::sync::atomic::Ordering;
+    let gen = ART_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    if data.is_null() || len <= 0 {
+        store_art(gen, None);
+        return;
+    }
+    // SAFETY: the caller guarantees `len` readable bytes at `data`; copied before returning.
+    let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec();
+    let spawned = std::thread::Builder::new()
+        .name("airplay-art".into())
+        .spawn(move || store_art(gen, crate::art_load::decode(&bytes)));
+    if spawned.is_err() {
+        store_art(gen, None);
+    }
+}
+
+fn store_art(gen: u64, img: Option<cinder_ui::art::Image>) {
+    if ART_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen {
+        return; // a newer cover came in meanwhile
+    }
     *ART.lock().unwrap() = Some(img);
     if let Ok(mut g) = crate::cell().lock() {
         if let Some(r) = g.as_mut() {

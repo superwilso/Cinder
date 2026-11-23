@@ -6025,7 +6025,11 @@ fn media_tick(r: &mut Render) {
 
 /// How long the song on Now Playing is, for a drag on its bar: the speaker's during a cast.
 fn seek_length(r: &Render) -> i64 {
-    if casting(r) {
+    // A live source (radio, AirPlay, FM, …) cannot be moved from here: its bar shows the time
+    // only. Without this a drag seeked the paused library song underneath (11-23, AirPlay).
+    if r.live.is_some() {
+        0
+    } else if casting(r) {
         cast::status().dur_ms
     } else {
         r.cur_duration_ms
