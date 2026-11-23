@@ -62,7 +62,15 @@ echo "== libgpg-error 1.51 + libgcrypt 1.10.3"
 unpack libgpg-error-1.51 libgpg-error-1.51.tar.bz2
 [ -f "$P/lib/libgpg-error.a" ] || cross libgpg-error-1.51 --disable-nls --disable-doc --disable-tests --disable-languages
 unpack libgcrypt-1.10.3 libgcrypt-1.10.3.tar.bz2
-[ -f "$P/lib/libgcrypt.a" ] || cross libgcrypt-1.10.3 --with-libgpg-error-prefix="$P" --disable-doc --disable-asm
+# --enable-random=linux: the default picks getentropy(), which musl has but the player's 3.10 kernel
+# does not (no getrandom), and libgcrypt then aborts the receiver the moment an iPhone pairs. The
+# linux module falls back to /dev/urandom. A library built the old way is built again, and so is
+# the receiver that linked it.
+if [ ! -f "$P/lib/libgcrypt.a" ] || [ ! -f "$W/.gcrypt-random-linux" ]; then
+    cross libgcrypt-1.10.3 --with-libgpg-error-prefix="$P" --disable-doc --disable-asm --enable-random=linux
+    touch "$W/.gcrypt-random-linux"
+    rm -f "$W/shairport-sync-5.5.2/shairport-sync"
+fi
 
 echo "== libplist 2.6.0 (the player's, and plistutil for this machine)"
 unpack libplist-2.6.0 libplist-2.6.0.tar.bz2

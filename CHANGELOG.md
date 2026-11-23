@@ -33,7 +33,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **AirPlay 2 shows up on iPhones.** The receiver crashed a few seconds after it started
   whenever a phone or computer on the network looked for AirPlay speakers, so the player never
   appeared in the list. Its network announcement had one entry longer than the built-in
-  announcer allowed. *Device-verified: the receiver stays up; the iPhone test is open.*
+  announcer allowed. Once listed, connecting failed too: the receiver stopped the moment a phone
+  paired, asking the system for random numbers in a way the player's kernel does not offer. It
+  now reads them the older way. *Device-verified: listed on an iPhone; playing is being tested.*
 - **"Play this now?" no longer asks once the songs you added have played.** Adding a song to Up
   Next and letting it play left the question switched on, so starting anything new asked about an
   Up Next that held only the rest of the album.
