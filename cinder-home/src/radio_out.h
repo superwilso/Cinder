@@ -12,6 +12,7 @@ struct RadioOut {
     double pos = 0;               // resampler: position in the source, for Bluetooth's 44.1 kHz
     short last[2] = { 0, 0 };
     std::vector<short> tmp;
+    const char* dev = "";         // the ALSA device it opened
 };
 
 static bool radio_out_open(RadioOut& o, unsigned src_rate, bool bt) {
@@ -32,6 +33,7 @@ static bool radio_out_open(RadioOut& o, unsigned src_rate, bool bt) {
             if (g_alsa.open(&o.pcm, d, /*PLAYBACK*/0, 0) < 0) { o.pcm = nullptr; continue; }
             if (g_alsa.set_params(o.pcm, /*S16_LE*/2, /*RW_INTERLEAVED*/3, 2, rate, 1, 250000) >= 0) {
                 o.rate = rate;
+                o.dev = d;
                 return true;
             }
             g_alsa.close(o.pcm);

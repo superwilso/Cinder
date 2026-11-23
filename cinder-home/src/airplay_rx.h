@@ -41,21 +41,46 @@ static std::string g_ap_note_sent = "-";
 // audio. A build without metadata refuses the options, so they are passed only to one that has them.
 static const char* const AP_META = "/tmp/cinder_airplay_meta";
 static int g_ap_meta_fd = -1;
+// ITS OWN OUTPUT ON THE JACK (11-23). Through the stdout pipe, AirPlay 2's clock could only see
+// Cinder's estimate of what was queued after the pipe, and every estimate error past 50 ms was a
+// resync (a stutter). An AirPlay 2 build with ALSA plays to hw:0,4 itself and keeps time from the
+// card's own delay: on the jack it runs `-o alsa` with the config below, and Cinder learns that it
+// is playing from the metadata pipe (`pbeg`/`pres`/`prsm` .. `paus`/`pend`, airplay_meta.h). On
+// Bluetooth it keeps the stdout pipe into Cinder's bridge. The output cannot be taken from it, so
+// handing the jack to something else stops the receiver (the sender's session ends, as Play does)
+// and starts it again 2 s later. The low-power ring needs Cinder's own sizes (shairport-sync's
+// default 11.9 s buffer never moved), and the card's position moves in 46 ms steps, so the drift
+// tolerance is half of one (at 2 ms it corrected all the time, heard as crackle).
+static const char* const AP_ALSA_CONF = "/tmp/cinder_alsa.conf";
+static const char* const AP_SPS_CONF = "/tmp/cinder_shairport.conf";
+static const char kApAlsaConf[] =
+    "pcm.hw {\n\t@args [ CARD DEV SUBDEV ]\n\t@args.CARD { type string default 0 }\n"
+    "\t@args.DEV { type integer default 0 }\n\t@args.SUBDEV { type integer default -1 }\n"
+    "\ttype hw\n\tcard $CARD\n\tdevice $DEV\n\tsubdevice $SUBDEV\n}\n"
+    "ctl.hw {\n\t@args [ CARD ]\n\t@args.CARD { type string default 0 }\n\ttype hw\n\tcard $CARD\n}\n";
+static const char kApSpsConf[] =
+    "general = {\n\tdrift_tolerance_in_seconds = 0.025;\n};\n"
+    "alsa = {\n\toutput_device = \"hw:0,4\";\n\toutput_rate = 44100;\n\toutput_format = \"S16_LE\";\n"
+    "\tperiod_size = 1378;\n\tbuffer_size = 11025;\n\tuse_mmap_if_available = \"no\";\n};\n";
+static volatile sig_atomic_t g_ap_direct = 0;    // this receiver plays to the jack itself
+static volatile sig_atomic_t g_ap_playing = 0;   // its sender says it is playing (metadata)
+static int g_ap_has_alsa = -1;                   // the AirPlay 2 build has ALSA: -1 not asked yet
 
-// Does this receiver binary take the metadata options? Read once per start: the strings are in it.
-static bool airplay_has_metadata(const char* bin) {
+// Is `what` in this receiver binary (an option it takes, an output it has)? Its strings are in it.
+static bool airplay_bin_has(const char* bin, const char* what) {
     int fd = ::open(bin, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return false;
-    static const char kOpt[] = "metadata-pipename";
-    char buf[65536 + sizeof kOpt];
+    const size_t len = strlen(what);
+    char buf[65536 + 64];
+    if (len >= 64) { ::close(fd); return false; }
     size_t keep = 0;
     bool found = false;
     for (;;) {
         ssize_t n = ::read(fd, buf + keep, sizeof buf - keep);
         if (n <= 0) break;
         size_t have = keep + (size_t)n;
-        if (memmem(buf, have, kOpt, sizeof kOpt - 1)) { found = true; break; }
-        keep = std::min(have, sizeof kOpt - 1);
+        if (memmem(buf, have, what, len)) { found = true; break; }
+        keep = std::min(have, len);
         std::memmove(buf, buf + have - keep, keep);
     }
     ::close(fd);
@@ -79,6 +104,10 @@ static void airplay_meta_read(apmeta::Parser& parser, apmeta::Song& song) {
             if (changed & apmeta::PICTURE)
                 cinder_set_airplay_art((const unsigned char*)song.pict.data(), (int)song.pict.size());
             if (changed & apmeta::PROGRESS) cinder_set_airplay_progress(song.pos_ms, song.dur_ms);
+            if (changed & apmeta::PLAYING) {
+                g_ap_playing = song.playing;
+                if (g_ap_direct) clog_(song.playing ? "airplay: the sender is playing" : "airplay: the sender stopped");
+            }
             // With the AirPlay debug switch on, every item the sender sends, for what it does not.
             static const bool dbg = ::access("/contents/cinder_airplay_debug", F_OK) == 0;
             if (dbg) {
@@ -171,8 +200,15 @@ struct JackClock {
 // The jack's queue now, plus `in_hand` frames read but not yet written; 0 when it cannot say.
 static long airplay_jack_queue(RadioOut& out, JackClock& jc, size_t in_hand) {
     long d = 0;
-    if (out.pcm && g_alsa.delay && g_alsa.delay(out.pcm, &d) == 0) jc.observe(d);
-    return out.pcm ? jc.queue() + (long)in_hand : 0;
+    if (!out.pcm || !g_alsa.delay || g_alsa.delay(out.pcm, &d) != 0) return out.pcm ? (long)in_hand : 0;
+    // Not started yet (ALSA starts once its buffer is full): nothing is playing, so nothing may be
+    // counted as played. Counting it was a glitch at the start of every song.
+    if (g_alsa.state && g_alsa.state(out.pcm) != 3 /*SND_PCM_STATE_RUNNING*/) {
+        jc.n = 0;
+        return (d > 0 ? d : 0) + (long)in_hand;
+    }
+    jc.observe(d);
+    return jc.queue() + (long)in_hand;
 }
 
 static void* airplay_reader(void*) {
@@ -208,6 +244,15 @@ static void* airplay_reader(void*) {
         int r = ::poll(pf, g_ap_meta_fd >= 0 ? 2 : 1, 500);
         long long now = now_ms();
         if (r > 0 && g_ap_meta_fd >= 0 && (pf[1].revents & POLLIN)) airplay_meta_read(meta_parser, meta_song);
+        // Its own output: the sender's word stands for the audio arriving. The tick takes the jack
+        // for it; a yield stops the receiver (airplay_yield), as nothing else can take it back.
+        if (g_ap_direct && g_ap_playing) {
+            last_audio = now;
+            if (!g_ap_yielded) {
+                if (!g_ap_granted) g_ap_want = 1;
+                else if (!g_ap_out_open) { g_ap_out_open = 1; clog_("airplay: playing on the jack (its own output, hw:0,4)"); }
+            }
+        }
         if (r > 0 && (pf[0].revents & (POLLIN | POLLHUP))) {
             ssize_t n = ::read(g_ap_fd, buf + carry, sizeof buf - carry);
             if (n <= 0) break;                // the receiver exited
@@ -228,7 +273,14 @@ static void* airplay_reader(void*) {
             } else {
                 if (!g_ap_out_open) {
                     if (!radio_out_open(out, 44100, g_ap_bt)) { g_ap_yielded = 1; clog_("airplay: the output would not open"); }
-                    else { g_ap_out_open = 1; jack.reset(); clog_(g_ap_bt ? "airplay: playing over Bluetooth" : "airplay: playing on the jack"); }
+                    else {
+                        g_ap_out_open = 1;
+                        jack.reset();
+                        char m[96];
+                        std::snprintf(m, sizeof m, "airplay: playing %s%s", g_ap_bt ? "over Bluetooth" : "on the jack, ",
+                                      g_ap_bt ? "" : out.dev);
+                        clog_(m);
+                    }
                 }
                 if (g_ap_out_open && out.pcm) airplay_queue_publish(airplay_jack_queue(out, jack, frames));
                 const bool wrote = g_ap_out_open && radio_out_write(out, (const short*)buf, (unsigned)frames);
@@ -282,6 +334,8 @@ static void airplay_stop(const char* why) {
     g_ap_fd = -1;
     if (g_ap_meta_fd >= 0) { ::close(g_ap_meta_fd); g_ap_meta_fd = -1; ::unlink(AP_META); }
     if (g_ap_queue_fd >= 0) { ::close(g_ap_queue_fd); g_ap_queue_fd = -1; ::unlink(AP_QUEUE); }
+    g_ap_direct = 0;
+    g_ap_playing = 0;
     cinder_set_airplay_meta(nullptr, nullptr, nullptr);
     cinder_set_airplay_art(nullptr, 0);
     if (g_ap_bt) { g_ldac_run = 0; g_ldac_alive = 0; }
@@ -294,19 +348,36 @@ static void airplay_stop(const char* why) {
 
 static bool airplay_start() {
     const bool ap2 = ::access(AP2_BIN, X_OK) == 0 && ::access(AP2_NQPTP, X_OK) == 0;
-    const bool meta = airplay_has_metadata(ap2 ? AP2_BIN : AP_BIN);
+    const bool meta = airplay_bin_has(ap2 ? AP2_BIN : AP_BIN, "metadata-pipename");
+    if (g_ap_has_alsa < 0) g_ap_has_alsa = ap2 && airplay_bin_has(AP2_BIN, "alsa_device_init") ? 1 : 0;
+    // On the jack an AirPlay 2 build with ALSA plays by itself; it needs the metadata to say when.
+    const bool direct = ap2 && meta && g_ap_has_alsa == 1 && g_bt_link_last != 1;
+    if (direct) {
+        auto put = [](const char* path, const char* text) {
+            FILE* f = std::fopen(path, "w");
+            if (!f) return false;
+            const bool ok = std::fputs(text, f) >= 0;
+            return std::fclose(f) == 0 && ok;
+        };
+        if (!put(AP_ALSA_CONF, kApAlsaConf) || !put(AP_SPS_CONF, kApSpsConf)) {
+            clog_("airplay: could not write its ALSA config — playing through Cinder instead");
+            g_ap_has_alsa = 0;
+        }
+    }
+    g_ap_direct = direct && g_ap_has_alsa == 1;
     if (meta) {
         ::unlink(AP_META);
         if (::mkfifo(AP_META, 0600) == 0) g_ap_meta_fd = ::open(AP_META, O_RDWR | O_NONBLOCK | O_CLOEXEC);
         if (g_ap_meta_fd < 0) clog_("airplay: no metadata pipe — the sender's song will not be shown");
     }
-    if (g_ap_queue_fd < 0) {   // the receiver's clock reads it (see airplay_queue_publish)
+    if (!g_ap_direct && g_ap_queue_fd < 0) {   // the receiver's clock reads it (airplay_queue_publish)
         g_ap_queue_fd = ::open(AP_QUEUE, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         airplay_queue_publish(0);
     }
     static const char kMetaOpt[] = "--metadata-pipename=/tmp/cinder_airplay_meta";
     const bool use_meta = g_ap_meta_fd >= 0;
-    auto drop_meta = []() { if (g_ap_meta_fd >= 0) { ::close(g_ap_meta_fd); g_ap_meta_fd = -1; ::unlink(AP_META); } };
+    auto drop_meta = []() { if (g_ap_meta_fd >= 0) { ::close(g_ap_meta_fd); g_ap_meta_fd = -1; ::unlink(AP_META); } g_ap_direct = 0; };
+    const bool to_jack = g_ap_direct;
     int fd[2];
     if (::pipe(fd) < 0) { drop_meta(); return false; }
     pid_t p = ::fork();
@@ -322,8 +393,13 @@ static bool airplay_start() {
         else if (nul >= 0) ::dup2(nul, 2);
         for (int i = 3; i < 256; i++) if (i != nul) ::close(i);
         ::chdir("/tmp");
-        const char* argv[10] = { "shairport-sync", "-a", AP_NAME, "-o", "stdout" };
+        const char* argv[14] = { "shairport-sync", "-a", AP_NAME, "-o", to_jack ? "alsa" : "stdout" };
         int argc = 5;
+        if (to_jack) {
+            argv[argc++] = "-c";
+            argv[argc++] = AP_SPS_CONF;
+            ::setenv("ALSA_CONFIG_PATH", AP_ALSA_CONF, 1);
+        }
         if (use_meta) { argv[argc++] = "-M"; argv[argc++] = "-g"; argv[argc++] = kMetaOpt; }
         if (err >= 0) argv[argc++] = "-vv";
         argv[argc] = nullptr;
@@ -339,6 +415,7 @@ static bool airplay_start() {
             if (h > 0) ::waitpid(h, nullptr, 0);
             if (nul >= 0) ::close(nul);
             ::execv(AP2_BIN, (char* const*)argv);
+            if (to_jack) ::_exit(127);   // the AirPlay 1 build has no ALSA to fall back to
         }
         if (nul >= 0) ::close(nul);
         ::execv(AP_BIN, (char* const*)argv);
@@ -356,13 +433,21 @@ static bool airplay_start() {
     bool ok = pthread_create(&th, &at, airplay_reader, nullptr) == 0;
     pthread_attr_destroy(&at);
     if (!ok) { airplay_stop("no reader thread"); return false; }
-    clog_(ap2 ? "airplay: receiver started (AirPlay 2 build, nqptp)" : "airplay: receiver started (AirPlay 1)");
+    clog_(!ap2 ? "airplay: receiver started (AirPlay 1)"
+          : to_jack ? "airplay: receiver started (AirPlay 2 build, nqptp, its own output on the jack)"
+                    : "airplay: receiver started (AirPlay 2 build, nqptp)");
     if (use_meta) clog_("airplay: the sender's song and cover come through its metadata pipe");
     return true;
 }
 
 // Music, FM, USB-DAC and the rest want the output: AirPlay lets go until its sender goes quiet.
 static void airplay_yield() {
+    // Playing to the jack itself, it cannot be asked to let go: stop it, start it again soon.
+    if (g_ap_direct && (g_ap_granted || g_ap_out_open || g_ap_playing || g_ap_want)) {
+        airplay_stop("the output is wanted");
+        g_ap_retry_at = now_ms() + 2000;
+        return;
+    }
     if (!g_ap_granted && !g_ap_out_open) return;
     g_ap_yielded = 1;
     for (int i = 0; i < 200 && g_ap_out_open; i++) usleep(5000);
@@ -376,6 +461,17 @@ static void airplay_tick(long long now) {
         g_ap_retry_at = now + 30000;
     }
     if (!want && g_ap_pid >= 0) airplay_stop(cinder_wifi_airplay() ? "Wi-Fi is not connected" : "switched off");
+    // The route changed under it: on the jack by itself while headphones are now connected (stop it
+    // now, or the music stays on the jack), or through Cinder while the jack is free again (only
+    // when idle: Cinder's own path still plays well enough to finish the song).
+    if (g_ap_pid >= 0 && g_ap_has_alsa == 1) {
+        const bool to_jack = g_bt_link_last != 1;
+        if (g_ap_direct && !to_jack) { airplay_stop("Bluetooth connected"); g_ap_retry_at = now; }
+        else if (!g_ap_direct && to_jack && g_ap_meta_fd >= 0 && !g_ap_out_open && !g_ap_want && !g_ap_granted) {
+            airplay_stop("Bluetooth disconnected");
+            g_ap_retry_at = now;
+        }
+    }
     if (want && g_ap_pid < 0 && now >= g_ap_retry_at && ::access(AP_BIN, X_OK) == 0) {
         if (!airplay_start()) g_ap_retry_at = now + 30000;
     }
@@ -384,6 +480,10 @@ static void airplay_tick(long long now) {
         if (g_msc_active || g_rx_active || g_fm_on || bridge) {
             g_ap_yielded = 1;
             clog_("airplay: the output is in use — not playing this stream");
+            if (g_ap_direct) {   // it would play over them: stop it
+                airplay_stop("the output is in use");
+                g_ap_retry_at = now + 2000;
+            }
         } else {
             if (g_playing) {
                 set_transport(false);

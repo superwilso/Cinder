@@ -31,6 +31,10 @@ constexpr uint32_t CORE = fourcc("core"), SSNC = fourcc("ssnc");
 constexpr uint32_t MINM = fourcc("minm"), ASAR = fourcc("asar"), ASAL = fourcc("asal");
 constexpr uint32_t PICT = fourcc("PICT"), PBEG = fourcc("pbeg");
 constexpr uint32_t PRGR = fourcc("prgr"), ASTM = fourcc("astm");
+// Whether the sender is playing (shairport-sync player.c and rtsp.c): `pbeg` stream begins, `pend`
+// ends; AirPlay 2's `pres` resume and `paus` pause; `prsm` playing again after buffering.
+constexpr uint32_t PEND = fourcc("pend"), PRES = fourcc("pres"), PAUS = fourcc("paus"),
+                   PRSM = fourcc("prsm");
 
 // Standard base64; whitespace skipped. False on any other character.
 inline bool b64_decode(const char* p, size_t n, std::string& out) {
@@ -126,9 +130,10 @@ struct Song {
     std::string pict;   // the cover's bytes; empty = none
     int64_t pos_ms = -1;  // where the song is, as of the item that said so; -1 = not said
     int64_t dur_ms = 0;   // its length; 0 = not known
+    bool playing = false;  // the sender is playing (what the receiver plays to the jack itself)
 };
 
-enum : int { NAMES = 1, PICTURE = 2, PROGRESS = 4 };
+enum : int { NAMES = 1, PICTURE = 2, PROGRESS = 4, PLAYING = 8 };   // PLAYING: `playing` changed
 
 // Applies one item; says what changed (NAMES, PICTURE, both, or 0).
 inline int apply(Song& s, const Item& it) {
@@ -165,7 +170,14 @@ inline int apply(Song& s, const Item& it) {
         const int was = (s.title.empty() && s.artist.empty() && s.album.empty() ? 0 : NAMES) |
                         (s.pict.empty() ? 0 : PICTURE) | (s.pos_ms < 0 && s.dur_ms == 0 ? 0 : PROGRESS);
         s = Song{};
-        return was;
+        s.playing = true;
+        return was | PLAYING;
+    }
+    if (it.type == SSNC && (it.code == PRES || it.code == PRSM || it.code == PEND || it.code == PAUS)) {
+        const bool now = it.code == PRES || it.code == PRSM;
+        if (s.playing == now) return 0;
+        s.playing = now;
+        return PLAYING;
     }
     return 0;
 }

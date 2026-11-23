@@ -74,8 +74,9 @@ int main() {
         int last = 0;
         const std::string two = item("core", "minm", "One") + item("ssnc", "pbeg", "");
         p.feed(two.data(), two.size(), [&](const apmeta::Item& it) { last = apmeta::apply(song, it); });
-        CHECK(song.title.empty() && song.pos_ms == -1 && last == (apmeta::NAMES | apmeta::PROGRESS),
-              "a new session (pbeg) clears the names and the position, and says so");
+        CHECK(song.title.empty() && song.pos_ms == -1 && song.playing &&
+                  last == (apmeta::NAMES | apmeta::PROGRESS | apmeta::PLAYING),
+              "a new session (pbeg) clears the names and the position, starts playing, and says so");
     }
     {
         apmeta::Parser p;
@@ -104,6 +105,17 @@ int main() {
         const std::string junk = std::string("garbage<item><type>zz</type></item>\n") + item("core", "minm", "Ok");
         p.feed(junk.data(), junk.size(), [&](const apmeta::Item& it) { got += apmeta::apply(song, it); });
         CHECK(song.title == "Ok" && got == (apmeta::NAMES | apmeta::PROGRESS), "junk before an item, and a broken item, are skipped");
+    }
+    {
+        apmeta::Parser p;
+        apmeta::Song song;
+        std::string seen;
+        const std::string s = item("ssnc", "pbeg", "") + item("ssnc", "paus", "") + item("ssnc", "paus", "") +
+                              item("ssnc", "pres", "") + item("ssnc", "pend", "") + item("ssnc", "prsm", "");
+        p.feed(s.data(), s.size(), [&](const apmeta::Item& it) {
+            if (apmeta::apply(song, it) & apmeta::PLAYING) seen += song.playing ? 'P' : 's';
+        });
+        CHECK(seen == "PsPsP", "begin, pause, resume, end and resume after buffering say playing or not, once each");
     }
     {
         apmeta::Parser p;

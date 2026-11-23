@@ -2,7 +2,7 @@
 # build-airplay2.sh — the AirPlay 2 receiver, static for the player, beside build-userland.sh's
 # AirPlay 1 one:
 #
-#   out/shairport-sync-ap2   Shairport Sync 5.5.2 built --with-airplay-2 (MIT), audio to stdout,
+#   out/shairport-sync-ap2   Shairport Sync 5.5.2 built --with-airplay-2 (MIT), audio to stdout or ALSA,
 #                            mDNS by its bundled tinysvcmdns (patched to announce _airplay._tcp too:
 #                            airplay/tinysvcmdns-airplay2.patch)
 #   out/nqptp                NQPTP 1.2.4 (GPL-2.0), the PTP timing AirPlay 2 needs; it must own
@@ -10,7 +10,7 @@
 #                            and it stops being root once they are bound
 #                            (airplay/nqptp-drop-root.patch)
 #
-# Libraries, all static: libsodium (ISC), libgcrypt + libgpg-error (LGPL-2.1), libplist (LGPL-2.1),
+# Libraries, all static: alsa-lib (LGPL-2.1), libsodium (ISC), libgcrypt + libgpg-error (LGPL-2.1), libplist (LGPL-2.1),
 # FFmpeg 7.1 cut down to the AAC and ALAC decoders and the resampler (LGPL-2.1), OpenSSL, popt and
 # libconfig from build-userland.sh (run it first), and airplay/uuid (the three libuuid calls
 # shairport-sync makes). The build machine needs autoconf, automake, libtool and xxd; plistutil is
@@ -41,6 +41,9 @@ fetch https://gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2 be0f1b
 # cannot be linked statically into one program.
 fetch https://gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.10.3.tar.bz2 8b0870897ac5ac67ded568dcfadf45969cfa8a6beb0fd60af2a9eadc2a3272aa
 fetch https://github.com/libimobiledevice/libplist/releases/download/2.6.0/libplist-2.6.0.tar.bz2 67be9ee3169366589c92dc7c22809b90f51911dd9de22520c39c9a64fb047c9c
+# The receiver's own output to the jack (2026-11-23): AirPlay 2 keeps time from the card's real
+# delay, which no pipe to Cinder can give it exactly.
+fetch https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.12.tar.bz2 4868cd908627279da5a634f468701625be8cc251d84262c7e5b6a218391ad0d2
 fetch https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz 40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6
 fetch https://github.com/mikebrady/nqptp/archive/refs/tags/1.2.4.tar.gz 1df1d5edd5b713010d6495b3abca4c1cf4ad8fa6029df0abeb9e4de8e0eb707a nqptp-1.2.4.tar.gz
 fetch https://github.com/mikebrady/shairport-sync/archive/refs/tags/5.5.2.tar.gz abcdb59674b6eedb4f3f6228f3c702e65d2cdc037231b0c48617fd90891b49e9 shairport-sync-5.5.2.tar.gz
@@ -53,6 +56,11 @@ cross() {
           CC=$CC CFLAGS="-Os -fPIC" && make -j"$NPROC" && make install ) >"$W/$d.log" 2>&1 \
         || { tail -30 "$W/$d.log"; echo "FAILED: $d (log: $W/$d.log)"; exit 1; }
 }
+
+echo "== alsa-lib 1.2.12 (static, no plugins: Cinder hands the receiver its config, ALSA_CONFIG_PATH)"
+unpack alsa-lib-1.2.12 alsa-lib-1.2.12.tar.bz2
+[ -f "$P/lib/libasound.a" ] || cross alsa-lib-1.2.12 --with-libdl=no --disable-python --disable-alisp \
+    --disable-ucm --disable-topology --disable-rawmidi --disable-hwdep --disable-seq
 
 echo "== libsodium 1.0.20"
 unpack libsodium-1.0.20 libsodium-1.0.20.tar.gz
@@ -119,13 +127,14 @@ fi
 # Linked against build-userland.sh's OpenSSL: built again whenever that changes version.
 # …and when the built one predates the metadata pipe (the sender's song on Now Playing, 2026-11-23).
 if [ ! -f "$W/shairport-sync-5.5.2/shairport-sync" ] || ! cmp -s "$UP/.openssl" "$W/.openssl" \
-   || ! grep -qa metadata-pipename "$W/shairport-sync-5.5.2/shairport-sync"; then
+   || ! grep -qa metadata-pipename "$W/shairport-sync-5.5.2/shairport-sync" \
+   || ! grep -qa "alsa-" "$W/shairport-sync-5.5.2/shairport-sync"; then
     ( cd "$W/shairport-sync-5.5.2" && { [ ! -f Makefile ] || make distclean; } && autoreconf -fi \
           && PATH="$HP/bin:$PATH" PKG_CONFIG_LIBDIR="$P/lib/pkgconfig:$UP/lib/pkgconfig" ./configure --host=$HOST \
                --with-airplay-2 --with-ssl=openssl --with-tinysvcmdns --with-stdout --with-pipe --with-metadata-pipe \
-               --without-alsa --without-soxr --without-avahi --without-dbus-interface --without-mpris-interface \
+               --with-alsa --without-soxr --without-avahi --without-dbus-interface --without-mpris-interface \
                CC=$CC CFLAGS="-Os -I$P/include -I$UP/include" LDFLAGS="-static -L$P/lib -L$UP/lib" \
-               LIBS="-luuid -lcrypto -lgcrypt -lgpg-error -lsodium -lm -lpthread" \
+               LIBS="-luuid -lcrypto -lgcrypt -lgpg-error -lsodium -lasound -lm -lpthread -lrt" \
           && PATH="$HP/bin:$PATH" make -j"$NPROC" ) >"$W/shairport.log" 2>&1 || { tail -40 "$W/shairport.log"; exit 1; }
     cp "$UP/.openssl" "$W/.openssl"
 fi
