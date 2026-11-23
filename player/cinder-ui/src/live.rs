@@ -120,7 +120,10 @@ mod tests {
     #[test]
     fn airplay_shows_the_senders_song_and_the_source_until_it_names_one() {
         let none = AirPlayMeta::default();
-        assert_eq!(lines(AIRPLAY, &inputs(&none)), ("AirPlay".into(), String::new()));
+        assert_eq!(
+            lines(AIRPLAY, &inputs(&none)),
+            ("AirPlay".into(), String::new())
+        );
         let song = AirPlayMeta {
             title: "Holocene".into(),
             artist: "Bon Iver".into(),

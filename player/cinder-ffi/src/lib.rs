@@ -11,8 +11,8 @@
 // (which assumes safe-Rust callers) is a false positive for this FFI surface.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-mod art_cache;
 mod airplay;
+mod art_cache;
 mod art_load;
 mod artist_photos;
 mod books;

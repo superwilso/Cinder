@@ -24,6 +24,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   asks for the largest the kernel allows (2 MB, about 12 s of CD-quality music), so the processor
   wakes about ten times less often. The research behind it is `analysis/RE_lowest_power_wired.md`.
   *Host-tested; device-unverified.*
+- **AirPlay shows the song.** Now Playing shows the title, artist and cover the sending phone or
+  computer names, instead of just "AirPlay". Both receivers (AirPlay and AirPlay 2) now pass the
+  sender's song details to Cinder. *Host-tested; device-unverified.*
 
 ### Fixed
 

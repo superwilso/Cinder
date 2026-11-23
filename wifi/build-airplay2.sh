@@ -106,10 +106,12 @@ if [ ! -d "$W/shairport-sync-5.5.2" ]; then
     ( cd "$W/shairport-sync-5.5.2" && patch -p1 < "$HERE/airplay/tinysvcmdns-airplay2.patch" )
 fi
 # Linked against build-userland.sh's OpenSSL: built again whenever that changes version.
-if [ ! -f "$W/shairport-sync-5.5.2/shairport-sync" ] || ! cmp -s "$UP/.openssl" "$W/.openssl"; then
+# …and when the built one predates the metadata pipe (the sender's song on Now Playing, 2026-11-23).
+if [ ! -f "$W/shairport-sync-5.5.2/shairport-sync" ] || ! cmp -s "$UP/.openssl" "$W/.openssl" \
+   || ! grep -qa metadata-pipename "$W/shairport-sync-5.5.2/shairport-sync"; then
     ( cd "$W/shairport-sync-5.5.2" && { [ ! -f Makefile ] || make distclean; } && autoreconf -fi \
           && PATH="$HP/bin:$PATH" PKG_CONFIG_LIBDIR="$P/lib/pkgconfig:$UP/lib/pkgconfig" ./configure --host=$HOST \
-               --with-airplay-2 --with-ssl=openssl --with-tinysvcmdns --with-stdout --with-pipe \
+               --with-airplay-2 --with-ssl=openssl --with-tinysvcmdns --with-stdout --with-pipe --with-metadata-pipe \
                --without-alsa --without-soxr --without-avahi --without-dbus-interface --without-mpris-interface \
                CC=$CC CFLAGS="-Os -I$P/include -I$UP/include" LDFLAGS="-static -L$P/lib -L$UP/lib" \
                LIBS="-luuid -lcrypto -lgcrypt -lgpg-error -lsodium -lm -lpthread" \

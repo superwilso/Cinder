@@ -129,7 +129,7 @@ cp -f "$HERE/airplay/config.h" "$SS/config.h"
     shairport.c bonjour_strings.c mdns.c common.c rtp.c player.c audio.c loudness.c activity_monitor.c \
     rtsp.c utilities/debug.c utilities/network_utilities.c utilities/rtsp_message_utilities.c \
     utilities/string_utilities.c utilities/exit.c alac.c mdns_tinysvcmdns.c tinysvcmdns.c \
-    audio_stdout.c audio_pipe.c -L"$P/lib" -lpopt -lconfig -lssl -lcrypto -lm ) >"$W/shairport.log" 2>&1
+    audio_stdout.c audio_pipe.c metadata/pc_queue.c metadata/core.c metadata/pipe.c -L"$P/lib" -lpopt -lconfig -lssl -lcrypto -lm ) >"$W/shairport.log" 2>&1
 
 echo "== wifiscan"
 $CC -static -Os -Wall -Wextra -o "$W/wifiscan" "$HERE/tools/wifiscan.c"

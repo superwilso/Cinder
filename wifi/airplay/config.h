@@ -5,4 +5,7 @@
 #define CONFIG_TINYSVCMDNS 1
 #define CONFIG_STDOUT 1
 #define CONFIG_PIPE 1
+/* The sender's song and cover through a FIFO (-M -g --metadata-pipename): Now Playing shows them. */
+#define CONFIG_METADATA 1
+#define CONFIG_METADATA_PIPE 1
 #define CONFIG_HAMMERTON 1
