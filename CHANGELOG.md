@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-11-22
+
 ### Added
 
 - **Styles now dress the settings screens and the Library too.** Nocturne (and Clock) and Terminal
@@ -34,22 +36,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   `%2F` (`AC%2FDC.jpg`). Photos made for Patchman's `ARTIST-PHOTOS` folder work too. Cropped to a
   square, cached once, and loaded in the background after the drive is ready. *Host-tested;
   device-unverified.*
-
-### Fixed
-
-- **Sorting songs by length** put an hour-long track among the one-minute ones (its "1:02:03" was
-  read as minutes and seconds).
-
-### Changed
-
-- **Bluetooth playback with the screen dark holds the CPU at 1040 MHz**, as the jack already did.
-  1300 MHz costs about 28% more energy per cycle, and LDAC needs about a quarter of a core at 1040.
-  *Device-unverified* (listening check: an album on LDAC with the screen off).
-
-## [0.4.4] — 2026-11-22
-
-### Added
-
 - **Glue songs together in a playlist.** In the playlist editor, tap a song to glue it to the one
   above; a bracket joins them. Glued songs always play together and in order however the playlist
   is shuffled. Saved in the playlist file as a comment line other players ignore, and kept across
@@ -79,6 +65,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **Bluetooth playback with the screen dark holds the CPU at 1040 MHz**, as the jack already did.
+  1300 MHz costs about 28% more energy per cycle, and LDAC needs about a quarter of a core at 1040.
+  *Device-unverified* (listening check: an album on LDAC with the screen off).
 - **Holding volume up or down gets going sooner.** The hold starts stepping after 0.25 s instead of
   0.35 s and speeds up after one second instead of 1.5 s, so a full sweep takes about 4.6 s instead
   of 5.6 s. A tap is still exactly one step.
@@ -89,6 +78,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Sorting songs by length** put an hour-long track among the one-minute ones (its "1:02:03" was
+  read as minutes and seconds).
 - **Internet radio no longer repeats the last second when Wi-Fi drops (#59).** When a station
   stopped sending (Wi-Fi off, a weak signal), the headphone output kept replaying the last second of
   sound until the stream ended. It now plays silence until the sound returns, and turning Wi-Fi off
