@@ -131,6 +131,18 @@ pub struct Image {
 }
 
 impl Image {
+    /// The largest centred square, so a portrait photo is cropped rather than squashed.
+    pub fn center_square(&self) -> Image {
+        let e = self.w.min(self.h);
+        let (x0, y0) = ((self.w - e) / 2, (self.h - e) / 2);
+        let mut rgb = Vec::with_capacity(e * e * 3);
+        for y in y0..y0 + e {
+            let row = (y * self.w + x0) * 3;
+            rgb.extend_from_slice(&self.rgb[row..row + e * 3]);
+        }
+        Image { w: e, h: e, rgb }
+    }
+
     /// The cover's colour, for Settings ▸ Cover colours. Each sampled pixel counts by how
     /// saturated it is, so a red cover on a white sleeve reads red rather than pink-grey. Every 8th
     /// pixel each way: ~3,600 reads on a 480×480 cover, cheap enough to run every frame.
@@ -709,6 +721,18 @@ pub fn gradient_image(t: &Theme, w: i32, h: i32, name: &str, opacity: f32) -> Im
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn center_square_keeps_the_middle_of_a_portrait() {
+        // 2 wide, 4 tall: rows 1 and 2 are the middle.
+        let rgb: Vec<u8> = (0..8u8).flat_map(|i| [i, i, i]).collect();
+        let sq = super::Image { w: 2, h: 4, rgb }.center_square();
+        assert_eq!((sq.w, sq.h), (2, 2));
+        assert_eq!(
+            sq.rgb.iter().step_by(3).copied().collect::<Vec<_>>(),
+            [2, 3, 4, 5]
+        );
+    }
+
     /// The fixed-point upscale (11-22) stays within two levels of the f32 loop it replaced (on noise,
     /// its worst case; nobody can see that).
     #[test]

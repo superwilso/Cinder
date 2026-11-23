@@ -716,6 +716,13 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         drag: None,
                         swipe: None,
                         sbar_active: false,
+                        left_secs: up_next::left_secs(
+                            up_next::after_secs(
+                                tracks,
+                                (!tracks.is_empty()).then(|| 2.min(tracks.len() - 1)),
+                            ),
+                            "-2:31",
+                        ),
                     },
                 );
             }),
@@ -738,6 +745,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         drag: None,
                         swipe: None,
                         sbar_active: false,
+                        left_secs: None,
                     },
                 );
             }),
@@ -774,6 +782,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         drag: Some(d),
                         swipe: None,
                         sbar_active: false,
+                        left_secs: None,
                     },
                 );
             }),
@@ -950,6 +959,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         drag: None,
                         swipe: Some(cinder_ui::library::SwipeRow { y: row_y, dx: 110 }),
                         sbar_active: false,
+                        left_secs: None,
                     },
                 );
             }),
@@ -1156,6 +1166,31 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     0,
                     None,
                     &lib,
+                    None,
+                    false,
+                    0,
+                    false,
+                )
+            }),
+            // An artist with a photo on the drive (`cinder_artists/<name>.jpg`): the photo stands
+            // where the cover stack would. A portrait gradient, cropped as a real photo is.
+            ("library_artists_photo", &|c: &mut Canvas| {
+                let mut l = lib.clone();
+                if let Some(name) = l.artists.first().map(|a| a.name.clone()) {
+                    let tall = cinder_ui::art::gradient_image(&theme, 48, 80, "photo", 1.0);
+                    l.artist_photos.insert(name, tall.center_square());
+                }
+                library::render(
+                    c,
+                    &theme,
+                    &fonts,
+                    Tab::Artists,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    &l,
                     None,
                     false,
                     0,
@@ -3101,6 +3136,34 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     "held"
                 };
                 save(&c, &format!("swipe_{tag}_{i}_{}px_{armed}", dx.abs()));
+            }
+        }
+    }
+
+    // ── STYLE sweep ───────────────────────────────────────────────────────────────────────────
+    // The settings screens and the Library in each style that dresses the kit (`style::Look`):
+    // the kit's rows, chips, switches and button, the header and the Now Playing bar. Cassette and
+    // Winamp wear Terminal's kit and Clock Nocturne's, so two styles cover all five.
+    {
+        use cinder_ui::nav::Screen;
+        use cinder_ui::style::Style;
+        cinder_ui::text::set_scale_pct(100);
+        for style in [Style::Nocturne, Style::Terminal] {
+            for (name, screen) in [
+                ("settings", Screen::Settings),
+                ("display", Screen::Display),
+                ("bluetooth", Screen::Bluetooth),
+                ("sound", Screen::Sound),
+                ("library", Screen::Library),
+                ("album", Screen::Album),
+                ("artist", Screen::Artist),
+            ] {
+                let mut app = new_app();
+                app.set_style(style);
+                app.go_for_preview(screen);
+                let mut c = Canvas::new();
+                app.render(&mut c, &fonts, &np);
+                save(&c, &format!("style_{}_{name}", style.token()));
             }
         }
     }

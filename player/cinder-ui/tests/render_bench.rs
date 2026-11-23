@@ -434,7 +434,12 @@ fn bench_derived_state() {
         drag: None,
         swipe: None,
         sbar_active: false,
+        left_secs: Some(200 * 3600),
     };
+    // What `App` memoises: summing the lengths after the playing track, here a whole library.
+    time_it("up_next::after_secs (memoised in App)", n, || {
+        std::hint::black_box(cinder_ui::up_next::after_secs(&ctx, Some(ctx.len() / 2)));
+    });
     time_it("up_next::render_view", n, || {
         let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view);
     });
@@ -465,6 +470,7 @@ fn bench_derived_state() {
         drag: None,
         swipe: None,
         sbar_active: false,
+        left_secs: Some(200 * 3600),
     };
     time_it("up_next::render_view (album)", n, || {
         let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view_small);

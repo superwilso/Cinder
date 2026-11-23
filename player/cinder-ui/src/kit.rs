@@ -7,6 +7,11 @@
 //! `Theme` tokens (plus `Theme::ctrl`, which is derived from them), so every palette, accent and
 //! night level gets the kit for free.
 //!
+//! EACH STYLE DRAWS THESE ITS OWN WAY. The public functions here forward to `t.style.look()`
+//! (`style::Look`); Cinder's drawing is the `cinder_*` function under each, which is every style's
+//! default. Only the drawing moves: the boxes below are fixed, so a style changes how a row or a
+//! chip looks, never where a finger lands on it.
+//!
 //! GEOMETRY IS THE HIT TEST'S TOO. Anything a finger can land on here — the chips above all — is
 //! laid out by a pure function of its inputs that does not measure text, so a screen's `tap` can
 //! ask the same function the render used without holding a `FontSet`. Text is fitted INTO those
@@ -65,31 +70,59 @@ pub fn section_label(
     label: &str,
     action: Option<&str>,
 ) -> i32 {
+    t.style.look().section_label(c, t, f, y, label, action)
+}
+
+/// Cinder's section label: the default of `style::Look::section_label`.
+pub fn cinder_section_label(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    label: &str,
+    action: Option<&str>,
+) -> i32 {
+    section_label_in(c, t, f, y, label, action, Family::Mono, (0.16, 0.14)).0
+}
+
+/// A section label in `fam`, `tracking` = (label, action), for a style's own: returns the y below it and the x
+/// where the label's text ends (a style may draw a rule after it).
+#[allow(clippy::too_many_arguments)]
+pub fn section_label_in(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    label: &str,
+    action: Option<&str>,
+    fam: Family,
+    tracking: (f32, f32),
+) -> (i32, f32, f32) {
     let base = (y + SECTION_H - 8) as f32;
     let label = crate::i18n::text(label);
     let action = action.map(crate::i18n::text);
     let st = sty(
-        Family::Mono,
+        fam,
         Weight::Regular,
         crate::scale::CAPTION,
         t.faint,
-        0.16,
+        tracking.0,
     );
     let aw = action.map(|a| {
         let ast = sty(
-            Family::Mono,
+            fam,
             Weight::Regular,
             crate::scale::CAPTION,
             t.acc,
-            0.14,
+            tracking.1,
         );
         let w = text::measure(f, a, &ast);
         text::draw(c, f, RIGHT as f32 - w, base, a, &ast);
         w + 16.0
     });
     let lw = (RIGHT - LEFT) as f32 - aw.unwrap_or(0.0);
-    text::draw(c, f, LEFT as f32, base, &fit(f, label, &st, lw), &st);
-    y + SECTION_H
+    let end = text::draw(c, f, LEFT as f32, base, &fit(f, label, &st, lw), &st);
+    (y + SECTION_H, end, RIGHT as f32 - aw.unwrap_or(0.0))
 }
 
 /// Where a section label's action sits, for the hit test: the right-hand half of the label band.
@@ -111,6 +144,18 @@ pub fn strip(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, line: &str) -> i32 
 
 /// [`strip`] in another ink: the accent when the strip can be tapped.
 pub fn strip_ink(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, line: &str, ink: Rgb888) -> i32 {
+    t.style.look().strip(c, t, f, y, line, ink)
+}
+
+/// Cinder's strip: the default of `style::Look::strip`.
+pub fn cinder_strip(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    line: &str,
+    ink: Rgb888,
+) -> i32 {
     fill_rect(c, 0, y, W as i32, STRIP_H, t.panel);
     hline(c, y, t.line);
     hline(c, y + STRIP_H - 1, t.line);
@@ -131,6 +176,11 @@ pub fn strip_ink(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, line: &str, ink
 ///
 /// `widgets::toggle` is the older one-off (accent outline, accent knob). New screens use this.
 pub fn switch(c: &mut Canvas, t: &Theme, x: i32, y: i32, on: bool) {
+    t.style.look().switch(c, t, x, y, on)
+}
+
+/// Cinder's switch: the default of `style::Look::switch`.
+pub fn cinder_switch(c: &mut Canvas, t: &Theme, x: i32, y: i32, on: bool) {
     const KNOB: i32 = 16;
     let inset = (SWITCH_H - KNOB) / 2;
     if on {
@@ -222,8 +272,77 @@ impl<'a> Row<'a> {
 /// Draw `r` at `y`, `h` tall (normally [`ROW_H()`]; a list that must fit the glass may pass less).
 /// Returns the y below it.
 pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i32 {
+    t.style.look().row(c, t, f, y, h, r)
+}
+
+/// How a style dresses the kit's row. Everything else — the lead, the trail and its width, the
+/// fitting of the title and subtitle into what is left — is the same in every style.
+pub struct RowDress {
+    /// The title's type (`sel` = the chosen row).
+    pub title: fn(&Theme, bool) -> crate::text::TextStyle,
+    /// The subtitle's type.
+    pub sub: fn(&Theme) -> crate::text::TextStyle,
+    /// The value on the right, in `col`.
+    pub value: fn(Rgb888) -> crate::text::TextStyle,
+    /// The chosen row's mark, drawn first: `(canvas, theme, fonts, y, h)`.
+    pub sel: fn(&mut Canvas, &Theme, &FontSet, i32, i32),
+    /// The line under the row, at `y` (the row's last pixel row).
+    pub rule: fn(&mut Canvas, &Theme, i32),
+    /// The "this opens something" mark, its right edge at `x`, centred on `cy`.
+    pub open: fn(&mut Canvas, &Theme, &FontSet, f32, f32),
+}
+
+/// Cinder's dress: a wash on the chosen row, a full-width hairline, a chevron.
+pub const CINDER_ROW: RowDress = RowDress {
+    title: |t, sel| {
+        sty(
+            Family::Sans,
+            Weight::SemiBold,
+            crate::scale::ROW,
+            if sel { t.acc } else { t.ink },
+            0.0,
+        )
+    },
+    sub: |t| {
+        sty(
+            Family::Sans,
+            Weight::Regular,
+            crate::scale::SECONDARY,
+            t.dim,
+            0.0,
+        )
+    },
+    value: |col| {
+        sty(
+            Family::Mono,
+            Weight::Regular,
+            crate::scale::CAPTION,
+            col,
+            0.1,
+        )
+    },
+    sel: |c, t, _, y, h| fill_rect(c, 0, y, W as i32, h, t.row_sel),
+    rule: |c, t, y| hline(c, y, t.line),
+    open: |c, t, _, x, cy| icons::chevron(c, x - 2.0, cy, 14.0, t.faint),
+};
+
+/// Cinder's row: the default of `style::Look::row`.
+pub fn cinder_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i32 {
+    row_dressed(c, t, f, y, h, r, &CINDER_ROW)
+}
+
+/// The kit's row in `d`'s dress.
+pub fn row_dressed(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    h: i32,
+    r: &Row,
+    d: &RowDress,
+) -> i32 {
     if r.sel {
-        fill_rect(c, 0, y, W as i32, h, t.row_sel);
+        (d.sel)(c, t, f, y, h);
     }
     let cy = y + h / 2;
     let mut x = LEFT as f32;
@@ -249,15 +368,7 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
     }
 
     // The right-hand side first: it keeps its width and the title is fitted into what is left.
-    let vst = |col| {
-        sty(
-            Family::Mono,
-            Weight::Regular,
-            crate::scale::CAPTION,
-            col,
-            0.1,
-        )
-    };
+    let vst = d.value;
     let mut right_edge = RIGHT as f32;
     match r.trail {
         Trail::None => {}
@@ -269,7 +380,7 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
                 RIGHT as f32
             };
             if chevron {
-                icons::chevron(c, RIGHT as f32 - 2.0, cy as f32, 14.0, t.faint);
+                (d.open)(c, t, f, RIGHT as f32, cy as f32);
             }
             let col = if matches!(r.trail, Trail::Tag(_)) {
                 t.acc
@@ -294,13 +405,7 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
         Trail::Reserve(w) => right_edge = (RIGHT - w - 14) as f32,
     }
 
-    let tst = sty(
-        Family::Sans,
-        Weight::SemiBold,
-        crate::scale::ROW,
-        if r.sel { t.acc } else { t.ink },
-        0.0,
-    );
+    let tst = (d.title)(t, r.sel);
     let avail = (right_edge - x).max(0.0);
     if r.sub.is_empty() {
         text::draw(
@@ -320,13 +425,7 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
             &fit(f, r.title, &tst, avail),
             &tst,
         );
-        let sst = sty(
-            Family::Sans,
-            Weight::Regular,
-            crate::scale::SECONDARY,
-            t.dim,
-            0.0,
-        );
+        let sst = (d.sub)(t);
         text::draw(
             c,
             f,
@@ -336,7 +435,7 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
             &sst,
         );
     }
-    hline(c, y + h - 1, t.line);
+    (d.rule)(c, t, y + h - 1);
     y + h
 }
 
@@ -420,22 +519,20 @@ pub fn chips_in(
     sel: Option<usize>,
     cols: usize,
 ) -> i32 {
-    // A row with a label too wide for its chip steps down to the caption size, all of it, before
-    // anything is cut: at the owner's 120 % the Menu's START ON chips read "Now Pla…".
-    let probe = sty(
-        Family::Sans,
-        Weight::SemiBold,
-        crate::scale::SECONDARY,
-        t.ink,
-        0.0,
-    );
-    let size = if labels.iter().enumerate().any(|(i, l)| {
-        text::measure(f, crate::i18n::text(l), &probe) > (chip_span(i, cols).1 - 16) as f32
-    }) {
-        crate::scale::CAPTION
-    } else {
-        crate::scale::SECONDARY
-    };
+    t.style.look().chips(c, t, f, y, labels, sel, cols)
+}
+
+/// Cinder's chips: the default of `style::Look::chips`.
+pub fn cinder_chips(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y: i32,
+    labels: &[&str],
+    sel: Option<usize>,
+    cols: usize,
+) -> i32 {
+    let size = chip_text_size(f, labels, cols, Family::Sans, Weight::SemiBold, 16);
     for (i, l) in labels.iter().enumerate() {
         let l = crate::i18n::text(l);
         let (x, w) = chip_span(i, cols);
@@ -465,8 +562,40 @@ pub fn chips_in(
     y + CHIP_H
 }
 
+/// The type size for a row of chips: a row with a label too wide for its chip (less `pad` px)
+/// steps down to the caption size, all of it, before anything is cut: at the owner's 120 % the
+/// Menu's START ON chips read "Now Pla…".
+pub fn chip_text_size(
+    f: &FontSet,
+    labels: &[&str],
+    cols: usize,
+    fam: Family,
+    weight: Weight,
+    pad: i32,
+) -> f32 {
+    let probe = sty(
+        fam,
+        weight,
+        crate::scale::SECONDARY,
+        Rgb888::new(0, 0, 0),
+        0.0,
+    );
+    if labels.iter().enumerate().any(|(i, l)| {
+        text::measure(f, crate::i18n::text(l), &probe) > (chip_span(i, cols).1 - pad) as f32
+    }) {
+        crate::scale::CAPTION
+    } else {
+        crate::scale::SECONDARY
+    }
+}
+
 /// The one orange thing on a screen. Returns the y below it.
 pub fn primary_button(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str) -> i32 {
+    t.style.look().primary_button(c, t, f, y, label)
+}
+
+/// Cinder's primary button: the default of `style::Look::primary_button`.
+pub fn cinder_primary_button(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str) -> i32 {
     fill_rect(c, LEFT, y, RIGHT - LEFT, BUTTON_H, t.acc);
     let st = sty(
         Family::Sans,

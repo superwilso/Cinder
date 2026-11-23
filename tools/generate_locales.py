@@ -86,7 +86,7 @@ def source_keys():
     catalog through a constant or a table are not seen here; the locale files carry those."""
     keys = set()
     for folder in SOURCES:
-        for path in folder.glob("*.rs"):
+        for path in folder.rglob("*.rs"):
             if path in (CATALOG, CATALOG.with_name("i18n.rs")):  # i18n.rs: its tests' made-up keys
                 continue
             text = path.read_text(encoding="utf8")

@@ -2076,6 +2076,9 @@ pub struct App {
     /// Matching songs as ABSOLUTE indices into `lib.songs`, like `track_pick_order`.
     search_order: Vec<crate::search::Hit>,
     search_scroll_px: i32,
+    /// Up Next's "everything after the playing track" length, keyed on (list address, length,
+    /// position). See `Screen::UpNext` in `render`.
+    queue_after_memo: Option<((usize, usize, usize), Option<u32>)>,
     /// Memoised A-Z rail map, keyed on (tab, songs sort, albums order). See `az_present_memo`.
     az_memo: Option<((u8, usize, usize), [bool; 27])>,
     /// Does the queue still follow playback? True until the user scrolls it themselves; reset on
@@ -2487,6 +2490,7 @@ impl Default for App {
             search_order: Vec::new(),
             search_scroll_px: 0,
             az_memo: None,
+            queue_after_memo: None,
         }
     }
 }
@@ -10985,6 +10989,10 @@ impl App {
         lib.views = self.lib_views;
         lib.folders_tab = self.opt(Opt::FoldersTab);
         lib.prepare_order();
+        // Photos arrive from a background load after the library; keep the last ones until then.
+        if lib.artist_photos.is_empty() {
+            lib.artist_photos = std::mem::take(&mut self.lib.artist_photos);
+        }
         self.lib = lib;
         self.az_memo = None; // a new library is a new set of letters
         self.lib_idx = 0;
@@ -12322,6 +12330,22 @@ impl App {
                     }
                     _ => String::new(),
                 };
+                // ponytail: keyed on the list's address, length and position; an edit that
+                // swaps a row in place for one of another length shows the old total until the
+                // track changes. Key on a queue generation if that ever matters.
+                let key = (
+                    self.context.as_ptr() as usize,
+                    self.context.len(),
+                    self.context_idx,
+                );
+                let after = match self.queue_after_memo {
+                    Some((k, v)) if k == key => v,
+                    _ => {
+                        let v = crate::up_next::after_secs(&self.context, cur);
+                        self.queue_after_memo = Some((key, v));
+                        v
+                    }
+                };
                 let view = crate::up_next::QueueView {
                     album: &album,
                     tracks: &self.context,
@@ -12332,6 +12356,7 @@ impl App {
                     drag: self.row_drag,
                     swipe: self.swipe_row,
                     sbar_active: self.sbar_active(),
+                    left_secs: crate::up_next::left_secs(after, np.remaining),
                 };
                 crate::up_next::render_view(c, &theme, fonts, &view);
             }

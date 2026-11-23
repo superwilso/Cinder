@@ -638,9 +638,17 @@ if adb wait-for-device >/dev/null 2>&1; then
     restore_cable_escape
     trap - EXIT
     if [ "$KEEP_ESCAPE" = 1 ]; then
-        adb shell "echo 1 > $CABLE_FLAG; chown system:system $CABLE_FLAG; chmod 644 $CABLE_FLAG; sync" >/dev/null 2>&1 \
-            && ok "cable_escape_off put back (--keep-escape)" \
-            || warn "could not put $CABLE_FLAG back — do it by hand"
+        # Retried and read back: adb drops for a moment just after boot, and one failed write (11-23)
+        # left the escape lifted until it was put back by hand.
+        put=0
+        for _ in 1 2 3 4 5; do
+            adb wait-for-device >/dev/null 2>&1
+            adb shell "echo 1 > $CABLE_FLAG; chown system:system $CABLE_FLAG; chmod 644 $CABLE_FLAG; sync" >/dev/null 2>&1
+            if [ "$(adb shell cat $CABLE_FLAG 2>/dev/null | tr -d '\r')" = 1 ]; then put=1; break; fi
+            sleep 2
+        done
+        if [ "$put" = 1 ]; then ok "cable_escape_off put back (--keep-escape)"
+        else warn "could not put $CABLE_FLAG back — do it by hand"; fi
     fi
     # `|| true`: adb is often back before the launcher has started the app, the grep then matches
     # nothing, and under `set -euo pipefail` that ended the script with rc=1 and no message after a

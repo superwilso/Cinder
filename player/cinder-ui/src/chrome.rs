@@ -349,6 +349,22 @@ pub fn np_bar(
     playing: bool,
     progress: f32,
 ) {
+    t.style
+        .look()
+        .np_bar(c, t, f, title, artist, playing, progress)
+}
+
+/// Cinder's return bar: the default of `style::Look::np_bar`. The box is [`np_bar_rect`] and the
+/// play button's zone [`NP_BAR_PLAY_W`] in every style.
+pub fn cinder_np_bar(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    title: &str,
+    artist: &str,
+    playing: bool,
+    progress: f32,
+) {
     let (x, y, w, h) = np_bar_rect();
     fill_rect(c, x, y, w, h, t.panel);
     fill_rect(c, x, y, w, 1, t.line);
@@ -443,14 +459,16 @@ const CHIP_PAD: f32 = 10.0;
 /// right margin matches every other screen's.
 const CHIP_RIGHT: f32 = 458.0;
 
-fn title_style(col: Rgb888) -> crate::text::TextStyle {
+/// Cinder's header title: the default of `style::Look::header_title`.
+pub fn cinder_title_style(col: Rgb888) -> crate::text::TextStyle {
     sty(Family::Sans, Weight::Bold, 30.0, col, -0.01)
 }
 
 /// Where [`header`]'s title ends, in px — for a screen that draws its own furniture to the right
-/// of it (Up Next's caption and chips). Measured, not assumed: the title grows with the UI scale.
-pub fn header_title_end(f: &FontSet, title: &str) -> f32 {
-    TITLE_X + text::measure(f, title, &title_style(Rgb888::new(0, 0, 0)))
+/// of it (Up Next's caption and chips). Measured, not assumed: the title grows with the UI scale,
+/// and its type is the style's.
+pub fn header_title_end(t: &Theme, f: &FontSet, title: &str) -> f32 {
+    TITLE_X + text::measure(f, title, &t.style.look().header_title(Rgb888::new(0, 0, 0)))
 }
 
 pub fn header(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, right: Option<&str>) -> i32 {
@@ -540,8 +558,9 @@ fn header_impl(
 ) -> i32 {
     let chip = chip_short.is_some();
     let min_x = controls_x0;
-    icons::back(c, 30.0, 62.0, BACK_GLYPH * text::touch_scale(), t.dim);
-    let ts = title_style(t.ink);
+    let look = t.style.look();
+    look.back_glyph(c, t, 30.0, 62.0, BACK_GLYPH * text::touch_scale());
+    let ts = look.header_title(t.ink);
     let rs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
     // The title is FITTED. Most titles are fixed words, but some are the user's own — a playlist's
     // name on the track picker — and an unfitted one ran off the panel and left the caption a

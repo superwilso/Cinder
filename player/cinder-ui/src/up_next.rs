@@ -467,6 +467,22 @@ pub struct QueueView<'a> {
     pub drag: Option<RowDrag>,
     pub swipe: Option<crate::library::SwipeRow>,
     pub sbar_active: bool,
+    /// Time left to play: the rest of the playing track plus everything after it, or `None` when
+    /// any of those lengths is unknown (then no time is shown rather than a wrong one).
+    pub left_secs: Option<u32>,
+}
+
+/// The length of everything after the playing track, or `None` if any of it is unknown. Separate
+/// from [`left_secs`] because this walks the list (the whole library after "Shuffle all") and
+/// `App` memoises it, while the playing track's remainder changes every second.
+pub fn after_secs(tracks: &[SongRow], current: Option<usize>) -> Option<u32> {
+    crate::library::total_secs(tracks.get(current? + 1..)?.iter().map(|r| r.dur.as_str()))
+}
+
+/// Time left in the queue: the playing track's remaining time (`"-2:31"`, as Now Playing shows
+/// it) plus [`after_secs`]. `None` if either is unknown.
+pub fn left_secs(after: Option<u32>, cur_remaining: &str) -> Option<u32> {
+    Some(after? + crate::library::dur_secs(cur_remaining)?)
 }
 
 /// The header caption: how much is still to come, or what a drag does.
@@ -547,15 +563,32 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     if v.current.is_some() {
         let cs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
         let room = (cap_right - 12) as f32
-            - (crate::chrome::header_title_end(f, crate::i18n::text("Up Next")) + 12.0);
+            - (crate::chrome::header_title_end(t, f, crate::i18n::text("Up Next")) + 12.0);
         let long = caption(left, v.drag.is_some());
         let short = if v.drag.is_some() {
             String::from(crate::i18n::text("DRAG"))
         } else {
             crate::ui_format!("{left} LEFT", left = left)
         };
-        if let Some(cap) = [long, short]
+        // With the time left when it is known and there is room: the count and the time, then
+        // the time alone (with LEFT, then bare, then in minutes: at a large text size only
+        // "92 MIN" fits, and the time says more than the count), then the count alone.
+        let timed = match (v.drag, v.left_secs) {
+            (None, Some(secs)) => {
+                let time = crate::library::fmt_total(secs).to_uppercase();
+                vec![
+                    format!("{long} · {time}"),
+                    crate::ui_format!("{time} LEFT", time = time),
+                    time,
+                    // Narrowest: minutes only, no larger than "23 LEFT" at the owner's text size.
+                    crate::ui_format!("{} min", ((secs + 30) / 60).max(1)).to_uppercase(),
+                ]
+            }
+            _ => Vec::new(),
+        };
+        if let Some(cap) = timed
             .into_iter()
+            .chain([long, short])
             .find(|s| text::measure(f, s, &cs) <= room)
         {
             right(c, f, (cap_right - 12) as f32, 65.0, &cap, &cs);
@@ -1099,5 +1132,25 @@ mod tests {
         assert_eq!(caption(1, false), "1 TRACK LEFT");
         assert_eq!(caption(12, false), "12 TRACKS LEFT");
         assert_eq!(caption(12, true), "DRAG TO REORDER");
+    }
+
+    #[test]
+    fn the_time_left_is_the_rest_of_this_track_and_all_after_it_or_nothing() {
+        let row = |d: &str| SongRow {
+            dur: d.into(),
+            ..Default::default()
+        };
+        let q = [row("9:99"), row("3:00"), row("4:30"), row("1:00:00")];
+        // 2:31 of the playing track + 4:30 + 1:00:00; the played track before it does not count.
+        let left = |cur, rem| left_secs(after_secs(&q, cur), rem);
+        assert_eq!(left(Some(1), "-2:31"), Some(151 + 270 + 3600));
+        assert_eq!(left(Some(3), "-0:05"), Some(5));
+        assert_eq!(left(None, "-2:31"), None);
+        // Any unknown makes the whole total unknown.
+        assert_eq!(left(Some(1), ""), None);
+        let gap = [row("3:00"), row(""), row("4:00")];
+        assert_eq!(left_secs(after_secs(&gap, Some(0)), "-1:00"), None);
+        assert_eq!(crate::library::fmt_total(151 + 270 + 3600), "1 h 7 min");
+        assert_eq!(crate::library::fmt_total(20), "1 min");
     }
 }

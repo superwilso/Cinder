@@ -376,6 +376,7 @@ fn grid_tile(
     }
     let base = y + GRID_TILE_TOP + tile;
     let tst = body_label(
+        t,
         Family::Sans,
         Weight::SemiBold,
         14.0,
@@ -390,6 +391,7 @@ fn grid_tile(
         &tst,
     );
     let sst = body_label(
+        t,
         Family::Sans,
         Weight::Regular,
         12.0,
@@ -435,6 +437,7 @@ fn compact_row(
     }
     let avail = right_edge - tw - 22.0;
     let tst = body_label(
+        t,
         Family::Sans,
         Weight::SemiBold,
         17.0,
@@ -443,7 +446,7 @@ fn compact_row(
     let title = crate::widgets::fit(f, title, &tst, avail);
     let end = text::draw(c, f, 22.0, base, &title, &tst);
     if !rest.is_empty() && end + 40.0 < 22.0 + avail {
-        let rst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
+        let rst = body_label(t, Family::Sans, Weight::Regular, 15.0, t.dim);
         let r = crate::widgets::fit(f, rest, &rst, 22.0 + avail - end - 10.0);
         text::draw(c, f, end + 10.0, base, &r, &rst);
     }
@@ -1536,7 +1539,8 @@ pub fn song_order(lib: &Library, sort: usize) -> Vec<usize> {
         2 => order.sort_by(|&a, &b| by_artist(b, a).then_with(|| by_title(a, b))),
         3 => order.sort_by(|&a, &b| {
             dur_secs(&s[a].dur)
-                .cmp(&dur_secs(&s[b].dur))
+                .unwrap_or(0)
+                .cmp(&dur_secs(&s[b].dur).unwrap_or(0))
                 .then_with(|| by_title(a, b))
         }),
         // Recently added: newest addedtime first.
@@ -1854,8 +1858,26 @@ pub fn tab_layout(f: &FontSet, folders: bool) -> Vec<(Option<Tab>, f32, f32)> {
 
 fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab, folders: bool) -> i32 {
     let (size, layout) = strip_fit(f, folders);
+    let mut items: [(f32, f32, &str, bool); 5] = [(0.0, 0.0, "", false); 5];
+    let mut n = 0;
     for ((tab, x, w), (_, label)) in layout.into_iter().zip(strip_labels(folders)) {
-        let on = tab == Some(active);
+        items[n] = (x, w, label, tab == Some(active));
+        n += 1;
+    }
+    t.style.look().lib_tabs(c, t, f, y0, &items[..n], size)
+}
+
+/// Cinder's tab strip ([`crate::style::Look::lib_tabs`]): mono labels, the active one in the
+/// accent over a 2 px bar, a hairline under the strip.
+pub(crate) fn cinder_tabs(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    y0: i32,
+    tabs: &[(f32, f32, &str, bool)],
+    size: f32,
+) -> i32 {
+    for &(x, w, label, on) in tabs {
         let st = sty(
             Family::Mono,
             Weight::Regular,
@@ -1953,8 +1975,24 @@ fn band_in(
     c: &mut Canvas,
     t: &Theme,
     f: &FontSet,
+    rect: (i32, i32, i32, i32),
+    glyph: Glyph,
+    label: &str,
+    sub: &str,
+) -> i32 {
+    t.style.look().lib_band(c, t, f, rect, glyph, label, sub)
+}
+
+/// A drawing of an icon: `(canvas, cx, cy, size, colour)`, as in `icons`.
+pub type Glyph = fn(&mut Canvas, f32, f32, f32, Rgb888);
+
+/// Cinder's band ([`crate::style::Look::lib_band`]): filled in the accent.
+pub(crate) fn cinder_band(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
     (bx, top, bw, h): (i32, i32, i32, i32),
-    glyph: fn(&mut Canvas, f32, f32, f32, Rgb888),
+    glyph: Glyph,
     label: &str,
     sub: &str,
 ) -> i32 {
@@ -1993,17 +2031,24 @@ fn band_in(
 }
 
 /// The square button beside a band: outlined in the accent, `glyph` in its middle.
-fn side_button(
+fn side_button(c: &mut Canvas, t: &Theme, rect: (i32, i32, i32, i32), glyph: Glyph) {
+    t.style.look().lib_side_button(c, t, rect, glyph)
+}
+
+/// Cinder's side button ([`crate::style::Look::lib_side_button`]).
+pub(crate) fn cinder_side_button(
     c: &mut Canvas,
     t: &Theme,
     (x, y, w, h): (i32, i32, i32, i32),
-    glyph: fn(&mut Canvas, f32, f32, f32, Rgb888),
+    glyph: Glyph,
 ) {
     crate::widgets::stroke_rect(c, x, y, w, h, t.acc, 2);
     glyph(c, (x + w / 2) as f32, (y + h / 2) as f32, 22.0, t.acc);
 }
 
-fn body_label(fam: Family, w: Weight, size: f32, col: Rgb888) -> TextStyle {
+/// A list's text in the style's type ([`crate::style::Look::lib_type`]).
+fn body_label(t: &Theme, fam: Family, w: Weight, size: f32, col: Rgb888) -> TextStyle {
+    let (fam, w) = t.style.look().lib_type(fam, w);
     sty(fam, w, size, col, 0.0)
 }
 
@@ -2056,11 +2101,33 @@ pub fn next_album_sort(lib: &Library, sort: usize) -> usize {
     cycle[(i + 1) % cycle.len()]
 }
 
-fn dur_secs(d: &str) -> i32 {
-    let mut it = d.split(':');
-    let m: i32 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-    let s: i32 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-    m * 60 + s
+/// A row's length in seconds: "3:05", "1:02:03", or a remaining time's "-2:31". `None` for an
+/// empty or malformed length — an unknown, not a zero.
+pub(crate) fn dur_secs(d: &str) -> Option<u32> {
+    let d = d.trim().trim_start_matches('-');
+    if d.is_empty() {
+        return None;
+    }
+    d.split(':').try_fold(0u32, |acc, p| {
+        Some(acc * 60 + p.trim().parse::<u32>().ok()?)
+    })
+}
+
+/// The sum of some lengths, or `None` if any one is unknown: a total that quietly skips a track
+/// is a wrong number, and nothing is better than a wrong number.
+pub(crate) fn total_secs<'a>(durs: impl IntoIterator<Item = &'a str>) -> Option<u32> {
+    durs.into_iter()
+        .try_fold(0u32, |acc, d| Some(acc + dur_secs(d)?))
+}
+
+/// "48 min" / "1 h 12 min", to the nearest minute, in the UI's language.
+pub(crate) fn fmt_total(secs: u32) -> String {
+    let m = ((secs + 30) / 60).max(1);
+    if m < 60 {
+        crate::ui_format!("{} min", m)
+    } else {
+        crate::ui_format!("{} h {} min", m / 60, m % 60)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2322,7 +2389,7 @@ pub fn render(
                     artdim(t),
                 );
                 let tcol = if now { t.acc } else { t.ink };
-                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
+                let tst = body_label(t, Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                 text::draw(
                     c,
                     f,
@@ -2331,7 +2398,7 @@ pub fn render(
                     &crate::widgets::fit(f, &sgn.title, &tst, 300.0 - thumb_dx() as f32),
                     &tst,
                 );
-                let ast = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
+                let ast = body_label(t, Family::Sans, Weight::Regular, 15.0, t.dim);
                 text::draw(
                     c,
                     f,
@@ -2495,7 +2562,7 @@ pub fn render(
                         // These two were drawn untruncated, so a long album name simply ran off the
                         // right edge of the panel.
                         let tst =
-                            body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
+                            body_label(t, Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                         text::draw(
                             c,
                             f,
@@ -2509,7 +2576,7 @@ pub fn render(
                         } else {
                             format!("{} · {}", al.year, n_tracks(al.tracks))
                         };
-                        let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
+                        let sst = body_label(t, Family::Sans, Weight::Regular, 15.0, t.dim);
                         text::draw(
                             c,
                             f,
@@ -2545,7 +2612,7 @@ pub fn render(
                                 &num,
                                 &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0),
                             );
-                            let cst = body_label(Family::Sans, Weight::Regular, 17.0, t.ink);
+                            let cst = body_label(t, Family::Sans, Weight::Regular, 17.0, t.ink);
                             text::draw(
                                 c,
                                 f,
@@ -2663,12 +2730,25 @@ pub fn render(
                 if now {
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
                 }
-                let arts: Vec<&str> = ar.arts.iter().map(|s| s.as_str()).collect();
-                art_stack(c, t, lib, 22, cy, &arts, &ar.album_ids);
+                if let Some(photo) = lib.artist_photos.get(&ar.name) {
+                    // A photo stands where the cover stack would, centred in its width.
+                    let s = list_thumb_px();
+                    let x = 22 + ART_STACK_OFFSET / 2;
+                    if photo.w == s as usize {
+                        art::draw_image(c, t, x, cy - s / 2, photo, artdim(t));
+                    } else {
+                        // Big view. Negative ids are never album ids.
+                        let id = -1 - i64::from(art::name_key(&ar.name));
+                        art::scaled_cached(c, t, x, cy - s / 2, id, photo, s, artdim(t));
+                    }
+                } else {
+                    let arts: Vec<&str> = ar.arts.iter().map(|s| s.as_str()).collect();
+                    art_stack(c, t, lib, 22, cy, &arts, &ar.album_ids);
+                }
                 let tcol = if now { t.acc } else { t.ink };
                 // Text clears the cover stack: it is 22 + STACK_OFFSET + THUMB_PX wide.
                 let tx = (22 + ART_STACK_W + thumb_dx() + 10) as f32;
-                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
+                let tst = body_label(t, Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                 text::draw(
                     c,
                     f,
@@ -2684,7 +2764,7 @@ pub fn render(
                     tx,
                     (cy + 16) as f32 + (crate::text::scaled(20.0) - 20.0).max(0.0).ceil(),
                     &sub,
-                    &body_label(Family::Sans, Weight::Regular, 15.0, t.dim),
+                    &body_label(t, Family::Sans, Weight::Regular, 15.0, t.dim),
                 );
                 stroke_rect(c, 414, cy - 20, 40, 40, t.line, 1);
                 icons::shuffle(c, 434.0, cy as f32, 15.0, t.dim);
@@ -2800,7 +2880,7 @@ pub fn render(
                 } else {
                     0.0
                 };
-                let nst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
+                let nst = body_label(t, Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                 text::draw(
                     c,
                     f,
@@ -2819,7 +2899,7 @@ pub fn render(
                 } else {
                     n_tracks(pl.tracks)
                 };
-                let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
+                let sst = body_label(t, Family::Sans, Weight::Regular, 15.0, t.dim);
                 text::draw(
                     c,
                     f,
@@ -2941,11 +3021,21 @@ pub fn album_view(
     } else {
         album.cue.len() as u32
     };
-    let meta = if album.year.is_empty() {
-        n_tracks(n).to_uppercase()
+    // The album's length, when every track's is known (and every track is loaded).
+    let total = if album.cue.is_empty() {
+        (album.track_list.len() == n as usize)
+            .then(|| total_secs(album.track_list.iter().map(|s| s.dur.as_str())))
+            .flatten()
     } else {
-        format!("{} · {}", album.year, n_tracks(n).to_uppercase())
+        total_secs(album.cue.iter().map(|c| c.dur.as_str()))
     };
+    let mut meta = n_tracks(n).to_uppercase();
+    if !album.year.is_empty() {
+        meta = format!("{} · {}", album.year, meta);
+    }
+    if let Some(secs) = total {
+        meta = format!("{} · {}", meta, fmt_total(secs).to_uppercase());
+    }
     let mst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
     text::draw(
         c,
@@ -3011,7 +3101,7 @@ pub fn album_view(
             ),
         );
         let tcol = if now { t.acc } else { t.ink };
-        let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
+        let tst = body_label(t, Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
         text::draw(
             c,
             f,
@@ -3435,7 +3525,7 @@ pub fn artist_view(
                 if let Some(dx) = sw {
                     swipe_reveal(c, t, f, y, ARTIST_TRACK_RH(), dx, SwipeIntent::Queue);
                 }
-                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink);
+                let tst = body_label(t, Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink);
                 text::draw(
                     c,
                     f,
@@ -3444,7 +3534,7 @@ pub fn artist_view(
                     &crate::widgets::fit(f, &tr.song.title, &tst, 300.0),
                     &tst,
                 );
-                let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
+                let ast = body_label(t, Family::Sans, Weight::Regular, 14.0, t.dim);
                 text::draw(
                     c,
                     f,
@@ -3493,7 +3583,7 @@ pub fn artist_view(
                     list_thumb_px(),
                     artdim(t),
                 );
-                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink);
+                let tst = body_label(t, Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink);
                 text::draw(
                     c,
                     f,
@@ -3511,7 +3601,7 @@ pub fn artist_view(
                 // line, right-aligned before the chevron, so the name keeps the whole first line.
                 let rating = lib.album_rating(al);
                 let sub_w = if rating.is_some() { 250.0 } else { 340.0 };
-                let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
+                let sst = body_label(t, Family::Sans, Weight::Regular, 15.0, t.dim);
                 text::draw(
                     c,
                     f,
@@ -3558,7 +3648,7 @@ pub fn artist_view(
                     ),
                 );
                 let tcol = if now { t.acc } else { t.ink };
-                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
+                let tst = body_label(t, Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                 text::draw(
                     c,
                     f,
@@ -3567,7 +3657,7 @@ pub fn artist_view(
                     &crate::widgets::fit(f, &sgn.title, &tst, 300.0),
                     &tst,
                 );
-                let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
+                let ast = body_label(t, Family::Sans, Weight::Regular, 14.0, t.dim);
                 text::draw(
                     c,
                     f,
@@ -4035,7 +4125,7 @@ pub fn playlist_view(
             artdim(t),
         );
         let tcol = if now { t.acc } else { t.ink };
-        let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
+        let tst = body_label(t, Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
         text::draw(
             c,
             f,
@@ -4044,7 +4134,7 @@ pub fn playlist_view(
             &crate::widgets::fit(f, &sgn.title, &tst, 268.0 - thumb_dx() as f32),
             &tst,
         );
-        let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
+        let ast = body_label(t, Family::Sans, Weight::Regular, 14.0, t.dim);
         text::draw(
             c,
             f,
@@ -4981,7 +5071,8 @@ mod tests {
             for search in [false, true] {
                 let (x0, _) = view_button_x(search);
                 let x1 = controls_x1(search);
-                let title_end = crate::chrome::header_title_end(&f, "Library");
+                let title_end =
+                    crate::chrome::header_title_end(&crate::theme::Theme::day(), &f, "Library");
                 assert!(
                     title_end <= (x0 + 8 - 16) as f32,
                     "{}%: title ends at {title_end} (search {search})",
@@ -5336,6 +5427,7 @@ pub fn genre_render(
         }
         let cy = y + GENRE_RH() / 2;
         let ns = body_label(
+            t,
             Family::Sans,
             Weight::SemiBold,
             crate::scale::ROW,

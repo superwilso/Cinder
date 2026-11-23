@@ -13,6 +13,7 @@
 
 mod art_cache;
 mod art_load;
+mod artist_photos;
 mod books;
 mod cast;
 mod chromecast;
@@ -2721,6 +2722,7 @@ fn build_library_with(
         playlist_thumbs: Default::default(),
         cover_pictures: Vec::new(),
         playlist_pictures: Default::default(),
+        artist_photos: Default::default(),
         genres,
         hires_tracks,
         filter_genre: None,
@@ -11310,6 +11312,7 @@ fn art_cache_install(r: &mut Render, plan: ArtPlan, db_path: &str) {
     art_cache::set_live_keys(sources.iter().map(|(_, _, k)| *k));
     let have = cached.len();
     r.app.library_mut().thumbs = cached;
+    spawn_artist_photos();
     eprintln!(
         "cinder-ffi: art cache: {have} cached, {} to decode (~{} s of background work)",
         todo.len(),
@@ -11435,6 +11438,46 @@ fn art_cache_install(r: &mut Render, plan: ArtPlan, db_path: &str) {
 /// so the last attempt is around three minutes in — comfortably past the point where `/data/mnt`
 /// appears, without leaving a thread sweeping a library of genuinely artless albums forever.
 const ART_BUILD_ROUNDS: u32 = 6;
+
+/// Load the Artists tab's photos (`artist_photos`) in the background and install them in one go.
+/// Runs on every library install: after the first time each photo is a 48 px cache read. Waits
+/// for the drive the way the cover builder does, since at boot it is not mounted yet.
+fn spawn_artist_photos() {
+    std::thread::spawn(|| {
+        lower_thread_priority();
+        let mut round = 0u32;
+        let found = loop {
+            if let Some(f) = artist_photos::scan() {
+                break f;
+            }
+            if round == ART_BUILD_ROUNDS {
+                return;
+            }
+            round += 1;
+            std::thread::sleep(std::time::Duration::from_secs(10 * round as u64));
+        };
+        let mut photos = std::collections::HashMap::new();
+        for (name, path) in found {
+            match artist_photos::load(&path) {
+                Some(img) => {
+                    photos.insert(name, img);
+                }
+                None => eprintln!("cinder-ffi: artist photo: {path:?} would not decode"),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20)); // background work: yield
+        }
+        let n = photos.len();
+        if let Ok(mut g) = cell().lock() {
+            if let Some(r) = g.as_mut() {
+                r.app.library_mut().artist_photos = photos;
+                r.dirty = r.dirty || r.app.shows_album_art();
+            }
+        }
+        if n > 0 {
+            eprintln!("cinder-ffi: artist photos: {n} loaded");
+        }
+    });
+}
 
 static ART_BUILDER_RUNNING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);

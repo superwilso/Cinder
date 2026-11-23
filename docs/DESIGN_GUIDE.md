@@ -47,8 +47,9 @@ How Cinder looks is three separate choices. Keep them separate in your design to
 palette, the six accents and night mode keep working under every style. If your mockup uses a
 colour the tokens can't name, either it's a palette (ship it as one) or the design has to change.
 
-Today a style redesigns **Now Playing** and inherits every other screen from Cinder. The other
-screens follow the same rules, in the order listed in [`PLAN_design_styles.md`](PLAN_design_styles.md).
+A style redesigns **Now Playing**, and dresses the kit every settings screen is built from (rows,
+section labels, chips, switches, the primary button), the header and the Now Playing bar. The
+Library's lists keep Cinder's look for now. How to make one: [`STYLES.md`](STYLES.md).
 
 ## 3. The screen
 
@@ -265,23 +266,6 @@ through [cinder-themes](https://github.com/superwilso/cinder-themes).
 4. Keep the bands in §3 and everything in §8's list.
 5. Open an issue on [Cinder](https://github.com/superwilso/Cinder) with the frames attached.
 
-**A style, in code:**
-
-1. Add a variant to `Style` in [`style.rs`](../player/cinder-ui/src/style.rs), with a name, a
-   settings word and one line for Settings.
-2. Add a layout function and a render function for it to
-   [`np_styles.rs`](../player/cinder-ui/src/np_styles.rs). The render draws every control from the
-   layout's regions. No coordinate may appear in one function and not the other.
-3. Add previews to `cinder-host`: playing, with the Lyrics chip and sleep badge, each page, and
-   nothing playing.
-4. Run the gates:
-
-   ```sh
-   cd player
-   cargo test --release                        # includes the style contract and the overflow audit
-   cargo run --release -p cinder-host -- --audit
-   cargo run --release -p cinder-host -- --cut 120  # labels cut with "…" at a larger text size
-   cargo run --release -p cinder-host -- --bless   # after looking at the new PNGs in player/out/
-   ```
-
-5. Open a pull request with the new previews attached.
+**A style, in code:** follow [`STYLES.md`](STYLES.md). In short: copy a file in
+`player/cinder-ui/src/styles/`, register it in `style.rs`, override what you redesign, add previews,
+and run the gates, which check every style without being told about yours.

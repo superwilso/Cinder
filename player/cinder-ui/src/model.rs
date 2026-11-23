@@ -505,6 +505,9 @@ pub struct Library {
     pub cover_pictures: Vec<CoverPicture>,
     /// Playlist id → the `cover_pictures` entry it uses, for the picker's mark.
     pub playlist_pictures: std::collections::HashMap<i64, usize>,
+    /// Artist photos at the row thumbnail's 48 px, keyed by the artist's name exactly as the
+    /// Artists tab shows it. From `cinder_artists/<name>.jpg` on the drive; usually empty.
+    pub artist_photos: std::collections::HashMap<String, crate::art::Image>,
     /// Every genre that at least one track carries, with its count. Built once at library build.
     pub genres: Vec<GenreRow>,
     /// The ACTIVE genre filter: `Some(id)` hides every track that does not carry it.
@@ -874,6 +877,7 @@ impl Library {
             playlist_thumbs: Default::default(),
             cover_pictures: Vec::new(),
             playlist_pictures: Default::default(),
+            artist_photos: Default::default(),
             genres,
             filter_genre: None,
             filter_hires: false,

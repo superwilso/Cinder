@@ -16,6 +16,30 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Styles now dress the settings screens and the Library too.** Nocturne (and Clock) and Terminal
+  (and Cassette and Winamp) restyle the rows, section labels, choice chips, switches, the main
+  button, the header and the Now Playing bar, not only Now Playing; in the Library, the list type,
+  the tabs and the shuffle/Play bands (album, artist and playlist pages too). Every tap target
+  stays where it was.
+  Making your own style is one file now: see `docs/STYLES.md`. *Host-tested (previews, and every
+  screen in every style at every text size); device-unverified.*
+
+- **Album pages show the album's length** beside the year and track count, and **Up Next shows
+  the time left** (the rest of the playing track and everything after it). Either is left out
+  when a track's length is unknown, rather than show a wrong total. *Host-tested; device-unverified.*
+- **Artist photos on the Artists tab.** Put `<Artist>.jpg` or `.png` in a `cinder_artists` folder
+  on the player or the card, named as the artist shows in the tab; a name with `/` is written
+  `%2F` (`AC%2FDC.jpg`). Photos made for Patchman's `ARTIST-PHOTOS` folder work too. Cropped to a
+  square, cached once, and loaded in the background after the drive is ready. *Host-tested;
+  device-unverified.*
+
+### Fixed
+
+- **Sorting songs by length** put an hour-long track among the one-minute ones (its "1:02:03" was
+  read as minutes and seconds).
+
 ### Changed
 
 - **Bluetooth playback with the screen dark holds the CPU at 1040 MHz**, as the jack already did.

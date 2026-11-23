@@ -62,6 +62,7 @@ DEFINED_ONCE = [
     (FFI, r"fn (tracks_in_order|write_atomic|json_str|private_tmp)\b"),
     (FFI, r"pub fn (pct_encode|pct_decode|url_decode)\b"),
     (UI, r"fn (next_in|from_token)<"),
+    ("player/cinder-ui/src/**/*.rs", r"pub fn (row_dressed|section_label_in|chip_text_size)\("),
     ("installer/src/*.rs", r"fn (hex)\(b: &\[u8\]\)"),
     ("cinder-home/src/probe.cpp", r"Framework& (start_probe_framework)\("),
 ]

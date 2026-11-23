@@ -899,3 +899,42 @@ fn every_style_stays_on_the_panel_with_its_text_apart() {
         bad.join("\n  ")
     );
 }
+
+/// Every screen in every style other than Cinder (which the tests above cover) keeps its text on
+/// the panel and apart, at every UI scale, with hostile strings. A style dresses the kit, the
+/// header and the Now Playing bar (`style::Look`), and those are on nearly every screen; a new
+/// style in `Style::ALL` is checked here without being named.
+#[test]
+fn every_style_dresses_every_screen_on_the_panel_with_its_text_apart() {
+    let fonts = FontSet::load();
+    let mut bad: Vec<String> = Vec::new();
+    for style in cinder_ui::style::Style::ALL {
+        if style == cinder_ui::style::Style::Cinder {
+            continue;
+        }
+        for idx in 0..cinder_ui::text::SCALE_STEPS.len() {
+            let _g = scale_lock(idx);
+            let pct = cinder_ui::text::SCALE_STEPS[idx];
+            for &s in SCREENS {
+                let mut a = at(s);
+                a.set_style(style);
+                let what = format!("{style:?} {s:?} @ {pct}%");
+                let n = overflow_of(&mut a, &fonts, &np_hostile());
+                if n > 0 {
+                    bad.push(format!("{what}: {n} px past the margin"));
+                }
+                for (x, y, px) in collisions_of(&mut a, &fonts, &np_hostile()) {
+                    bad.push(format!("{what}: {x:?} × {y:?} ({px} px)"));
+                }
+            }
+        }
+    }
+    let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
+    bad.dedup();
+    assert!(
+        bad.is_empty(),
+        "a style's screens overflow ({}):\n  {}",
+        bad.len(),
+        bad.join("\n  ")
+    );
+}

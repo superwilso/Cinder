@@ -19,7 +19,7 @@ in). It is Rust and compiled in, which is the 2026-09-14 decision ("skins only",
 | Now Playing's layout as a pure function. `layout(style, night, lyrics)` returns every target (`Hit`), its shape, the seek rail and the page block | `now_playing.rs` |
 | `nav` asks that layout for taps, the rail and the page swipe. No coordinate for Now Playing is left in `nav.rs` | `nav.rs` |
 | Cinder's layout reproduces today's screen. Every golden hash of the Cinder Now Playing is unchanged. The literal transport circles are gone, and Prev and Next now answer where they are drawn (128 and 352, not 130 and 350) | `now_playing::cinder_layout` |
-| Nocturne and Terminal: a layout and a render each, the render drawing every control from the layout | `np_styles.rs` |
+| Nocturne and Terminal: a layout and a render each, the render drawing every control from the layout | `styles/` (was `np_styles.rs`) |
 | An inset cover is scaled once per track, into a single-entry cache (about 480 KB while such a style is on) | `art::draw_fitted` |
 | **Settings ▸ Display ▸ STYLE · NOW PLAYING**: three chips, and Select steps through them | `display.rs` |
 | `style=` in `cinder_settings.conf`. An unknown word keeps the current style | `cinder-ffi` |
@@ -44,15 +44,53 @@ tapped, scrubbed and swiped where it draws.
 | # | What | Effort | Gate |
 |---|---|---|---|
 | 2 | **Device run**: [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §23 | One session | §23.1–23.6 |
-| 3 | **The kit, per style.** `kit::row`, `section_label`, `chips` and `primary_button` ask the theme's style how to draw. One change restyles Settings, Display, Sound, Bluetooth and every other settings screen at once, because they are all built from the kit | 1–2 days | Golden unmoved for Cinder; contract: row and chip targets unchanged, since the kit's geometry is shared |
-| 4 | **The header and the Now Playing bar, per style.** `chrome::header` (back chevron, title) and the bar at the foot of every screen. The status bar stays the same in every style | 1 day | The same |
+| 3 | **Done 11-22.** **The kit, per style.** `kit::row`, `section_label`, `chips` and `primary_button` ask the theme's style how to draw. One change restyles Settings, Display, Sound, Bluetooth and every other settings screen at once, because they are all built from the kit | 1–2 days | Golden unmoved for Cinder; contract: row and chip targets unchanged, since the kit's geometry is shared |
+| 4 | **Done 11-22.** **The header and the Now Playing bar, per style.** `chrome::header` (back chevron, title) and the bar at the foot of every screen. The status bar stays the same in every style | 1 day | The same |
 | 5 | **Lock screen and Menu** | 1 day | A contract like Now Playing's: every target ≥ 44 px |
 | 6 | **Library rows and grid, per style.** Row heights stay fixed (the guide's §6); a style draws inside them. That keeps the ~300 hit-test references in `nav.rs` valid | 2–3 days | Golden unmoved for Cinder; hit tests unchanged |
 | 7 | **Share styles as designs.** A `styles/` folder in [cinder-themes](https://github.com/superwilso/cinder-themes) for mockups made to the guide, and a "Propose a style" issue form. Accepted ones are built as Rust | ½ day | — |
 | 8 | **Layout files for Now Playing**: only if the owner accepts the exception in [`PLAN_now_playing_layouts.md`](PLAN_now_playing_layouts.md) §1. `Layout` is already the data such a file would fill, and the contract is already the check it would get | 3–4 days | That plan's §6 |
 
-Steps 3 and 4 are the best value next: together they change the look of every screen except the
-Library.
+Steps 3 and 4 were done 11-22, with the structure behind them: one `Look` trait (Cinder's drawing as
+every default), one file per style in `player/cinder-ui/src/styles/`, `kit_from!` to wear another
+style's kit, previews for five screens in Nocturne and Terminal, and an overflow test over every
+screen in every style. How to add a style: [`STYLES.md`](STYLES.md). Next is step 6 (the Library).
+
+## Step 6 in detail: the Library (researched 11-22)
+
+**Built 11-23, the light half:** `lib_type`, `lib_tabs`, `lib_band` and `lib_side_button`, with
+Cinder's drawing as the defaults (every Cinder preview unmoved) and Nocturne and Terminal dressed.
+Still to come from the table below: `lib_row` (the playing mark and rules), `lib_group`, `lib_tile`,
+`lib_rail`, `lib_empty`, and a fling measured per style on the player.
+
+The Library already draws through a handful of helpers in `player/cinder-ui/src/library.rs`, so it
+can follow the kit's pattern: each helper becomes a `Look` method with Cinder's drawing as its
+default, and the geometry (row heights, the band, the A–Z rail, the grid pitch) stays shared with
+the ~300 hit tests in `nav.rs`.
+
+| Hook | Draws | Today |
+|---|---|---|
+| `lib_tabs` | Songs · Albums · Artists · Playlists (· Folders) | `tabs` |
+| `lib_band` | The shuffle band, its side button, and the filter strip under it | `band_block`, `filter_strip`, `band_in`, `side_button` |
+| `lib_row` | A list row: title, subtitle, trail, the playing mark | `compact_row` and the comfortable rows written inline in `render` — the inline ones first become one function, which is the only real refactor |
+| `lib_group` | An album group's heading (artist in capitals) | inline in `render` |
+| `lib_tile` | A grid tile's caption, frame and playing mark (never the cover's size) | `grid_tile` |
+| `lib_rail` | The A–Z rail and the scrollbar | `az_render`, the scrollbar block |
+| `lib_empty` | The empty state | `draw_empty_note` |
+
+Album, artist and playlist pages reuse `lib_row` and the band; their headers are separate (one
+hook each, later).
+
+**Performance is the gate here, not looks.** The Library is the screen that scrolls: a frame is
+~14.5 ms, most of it the present (measured 11-03). A hook is one indirect call
+per row, which costs nothing measurable; what a style must not do is draw more per row (a dotted
+rule is 240 single-pixel fills, so Terminal's rows draw their rule as one solid `faint` line in the
+Library, or as a run of 2 px dashes). Check with `devctl.sh stalls` during a fling, per style.
+
+**Order:** (1) pull the inline rows into `lib_row`, golden unmoved; (2) the hooks with Cinder
+defaults, golden unmoved; (3) Nocturne and Terminal, with Library previews in the style sweep and
+the per-style overflow test already covering the screens; (4) a fling measured per style on the
+player. About 2 days, the first half pure refactor.
 
 ## What a style may not do
 

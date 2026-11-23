@@ -425,10 +425,7 @@ impl Layout {
 /// Now Playing's layout in `style`. `night` matters to Cinder, whose night layout is a different
 /// screen; `lyrics` adds the Lyrics chip's target when the song has lyrics.
 pub fn layout(style: crate::style::Style, night: bool, lyrics: bool) -> Layout {
-    let l = match style {
-        crate::style::Style::Cinder => cinder_layout(night, lyrics),
-        other => crate::np_styles::layout(other, lyrics),
-    };
+    let l = style.look().np_layout(night, lyrics);
     if big() {
         big_targets(l)
     } else {
@@ -504,7 +501,8 @@ pub const SMALL_R: i32 = 30;
 /// Cinder's own Now Playing, as it has always answered taps: the Lyrics chip first (its band is
 /// otherwise the Menu's), the heart, the title block, the transport, the toolbar, then the Menu
 /// band. The order is the priority where two overlap.
-fn cinder_layout(night: bool, lyrics: bool) -> Layout {
+/// Cinder's own layout: the default of `style::Look::np_layout`.
+pub fn cinder_layout(night: bool, lyrics: bool) -> Layout {
     let w = crate::canvas::W as i32;
     let rail = Rail {
         x0: RAIL_X0,
@@ -1052,11 +1050,13 @@ fn level_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     );
 }
 
+/// Now Playing, drawn in `t.style` (see `style::Look::np_render`).
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
-    if t.style != crate::style::Style::Cinder {
-        crate::np_styles::render(c, t, f, np);
-        return;
-    }
+    t.style.look().np_render(c, t, f, np)
+}
+
+/// Cinder's own Now Playing: the default of `style::Look::np_render`.
+pub fn cinder_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     c.fill(t.bg);
     let seed = np.viz_seed; // animated by the shell while playing; constant when paused/host
 
