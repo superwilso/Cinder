@@ -12,6 +12,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod art_cache;
+mod airplay;
 mod art_load;
 mod artist_photos;
 mod books;
@@ -5881,6 +5882,21 @@ fn live_np(r: &mut Render, kind: u8, playing: bool) {
         bake_gradient_art(r);
         // Not a library song: no library cover may claim the slot.
         r.art_key = Some(-1);
+    }
+    // An AirPlay sender's cover, when it sends one (after the switch above, which clears the art).
+    if kind == cinder_ui::live::AIRPLAY {
+        match airplay::take_art() {
+            Some(Some(img)) => {
+                r.art_full = Some(img.scaled_to(480, 480));
+                r.art_thumb = Some(img.scaled_to(92, 92));
+            }
+            Some(None) => {
+                r.art_full = None;
+                r.art_thumb = None;
+                bake_gradient_art(r);
+            }
+            None => {}
+        }
     }
     let (title, sub) = r.app.live_lines(kind, &renderer::title());
     r.np.title = title;

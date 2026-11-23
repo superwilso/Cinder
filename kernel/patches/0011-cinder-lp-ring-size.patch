@@ -1,0 +1,29 @@
+The low-power PCM's DRAM ring (hw:0,4) as a build setting (CINDER_LP_RING_MB). build.sh always passes it:
+2 MB, Sony's, unless LP_RING_MB is set for a test kernel. The CM4 maps all of DRAM, so only this
+preallocation limits the ring (analysis/RE_lowest_power_wired.md). Lines rewritten in place, so no
+__LINE__ moves and the default image stays byte for byte the same.
+
+diff --git a/sound/soc/mediatek/mt8590/mt8590-lp-audio.c b/sound/soc/mediatek/mt8590/mt8590-lp-audio.c
+index 96a63211..e082436a 100644
+--- a/sound/soc/mediatek/mt8590/mt8590-lp-audio.c
++++ b/sound/soc/mediatek/mt8590/mt8590-lp-audio.c
+@@ -100,7 +100,7 @@ static const struct snd_pcm_hardware mt8590_lp_pcm_hardware = {
+ 	.period_bytes_max = 3072 * 10,
+ 	.periods_min      = 8,
+ 	.periods_max      = 1024,
+-	.buffer_bytes_max = 2 * 1024 * 1024,
++	.buffer_bytes_max = CINDER_LP_RING_MB * 1024 * 1024,   /* build.sh LP_RING_MB, Sony: 2 (patch 0011) */
+ };
+ 
+ static int itrcon_i2s1out(int on)
+@@ -441,8 +441,8 @@ static int mt8590_lp_pcm_new(struct snd_soc_pcm_runtime *rtd)
+ 		rtd->pcm,
+ 		SNDRV_DMA_TYPE_DEV,
+ 		NULL,
+-		2 * 1024 * 1024,
+-		2 * 1024 * 1024);
++		CINDER_LP_RING_MB * 1024 * 1024,
++		CINDER_LP_RING_MB * 1024 * 1024);
+ }
+ 
+ static void mt8590_lp_pcm_free(struct snd_pcm *pcm)

@@ -48,6 +48,7 @@ the ones the patches remove and two the compilers handle differently.
 | 0008 | Sony's USB unplug check (`khubd_poll`) looks every 100 ms only while a high-speed device is plugged into the player as a host, and once a second otherwise. That is 9 fewer wakeups a second almost all the time: measured on a player with the screen off, 87 to 79 a second during playback and 46 to 39 when paused. |
 | 0009 | Two builds of the same source give the same image. The Mali GPU driver wrote the build machine's git revision, commit date and clock into its version string; with `__DATE__` and `__TIME__` pinned in `build.sh`, the release check can compare the kernel byte for byte. |
 | 0010 | The voltage of the 1040, 747.5 and 598 MHz steps can be set at build time (`UNDERVOLT_MV`, below). Unset, build.sh passes Sony's 1150 mV and the image is byte for byte the same. |
+| 0011 | The low-power playback ring's largest size can be set at build time (`LP_RING_MB`, below). Unset, build.sh passes Sony's 2 MB and the image is byte for byte the same. |
 
 ## czram.ko: working swap on the stock kernel
 
@@ -102,7 +103,7 @@ kernel printed no error a normal boot does not also print.
 ### An undervolt test kernel
 
 ```sh
-UNDERVOLT_MV=1090 ./build.sh     # out/undervolt-1090/zImage; nothing in out/ changes
+UNDERVOLT_MV=1090 ./build.sh     # out/test-uv1090/zImage; nothing in out/ itself changes
 ```
 
 The CPU runs 1040, 747.5 and 598 MHz at 1150 mV. MediaTek's source has a validated low-voltage
@@ -110,6 +111,18 @@ corner (`HQA_LV_1_09V`) that runs the same three steps at 1090 mV, and a 1050 mV
 only with other power chips. `UNDERVOLT_MV` accepts 1050–1150. Such a kernel is only ever booted
 from RAM as above, never flashed or shipped: chips differ, so a voltage that holds on one player
 proves nothing about another.
+
+### A larger low-power playback ring
+
+```sh
+LP_RING_MB=8 ./build.sh          # out/test-ring8/zImage (2..16; combine with UNDERVOLT_MV)
+```
+
+Music on the headphone jack plays through `hw:0,4`, whose DRAM ring the CM4 coprocessor drains
+while the main cores sleep; they wake when it is nearly empty. Sony's kernel caps the ring at 2 MB
+(about 12 s at 16-bit 44.1 kHz). A larger cap lets a player that asks for more (Cinder's `long_ring`
+switch) sleep longer between refills; nothing that asks for less is affected, but the larger block
+is reserved at boot. See `analysis/RE_lowest_power_wired.md`.
 
 ## Installing on the player
 

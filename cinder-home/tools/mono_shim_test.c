@@ -104,6 +104,24 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     return (long)frames;
 }
 const unsigned char* fake_last(void) { return g_last; }
+/* The long ring: Sony's HAL opens hw:0,4 by name; the kernel's ring tops out at 2 MB. */
+const char* snd_pcm_name(void* pcm) { (void)pcm; return "hw:0,4"; }
+static unsigned long g_buf, g_start;
+int snd_pcm_hw_params_set_buffer_size_near(void* pcm, void* params, unsigned long* val)
+{
+    (void)pcm; (void)params;
+    if (*val > 524288) *val = 524288;   /* 2 MB of 16-bit stereo */
+    g_buf = *val;
+    return 0;
+}
+int snd_pcm_sw_params_set_start_threshold(void* pcm, void* params, unsigned long val)
+{
+    (void)pcm; (void)params;
+    g_start = val;
+    return 0;
+}
+unsigned long fake_buf(void) { return g_buf; }
+unsigned long fake_start(void) { return g_start; }
 /* Sony's FilterChain::Create: records the names it was handed, space-separated. */
 static char g_chain[512];
 void fake_fc_create(void* self, const void* pool, const cxx_vec* names) __asm__(FC_CREATE);
@@ -128,6 +146,10 @@ int snd_pcm_hw_params(void* pcm, void* params);
 long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames);
 int snd_pcm_hw_params_set_rate_near(void* pcm, void* params, unsigned int* val, int* dir);
 const unsigned char* fake_last(void);
+int snd_pcm_hw_params_set_buffer_size_near(void* pcm, void* params, unsigned long* val);
+int snd_pcm_sw_params_set_start_threshold(void* pcm, void* params, unsigned long val);
+unsigned long fake_buf(void);
+unsigned long fake_start(void);
 unsigned fake_rate(void);
 void fc_create(void* self, const void* pool, const cxx_vec* names) __asm__(FC_CREATE);
 const char* fake_chain(void);
@@ -425,6 +447,27 @@ int main(int argc, char** argv)
         }
         if (is_ssfw) check(failed == 3 && from == 1, "jack: the first three failed writes and the library are logged");
         else check(failed == 0 && from == 0, "jack: in any other process nothing is logged");
+    }
+
+    /* the long ring: only with its flag, only in SoundServiceFw; the start stays at Sony's size */
+    {
+        char p[512];
+        snprintf(p, sizeof p, "%s/cinder_long_ring", dir);
+        unsigned long b = 44104;
+        snd_pcm_hw_params_set_buffer_size_near(pcmh, NULL, &b);
+        snd_pcm_sw_params_set_start_threshold(pcmh, NULL, b);
+        check(fake_buf() == 44104 && fake_start() == 44104, "long ring off: Sony's 1 s ring and start, untouched");
+        int fd = open(p, O_WRONLY | O_CREAT, 0644);
+        if (fd >= 0) close(fd);
+        b = 44104;
+        snd_pcm_hw_params_set_buffer_size_near(pcmh, NULL, &b);
+        snd_pcm_sw_params_set_start_threshold(pcmh, NULL, b);
+        if (expect_active)
+            check(b == 524288 && fake_buf() == 524288 && fake_start() == 44104,
+                  "long ring: the kernel's largest ring, started at Sony's size");
+        else
+            check(fake_buf() == 44104 && fake_start() == 44104, "long ring: in any other process untouched");
+        unlink(p);
     }
 
     /* #43: the rate reaches the pointer version, whether or not the hooks are on. */

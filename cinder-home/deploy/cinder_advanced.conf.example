@@ -22,6 +22,10 @@
 #suspend_s=5
 # Hold the processor at least this fast while playing (default off). 598000 / 747500 / 1040000 / 1300000.
 #cpufloor_khz=1040000
+# Headphone jack, screen off: let the processor sleep ~12 s at a time instead of 1 s, by giving the
+# low-power player a 2 MB music buffer instead of Sony's 1 s. From the next song. Sound-setting
+# changes are heard as late as the buffer is long.
+#long_ring
 
 # ── Playback ─────────────────────────────────────────────────────────────────────────────────
 # Play queues that are all FLAC with Cinder's own decoder instead of Sony's player (new, being

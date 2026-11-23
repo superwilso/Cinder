@@ -34,6 +34,7 @@ pub mod keyboard;
 pub mod kit;
 pub mod language;
 pub mod library;
+pub mod live;
 pub mod lock;
 pub mod lyrics;
 pub mod media_server;

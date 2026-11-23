@@ -78,6 +78,9 @@ static const char kRgain[] = CINDER_MONO_DIR "/cinder_rg";
 static const char kHpeq[] = CINDER_MONO_DIR "/cinder_hpeq";
 /* Names the abstract socket of Cinder's own Bluetooth stack (one line). See a2dp_target(). */
 static const char kA2dpTarget[] = CINDER_MONO_DIR "/cinder_a2dp_target";
+/* Present = ask for the longest low-power ring (see "the long ring" below). Cinder writes it from
+ * `long_ring` in cinder_advanced.conf. */
+static const char kLongRing[] = CINDER_MONO_DIR "/cinder_long_ring";
 static const char kBtName[] = "pst::services::bttransmitterservice";
 
 /* ── how it is loaded, and how it gets out of the way ─────────────────────────────────────────
@@ -129,6 +132,10 @@ static int (*real_hw_params)(void*, void*);
 static int (*real_get_rate)(const void*, unsigned int*, int*);
 static int (*real_set_rate_near)(void*, void*, unsigned int*, int*);
 static int (*real_set_rate)(void*, void*, unsigned int, int);
+static int (*real_set_buffer_size_near)(void*, void*, unsigned long*);
+static int (*real_set_buffer_time_near)(void*, void*, unsigned int*, int*);
+static int (*real_set_start_threshold)(void*, void*, unsigned long);
+static const char* (*real_pcm_name)(void*);
 
 /* hagodaemon runs the constructor as ROOT and only then becomes `system` (uid 100, no
  * CAP_DAC_OVERRIDE), and root's umask here is 077 — so a file the constructor creates in /tmp is
@@ -535,7 +542,7 @@ void cinder_fc_create(void* self, const void* pool, const cxx_vec* names)
 }
 
 /* ── the jack: libasound ─────────────────────────────────────────────────────────────────────── */
-typedef struct { void* pcm; int fmt; int ch; unsigned rate; int said; } pcm_info;
+typedef struct { void* pcm; int fmt; int ch; unsigned rate; int said; unsigned long ring0; } pcm_info;
 #define MAX_PCM 16
 static pcm_info g_pcm[MAX_PCM];
 static pthread_mutex_t g_pcm_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -625,6 +632,77 @@ int snd_pcm_hw_params_set_rate(void* pcm, void* params, unsigned int val, int di
     return r;
 }
 
+/* ── the long ring ─────────────────────────────────────────────────────────────────────────────
+ * The low-power PCM (hw:0,4, Sony's default) plays through the CM4 coprocessor, which wakes the A7
+ * cores only when the DRAM ring is nearly empty (analysis/RE_lowest_power_wired.md). Sony's HAL asks
+ * for 1 s; the kernel allows 2 MB (~12 s at 16-bit 44.1 kHz). While /tmp/cinder_long_ring exists,
+ * the HAL's buffer request on that PCM is raised to whatever the kernel allows (_near clamps it),
+ * and its start threshold — which the HAL sets to the whole buffer — is kept at the size Sony asked
+ * for, so a song starts as soon as it does today. Other PCMs and processes are never touched. */
+static int is_lowpower_pcm(void* pcm)
+{
+    if (!g_active || access(kLongRing, F_OK) != 0) return 0;   /* off in safe mode, like every feature */
+    RESOLVE_ALSA(real_pcm_name, "snd_pcm_name");
+    const char* n = real_pcm_name ? real_pcm_name(pcm) : NULL;
+    return n && (strcmp(n, "hw:0,4") == 0 || strcmp(n, "default") == 0);
+}
+
+static void ring_note(void* pcm, unsigned long frames)
+{
+    pthread_mutex_lock(&g_pcm_lock);
+    pcm_info* s = pcm_slot(pcm, 1);
+    if (s) s->ring0 = frames;
+    pthread_mutex_unlock(&g_pcm_lock);
+}
+
+int snd_pcm_hw_params_set_buffer_size_near(void* pcm, void* params, unsigned long* val)
+{
+    RESOLVE_ALSA(real_set_buffer_size_near, "snd_pcm_hw_params_set_buffer_size_near");
+    if (!real_set_buffer_size_near) return -ENOSYS;
+    if (!val || !is_lowpower_pcm(pcm)) return real_set_buffer_size_near(pcm, params, val);
+    const unsigned long asked = *val;
+    *val = 1UL << 22;   /* far past 2 MB in any format: the kernel's maximum is what comes back */
+    int r = real_set_buffer_size_near(pcm, params, val);
+    if (r < 0) { *val = asked; return real_set_buffer_size_near(pcm, params, val); }
+    ring_note(pcm, asked);
+    mlog("long ring: pcm %p buffer %lu -> %lu frames", pcm, asked, *val);
+    return r;
+}
+
+int snd_pcm_hw_params_set_buffer_time_near(void* pcm, void* params, unsigned int* val, int* dir)
+{
+    RESOLVE_ALSA(real_set_buffer_time_near, "snd_pcm_hw_params_set_buffer_time_near");
+    if (!real_set_buffer_time_near) return -ENOSYS;
+    if (!val || !is_lowpower_pcm(pcm)) return real_set_buffer_time_near(pcm, params, val, dir);
+    const unsigned int asked = *val;
+    *val = 60u * 1000000u;   /* 60 s: clamped to the kernel's 2 MB */
+    int r = real_set_buffer_time_near(pcm, params, val, dir);
+    if (r < 0) { *val = asked; return real_set_buffer_time_near(pcm, params, val, dir); }
+    /* The start threshold is in frames; the rate is known by now (set before the buffer). */
+    pthread_mutex_lock(&g_pcm_lock);
+    pcm_info* s = pcm_slot(pcm, 1);
+    if (s && s->rate) s->ring0 = (unsigned long)((unsigned long long)asked * s->rate / 1000000u);
+    pthread_mutex_unlock(&g_pcm_lock);
+    mlog("long ring: pcm %p buffer %u -> %u us", pcm, asked, *val);
+    return r;
+}
+
+int snd_pcm_sw_params_set_start_threshold(void* pcm, void* params, unsigned long val)
+{
+    RESOLVE_ALSA(real_set_start_threshold, "snd_pcm_sw_params_set_start_threshold");
+    if (!real_set_start_threshold) return -ENOSYS;
+    unsigned long ring0 = 0;
+    pthread_mutex_lock(&g_pcm_lock);
+    pcm_info* s = pcm_slot(pcm, 0);
+    if (s) ring0 = s->ring0;
+    pthread_mutex_unlock(&g_pcm_lock);
+    if (ring0 && val > ring0) {
+        mlog("long ring: pcm %p starts at %lu frames, not %lu", pcm, ring0, val);
+        val = ring0;
+    }
+    return real_set_start_threshold(pcm, params, val);
+}
+
 int snd_pcm_close(void* pcm)
 {
     RESOLVE_ALSA(real_pcm_close, "snd_pcm_close");
@@ -664,7 +742,7 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     const int eq = eq_on();
     if (!mono && !amb && !xf && !gain && !eq) return jack_write(pcm, buf, frames);
 
-    pcm_info info = { NULL, 0, 0, 0, 1 };
+    pcm_info info = { NULL, 0, 0, 0, 1, 0 };
     int said = 1;
     pthread_mutex_lock(&g_pcm_lock);
     pcm_info* s = pcm_slot(pcm, 0);

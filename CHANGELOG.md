@@ -16,6 +16,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **`long_ring` (Advanced, off by default): longer sleeps during headphone playback.** The
+  player's low-power playback path lets the main processor sleep until its music buffer is nearly
+  empty; Sony's software asks for a 1 s buffer. With `long_ring` in `cinder_advanced.conf` Cinder
+  asks for the largest the kernel allows (2 MB, about 12 s of CD-quality music), so the processor
+  wakes about ten times less often. The research behind it is `analysis/RE_lowest_power_wired.md`.
+  *Host-tested; device-unverified.*
+
 ### Fixed
 
 - **"Play this now?" no longer asks once the songs you added have played.** Adding a song to Up

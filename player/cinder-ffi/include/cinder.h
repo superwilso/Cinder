@@ -924,6 +924,11 @@ enum {
     CINDER_LIVE_FM = 4, CINDER_LIVE_RECEIVER = 5, CINDER_LIVE_USB_DAC = 6,
 };
 void cinder_set_live_source(int kind, int playing);
+/* What an AirPlay sender says is playing (shairport-sync's metadata pipe): title, artist, album;
+ * NULL or "" for none. Shown while CINDER_LIVE_AIRPLAY has the sound. */
+void cinder_set_airplay_meta(const char* title, const char* artist, const char* album);
+/* Its cover, JPEG or PNG bytes, decoded on the calling thread. NULL or len 0 = no cover. */
+void cinder_set_airplay_art(const unsigned char* data, int len);
 /* llusbdac: avail = module installed, loaded = in the kernel. get: 1 = engage loads it. */
 void cinder_set_usb_dac_low_latency(int avail, int loaded);
 int cinder_get_usb_dac_low_latency(void);

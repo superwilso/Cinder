@@ -129,7 +129,8 @@ for src in "$HERE/src/main.cpp:$HERE/main.o" \
            "$AUDIO/src/storage_shim.cpp:$HERE/storage_shim.o" \
            "$AUDIO/src/codec_shim.cpp:$HERE/codec_shim.o" \
            "$AUDIO/src/volume_shim.cpp:$HERE/volume_shim.o" \
-           "$HERE/src/discover.cpp:$HERE/discover.o"; do
+           "$HERE/src/discover.cpp:$HERE/discover.o" \
+           "$HERE/src/preload_glue.cpp:$HERE/preload_glue.o"; do
     # main.cpp keeps its clock in `long long` (now_ms): `long` is 32 bits here and wraps after
     # 24.8 days awake. Storing a time in a `long` again fails the build rather than the player.
     NARROW=(); [ "${src%%:*}" = "$HERE/src/main.cpp" ] && NARROW=(-Werror=shorten-64-to-32)
@@ -151,7 +152,7 @@ CRT="$HERE/.crt223"; mkdir -p "$CRT"
 cp -f "$DEVSYS/usr/lib/arm-linux-gnueabihf"/{Scrt1.o,crt1.o,crti.o,crtn.o} "$CRT/"
 $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$DEVSYS/usr/lib/arm-linux-gnueabihf" -L"$DEVSYS/lib/arm-linux-gnueabihf" \
-     "$HERE/main.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/power_shim.o" "$HERE/storage_shim.o" "$HERE/codec_shim.o" "$HERE/volume_shim.o" "${DISCOVER_MAIN[@]}" "$HERE/glibc223_compat.o" \
+     "$HERE/main.o" "$HERE/preload_glue.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/power_shim.o" "$HERE/storage_shim.o" "$HERE/codec_shim.o" "$HERE/volume_shim.o" "${DISCOVER_MAIN[@]}" "$HERE/glibc223_compat.o" \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lPlayerServiceClientUtil -lEffectCtrlDmp -lPowerMgrServiceClient \

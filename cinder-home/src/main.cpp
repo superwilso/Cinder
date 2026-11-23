@@ -72,6 +72,8 @@
 #include "cinder_storage.h"
 #include "cinder_codec.h"
 #include "discover.h"
+#include "preload_glue.h"
+#include "airplay_meta.h"   // the AirPlay sender's song, from shairport-sync's metadata pipe (host-tested)
 // The playback-control shim over Sony's PlayerService (cinder-audio/player_shim.cpp).
 #include "cinder_audio.h"
 
@@ -713,79 +715,6 @@ bool bt_listener_is_on();            // ditto — did AddListener actually take?
 void apply_bt_prompt_reply(bool accept); // ditto — answers a numeric-comparison / SSP prompt
 void apply_bt_pair_device(); // ditto — pairs with a device the scan turned up
 
-// ── MONO beyond the LDAC bridge: libcinder_mono.so ───────────────────────────────────────────────
-// The library (src/cinder-mono.c) runs inside Sony's SoundServiceFw and sums every stereo buffer on
-// its way to the jack and to the Bluetooth transmitter while /tmp/cinder_mono exists. Cinder owns
-// that file — it is the Mono switch — and reads the library's own marker, /tmp/cinder_mono_shim, to
-// tell the Balance row whether mono reaches everything or only USB-DAC -> LDAC. Both live in tmpfs:
-// a boot starts with neither, the library writes its marker when it loads, and this writes the flag
-// from the saved setting.
-static void mono_flag_apply() {
-    if (cinder_get_mono()) {
-        int fd = ::open("/tmp/cinder_mono", O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
-        if (fd >= 0) ::close(fd);
-    } else {
-        ::unlink("/tmp/cinder_mono");
-    }
-}
-static int g_mono_shim_seen = -1;
-static void mono_shim_poll() {
-    const int up = ::access("/tmp/cinder_mono_shim", F_OK) == 0 ? 1 : 0;
-    if (up == g_mono_shim_seen) return;
-    g_mono_shim_seen = up;
-    cinder_set_mono_shim(up);
-    clog_(up ? "mono: libcinder_mono.so is loaded in SoundServiceFw — mono reaches the jack and Bluetooth"
-             : "mono: libcinder_mono.so is not loaded — mono reaches USB-DAC -> LDAC only");
-}
-
-// ── PROOF FOR THE hagodaemon WRAPPER'S TRIAL (deploy/cinder-guard.sh) ───────────────────────────
-// On a player with the `preload` component, src/cinder-hagowrap.c stands in front of every Sony
-// service, and the boot guard takes it away again unless the last boot left proof that it works.
-// The guard runs before anything is up and can only read files, so this writes them:
-//   hago_up    this boot reached a healthy Cinder, so every Sony service started through it
-//   hago_play  playback has been asked for and has not yet been heard to run
-//   hago_ok    audio ran for five seconds through the sound service the wrapper preloads
-// hago_play is the one that matters when it goes wrong: the first wrapper build took the sound
-// service down at the first hw_params, a healthy boot later, and the player rebooted. A pause or an
-// orderly power-off before the five seconds removes it — that is somebody stopping the music, not
-// the music failing to start. Nothing here runs on a player without the wrapper.
-static int g_hago = -1;        // -1 not looked yet, 0 no wrapper on this player, 1 there is one
-static int g_hago_run_s = 0;
-static bool g_hago_proven = false;   // audio has run this boot: nothing more to say about playback
-static const char kHagoReal[] = "/system/vendor/sony/bin/hagodaemon.real";
-static void hago_touch(const char* path) {
-    int fd = ::open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
-    if (fd >= 0) ::close(fd);
-}
-static bool hago_watching() {
-    // stat, not access: the off-device harness answers stat from its own tree and leaves access
-    // real, and this is a rule worth being able to run there.
-    if (g_hago < 0) { struct stat st; g_hago = ::stat(kHagoReal, &st) == 0 ? 1 : 0; }
-    return g_hago == 1;
-}
-static void hago_note_healthy() {
-    if (!hago_watching()) return;
-    hago_touch("/data/cinder/hago_up");
-    clog_("wrapper: this boot came up through cinder-hagowrap (proof left for the boot guard)");
-}
-static void hago_note_transport(bool playing) {
-    if (g_hago_proven || !hago_watching()) return;
-    g_hago_run_s = 0;
-    if (playing) hago_touch("/data/cinder/hago_play");
-    else ::unlink("/data/cinder/hago_play");
-}
-// 1 Hz. `running` is the real thing, not the intent: g_playing starts true on every boot.
-static void hago_tick(bool running) {
-    if (g_hago_proven || !hago_watching()) return;
-    if (!running) { g_hago_run_s = 0; return; }
-    if (++g_hago_run_s < 5) return;
-    hago_touch("/data/cinder/hago_ok");
-    ::unlink("/data/cinder/hago_play");
-    ::sync();
-    g_hago_proven = true;
-    clog_("wrapper: audio has run for 5 s through the preloaded sound service — confirmed for the boot guard");
-}
-
 void render_up_locked();
 void render_up() {
     pthread_mutex_lock(&g_render_up_mu);
@@ -805,6 +734,7 @@ void render_up_locked() {
     int sl = cinder_settings_load("/contents/cinder_settings.conf");
     g_settings_loaded = (sl & 1) != 0;
     mono_flag_apply();   // tmpfs: SoundServiceFw's mono library reads it from its first buffer
+    long_ring_flag_apply();
     g_volume_restored = (sl & 2) != 0;
     g_bt_on_restored  = (sl & 4) != 0;
     // Reconcile the USB-DAC toggle with the gadget's ACTUAL mode. The toggle is our intent; the
@@ -13174,6 +13104,53 @@ static volatile sig_atomic_t g_ap_yielded = 0;  // someone else took the output:
 static bool g_ap_bt = false, g_ap_source_held = false, g_ap_source_want = false;
 static long long g_ap_retry_at = 0;
 static std::string g_ap_note_sent = "-";
+// THE SENDER'S SONG. A build with metadata (`-M -g --metadata-pipename`) writes the song's title,
+// artist, album and cover into this FIFO (airplay_meta.h). It is made and opened read-write here
+// before the receiver starts — read-write, so it never reads as ended between senders, and the
+// receiver's own nonblocking open always finds a reader. The reader thread polls it beside the
+// audio. A build without metadata refuses the options, so they are passed only to one that has them.
+static const char* const AP_META = "/tmp/cinder_airplay_meta";
+static int g_ap_meta_fd = -1;
+
+// Does this receiver binary take the metadata options? Read once per start: the strings are in it.
+static bool airplay_has_metadata(const char* bin) {
+    int fd = ::open(bin, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    static const char kOpt[] = "metadata-pipename";
+    char buf[65536 + sizeof kOpt];
+    size_t keep = 0;
+    bool found = false;
+    for (;;) {
+        ssize_t n = ::read(fd, buf + keep, sizeof buf - keep);
+        if (n <= 0) break;
+        size_t have = keep + (size_t)n;
+        if (memmem(buf, have, kOpt, sizeof kOpt - 1)) { found = true; break; }
+        keep = std::min(have, sizeof kOpt - 1);
+        std::memmove(buf, buf + have - keep, keep);
+    }
+    ::close(fd);
+    return found;
+}
+
+static void airplay_meta_read(apmeta::Parser& parser, apmeta::Song& song) {
+    char buf[16384];
+    for (;;) {
+        ssize_t n = ::read(g_ap_meta_fd, buf, sizeof buf);
+        if (n <= 0) return;   // EAGAIN: all read
+        parser.feed(buf, (size_t)n, [&](const apmeta::Item& it) {
+            const int changed = apmeta::apply(song, it);
+            if (changed & apmeta::NAMES) {
+                cinder_set_airplay_meta(song.title.c_str(), song.artist.c_str(), song.album.c_str());
+                char m[200];
+                std::snprintf(m, sizeof m, "airplay: the sender is playing \"%.60s\" by \"%.60s\"",
+                              song.title.c_str(), song.artist.c_str());
+                clog_(m);
+            }
+            if (changed & apmeta::PICTURE)
+                cinder_set_airplay_art((const unsigned char*)song.pict.data(), (int)song.pict.size());
+        });
+    }
+}
 
 static void* airplay_reader(void*) {
     g_ap_reader_alive = 1;
@@ -13181,11 +13158,14 @@ static void* airplay_reader(void*) {
     RadioOut out;
     long long last_audio = 0;
     size_t carry = 0;                         // a frame split across reads (4 bytes a frame)
+    apmeta::Parser meta_parser;
+    apmeta::Song meta_song;
     while (!g_ap_stop) {
-        struct pollfd pf = { g_ap_fd, POLLIN, 0 };
-        int r = ::poll(&pf, 1, 500);
+        struct pollfd pf[2] = { { g_ap_fd, POLLIN, 0 }, { g_ap_meta_fd, POLLIN, 0 } };
+        int r = ::poll(pf, g_ap_meta_fd >= 0 ? 2 : 1, 500);
         long long now = now_ms();
-        if (r > 0) {
+        if (r > 0 && g_ap_meta_fd >= 0 && (pf[1].revents & POLLIN)) airplay_meta_read(meta_parser, meta_song);
+        if (r > 0 && (pf[0].revents & (POLLIN | POLLHUP))) {
             ssize_t n = ::read(g_ap_fd, buf + carry, sizeof buf - carry);
             if (n <= 0) break;                // the receiver exited
             size_t have = carry + (size_t)n, frames = have / 4;
@@ -13245,6 +13225,9 @@ static void airplay_stop(const char* why) {
     if (g_ap_fd >= 0) ::close(g_ap_fd);
     g_ap_pid = -1;
     g_ap_fd = -1;
+    if (g_ap_meta_fd >= 0) { ::close(g_ap_meta_fd); g_ap_meta_fd = -1; ::unlink(AP_META); }
+    cinder_set_airplay_meta(nullptr, nullptr, nullptr);
+    cinder_set_airplay_art(nullptr, 0);
     if (g_ap_bt) { g_ldac_run = 0; g_ldac_alive = 0; }
     if (g_ap_source_held) airplay_bt_source(false);
     if (::access(AP2_NQPTP, X_OK) == 0) wifi_helper("nqptp-stop", nullptr, nullptr);
@@ -13255,10 +13238,19 @@ static void airplay_stop(const char* why) {
 
 static bool airplay_start() {
     const bool ap2 = ::access(AP2_BIN, X_OK) == 0 && ::access(AP2_NQPTP, X_OK) == 0;
+    const bool meta = airplay_has_metadata(ap2 ? AP2_BIN : AP_BIN);
+    if (meta) {
+        ::unlink(AP_META);
+        if (::mkfifo(AP_META, 0600) == 0) g_ap_meta_fd = ::open(AP_META, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (g_ap_meta_fd < 0) clog_("airplay: no metadata pipe — the sender's song will not be shown");
+    }
+    static const char kMetaOpt[] = "--metadata-pipename=/tmp/cinder_airplay_meta";
+    const bool use_meta = g_ap_meta_fd >= 0;
+    auto drop_meta = []() { if (g_ap_meta_fd >= 0) { ::close(g_ap_meta_fd); g_ap_meta_fd = -1; ::unlink(AP_META); } };
     int fd[2];
-    if (::pipe(fd) < 0) return false;
+    if (::pipe(fd) < 0) { drop_meta(); return false; }
     pid_t p = ::fork();
-    if (p < 0) { ::close(fd[0]); ::close(fd[1]); return false; }
+    if (p < 0) { ::close(fd[0]); ::close(fd[1]); drop_meta(); return false; }
     if (p == 0) {
         ::dup2(fd[1], 1);
         int nul = ::open("/dev/null", O_WRONLY);
@@ -13276,9 +13268,11 @@ static bool airplay_start() {
             }
             if (h > 0) ::waitpid(h, nullptr, 0);
             if (nul >= 0) ::close(nul);
+            if (use_meta) ::execl(AP2_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", "-M", "-g", kMetaOpt, (char*)nullptr);
             ::execl(AP2_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", (char*)nullptr);
         }
         if (nul >= 0) ::close(nul);
+        if (use_meta) ::execl(AP_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", "-M", "-g", kMetaOpt, (char*)nullptr);
         ::execl(AP_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", (char*)nullptr);
         ::_exit(127);
     }
@@ -13295,6 +13289,7 @@ static bool airplay_start() {
     pthread_attr_destroy(&at);
     if (!ok) { airplay_stop("no reader thread"); return false; }
     clog_(ap2 ? "airplay: receiver started (AirPlay 2 build, nqptp)" : "airplay: receiver started (AirPlay 1)");
+    if (use_meta) clog_("airplay: the sender's song and cover come through its metadata pipe");
     return true;
 }
 
@@ -13387,7 +13382,7 @@ static void ambient_tick() {
     int code;
     if (!sound) code = 0;
     else if (bridge) code = 4;
-    else if (music) code = g_mono_shim_seen == 1 ? 1 : 5;
+    else if (music) code = mono_shim_seen() == 1 ? 1 : 5;
     else if (busy) code = 7;
     else if (g_amb_alive || g_amb_bt_alive) code = (int)g_amb_route;
     else if (want && !want_bt && !amb_can_play_jack()) code = 7;
@@ -13898,7 +13893,7 @@ void carry_out(int act) {
             const int on = cinder_get_mono();
             char m[160];
             std::snprintf(m, sizeof m,
-                          g_mono_shim_seen == 1
+                          mono_shim_seen() == 1
                               ? "sound: mono %s — jack and Bluetooth at once (libcinder_mono.so), "
                                 "USB-DAC->LDAC from its next session"
                               : "sound: mono %s — applies to USB-DAC->LDAC only (next session); "
@@ -18069,6 +18064,10 @@ void start_pump_ticker() {
 }
 
 } // namespace
+
+// The log and the advanced switches for the files split out of this one (preload_glue.cpp).
+void cinder_home_log(const char* m) { clog_(m); }
+bool cinder_home_adv_on(const char* key) { return adv_on(key); }
 
 // `cinder-home --stock-eq`: THE HAND-BACK FOR THE ROUTES THAT NEVER RUN boot_to_stock(). The cable
 // escape, a bad-boot revert and a crash hand-over all reach Sony's player from the launcher, which

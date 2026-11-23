@@ -1453,6 +1453,8 @@ pub struct App {
     /// Showing a fabricated hardware fact is worse than showing none, so the line stayed generic
     /// until the format could cross the FFI boundary. This is that.
     usb_dac_fmt: Option<(u32, u32, u32)>,
+    /// What an AirPlay sender says is playing (`set_airplay_meta`).
+    airplay_meta: crate::live::AirPlayMeta,
     /// llusbdac: installed (the shell found the module), asked for, and loaded (it then stays until
     /// the restart, so the switch locks on).
     usb_dac_ll_avail: bool,
@@ -2214,6 +2216,7 @@ impl Default for App {
             ambient_route: crate::soundscape::Route::Off,
             ambient_sel: 0,
             usb_dac_fmt: None,
+            airplay_meta: Default::default(),
             usb_dac_ll_avail: false,
             usb_dac_ll: false,
             usb_dac_ll_stats: None,
@@ -8250,62 +8253,35 @@ impl App {
 
     /// Now Playing's two lines while sound comes from a live source (`live::*`, as the shell
     /// reports it), built from what that source's page already knows. `dlna_title` is the DLNA
-    /// controller's own title for its link.
+    /// controller's own title for its link. The rules are `live::lines`.
     pub fn live_lines(&self, kind: u8, dlna_title: &str) -> (String, String) {
-        let text = crate::i18n::text;
-        // An ICY title is "Artist - Song".
-        let split = |t: &str| match t.split_once(" - ") {
-            Some((a, s)) if !s.trim().is_empty() => (s.trim().to_string(), a.trim().to_string()),
-            _ => (t.trim().to_string(), String::new()),
+        let station = self
+            .radio_status
+            .station
+            .and_then(|i| self.radio_stations.get(i))
+            .map(|s| s.name.as_str());
+        crate::live::lines(
+            kind,
+            &crate::live::Inputs {
+                station,
+                radio_title: &self.radio_status.title,
+                dlna_title,
+                airplay: &self.airplay_meta,
+                fm_khz: self.fm_khz,
+                rx_peer: &self.rx_peer,
+                rx_codec: self.rx_codec,
+                usb_dac_fmt: self.usb_dac_fmt,
+            },
+        )
+    }
+    /// What an AirPlay sender says is playing (shairport-sync's metadata): title, artist, album.
+    /// Empty strings when it says nothing.
+    pub fn set_airplay_meta(&mut self, title: &str, artist: &str, album: &str) {
+        self.airplay_meta = crate::live::AirPlayMeta {
+            title: title.to_string(),
+            artist: artist.to_string(),
+            album: album.to_string(),
         };
-        match kind {
-            live::RADIO => {
-                let station = self
-                    .radio_status
-                    .station
-                    .and_then(|i| self.radio_stations.get(i))
-                    .map(|s| s.name.clone())
-                    .unwrap_or_else(|| text("Internet radio").to_string());
-                match split(&self.radio_status.title) {
-                    (s, _) if s.is_empty() => (station, text("Internet radio").to_string()),
-                    (s, a) if a.is_empty() => (s, station),
-                    (s, a) => (s, format!("{a} · {station}")),
-                }
-            }
-            live::DLNA => {
-                let (s, a) = split(dlna_title);
-                let from = text("Play to this player").to_string();
-                match (s.is_empty(), a.is_empty()) {
-                    (true, _) => (from, String::new()),
-                    (false, true) => (s, from),
-                    (false, false) => (s, a),
-                }
-            }
-            live::AIRPLAY => (text("AirPlay").to_string(), String::new()),
-            live::FM => (
-                format!("{:.1} MHz", self.fm_khz as f32 / 1000.0),
-                text("FM radio").to_string(),
-            ),
-            live::RECEIVER => (
-                if self.rx_peer.is_empty() {
-                    text("Bluetooth").to_string()
-                } else {
-                    self.rx_peer.clone()
-                },
-                if self.rx_codec == 0 {
-                    String::new()
-                } else {
-                    crate::receiver::codec_label(self.rx_codec)
-                },
-            ),
-            live::USB_DAC => (
-                text("USB-DAC").to_string(),
-                self.usb_dac_fmt
-                    .map(|(rate, bits, _)| format!("{:.1} kHz · {bits}-bit", rate as f32 / 1000.0))
-                    .unwrap_or_default(),
-            ),
-            _ => (String::new(), String::new()),
-        }
     }
     /// Pick station `i` as a tap on it would (dev command channel). False when there is none.
     pub fn pick_radio(&mut self, i: usize) -> bool {
@@ -15839,14 +15815,7 @@ fn tab_name(t: Tab) -> &'static str {
 /// Display title for a Screen, taken from the Menu table (falls back to the app name).
 /// What is making the sound when it is not the library (`cinder_set_live_source`, cinder.h's
 /// `CINDER_LIVE_*`). 0 = the library.
-pub mod live {
-    pub const RADIO: u8 = 1;
-    pub const DLNA: u8 = 2;
-    pub const AIRPLAY: u8 = 3;
-    pub const FM: u8 = 4;
-    pub const RECEIVER: u8 = 5;
-    pub const USB_DAC: u8 = 6;
-}
+pub use crate::live;
 
 fn screen_title(s: Screen) -> &'static str {
     match s {

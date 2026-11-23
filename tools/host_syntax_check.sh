@@ -76,6 +76,7 @@ check "$CXX" "src/main.cpp"     cinder-home/src/main.cpp     "${CXXFLAGS[@]}" "$
 check "$CXX" "src/main.cpp [dev]" cinder-home/src/main.cpp "${CXXFLAGS[@]}" -DCINDER_DEV=1 "${INC[@]}"
 check "$CXX" "src/probe.cpp"    cinder-home/src/probe.cpp    "${CXXFLAGS[@]}" "${INC[@]}"
 check "$CXX" "src/discover.cpp" cinder-home/src/discover.cpp "${CXXFLAGS[@]}" "${INC[@]}"
+check "$CXX" "src/preload_glue.cpp" cinder-home/src/preload_glue.cpp "${CXXFLAGS[@]}" "${INC[@]}"
 
 echo
 echo "cinder-audio (the Sony IPC shims — no tests, see SHORTCOMINGS.md §A2):"
