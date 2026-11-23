@@ -9,12 +9,15 @@
 //
 // type and code are four-character codes in hex; data is base64 in lines of 76. The song's names
 // come as type `core`: `minm` title, `asar` artist, `asal` album; its cover as `ssnc` `PICT`
-// (JPEG or PNG bytes); `ssnc` `pbeg` starts a new play session. Pure and host-tested
+// (JPEG or PNG bytes); `ssnc` `pbeg` starts a new play session. Where the song is: `ssnc` `prgr`,
+// "start/now/end" RTP stamps at 44.1 kHz, when the sender says; its length alone: `core` `astm`
+// (milliseconds, 4 bytes big-endian). Pure and host-tested
 // (tools/airplay_meta_selftest.cpp); main.cpp's AirPlay reader feeds it.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 
@@ -27,6 +30,7 @@ constexpr uint32_t fourcc(const char* s) {
 constexpr uint32_t CORE = fourcc("core"), SSNC = fourcc("ssnc");
 constexpr uint32_t MINM = fourcc("minm"), ASAR = fourcc("asar"), ASAL = fourcc("asal");
 constexpr uint32_t PICT = fourcc("PICT"), PBEG = fourcc("pbeg");
+constexpr uint32_t PRGR = fourcc("prgr"), ASTM = fourcc("astm");
 
 // Standard base64; whitespace skipped. False on any other character.
 inline bool b64_decode(const char* p, size_t n, std::string& out) {
@@ -120,18 +124,38 @@ private:
 struct Song {
     std::string title, artist, album;
     std::string pict;   // the cover's bytes; empty = none
+    int64_t pos_ms = -1;  // where the song is, as of the item that said so; -1 = not said
+    int64_t dur_ms = 0;   // its length; 0 = not known
 };
 
-enum : int { NAMES = 1, PICTURE = 2 };
+enum : int { NAMES = 1, PICTURE = 2, PROGRESS = 4 };
 
 // Applies one item; says what changed (NAMES, PICTURE, both, or 0).
 inline int apply(Song& s, const Item& it) {
     if (it.type == CORE) {
         std::string* f = it.code == MINM ? &s.title : it.code == ASAR ? &s.artist
                        : it.code == ASAL ? &s.album : nullptr;
+        if (it.code == ASTM && it.data.size() == 4) {
+            const uint32_t ms = (uint32_t(uint8_t(it.data[0])) << 24) | (uint32_t(uint8_t(it.data[1])) << 16) |
+                                (uint32_t(uint8_t(it.data[2])) << 8) | uint32_t(uint8_t(it.data[3]));
+            s.dur_ms = ms;
+            return PROGRESS;
+        }
         if (!f || *f == it.data) return 0;
         *f = it.data;
+        if (f == &s.title) {   // a new song starts at its beginning until the sender says otherwise
+            s.pos_ms = 0;
+            return NAMES | PROGRESS;
+        }
         return NAMES;
+    }
+    if (it.type == SSNC && it.code == PRGR) {
+        unsigned long a = 0, b = 0, c = 0;
+        if (std::sscanf(it.data.c_str(), "%lu/%lu/%lu", &a, &b, &c) != 3) return 0;
+        // RTP stamps wrap at 2^32: the differences, in 32 bits, are right across the wrap.
+        s.pos_ms = int64_t(uint32_t(b - a)) * 1000 / 44100;
+        s.dur_ms = int64_t(uint32_t(c - a)) * 1000 / 44100;
+        return PROGRESS;
     }
     if (it.type == SSNC && it.code == PICT) {
         s.pict = it.data;
@@ -139,7 +163,7 @@ inline int apply(Song& s, const Item& it) {
     }
     if (it.type == SSNC && it.code == PBEG) {   // a new session: nothing is known yet
         const int was = (s.title.empty() && s.artist.empty() && s.album.empty() ? 0 : NAMES) |
-                        (s.pict.empty() ? 0 : PICTURE);
+                        (s.pict.empty() ? 0 : PICTURE) | (s.pos_ms < 0 && s.dur_ms == 0 ? 0 : PROGRESS);
         s = Song{};
         return was;
     }

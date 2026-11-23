@@ -5902,6 +5902,20 @@ fn live_np(r: &mut Render, kind: u8, playing: bool) {
     r.np.title = title;
     r.np.artist = sub;
     r.np.playing = playing;
+    // An AirPlay sender that says where its song is gets a real bar and countdown.
+    if kind == cinder_ui::live::AIRPLAY {
+        if let Some((pos, dur)) = airplay::progress(playing) {
+            if dur > 0 {
+                set_progress(&mut r.np, pos, dur);
+            } else {
+                r.np.elapsed = fmt_time(pos.max(0));
+                r.np.remaining.clear();
+                r.np.progress = 0.0;
+            }
+            r.dirty = true;
+            return;
+        }
+    }
     // Time since it started; there is no end, so no bar and no countdown (set_progress would clamp
     // the time to a zero duration).
     let since = r

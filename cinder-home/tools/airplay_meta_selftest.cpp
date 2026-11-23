@@ -74,7 +74,28 @@ int main() {
         int last = 0;
         const std::string two = item("core", "minm", "One") + item("ssnc", "pbeg", "");
         p.feed(two.data(), two.size(), [&](const apmeta::Item& it) { last = apmeta::apply(song, it); });
-        CHECK(song.title.empty() && last == apmeta::NAMES, "a new session (pbeg) clears the names and says so");
+        CHECK(song.title.empty() && song.pos_ms == -1 && last == (apmeta::NAMES | apmeta::PROGRESS),
+              "a new session (pbeg) clears the names and the position, and says so");
+    }
+    {
+        apmeta::Parser p;
+        apmeta::Song song;
+        int got = 0;
+        // 10 s into a 200 s song, the stamps wrapping past 2^32 on the way (shairport-sync's
+        // "start/now/end" at 44.1 kHz), then a new title that starts at 0.
+        const unsigned a = 4294967000u, b = a + 441000u, c = a + 8820000u;
+        char prgr[64];
+        std::snprintf(prgr, sizeof prgr, "%u/%u/%u", a, b, c);
+        const std::string ms("\x00\x03\x0d\x40", 4);   // 200000 ms
+        const std::string items = item("ssnc", "prgr", prgr);
+        p.feed(items.data(), items.size(), [&](const apmeta::Item& it) { got |= apmeta::apply(song, it); });
+        CHECK(song.pos_ms == 10000 && song.dur_ms == 200000 && got == apmeta::PROGRESS,
+              "prgr gives the position and length, across the RTP wrap");
+        const std::string next = item("core", "astm", ms) + item("core", "minm", "Next");
+        got = 0;
+        p.feed(next.data(), next.size(), [&](const apmeta::Item& it) { got |= apmeta::apply(song, it); });
+        CHECK(song.pos_ms == 0 && song.dur_ms == 200000 && got == (apmeta::NAMES | apmeta::PROGRESS),
+              "astm gives the length; a new title starts at 0");
     }
     {
         apmeta::Parser p;
@@ -82,7 +103,7 @@ int main() {
         int got = 0;
         const std::string junk = std::string("garbage<item><type>zz</type></item>\n") + item("core", "minm", "Ok");
         p.feed(junk.data(), junk.size(), [&](const apmeta::Item& it) { got += apmeta::apply(song, it); });
-        CHECK(song.title == "Ok" && got == apmeta::NAMES, "junk before an item, and a broken item, are skipped");
+        CHECK(song.title == "Ok" && got == (apmeta::NAMES | apmeta::PROGRESS), "junk before an item, and a broken item, are skipped");
     }
     {
         apmeta::Parser p;

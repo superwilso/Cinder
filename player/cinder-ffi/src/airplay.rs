@@ -55,6 +55,49 @@ pub unsafe extern "C" fn cinder_set_airplay_art(data: *const u8, len: c_int) {
     }
 }
 
+/// Where the sender's song is: (position ms, length ms, when that position was true). Paused, the
+/// clock is moved up to the present each frame so the position stops with it.
+static PROGRESS: Mutex<Option<(i64, i64, std::time::Instant)>> = Mutex::new(None);
+
+/// Where the sender's song is (`pos_ms` -1 = not said, which keeps the count going) and its
+/// length (0 = not known).
+#[no_mangle]
+pub extern "C" fn cinder_set_airplay_progress(pos_ms: i64, dur_ms: i64) {
+    let now = std::time::Instant::now();
+    let mut g = PROGRESS.lock().unwrap();
+    if pos_ms < 0 && dur_ms <= 0 {
+        *g = None; // a new session: nothing is known yet
+        return;
+    }
+    let pos = if pos_ms >= 0 {
+        pos_ms
+    } else {
+        g.map(|(p, _, at)| p + now.duration_since(at).as_millis() as i64)
+            .unwrap_or(0)
+    };
+    *g = Some((pos, dur_ms.max(0), now));
+    drop(g);
+    if let Ok(mut g) = crate::cell().lock() {
+        if let Some(r) = g.as_mut() {
+            r.dirty = true;
+        }
+    }
+}
+
+/// The song's position and length now, if the sender said; the position stands still while
+/// `playing` is false.
+pub(crate) fn progress(playing: bool) -> Option<(i64, i64)> {
+    let now = std::time::Instant::now();
+    let mut g = PROGRESS.lock().unwrap();
+    let (p, d, at) = (*g)?;
+    let pos = p + now.duration_since(at).as_millis() as i64;
+    if !playing {
+        *g = Some((p, d, now));
+        return Some((p, d));
+    }
+    Some((pos, d))
+}
+
 /// What arrived since the last call: `None` nothing new, `Some(None)` no cover, `Some(Some(_))` one.
 pub(crate) fn take_art() -> Option<Option<cinder_ui::art::Image>> {
     ART.lock().unwrap().take()

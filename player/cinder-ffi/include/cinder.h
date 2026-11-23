@@ -929,6 +929,9 @@ void cinder_set_live_source(int kind, int playing);
 void cinder_set_airplay_meta(const char* title, const char* artist, const char* album);
 /* Its cover, JPEG or PNG bytes, decoded on the calling thread. NULL or len 0 = no cover. */
 void cinder_set_airplay_art(const unsigned char* data, int len);
+/* Where the sender's song is, in ms, as of this call (-1 = not said), and its length (0 = not
+ * known); -1 and 0 together = a new session, nothing known. Now Playing counts on from here. */
+void cinder_set_airplay_progress(long long pos_ms, long long dur_ms);
 /* llusbdac: avail = module installed, loaded = in the kernel. get: 1 = engage loads it. */
 void cinder_set_usb_dac_low_latency(int avail, int loaded);
 int cinder_get_usb_dac_low_latency(void);

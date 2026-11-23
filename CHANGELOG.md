@@ -35,7 +35,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   appeared in the list. Its network announcement had one entry longer than the built-in
   announcer allowed. Once listed, connecting failed too: the receiver stopped the moment a phone
   paired, asking the system for random numbers in a way the player's kernel does not offer. It
-  now reads them the older way. *Device-verified: listed on an iPhone; playing is being tested.*
+  now reads them the older way. And when the first song arrived, Cinder itself closed (the player
+  went back to Sony's app) if nothing had played on the jack since it started; the audio output
+  now gets ready on its own. *Device-verified: listed on an iPhone; playing is being tested.*
 - **"Play this now?" no longer asks once the songs you added have played.** Adding a song to Up
   Next and letting it play left the question switched on, so starting anything new asked about an
   Up Next that held only the rest of the album.

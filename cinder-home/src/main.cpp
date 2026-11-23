@@ -12571,93 +12571,7 @@ struct RadioDec {
     }
 };
 
-struct RadioOut {
-    snd_pcm_t* pcm = nullptr;
-    int fd = -1;
-    unsigned rate = 0, src_rate = 0;
-    double pos = 0;               // resampler: position in the source, for Bluetooth's 44.1 kHz
-    short last[2] = { 0, 0 };
-    std::vector<short> tmp;
-};
-
-static bool radio_out_open(RadioOut& o, unsigned src_rate, bool bt) {
-    o.src_rate = src_rate;
-    if (bt) {
-        o.fd = ldac_connect_socket(44100, 2);
-        o.rate = 44100;
-        return o.fd >= 0;
-    }
-    // The stream's own rate first; a rate the jack will not take (a hi-res file) is resampled to
-    // its family's base rate.
-    const unsigned base = src_rate % 11025 == 0 ? 44100 : 48000;
-    for (unsigned rate : { src_rate, base }) {
-        for (const char* d : { "hw:0,4", "hw:0,0" }) {
-            if (g_alsa.open(&o.pcm, d, /*PLAYBACK*/0, 0) < 0) { o.pcm = nullptr; continue; }
-            if (g_alsa.set_params(o.pcm, /*S16_LE*/2, /*RW_INTERLEAVED*/3, 2, rate, 1, 250000) >= 0) {
-                o.rate = rate;
-                return true;
-            }
-            g_alsa.close(o.pcm);
-            o.pcm = nullptr;
-        }
-    }
-    return false;
-}
-
-// Write interleaved stereo. A stream at another rate than the output's (any stream not 44.1 kHz
-// over Bluetooth, a hi-res one on the jack) is resampled linearly.
-// ponytail: linear interpolation; a windowed-sinc resampler if 48 kHz stations sound dull over BT.
-static bool radio_out_write(RadioOut& o, const short* pcm, unsigned frames) {
-    if (!o.pcm && o.fd < 0) return false;
-    const short* out = pcm;
-    size_t n = frames;
-    if (o.src_rate != o.rate) {
-        const double step = (double)o.src_rate / o.rate;
-        o.tmp.clear();
-        for (; o.pos < frames; o.pos += step) {
-            unsigned i = (unsigned)o.pos;
-            double fr = o.pos - i;
-            for (int c = 0; c < 2; c++) {
-                short a = i == 0 ? o.last[c] : pcm[(i - 1) * 2 + c];
-                short b = pcm[i * 2 + c];
-                o.tmp.push_back((short)(a + (b - a) * fr));
-            }
-        }
-        o.pos -= frames;
-        o.last[0] = pcm[(frames - 1) * 2];
-        o.last[1] = pcm[(frames - 1) * 2 + 1];
-        out = o.tmp.data();
-        n = o.tmp.size() / 2;
-    }
-    if (o.pcm) {
-        while (n) {
-            long w = g_alsa.writei(o.pcm, out, n);
-            if (w == -EPIPE || w == -ESTRPIPE || w == -EINTR) {
-                if (w == -EPIPE) ++g_radio_xruns;
-                g_alsa.prepare(o.pcm);
-                continue;
-            }
-            if (w < 0) return false;
-            out += w * 2;
-            n -= (size_t)w;
-        }
-        return true;
-    }
-    const unsigned char* p = (const unsigned char*)out;
-    size_t want = n * 4;
-    while (want) {
-        ssize_t w = ::send(o.fd, p, want, MSG_NOSIGNAL);
-        if (w < 0) { if (errno == EINTR) continue; return false; }
-        p += w;
-        want -= (size_t)w;
-    }
-    return true;
-}
-
-static void radio_out_close(RadioOut& o) {
-    if (o.pcm) { if (g_alsa.drop) g_alsa.drop(o.pcm); g_alsa.close(o.pcm); o.pcm = nullptr; }
-    if (o.fd >= 0) { ::close(o.fd); o.fd = -1; }
-}
+#include "radio_out.h"   // the radio/DLNA/AirPlay output: jack or Bluetooth bridge, resampled
 
 static void* radio_thread(void*) {
     g_radio_alive = 1;
@@ -13148,6 +13062,18 @@ static void airplay_meta_read(apmeta::Parser& parser, apmeta::Song& song) {
             }
             if (changed & apmeta::PICTURE)
                 cinder_set_airplay_art((const unsigned char*)song.pict.data(), (int)song.pict.size());
+            if (changed & apmeta::PROGRESS) cinder_set_airplay_progress(song.pos_ms, song.dur_ms);
+            // With the AirPlay debug switch on, every item the sender sends, for what it does not.
+            static const bool dbg = ::access("/contents/cinder_airplay_debug", F_OK) == 0;
+            if (dbg) {
+                char m[160], t[5] = { char(it.type >> 24), char(it.type >> 16), char(it.type >> 8), char(it.type), 0 },
+                     c[5] = { char(it.code >> 24), char(it.code >> 16), char(it.code >> 8), char(it.code), 0 };
+                bool text = it.data.size() <= 60;
+                for (char ch : it.data) text = text && ch >= 32 && ch < 127;
+                std::snprintf(m, sizeof m, "airplay: item %s/%s %zu bytes%s%.60s", t, c, it.data.size(),
+                              text ? " " : "", text ? it.data.c_str() : "");
+                clog_(m);
+            }
         });
     }
 }
@@ -13254,9 +13180,19 @@ static bool airplay_start() {
     if (p == 0) {
         ::dup2(fd[1], 1);
         int nul = ::open("/dev/null", O_WRONLY);
-        if (nul >= 0) ::dup2(nul, 2);
+        // Dev switch: /contents/cinder_airplay_debug makes the receiver say what it is doing (-vv)
+        // into /tmp/cinder_airplay.log, for a sender that sees the player but cannot play to it.
+        const bool dbg = ::access("/contents/cinder_airplay_debug", F_OK) == 0;
+        int err = dbg ? ::open("/tmp/cinder_airplay.log", O_WRONLY | O_CREAT | O_TRUNC, 0644) : -1;
+        if (err >= 0) { ::dup2(err, 2); ::close(err); }
+        else if (nul >= 0) ::dup2(nul, 2);
         for (int i = 3; i < 256; i++) if (i != nul) ::close(i);
         ::chdir("/tmp");
+        const char* argv[10] = { "shairport-sync", "-a", AP_NAME, "-o", "stdout" };
+        int argc = 5;
+        if (use_meta) { argv[argc++] = "-M"; argv[argc++] = "-g"; argv[argc++] = kMetaOpt; }
+        if (err >= 0) argv[argc++] = "-vv";
+        argv[argc] = nullptr;
         if (ap2) {
             // nqptp first (the receiver looks for it once, at start). The helper's own words go
             // to /dev/null, not into the audio pipe on stdout.
@@ -13268,12 +13204,10 @@ static bool airplay_start() {
             }
             if (h > 0) ::waitpid(h, nullptr, 0);
             if (nul >= 0) ::close(nul);
-            if (use_meta) ::execl(AP2_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", "-M", "-g", kMetaOpt, (char*)nullptr);
-            ::execl(AP2_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", (char*)nullptr);
+            ::execv(AP2_BIN, (char* const*)argv);
         }
         if (nul >= 0) ::close(nul);
-        if (use_meta) ::execl(AP_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", "-M", "-g", kMetaOpt, (char*)nullptr);
-        ::execl(AP_BIN, "shairport-sync", "-a", AP_NAME, "-o", "stdout", (char*)nullptr);
+        ::execv(AP_BIN, (char* const*)argv);
         ::_exit(127);
     }
     ::close(fd[1]);
@@ -17316,8 +17250,10 @@ void* render_driver(void*) {
                 // under a stream is the fault this fixes, so it errs toward leaving it on.)
                 HK_MARK();
                 const bool on_bt = cinder_get_bt_route() != 0;
+                // Internet radio, DLNA and AirPlay (`net`) play on the jack through it too: left out,
+                // a dark screen put the DAC and amp to standby 30 s into an AirPlay song (11-23).
                 const bool codec_in_path = src.radio || src.receiver || src.usb_dac
-                                           || ((src.library || src.ambient) && !on_bt);
+                                           || ((src.library || src.ambient || src.net) && !on_bt);
                 // ON BLUETOOTH THE SCREEN HAS NOTHING TO DO WITH IT (2026-10-05). This used to
                 // wait for a dark screen whatever the route, and every time the screen lit the
                 // codec was woken again: in the owner's log of a walk with headphones on, the
