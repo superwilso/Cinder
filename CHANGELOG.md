@@ -46,7 +46,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   it, instead of through Cinder: the stutters, speed-ups and crackle are gone (Bluetooth still
   goes through Cinder). A phone that dropped its first connection and reconnected used to leave
   the output locked, so the player showed as connected but played nothing; it no longer does.
-  *Device-verified: plays cleanly from an iPhone on the jack (the reconnect fix is not yet).*
+  *Device-verified, reconnect fix included.*
 - **"Play this now?" no longer asks once the songs you added have played.** Adding a song to Up
   Next and letting it play left the question switched on, so starting anything new asked about an
   Up Next that held only the rest of the album.
