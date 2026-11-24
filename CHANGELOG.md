@@ -16,11 +16,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
-### Changed
-
-- **Big view is the default.** A first start, or a settings file from before the switch existed,
-  opens in Big view. A saved choice is kept, so a player set to the normal size stays that way.
-
 ## [0.4.5] — 2026-11-24
 
 ### Fixed
@@ -35,6 +30,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   ahead; Now Playing then ran 12 s behind the music. Cinder now puts the player back at the
   position you heard when it pauses. *Device-verified on a jack capture rig (pause, resume and
   seek).*
+
+### Changed
+
+- **Big view is the default.** A first start, or a settings file from before the switch existed,
+  opens in Big view. A saved choice is kept, so a player set to the normal size stays that way.
 
 ## [0.4.4] — 2026-11-24
 
