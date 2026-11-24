@@ -17134,7 +17134,14 @@ void* render_driver(void*) {
                 const bool charging = battery_charging();
                 if (was_charging && !charging) unplugged_ms = now_ms();
                 was_charging = charging;
-                const long long idle_from = std::max(g_last_input_ms, unplugged_ms);
+                // And from the last moment anything was audible: idle means N minutes with NOTHING
+                // playing. Counting from the last touch alone switched the player off mid-song
+                // (2026-11-24, 36 min of screen-off jack playback): in ultra deep idle the position
+                // callbacks arrive late, `audible` read false for one tick, and the touch was
+                // already 30 min old. A pause after a long listen powered off at once the same way.
+                static long long audible_ms = 0;
+                if (audible) audible_ms = now_ms();
+                const long long idle_from = std::max({g_last_input_ms, unplugged_ms, audible_ms});
                 if (off_min > 0 && !audible && !g_msc_active && !g_wifi_updating && !cinder_modal_open() &&
                     !charging && now_ms() >= next_try_ms &&
                     now_ms() - idle_from >= (long)off_min * 60000L) {
