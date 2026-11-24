@@ -33,7 +33,7 @@ echo $$ > "$PIDFILE" 2>/dev/null
 
 # Header only once, so restarting after a reboot appends to the same series.
 if [ ! -s "$OUT" ]; then
-    echo "# cinder battery track — epoch uptime capacity voltage_uv status usb backlight cpu_idle cpu_total pcm home_jiffies btif_rx" > "$OUT"
+    echo "# cinder battery track — epoch uptime capacity voltage_uv status usb backlight cpu_idle cpu_total pcm home_jiffies btif_rx dpidle ctxt ring" > "$OUT"
 fi
 
 r() { cat "$1" 2>/dev/null; }
@@ -85,9 +85,15 @@ while : ; do
     # instead (cumulative; hundreds a second while A2DP streams, a few at idle).
     BTIF=$(grep -m1 'btif rx dma' /proc/interrupts 2>/dev/null | tr -s ' ' | cut -d' ' -f2)
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    # Deep idle entries (cumulative), context switches (the wake-up proxy), and the jack PCM's
+    # buffer in frames: 44104 is Sony's 1 s ring, 524288 the `long_ring` one, '-' when closed.
+    DP=$(grep -o 'dpidle_cnt\[0\]=[0-9]*' /sys/power/idle_state 2>/dev/null | cut -d= -f2)
+    CTXT=$(grep -m1 '^ctxt' /proc/stat 2>/dev/null | cut -d' ' -f2)
+    RING=$(grep -m1 '^buffer_size' /proc/asound/card0/pcm4p/sub0/hw_params 2>/dev/null | tr -s ' ' | cut -d' ' -f2)
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$EPOCH" "$UP" "$CAP" "$VOLT" "$STAT" "$USB" "$BL" \
-        "$CPU_IDLE" "$CPU_TOTAL" "$PCM" "$HOME_J" "${BTIF:-0}" >> "$OUT"
+        "$CPU_IDLE" "$CPU_TOTAL" "$PCM" "$HOME_J" "${BTIF:-0}" "${DP:-0}" "${CTXT:-0}" "${RING:--}" >> "$OUT"
 
     sleep "$INTERVAL"
 done

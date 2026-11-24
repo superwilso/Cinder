@@ -29,6 +29,9 @@ def rows(path):
                 status=f[4], usb=f[5], bl=int(f[6] or 0),
                 cpu_idle=int(f[7]), cpu_total=int(f[8]), pcm=f[9], home=int(f[10]),
                 btif=int(f[11]) if len(f) > 11 and f[11].isdigit() else None,
+                dpidle=int(f[12]) if len(f) > 12 and f[12].isdigit() else None,
+                ctxt=int(f[13]) if len(f) > 13 and f[13].isdigit() else None,
+                ring=int(f[14]) if len(f) > 14 and f[14].isdigit() else None,
             ))
         except ValueError:
             continue
@@ -47,6 +50,9 @@ def state_of(r, nxt=None):
     if playing and screen:
         return "playing, screen on"
     if playing:
+        # The long_ring A/B (DEVICE_CHECKLIST 51.54): Sony's 1 s ring is 44104 frames.
+        if r.get("ring") and r["ring"] > 100000:
+            return "playing, screen off, long ring"
         return "playing, screen off"
     if screen:
         return "idle, screen on"
@@ -69,6 +75,7 @@ def main(path):
     dcap = defaultdict(float)
     dmv = defaultdict(float)
     busy = defaultdict(lambda: [0.0, 0.0])  # [busy_jiffies, total_jiffies]
+    wake = defaultdict(lambda: [0.0, 0.0, 0.0])  # [deep idle entries, context switches, seconds]
     charge_s = 0.0
     reboots = 0
 
@@ -92,6 +99,10 @@ def main(path):
         if dtot > 0:
             busy[st][0] += dtot - didle
             busy[st][1] += dtot
+        if a.get("dpidle") is not None and b.get("dpidle") is not None and b["ctxt"] >= a["ctxt"]:
+            wake[st][0] += b["dpidle"] - a["dpidle"]
+            wake[st][1] += b["ctxt"] - a["ctxt"]
+            wake[st][2] += dt
 
     if reboots:
         print(f"reboots        {reboots} (those intervals dropped)")
@@ -103,8 +114,8 @@ def main(path):
         return
 
     print()
-    print(f"{'state':<20} {'hours':>7} {'%/h':>7} {'mV/h':>8} {'cpu busy':>9} {'runtime':>9}")
-    print("-" * 64)
+    print(f"{'state':<31} {'hours':>7} {'%/h':>7} {'mV/h':>8} {'cpu busy':>9} {'runtime':>9}")
+    print("-" * 75)
     for st in sorted(live, key=lambda k: -live[k]):
         h = live[st] / 3600.0
         pph = dcap[st] / h if h > 0 else 0.0
@@ -112,7 +123,15 @@ def main(path):
         bt = busy[st]
         bpct = (100.0 * bt[0] / bt[1]) if bt[1] else 0.0
         rt = f"{100.0 / pph:.1f} h" if pph > 0.05 else "—"
-        print(f"{st:<20} {h:7.2f} {pph:7.2f} {mvph:8.1f} {bpct:8.1f}% {rt:>9}")
+        print(f"{st:<31} {h:7.2f} {pph:7.2f} {mvph:8.1f} {bpct:8.1f}% {rt:>9}")
+
+    if any(w[2] for w in wake.values()):
+        print()
+        print(f"{'state':<31} {'deep idle/min':>14} {'switches/s':>11}")
+        for st in sorted(live, key=lambda k: -live[k]):
+            w = wake[st]
+            if w[2]:
+                print(f"{st:<31} {60 * w[0] / w[2]:14.1f} {w[1] / w[2]:11.1f}")
 
     print()
     print("Reading it: %/h is the gauge, mV/h is the cell. The gauge is coarse (1% steps) and lies")
