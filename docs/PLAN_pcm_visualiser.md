@@ -4,7 +4,7 @@
 Bands half of step 5 are built and host-tested the same day; the device run is
 [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §24.*
 
-> **Built:** `cinder-ffi/src/pcm_tap.rs` (find, parse, choose the slot by timestamp, `pread`),
+> **Built:** `cinder-core/src/pcm_tap.rs` (find, parse, choose the slot by timestamp, `pread`),
 > `spectrum::from_pcm` (2048-point FFT, log bands 40 Hz–16 kHz by energy), the switch-over in
 > `lib.rs` (`viz_tap`, `tap_fresh`, `cinder_viz_wants_analyzer`), and Settings ▸ Visualiser ▸
 > Bands. **Measured before:** Sony's analyzer used 160 CPU ticks in 20 s (7.9% of one of the

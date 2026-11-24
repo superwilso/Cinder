@@ -76,6 +76,10 @@ case "$CHANNEL" in
     *) echo "usage: build.sh [stable|dev]"; exit 1 ;;
 esac
 DIST="$HERE/dist/$CHANNEL"
+# CINDER_APP=5: cinder-home links v0.5 (player/cinder-app5, docs/PLAN_v0.5.md) instead of v0.4's
+# cinder-ffi, into dist/v5-<channel>/. The probe keeps v0.4's library either way.
+APP_CRATE=cinder-ffi
+if [ "${CINDER_APP:-}" = 5 ]; then APP_CRATE=cinder-app5; DIST="$HERE/dist/v5-$CHANNEL"; fi
 echo "── CINDER build channel: $CHANNEL ──"
 
 TARGET=arm-linux-gnueabihf
@@ -104,7 +108,7 @@ echo "[1/4] build cinder-ffi staticlib (Rust UI + SQLite vs glibc 2.23)…"
   CC_arm_unknown_linux_gnueabihf="$CC" \
   AR_arm_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar \
   CFLAGS_arm_unknown_linux_gnueabihf="-DSQLITE_DISABLE_LFS ${T32[*]} ${SYS223[*]}" \
-    cargo build -p cinder-ffi --release --target arm-unknown-linux-gnueabihf "${CARGO_FEATURES[@]}" )
+    cargo build -p cinder-ffi -p "$APP_CRATE" --release --target arm-unknown-linux-gnueabihf "${CARGO_FEATURES[@]}" )
 
 echo "[2/4] compile C++ shell + audio shim (clang/libc++, -fno-rtti)…"
 # Compile against the device libc++ headers AND the glibc-2.23 C headers. We must force the
@@ -158,7 +162,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lPlayerServiceClientUtil -lEffectCtrlDmp -lPowerMgrServiceClient \
      -lUsbDeviceAudioPlayerService -lBtCommonService -lBtTransmitterService \
      -lVolumeService \
-     -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
+     -l:libc++.so.1 -l:libcxxrt.so.1 "-l${APP_CRATE//-/_}" \
      "$SONYLIB/libMediaStoreServiceClient.so" \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$OUT"

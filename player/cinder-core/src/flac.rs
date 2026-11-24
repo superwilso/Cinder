@@ -10,6 +10,9 @@
 //! ponytail: the frame footer's CRC-16 is read, not checked; a damaged frame plays as noise rather
 //! than being dropped. Check it if a damaged file is ever reported.
 
+// C exports take raw handles from the audio engine (same allow as cinder-ffi had).
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::num::Wrapping;
@@ -617,7 +620,13 @@ impl<R: Read + Seek> Decoder<R> {
 /// Opens `path`; null if it is not a FLAC this decoder can play.
 #[no_mangle]
 pub extern "C" fn cinder_flac_open(path: *const libc::c_char) -> *mut Decoder<File> {
-    let p = unsafe { crate::cstr(path) };
+    let p = if path.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(path) }
+            .to_string_lossy()
+            .into_owned()
+    };
     match open(&p) {
         Ok(d) => Box::into_raw(Box::new(d)),
         Err(e) => {

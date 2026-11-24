@@ -67,6 +67,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "cinder-app5"
+version = "0.5.0-dev"
+dependencies = [
+ "cinder-core",
+ "cinder-ui",
+ "libc",
+]
+
+[[package]]
+name = "cinder-core"
+version = "0.1.0"
+dependencies = [
+ "cinder-db",
+ "cinder-ui",
+ "libc",
+]
+
+[[package]]
 name = "cinder-db"
 version = "0.1.0"
 dependencies = [
@@ -77,6 +95,7 @@ dependencies = [
 name = "cinder-ffi"
 version = "0.1.0"
 dependencies = [
+ "cinder-core",
  "cinder-db",
  "cinder-ui",
  "libc",

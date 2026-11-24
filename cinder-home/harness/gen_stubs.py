@@ -88,7 +88,10 @@ def main():
             if not m:
                 continue
             rt, name, args = m.group(1).strip(), m.group(2), m.group(3).strip()
-            if not name.startswith('cinder_') or name in seen or name in HAND_WRITTEN or name in rust:
+            # With a real library the hand-written cinder.h fakes are compiled out (harness.cpp), so
+            # one it does not define yet (cinder-app5, growing) gets a plain stub like the rest.
+            if (not name.startswith('cinder_') or name in seen or name in rust
+                    or (name in HAND_WRITTEN and not (no_ffi and h == HEADERS[0]))):
                 continue
             seen.add(name)
             decls.append((rt, name, args))

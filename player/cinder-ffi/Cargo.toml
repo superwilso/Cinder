@@ -14,11 +14,12 @@ crate-type = ["staticlib", "rlib"]
 [features]
 # Forwarded to cinder-ui: `--features dev` selects the development channel marker. build.sh passes
 # it for the dev build; the stable build omits it. Same tree, one flag.
-dev = ["cinder-ui/dev"]
+dev = ["cinder-ui/dev", "cinder-core/dev"]
 
 [dependencies]
 cinder-ui = { path = "../cinder-ui" }
 cinder-db = { path = "../cinder-db" }
+cinder-core = { path = "../cinder-core" }
 libc = "0.2"
 # Album-cover decoders (pure Rust — must stay glibc-2.23-clean, no C deps).
 # JPEG covers the overwhelming majority of embedded art; PNG the rest; BMP is hand-rolled

@@ -203,7 +203,7 @@ one. (2) A paused PlayerService keeps its track; it has to be closed
 (`cinder_audio_release_sequence` + `cinder_audio_close_player`, as FM does) before Cinder's track
 can exist. Dev flag for that: `touch /tmp/cinder_player.release`.
 
-**Cinder's own FLAC decoder, 2026-11-18.** `player/cinder-ffi/src/flac.rs`: 4- to 32-bit,
+**Cinder's own FLAC decoder, 2026-11-18.** `player/cinder-core/src/flac.rs`: 4- to 32-bit,
 i64 prediction, CRC-8-checked frame sync, SEEKTABLE or bisection seek, C interface
 `cinder_flac_open/info/read/seek/close`. Host tests: five fixtures (16-bit LPC and fixed, 24-bit
 96 kHz, 32-bit, mono) and five of the owner's tracks decode to their own STREAMINFO MD5; seeks are

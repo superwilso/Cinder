@@ -14,7 +14,7 @@
 //! it. It is the same `viz::draw` the Now Playing pages call — not a mock-up of one.
 //!
 //! BANDS (added 2026-09-29) is real for library playback: those columns come from our own FFT of
-//! the decoded audio (`cinder-ffi/src/pcm_tap.rs`). Everything below about the twelve-band ceiling
+//! the decoded audio (`cinder-core/src/pcm_tap.rs`). Everything below about the twelve-band ceiling
 //! still holds for what the analyzer draws — FM and USB-DAC — where the columns are interpolated.
 //!
 //! What was not here before, and why: a band-COUNT row. Sony's AudioAnalyzerService allocates its level

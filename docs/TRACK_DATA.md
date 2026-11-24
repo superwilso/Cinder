@@ -185,7 +185,7 @@ chapters, in file-name order with numbers compared as numbers (`2` before `10`).
 | Saved views | `player/cinder-ui/src/views.rs` (`SavedView`, `parse`, `serialize`) |
 | Load and save | `cinder-ffi/src/lib.rs`: `load_views`, `save_views`, `flush_stats` |
 | Audiobooks: which files, the store | `player/cinder-ffi/src/books.rs` (`book_dir`, `rows`, `Store`, `start_point`) |
-| Audiobooks: series tags | `player/cinder-ffi/src/series.rs` (`read_file`), ordering in `books::order` |
+| Audiobooks: series tags | `player/cinder-core/src/series.rs` (`read_file`), ordering in `books::order` |
 | Audiobooks: saving and playing | `cinder-ffi/src/lib.rs`: `record_book_pos`, `flush_books`, `Action::PlayBook` |
 | Audiobooks: the screen | `player/cinder-ui/src/audiobooks.rs`, the header button in `library.rs` |
 

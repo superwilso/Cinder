@@ -74,6 +74,7 @@ Thumbs.db
 # `cinder-home/tools/pack_upg.sh <channel>` — or fetch the last release's: `tools/fetch_payload.sh`.
 cinder-home/dist/stable/
 cinder-home/dist/dev/
+cinder-home/dist/v5-*/
 
 # === C++ build intermediates + linked binaries (rebuild: bash cinder-home/build.sh) ===
 # .crt223/*.o stay tracked — they are glibc-2.23 toolchain INPUTS, not outputs.
@@ -92,6 +93,7 @@ cinder-home/dist/*/cinder-installer*
 # public headers on every run — none of it is a source of truth for anything.
 .harness/
 .harness-real/
+.harness-real5/
 
 # Debug symbols for the ARM binaries: build.sh writes these next to the stripped output so a crash
 # address can be resolved with addr2line. They are BUILD BYPRODUCTS — 6 MB each, rewritten on every

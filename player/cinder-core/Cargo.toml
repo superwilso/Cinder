@@ -1,0 +1,17 @@
+[package]
+name = "cinder-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The services both Cinder apps share (v0.4's cinder-ffi and v0.5's cinder-app5): plain Rust with
+# no C exports and no drawing, so either app can link them. docs/PLAN_v0.5.md.
+
+[features]
+# The development channel (cinder-ffi forwards its own `dev`): extra timing logs.
+dev = []
+
+[dependencies]
+cinder-db = { path = "../cinder-db" }
+libc = "0.2"
+cinder-ui = { path = "../cinder-ui" }

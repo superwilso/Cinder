@@ -29,17 +29,17 @@
 //! Escape: `/contents/cinder_nothread` (or `CINDER_NOTHREAD=1`) keeps the old synchronous present
 //! (see `cinder_render_init`) — strictly less machinery, per the ladder rule.
 
-use crate::FRAMES_PRESENTED;
+use crate::display::FRAMES_PRESENTED;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, Mutex};
 
 /// Anything that can push a finished frame to the panel. `Framebuffer` on device; mocks in the
 /// tests below.
-pub(crate) trait PresentTarget: Send {
+pub trait PresentTarget: Send {
     fn present(&mut self, buf: &[u32]);
 }
 
-pub(crate) struct PresentThread {
+pub struct PresentThread {
     shared: Arc<Shared>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -62,7 +62,7 @@ impl PresentThread {
     /// Spawn the thread and construct the presenter on it. Blocks until the
     /// opener reports; a failed open joins the thread and returns its error, so the caller can
     /// fall back exactly as if it had called the opener itself.
-    pub(crate) fn start<P, F>(open: F) -> Result<PresentThread, String>
+    pub fn start<P, F>(open: F) -> Result<PresentThread, String>
     where
         P: PresentTarget + 'static,
         F: FnOnce() -> Result<P, String> + Send + 'static,
@@ -128,7 +128,7 @@ impl PresentThread {
     ///
     /// Blocks while the previous frame is still queued — that backpressure is the escape-ladder
     /// contract (module doc), not an implementation convenience.
-    pub(crate) fn submit(&self, canvas_buf: &mut Vec<u32>) {
+    pub fn submit(&self, canvas_buf: &mut Vec<u32>) {
         let mut g = self.shared.slot.lock().unwrap();
         while g.frame.is_some() && !g.shutdown {
             g = self.shared.cv.wait(g).unwrap();
@@ -152,7 +152,7 @@ impl PresentThread {
     /// Block until at least `target` frames have completed presentation. Used by the bench to
     /// time the true present cost through the thread, and available to anything that must know
     /// pixels reached the panel (not just that a frame was submitted).
-    pub(crate) fn wait_presented(&self, target: u64) {
+    pub fn wait_presented(&self, target: u64) {
         let mut g = self.shared.slot.lock().unwrap();
         while FRAMES_PRESENTED.load(Ordering::SeqCst) < target && !g.shutdown {
             g = self.shared.cv.wait(g).unwrap();

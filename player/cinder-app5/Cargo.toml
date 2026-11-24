@@ -1,0 +1,19 @@
+[package]
+name = "cinder-app5"
+version = "0.5.0-dev"
+edition = "2021"
+publish = false
+
+# Cinder v0.5 (docs/PLAN_v0.5.md): the same cinder.h as cinder-ffi, but the shell's calls never wait
+# on drawing. A backend thread owns the state and publishes snapshots; the UI draws from them.
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+dev = ["cinder-ui/dev", "cinder-core/dev"]
+
+[dependencies]
+cinder-core = { path = "../cinder-core" }
+cinder-ui = { path = "../cinder-ui" }
+libc = "0.2"

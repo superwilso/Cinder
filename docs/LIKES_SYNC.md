@@ -2,7 +2,7 @@
 
 *Added 2026-08-20 alongside the PC-side `likesync` tool (repo: `Sony sync`).*
 
-*2026-10-01: the PC side is now [Flint](https://github.com/superwilso/flint) (`flint likes`, and the window's Likes & plays page), which replaced `likesync`. The contract below is unchanged. Flint's port of the key folding (`flint-core/src/likes.rs` `keys`) was compared table by table with `player/cinder-ffi/src/likes.rs` on that date and is identical — but nothing pins the two together yet ([`AUDIT_2026-10-01.md`](AUDIT_2026-10-01.md) F4).*
+*2026-10-01: the PC side is now [Flint](https://github.com/superwilso/flint) (`flint likes`, and the window's Likes & plays page), which replaced `likesync`. The contract below is unchanged. Flint's port of the key folding (`flint-core/src/likes.rs` `keys`) was compared table by table with `player/cinder-core/src/likes.rs` on that date and is identical — but nothing pins the two together yet ([`AUDIT_2026-10-01.md`](AUDIT_2026-10-01.md) F4).*
 
 Cinder has had liked songs since 2026-07-27 (`cinder_liked.conf` + the Now Playing heart + the
 Library's "Liked songs" row). What it did not have is a way for a like to arrive **from** the PC,
@@ -23,7 +23,7 @@ hand over USB-MSC, which matters for a list the owner curated by hand and cannot
 
 ## What Cinder does with the import
 
-`player/cinder-ffi/src/likes.rs`, called from `cinder_db_open` right after the library is built:
+`player/cinder-core/src/likes.rs`, called from `cinder_db_open` right after the library is built:
 
 1. read `/contents/cinder_liked_import.tsv`; absent → nothing happens (the normal boot);
 2. **no `# artist` header → ignore and leave it in place** (it is not ours);

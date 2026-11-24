@@ -21,6 +21,7 @@ The four documents that are always current live outside this directory:
 | Document | What it is |
 |---|---|
 | [`ROADMAP.md`](ROADMAP.md) | **What is planned, and where help is wanted:** what is being built next, testers with a Mac, device tests grouped by setup, open research, other models and translations. |
+| [`PLAN_v0.5.md`](PLAN_v0.5.md) | **Cinder v0.5.0 (2026-11-24).** A new app on the same shell: the redesign, drawing on its own thread with no stalls, and Themes v2 that let people design their own UI. Crates, threads, phases and checks. |
 | [`PLAN_hardware_first.md`](PLAN_hardware_first.md) | **Hardware is the only limit (2026-11-18).** What Sony's software still decides that the hardware doesn't, and the plan to take it back in phases: Bluetooth volume after a redial, battery, Cinder's own library index, Cinder's own decoder and playback engine, an own Bluetooth stack, boot time and memory. Each phase has its research, measurements and state. |
 | [`MONO.md`](MONO.md) | **Mono, and why Cinder stands on its own.** What Sound ▸ MONO does, the install option that puts it in Sony's sound service, its safety, and how it led to Cinder needing nothing else installed. |
 | [`PLAN_big_view.md`](PLAN_big_view.md) | **Big view.** Bigger text and controls in one switch; the pages still to redesign for it. |

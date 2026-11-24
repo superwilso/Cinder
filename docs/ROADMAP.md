@@ -5,6 +5,12 @@ What is planned for Cinder and Flint, and where help is welcome. Feature state l
 [`../CHANGELOG.md`](../CHANGELOG.md). To help with anything here, open an issue saying which item
 you are taking, or report a result there.
 
+## v0.5.0, the next major release
+
+A new Cinder app on the same shell, built alongside v0.4, which now gets fixes only. It brings the
+2026-11-24 redesign, drawing on its own thread so nothing stalls, and Themes v2, so people can design
+their own UI. The plan and phases are in [`PLAN_v0.5.md`](PLAN_v0.5.md).
+
 ## Built, waiting for a test on a player
 
 Each has a row in [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §41:

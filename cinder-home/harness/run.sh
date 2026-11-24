@@ -21,7 +21,12 @@ cd "$(dirname "$0")/../.." || exit 1
 # place of cinder.h's recording stubs, so main.cpp and the UI it drives run together. Only the
 # `real-*` scenarios run by default: the rest assert on stub calls that are not there in this build.
 REAL_FFI="${CINDER_HARNESS_REAL_FFI:-}"
-OUT="${CINDER_HARNESS_OUT:-$([ -n "$REAL_FFI" ] && echo .harness-real || echo .harness)}"
+# CINDER_HARNESS_APP=5 (with REAL_FFI): link v0.5's cinder-app5 instead (docs/PLAN_v0.5.md). What it
+# does not export yet keeps its recording stub, so it can grow one function at a time.
+FFI_CRATE=cinder-ffi
+[ "${CINDER_HARNESS_APP:-}" = 5 ] && FFI_CRATE=cinder-app5
+FFI_A="player/target/debug/lib${FFI_CRATE//-/_}.a"
+OUT="${CINDER_HARNESS_OUT:-$([ -n "$REAL_FFI" ] && echo ".harness-real${CINDER_HARNESS_APP:-}" || echo .harness)}"
 mkdir -p "$OUT" || exit 1
 
 CXX="${CXX:-}"
@@ -44,8 +49,8 @@ LDFLAGS=()
 FFI_LIB=()
 if [ -n "$REAL_FFI" ]; then
     CXXFLAGS+=(-DCINDER_HARNESS_REAL_FFI)
-    (cd player && cargo build -q -p cinder-ffi) || { echo "harness: FAILED to build cinder-ffi" >&2; exit 1; }
-    FFI_LIB=(player/target/debug/libcinder_ffi.a -ldl -lm)
+    (cd player && cargo build -q -p "$FFI_CRATE") || { echo "harness: FAILED to build $FFI_CRATE" >&2; exit 1; }
+    FFI_LIB=("$FFI_A" -ldl -lm)
     export CINDER_FFI_HEADLESS=1   # frames go nowhere: there is no fb0 here
 fi
 [ -n "${CINDER_HARNESS_COVERAGE:-}" ] && { CXXFLAGS+=(--coverage); LDFLAGS+=(--coverage); }
@@ -63,7 +68,7 @@ echo "harness: $($CXX --version | head -1)"
 # Regenerate both tables every run, from the sources they describe: a header that grows a function
 # the app calls must not be able to leave a stale stub behind, and a vtable slot index that is
 # corrected in main.cpp must not leave the harness naming the old method.
-python3 cinder-home/harness/gen_stubs.py . ${REAL_FFI:+--no-ffi=player/target/debug/libcinder_ffi.a} > "$OUT/stubs.cpp" || exit 1
+python3 cinder-home/harness/gen_stubs.py . ${REAL_FFI:+--no-ffi=$FFI_A} > "$OUT/stubs.cpp" || exit 1
 python3 cinder-home/harness/gen_slotmap.py cinder-home/src/main.cpp > "$OUT/slotmap.h" || exit 1
 
 build() { # build <out.o> <src> [extra flags...]
