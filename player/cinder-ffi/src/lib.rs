@@ -10526,6 +10526,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
         return 0;
     }
     let mut loaded = 0;
+    // Big view is the default (owner 11-24): on unless the file says `big_view=0`, so a first boot
+    // (no file) and a file from before the switch existed both start Big; a saved choice is kept.
+    let mut saw_big = false;
     if let Some(r) = cell().lock().unwrap().as_mut() {
         // Before the saved choice, which may only pick among them.
         r.app.set_languages(&installed_languages(LANGUAGES_PATH));
@@ -10941,7 +10944,10 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_brightness(n);
                         }
                     }
-                    "big_view" => r.app.set_big_view(v == "1"),
+                    "big_view" => {
+                        saw_big = true;
+                        r.app.set_big_view(v == "1");
+                    }
                     "ui_scale" => {
                         // set_ui_scale_pct clamps into the SCALE_STEPS range.
                         if let Ok(n) = v.parse::<u32>() {
@@ -11001,6 +11007,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
         let pref = r.hpeq_pref.clone();
         if let Err(e) = hpeq_play(r, &pref) {
             eprintln!("cinder-ffi: headphone EQ {pref}: {e}");
+        }
+        if !saw_big {
+            r.app.set_big_view(true);
         }
         r.settings_path = Some(p);
         r.last_saved_body = settings_body(r);
@@ -13821,6 +13830,14 @@ mod tests {
             assert_eq!(cinder_settings_load(path_c.as_ptr()), 1);
             assert_eq!(cinder_get_rx_codec_pref(), 0, "config: {contents:?}");
         }
+
+        // Big view is the default: on with no `big_view` line (first boot, older file); a saved
+        // `big_view=0` is kept. The file has no other keys, so nothing else is in play.
+        let big = || cell().lock().unwrap().as_ref().unwrap().app.big_view();
+        assert!(big(), "no big_view line = Big view");
+        std::fs::write(&path, "big_view=0\n").unwrap();
+        assert_eq!(cinder_settings_load(path_c.as_ptr()), 1);
+        assert!(!big(), "a saved big_view=0 is kept");
         cinder_render_shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
