@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-11-24
+
 ### Added
 
 - **`long_ring` (Advanced, off by default): longer sleeps during headphone playback.** The
@@ -27,40 +29,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **AirPlay shows the song.** Now Playing shows the title, artist and cover the sending phone or
   computer names, instead of just "AirPlay", and the song's own time and length when the
   sender gives them. Both receivers (AirPlay and AirPlay 2) now pass the
-  sender's song details to Cinder. *Host-tested; device-unverified.*
-
-### Fixed
-
-- **Repeat album on Cinder's own FLAC playback** (the `own_engine` test switch) played the
-  album's last song again instead of going back to its first. *Device-verified.*
-- **AirPlay 2 shows up on iPhones.** The receiver crashed a few seconds after it started
-  whenever a phone or computer on the network looked for AirPlay speakers, so the player never
-  appeared in the list. Its network announcement had one entry longer than the built-in
-  announcer allowed. Once listed, connecting failed too: the receiver stopped the moment a phone
-  paired, asking the system for random numbers in a way the player's kernel does not offer. It
-  now reads them the older way. And when the first song arrived, Cinder itself closed (the player
-  went back to Sony's app) if nothing had played on the jack since it started; the audio output
-  now gets ready on its own. AirPlay 2 also converted every song to a format Cinder heard as
-  noise, and with the screen dark the jack's amplifier was switched off 30 s into a song (internet
-  radio too); both are fixed. On the jack, AirPlay 2 now plays straight to the output, timed by
-  it, instead of through Cinder: the stutters, speed-ups and crackle are gone (Bluetooth still
-  goes through Cinder). A phone that dropped its first connection and reconnected used to leave
-  the output locked, so the player showed as connected but played nothing; it no longer does.
-  *Device-verified, reconnect fix included.*
-- **"Play this now?" no longer asks once the songs you added have played.** Adding a song to Up
-  Next and letting it play left the question switched on, so starting anything new asked about an
-  Up Next that held only the rest of the album.
-- Adding folders to a playlist: the New playlist band says "these songs", not "this track", and
-  the header shows the song count instead of a cut-off folder name.
-- Folders: a long folder name stops before its track count instead of running into it.
-- Artists tab: an artist photo lines up with the covers on the other rows.
-- A header title a little too wide for its space is drawn slightly smaller before it is cut
-  ("Library" in the Terminal style read "Libra…").
-
-## [0.4.4] — 2026-11-22
-
-### Added
-
+  sender's song details to Cinder. *Device-verified from an iPhone (AirPlay 2).*
 - **Holding the Library scrollbar shows the letter you are at**, in a large square in the middle of
   the list, as Sony's player does. On every sort that has the A–Z rail (Z–A artist sorts included).
   *Host-tested; device-tested on Songs.*
@@ -126,6 +95,33 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Turning Wi-Fi off no longer freezes the screen** for about eight seconds while the AirPlay
+  receiver shuts down. *Device-verified.*
+- **Repeat album on Cinder's own FLAC playback** (the `own_engine` test switch) played the
+  album's last song again instead of going back to its first. *Device-verified.*
+- **AirPlay 2 shows up on iPhones.** The receiver crashed a few seconds after it started
+  whenever a phone or computer on the network looked for AirPlay speakers, so the player never
+  appeared in the list. Its network announcement had one entry longer than the built-in
+  announcer allowed. Once listed, connecting failed too: the receiver stopped the moment a phone
+  paired, asking the system for random numbers in a way the player's kernel does not offer. It
+  now reads them the older way. And when the first song arrived, Cinder itself closed (the player
+  went back to Sony's app) if nothing had played on the jack since it started; the audio output
+  now gets ready on its own. AirPlay 2 also converted every song to a format Cinder heard as
+  noise, and with the screen dark the jack's amplifier was switched off 30 s into a song (internet
+  radio too); both are fixed. On the jack, AirPlay 2 now plays straight to the output, timed by
+  it, instead of through Cinder: the stutters, speed-ups and crackle are gone (Bluetooth still
+  goes through Cinder). A phone that dropped its first connection and reconnected used to leave
+  the output locked, so the player showed as connected but played nothing; it no longer does.
+  *Device-verified, reconnect fix included.*
+- **"Play this now?" no longer asks once the songs you added have played.** Adding a song to Up
+  Next and letting it play left the question switched on, so starting anything new asked about an
+  Up Next that held only the rest of the album.
+- Adding folders to a playlist: the New playlist band says "these songs", not "this track", and
+  the header shows the song count instead of a cut-off folder name.
+- Folders: a long folder name stops before its track count instead of running into it.
+- Artists tab: an artist photo lines up with the covers on the other rows.
+- A header title a little too wide for its space is drawn slightly smaller before it is cut
+  ("Library" in the Terminal style read "Libra…").
 - **Sorting songs by length** put an hour-long track among the one-minute ones (its "1:02:03" was
   read as minutes and seconds).
 - **Internet radio no longer repeats the last second when Wi-Fi drops (#59).** When a station
@@ -4424,8 +4420,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.4-rc1...HEAD
-[0.4.4]: https://github.com/superwilso/Cinder/compare/v0.4.3...v0.4.4-rc1
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/superwilso/Cinder/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/superwilso/Cinder/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/superwilso/Cinder/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/superwilso/Cinder/compare/v0.4.0...v0.4.1

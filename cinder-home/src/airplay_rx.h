@@ -327,8 +327,13 @@ static void airplay_stop(const char* why) {
     if (g_ap_pid < 0) return;
     g_ap_stop = 1;
     ::kill(g_ap_pid, SIGTERM);
-    for (int i = 0; i < 200 && g_ap_reader_alive; i++) usleep(10000);
-    ::waitpid(g_ap_pid, nullptr, 0);
+    // The AirPlay 2 receiver takes ~9 s to exit on SIGTERM (measured 11-24), and this runs on the
+    // UI thread: Wi-Fi off froze the screen 7.5 s. 0.2 s, then SIGKILL; the kernel frees the
+    // jack and its sockets, and the only loss is the mDNS goodbye.
+    int i = 0;
+    while (i < 20 && ::waitpid(g_ap_pid, nullptr, WNOHANG) == 0) { usleep(10000); i++; }
+    if (i == 20) { ::kill(g_ap_pid, SIGKILL); ::waitpid(g_ap_pid, nullptr, 0); }
+    for (int k = 0; k < 200 && g_ap_reader_alive; k++) usleep(10000);
     if (g_ap_fd >= 0) ::close(g_ap_fd);
     g_ap_pid = -1;
     g_ap_fd = -1;
