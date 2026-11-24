@@ -21,8 +21,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **Auto power-off no longer switches the player off mid-song.** After 30 minutes of listening
   with the screen off and no button pressed, one late position update could make Cinder think
   nothing was playing, and it powered off; pausing after a long listen powered off at once the same
-  way. The countdown now starts when the music stops. *Device-verified (the 36-minute power-off on
-  2026-11-24); the fixed build is being checked in the same listen.*
+  way. The countdown now starts when the music stops. *Device-verified: a 74-minute screen-off listen
+  with no button pressed stayed on.*
 - **`long_ring`: pausing no longer skips about 12 seconds of the song.** The long ring is
   dropped on a pause, and Sony's player resumed from where it had decoded to, a whole ring
   ahead; Now Playing then ran 12 s behind the music. Cinder now puts the player back at the

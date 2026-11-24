@@ -96,7 +96,9 @@ def main(path):
         dmv[st] += (a["volt"] - b["volt"]) / 1000.0
         dtot = b["cpu_total"] - a["cpu_total"]
         didle = b["cpu_idle"] - a["cpu_idle"]
-        if dtot > 0:
+        # /proc/stat's aggregate jumps when the second core goes on- or offline: skip those pairs.
+        # A pair after a jump over-counts (more jiffies than two cores at HZ=100 can make): skip too.
+        if dtot > 0 and 0 <= didle <= dtot and dtot <= 220 * dt:
             busy[st][0] += dtot - didle
             busy[st][1] += dtot
         if a.get("dpidle") is not None and b.get("dpidle") is not None and b["ctxt"] >= a["ctxt"]:
@@ -134,6 +136,7 @@ def main(path):
                 print(f"{st:<31} {60 * w[0] / w[2]:14.1f} {w[1] / w[2]:11.1f}")
 
     print()
+    print("voltage_now updates only every ~30 min on this player: mV/h needs hours, not minutes.")
     print("Reading it: %/h is the gauge, mV/h is the cell. The gauge is coarse (1% steps) and lies")
     print("near 100%, so trust mV/h over short spans and %/h over long ones. 'runtime' is 100/%/h —")
     print("a projection from that state alone, not a prediction of mixed use.")
