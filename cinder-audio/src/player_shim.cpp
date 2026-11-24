@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <time.h>
+#include <unistd.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -533,7 +534,18 @@ int cinder_audio_edit_sequence(const char* const* uris, int count, int start) {
 }
 
 int cinder_audio_play(void)  { return eng::active() ? eng::resume() : change_state(pl::playstate_t::Play); }
-int cinder_audio_pause(void) { return eng::active() ? eng::pause() : change_state(pl::playstate_t::Pause); }
+int cinder_audio_pause(void) {
+    if (eng::active()) return eng::pause();
+    const int pos = g_cb_pos_ms.load(std::memory_order_relaxed);
+    const int rc = change_state(pl::playstate_t::Pause);
+    // LONG RING (`long_ring`, the mono shim's 12 s low-power ring): a pause drops the ring, but
+    // PlayerService resumes from where it had DECODED to, so every pause skipped ~12 s and Now
+    // Playing then ran 12 s behind the ear (measured on the jack rig 2026-11-24). Its reported
+    // position follows the ear, so seek it back there while paused. Sony's 1 s ring has the same
+    // flaw (~0.8 s per pause), left as Sony has it.
+    if (rc == 0 && pos > 0 && ::access("/tmp/cinder_long_ring", F_OK) == 0) cinder_audio_seek_ms_origin(0, pos);
+    return rc;
+}
 
 // Stop playback AND drop our pinned track sequence, so PlayerService releases the current
 // track's file descriptor. Needed before handing /contents to the PC over USB-MSC: a paused

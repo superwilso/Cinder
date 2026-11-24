@@ -16,6 +16,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **`long_ring`: pausing no longer skips about 12 seconds of the song.** The long ring is
+  dropped on a pause, and Sony's player resumed from where it had decoded to, a whole ring
+  ahead; Now Playing then ran 12 s behind the music. Cinder now puts the player back at the
+  position you heard when it pauses. *Device-verified on a jack capture rig (pause, resume and
+  seek).*
+
 ## [0.4.4] — 2026-11-24
 
 ### Added
