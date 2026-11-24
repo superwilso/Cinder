@@ -40,9 +40,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   went back to Sony's app) if nothing had played on the jack since it started; the audio output
   now gets ready on its own. AirPlay 2 also converted every song to a format Cinder heard as
   noise, and with the screen dark the jack's amplifier was switched off 30 s into a song (internet
-  radio too); both are fixed. The sender's cover no longer holds up the sound when a new song
-  starts, which was making AirPlay stutter. *Device-verified: plays from an iPhone on the jack
-  with no underruns.*
+  radio too); both are fixed. On the jack, AirPlay 2 now plays straight to the output, timed by
+  it, instead of through Cinder: the stutters, speed-ups and crackle are gone (Bluetooth still
+  goes through Cinder). A phone that dropped its first connection and reconnected used to leave
+  the output locked, so the player showed as connected but played nothing; it no longer does.
+  *Device-verified: plays cleanly from an iPhone on the jack (the reconnect fix is not yet).*
 - **"Play this now?" no longer asks once the songs you added have played.** Adding a song to Up
   Next and letting it play left the question switched on, so starting anything new asked about an
   Up Next that held only the rest of the album.

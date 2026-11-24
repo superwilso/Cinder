@@ -4,6 +4,7 @@
 # player's real address), and btsource playing the sound service's stream to the headphones.
 #
 #   cinder-home/tools/btsource_run.sh start AA:BB:CC:DD:EE:FF [GAIN_DB]   default gain -20 dB
+#                                                    CINDER_BT_CODEC=ldac|aac|sbc first: that codec only
 #   cinder-home/tools/btsource_run.sh gain DB        live: louder/quieter, 0 = the sound service's level
 #                                                    (headphones with absolute volume play at 0 dB and
 #                                                    take the player's volume keys instead)
@@ -57,7 +58,7 @@ start)
     run_bg() { sh_ "$BB setsid sh -c 'exec $1 > $2 2>&1' </dev/null >/dev/null 2>&1 & sleep 1"; }
     [ -n "$(sh_ 'ls -l /proc/[0-9]*/fd 2>/dev/null | grep stpbt')" ] \
         || { run_bg "$BB env CINDER_BT_SNOOP=/tmp/cinder_bt.btsnoop /tmp/btbridge -w 86400" /tmp/btbridge.log; sleep 2; }
-    run_bg "/tmp/btsource $addr $gain" /tmp/btsource.log
+    run_bg "$BB env CINDER_BT_CODEC=${CINDER_BT_CODEC:-} /tmp/btsource $addr $gain" /tmp/btsource.log
     for _ in $(seq 30); do
         sleep 1
         l=$(sh_ 'cat /tmp/btsource.log')

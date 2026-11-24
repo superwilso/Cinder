@@ -21,7 +21,8 @@ Cinder's own files for that reason.
 | `wifiscan` | [`tools/wifiscan.c`](tools/wifiscan.c) | a scan with no libraries, for bring-up |
 | `curl`, `cacert.pem` | curl 8.22.0 + OpenSSL 3.0, static; Mozilla's CA list as curl.se publishes it | HTTPS: ListenBrainz, the update check, internet radio |
 | `shairport-sync` | Shairport Sync 5.5.2 (MIT), popt, libconfig, static; [`airplay/config.h`](airplay/config.h) in place of autotools | the AirPlay 1 receiver, audio to stdout |
-| `shairport-sync-ap2`, `nqptp` | [`build-airplay2.sh`](build-airplay2.sh): Shairport Sync 5.5.2 `--with-airplay-2` with libsodium, libgcrypt, libplist and a cut-down FFmpeg 7.1, static; NQPTP 1.2.4 (GPL-2.0), patched to stop being root once its ports are bound ([`airplay/`](airplay/)) | the AirPlay 2 receiver and its PTP clock; optional, AirPlay 1 runs without them |
+| `shairport-sync-ap2`, `nqptp` | [`build-airplay2.sh`](build-airplay2.sh): Shairport Sync 5.5.2 `--with-airplay-2` with libsodium, libgcrypt, libplist and a cut-down FFmpeg 7.1, static; NQPTP 1.2.4 (GPL-2.0), patched to stop being root once its ports are bound ([`airplay/`](airplay/)) | the AirPlay 2 receiver and its PTP clock; optional, AirPlay 1 runs without them. The patch also keeps its ALSA backend from leaking the jack's device when a connection is cancelled |
+| `bluetooth.ko`, `hci_vhci.ko`, `hci_stp.ko` | [`build-bluetooth.sh`](build-bluetooth.sh): the same backports tree's Bluetooth core and virtual HCI driver, plus [`bt/hci_stp.c`](bt/hci_stp.c), Cinder's own driver for the SoC's Bluetooth core ([design](../analysis/DESIGN_hci_stp.md)) | the own Bluetooth stack (in development, not installed) |
 
 `./build.sh` makes the modules. It needs Sony's GPL kernel tree for the NW-A50 (`KWORK`, the one
 [cinder-llusbdac](https://github.com/superwilso/cinder-llusbdac) builds against) and checks every

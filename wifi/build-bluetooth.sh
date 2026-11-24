@@ -4,7 +4,7 @@
 # build.sh's Wi-Fi modules. One backports build carries both: its compat.ko differs from build.sh's,
 # so load this set's compat.ko for Wi-Fi too when Bluetooth is wanted.
 #
-#   wifi/build-bluetooth.sh     ->  out/bt/{compat,bluetooth,hci_vhci}.ko (+ the Wi-Fi modules)
+#   wifi/build-bluetooth.sh     ->  out/bt/{compat,bluetooth,hci_vhci,hci_stp}.ko (+ the Wi-Fi modules)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KWORK="${KWORK:-$HERE/../../cinder-llusbdac/work}"
@@ -20,11 +20,14 @@ cp -a "$K/backports-3.17.1-1" "$BP"
 for p in "$HERE"/patches/*.patch; do patch -s -p1 -d "$BP" < "$p"; done
 sed -i 's/^# CPTCFG_BT is not set/CPTCFG_BT=m/' "$BP/.config"
 echo "CPTCFG_BT_HCIVHCI=m" >> "$BP/.config"
+# Cinder's own driver for the SoC's Bluetooth core (bt/hci_stp.c, analysis/DESIGN_hci_stp.md).
+cp "$HERE/bt/hci_stp.c" "$BP/drivers/bluetooth/"
+echo 'obj-m += hci_stp.o' >> "$BP/drivers/bluetooth/Makefile"
 { yes "" || true; } | make -C "$BP" KLIB="$K" KLIB_BUILD="$K" "${MK[@]}" oldconfig >"$W/bt-config.log" 2>&1
 make -C "$BP" KLIB="$K" KLIB_BUILD="$K" "${MK[@]}" \
     CONFIG_MTK_CONNSYS_WIFI=m CONFIG_MTK_WLAN_SUPPORT=y CONFIG_MTK_WLAN_CHIP=CONSYS -j"$(nproc)" >"$W/bt-build.log" 2>&1 \
     || { tail -30 "$W/bt-build.log"; exit 1; }
-for ko in "$BP/compat/compat.ko" "$BP/net/bluetooth/bluetooth.ko" "$BP/drivers/bluetooth/hci_vhci.ko" \
+for ko in "$BP/compat/compat.ko" "$BP/net/bluetooth/bluetooth.ko" "$BP/drivers/bluetooth/hci_vhci.ko" "$BP/drivers/bluetooth/hci_stp.ko" \
           "$BP/net/wireless/cfg80211.ko" "$BP/drivers/net/wireless/mt_soc/conn_soc/mt_wifi/wlan/wlan_mt.ko"; do
     arm-linux-gnueabihf-strip --strip-debug -o "$OUT/$(basename "$ko")" "$ko"
     vm="$(modinfo -F vermagic "$OUT/$(basename "$ko")")"

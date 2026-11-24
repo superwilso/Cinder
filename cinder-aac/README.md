@@ -35,4 +35,5 @@ Works on the owner's player (stock 1.02 / Walkman One 3.02). AAC is added alongs
 installer (Bluetooth: send AAC), or by hand with `./install.sh` for development. Also here: SBC XQ
 (Dual Channel at bitpool 47, about 550 kbit/s), and fdk-aac 2.x as the encoder
 (`build_fdk.sh`), which caps each frame to fit one packet. fdk-aac's licence, which goes with
-every copy of that library: [NOTICE.fdk-aac](NOTICE.fdk-aac). Details: [docs/STACK.md](docs/STACK.md).
+every copy of that library: [NOTICE.fdk-aac](NOTICE.fdk-aac). The own Bluetooth stack's sender (`cinder-home/tools/btsource.c`)
+also links AOSP's LDAC encoder (`build_ldac.sh`, Apache 2.0): [NOTICE.libldac](NOTICE.libldac). Details: [docs/STACK.md](docs/STACK.md).

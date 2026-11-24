@@ -144,3 +144,42 @@
                               .stats = NULL,
                               .play = &play,
                               .volume = NULL,
+--- a/audio_alsa.c
++++ b/audio_alsa.c
+@@ -242,6 +242,10 @@
+ static int get_permissible_configuration_settings() {
+   int ret = 0;
+   if (permissible_configuration_check_done == 0) {
++    // Cinder: a cancel inside snd_pcm_open (its close of the control device is a cancellation
++    // point) leaks the half-open PCM, and every later open of the device fails with EBUSY.
++    int cinder_cancel_state;
++    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cinder_cancel_state);
+     uint64_t hto = get_absolute_time_in_ns();
+     snd_pcm_hw_params_t *local_alsa_params = NULL;
+     snd_pcm_hw_params_alloca(&local_alsa_params);
+@@ -442,6 +446,7 @@
+       }
+     }
+     pthread_cleanup_pop(1); // unlock the mutex
++    pthread_setcancelstate(cinder_cancel_state, NULL);
+     if (ret != 0) {
+       char errorstring[1024];
+       strerror_r(-ret, (char *)errorstring, sizeof(errorstring));
+@@ -2422,10 +2427,15 @@
+ 
+   // first, check that the device is there!
+   snd_pcm_t *temp_alsa_handle = NULL;
++  int cinder_cancel_state; // Cinder: as in get_permissible_configuration_settings
++  pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cinder_cancel_state);
+   int response = snd_pcm_open(&temp_alsa_handle, alsa_out_dev, SND_PCM_STREAM_PLAYBACK, 0);
+-  ;
+-  if ((response == 0) && (temp_alsa_handle != NULL)) {
++  if ((response == 0) && (temp_alsa_handle != NULL))
+     response = snd_pcm_close(temp_alsa_handle);
++  else
++    temp_alsa_handle = NULL;
++  pthread_setcancelstate(cinder_cancel_state, NULL);
++  if (temp_alsa_handle != NULL) {
+     if (response != 0) {
+       char errorstring[1024];
+       strerror_r(-response, (char *)errorstring, sizeof(errorstring));

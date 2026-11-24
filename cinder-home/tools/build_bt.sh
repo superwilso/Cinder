@@ -21,7 +21,10 @@ OUT=$HERE/build/bt
 mkdir -p "$OUT"
 for t in btspike btbridge btpair btsource; do
     extra=()
-    case $t in btpair|btsource) extra=("$REPO/cinder-aac/src/aac_enc.c") ;; esac
+    case $t in btpair) extra=("$REPO/cinder-aac/src/aac_enc.c") ;;
+               # LDAC from cinder-aac/build_ldac.sh (AOSP's encoder, Apache 2.0); SBC is the firmware's.
+               btsource) [ -f "$REPO/cinder-aac/build/libldacBT_enc.a" ] || "$REPO/cinder-aac/build_ldac.sh"
+                         extra=("$REPO/cinder-aac/src/aac_enc.c" "$REPO/cinder-aac/build/libldacBT_enc.a") ;; esac
     $CC -O2 -Wall -Wextra -Werror "${SYS[@]}" -o "$OUT/$t" "$HERE/tools/$t.c" "${extra[@]}" \
         "$L/crt1.o" "$L/crti.o" "${LIBS[@]}" "$L/crtn.o" -Wl,-dynamic-linker,/lib/ld-linux-armhf.so.3
     bad=$(arm-linux-gnueabihf-readelf -V "$OUT/$t" | grep -oE 'GLIBC_[0-9.]+' | sort -uV |

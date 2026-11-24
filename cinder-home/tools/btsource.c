@@ -7,14 +7,16 @@
 //    the kernel, with pairing switched OFF: a key that does not match fails the link, and nothing
 //    here can make a new pairing that would replace the one the headphones keep for Sony's stack.
 // 2. Connects A2DP signalling (needs the player's real address: btbridge without CINDER_BT_ALT),
-//    finds the headphones' AAC endpoint, and keeps reconnecting every 5 s while they are away.
+//    lists the headphones' endpoints, and keeps reconnecting every 5 s while they are away.
 // 3. Listens on the abstract socket `cinder.a2dp` and names it in /tmp/cinder_a2dp_target, rewritten
 //    each second: the mono shim then sends the sound service's Bluetooth stream here instead of to
 //    Sony's transmitter, and cinder-pathwatch keeps PathMgr's route on Bluetooth while it is fresh.
 // 4. Per connection from the sound service: the type-1 frame gives rate and channels; the PCM
 //    (S16) is scaled by GAIN_DB (default -20, for headphones without absolute volume; 0 dB when they
 //    have it, since they then apply the volume; /tmp/cinder_bt_gain, one number in dB, overrides
-//    both live), encoded to AAC and sent as RTP at the real-time pace. The stream is suspended when the sound service hangs up (pause).
+//    both live), encoded (bt_enc.h: LDAC, else AAC, else SBC, as bt_codec.h picks; CINDER_BT_CODEC=
+//    ldac|aac|sbc allows only that one) and sent as RTP at the real-time pace. The stream is suspended
+//    when the sound service hangs up (pause).
 //
 // 5. A control thread answers the headphones' service directory (SDP) and remote control (AVRCP,
 //    bt_ctl.h): their buttons reach Cinder's command channel (/tmp/cinder_cmd, dev builds), their
@@ -31,7 +33,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 
-#include "../../cinder-aac/src/aac_enc.h"
+#include "bt_enc.h"
 #include "bt_l2.h"
 #include "bt_ctl.h"
 
@@ -99,11 +101,13 @@ static int l2cap(int psm) {
 static unsigned char g_label = 1;
 static unsigned char next_label(void) { g_label = (unsigned char)((g_label + 1) & 15); return g_label; }
 
-// The link: A2DP signalling and the headphones' AAC endpoint.
+// The link: A2DP signalling, the headphones' endpoints and the one configured.
 struct link {
-    int sig, media, seid, mtu, rate, max;   // rate 0 = not configured; max = their AAC bit/s cap
-    unsigned char cap[8];
+    int sig, media, mtu, rate, cur;   // rate 0 = not configured; cur = index into eps
+    int n;
+    struct bt_ep eps[8];
 };
+static int g_only = BT_NONE;   // CINDER_BT_CODEC: the one codec allowed, for testing each
 
 static int link_up(struct link* k) {
     memset(k, 0, sizeof *k);
@@ -112,21 +116,31 @@ static int link_up(struct link* k) {
     if (k->sig < 0) return -1;
     unsigned char r[512];
     const int n = avdtp(k->sig, next_label(), 0x01, NULL, 0, r, sizeof r);   // DISCOVER
-    for (int i = 2; i + 1 < n && !k->seid; i += 2) {
+    for (int i = 2; i + 1 < n && k->n < 8; i += 2) {
         const int seid = r[i] >> 2, inuse = (r[i] >> 1) & 1, sink = (r[i + 1] >> 3) & 1;
+        if (!sink || inuse) continue;
         unsigned char q = (unsigned char)(seid << 2), c[256];
         const int m = avdtp(k->sig, next_label(), 0x02, &q, 1, c, sizeof c);   // GET_CAPABILITIES
-        for (int j = 2; m > 0 && j + 1 < m; j += 2 + c[j + 1])
-            if (c[j] == 7 && sink && !inuse && c[j + 1] >= 8 && c[j + 3] == 0x02) {
-                k->seid = seid;
-                memcpy(k->cap, c + j + 2, 8);
-            }
+        for (int j = 2; m > 0 && j + 1 < m && j + 2 + c[j + 1] <= m; j += 2 + c[j + 1]) {
+            const int len = c[j + 1] < 16 ? c[j + 1] : 16, codec = bt_codec_of(c + j + 2, len);
+            if (c[j] != 7 || codec == BT_NONE || (g_only != BT_NONE && codec != g_only)) continue;
+            struct bt_ep* e = &k->eps[k->n++];
+            e->seid = seid;
+            e->codec = codec;
+            e->len = len;
+            memcpy(e->cap, c + j + 2, (size_t)len);
+            printf("endpoint %d: %s\n", seid, bt_codec_name(codec));
+        }
     }
-    if (!k->seid) { printf("no free AAC endpoint on the headphones\n"); close(k->sig); k->sig = -1; return -1; }
-    k->max = (k->cap[5] & 0x7f) << 16 | k->cap[6] << 8 | k->cap[7];
-    if (k->max == 0 || k->max > 320000) k->max = 320000;
-    printf("linked: AAC endpoint %d (48 kHz %s)\n", k->seid, k->cap[4] & 0x80 ? "yes" : "no");
+    if (!k->n) { printf("no free endpoint on the headphones in a codec this sends\n"); close(k->sig); k->sig = -1; return -1; }
+    printf("linked: %d endpoint(s)\n", k->n);
     return 0;
+}
+
+// The headphones' AAC bit rate cap, bounded to 320 kbit/s.
+static unsigned aac_max(const struct bt_ep* e) {
+    const unsigned m = (unsigned)(e->cap[5] & 0x7f) << 16 | e->cap[6] << 8 | e->cap[7];
+    return m == 0 || m > 320000 ? 320000 : m;
 }
 
 static void link_down(struct link* k) {
@@ -136,23 +150,30 @@ static void link_down(struct link* k) {
     k->rate = 0;
 }
 
-// Configure AAC at `rate`, open the media channel, start. Returns 0 when streaming may begin.
+// Choose and configure the endpoint for `rate`, open the media channel, start. Returns 0 when
+// streaming may begin; k->eps[k->cur] is the codec. LDAC is passed over when the media channel
+// comes up too small for it (configured again, once, without it).
+static void stream_close(struct link* k) {
+    unsigned char r[64];
+    const unsigned char se = (unsigned char)(k->eps[k->cur].seid << 2);
+    avdtp(k->sig, next_label(), 0x08, &se, 1, r, sizeof r);   // CLOSE
+    if (k->media >= 0) close(k->media);
+    k->media = -1;
+    k->rate = 0;
+}
+
 static int stream_start(struct link* k, int rate) {
     unsigned char r[256];
-    const unsigned char se = (unsigned char)(k->seid << 2);
-    if (k->rate && k->rate != rate) {   // a new rate: close and configure again
-        avdtp(k->sig, next_label(), 0x08, &se, 1, r, sizeof r);
-        close(k->media);
-        k->media = -1;
-        k->rate = 0;
-    }
-    if (!k->rate) {
-        const unsigned max = (unsigned)k->max;
-        const unsigned char ot = k->cap[2] & 0x80 ? 0x80 : 0x40;
-        const unsigned char f1 = rate == 44100 ? 0x01 : 0x00, f2 = (unsigned char)((rate == 48000 ? 0x80 : 0x00) | 0x04);
-        unsigned char cfg[14] = {se, 1 << 2, 1, 0, 7, 8, 0x00, 0x02, ot, f1, f2,
-                                 (unsigned char)(max >> 16), (unsigned char)(max >> 8), (unsigned char)max};
-        if (avdtp(k->sig, next_label(), 0x03, cfg, sizeof cfg, r, sizeof r) < 0) { printf("set configuration refused\n"); return -1; }
+    if (k->rate && k->rate != rate) stream_close(k);   // a new rate: close and configure again
+    for (int ldac_ok = 1; !k->rate; ldac_ok = 0) {
+        k->cur = bt_pick(k->eps, k->n, rate, ldac_ok);
+        if (k->cur < 0) { k->cur = 0; printf("no endpoint takes %d Hz\n", rate); return -1; }
+        const struct bt_ep* e = &k->eps[k->cur];
+        const unsigned char se = (unsigned char)(e->seid << 2);
+        unsigned char cfg[24] = {se, 1 << 2, 1, 0, 7, 0};
+        const int len = bt_config(e, rate, aac_max(e), cfg + 6);
+        cfg[5] = (unsigned char)len;
+        if (avdtp(k->sig, next_label(), 0x03, cfg, 6 + len, r, sizeof r) < 0) { printf("set configuration refused (%s)\n", bt_codec_name(e->codec)); return -1; }
         if (avdtp(k->sig, next_label(), 0x06, &se, 1, r, sizeof r) < 0) { printf("open refused\n"); return -1; }
         k->media = l2cap(25);
         if (k->media < 0) return -1;
@@ -161,14 +182,19 @@ static int stream_start(struct link* k, int rate) {
         getsockopt(k->media, 6 /* SOL_L2CAP */, 1 /* L2CAP_OPTIONS */, opt, &ol);
         k->mtu = opt[0] ? opt[0] : 672;
         k->rate = rate;
+        if (e->codec == BT_LDAC && k->mtu < BT_LDAC_MTU_MIN + 13 && ldac_ok) {
+            printf("media MTU %d is too small for LDAC: configuring again without it\n", k->mtu);
+            stream_close(k);
+        }
     }
+    const unsigned char se = (unsigned char)(k->eps[k->cur].seid << 2);
     if (avdtp(k->sig, next_label(), 0x07, &se, 1, r, sizeof r) < 0) { printf("start refused\n"); return -1; }
     return 0;
 }
 
 static void stream_suspend(struct link* k) {
     unsigned char r[64];
-    const unsigned char se = (unsigned char)(k->seid << 2);
+    const unsigned char se = (unsigned char)(k->eps[k->cur].seid << 2);
     avdtp(k->sig, next_label(), 0x09, &se, 1, r, sizeof r);
 }
 
@@ -410,20 +436,23 @@ static int serve(int c, struct link* k, double dflt_db) {
     if (read_all(c, cfg, 28)) return 0;
     const int chans = cfg[4], rate = cfg[24] | cfg[25] << 8 | cfg[26] << 16 | cfg[27] << 24;
     printf("sound service: %d Hz, %d channel(s), flag %u\n", rate, chans, cfg[20]);
-    if ((rate != 44100 && rate != 48000) || (rate == 48000 && !(k->cap[4] & 0x80)) || chans < 1 || chans > 2) {
-        printf("not a format these headphones take over AAC\n");
+    if ((rate != 44100 && rate != 48000) || chans < 1 || chans > 2) {
+        printf("not a format this sends over Bluetooth\n");
         return 0;
     }
     if (stream_start(k, rate)) return -1;
     const char* why = "";
-    const int br = aac_bitrate_for(k->mtu - 12, rate, k->max);
-    struct aac_enc* e = aac_enc_open(rate, br, AAC_LATM, &why);
-    if (!e) { printf("AAC encoder: %s\n", why); stream_suspend(k); return 0; }
-    printf("streaming: AAC %d kb/s, media MTU %d\n", br / 1000, k->mtu);
+    static struct bt_enc e;
+    if (bt_enc_open(&e, &k->eps[k->cur], rate, k->mtu, (int)aac_max(&k->eps[k->cur]), &why)) {
+        printf("%s encoder: %s\n", bt_codec_name(k->eps[k->cur].codec), why);
+        stream_suspend(k);
+        return 0;
+    }
+    printf("streaming: %s, media MTU %d\n", bt_codec_name(e.codec), k->mtu);
     g_playing = 1;
-    static int16_t in[AAC_FRAME_SAMPLES * 2], pcm[AAC_FRAME_SAMPLES * 2];
-    static unsigned char pkt[4096];
-    unsigned seq = 0, ts = 0;
+    static int16_t in[AAC_FRAME_SAMPLES * 2], pcm[AAC_FRAME_SAMPLES * 2];   // AAC's frame is the largest
+    static unsigned char pkt[2048];
+    unsigned seq = 0;
     long long frames = 0, sent = 0, lost = 0;
     int rc = 0;
     int g = 0;
@@ -431,7 +460,7 @@ static int serve(int c, struct link* k, double dflt_db) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
     long long last_touch = 0;
     while (!g_quit) {
-        if (read_all(c, in, (size_t)AAC_FRAME_SAMPLES * 2 * chans)) break;   // paused or stopped
+        if (read_all(c, in, (size_t)e.samples * 2 * chans)) break;   // paused or stopped
         if (now_ms() - last_touch >= 1000) {
             last_touch = now_ms();
             target_touch();
@@ -439,17 +468,19 @@ static int serve(int c, struct link* k, double dflt_db) {
             const double db = gain_db(g_abs_vol ? 0 : dflt_db);
             g = (int)(32767.0 * pow(10.0, (db > 0 ? 0 : db) / 20.0));
         }
-        for (int i = 0; i < AAC_FRAME_SAMPLES; i++) {
+        for (int i = 0; i < e.samples; i++) {
             const int l = in[chans == 2 ? 2 * i : i], r = in[chans == 2 ? 2 * i + 1 : i];
             pcm[2 * i] = (int16_t)((l * g) >> 15);
             pcm[2 * i + 1] = (int16_t)((r * g) >> 15);
         }
-        const int n = aac_enc_fit(e, pcm, pkt + 12, (int)sizeof pkt - 12, k->mtu - 12);
+        const int n = bt_enc_feed(&e, pcm);
         if (n > 0) {
-            const unsigned char h[12] = {0x80, 0x60, (unsigned char)(seq >> 8), (unsigned char)seq,
+            const uint32_t ts = e.pkt_ts;
+            const unsigned char h[12] = {0x80, BT_RTP_PT, (unsigned char)(seq >> 8), (unsigned char)seq,
                                          (unsigned char)(ts >> 24), (unsigned char)(ts >> 16),
                                          (unsigned char)(ts >> 8), (unsigned char)ts, 0, 0, 0, 1};
             memcpy(pkt, h, 12);
+            memcpy(pkt + 12, e.pkt, (size_t)n);
             if (send(k->media, pkt, (size_t)n + 12, 0) == n + 12) {
                 sent++;
             } else if (errno == ENOTCONN || errno == ECONNRESET || errno == EPIPE) {
@@ -462,12 +493,14 @@ static int serve(int c, struct link* k, double dflt_db) {
             seq++;
         } else if (n == -2) {
             lost++;
+        } else if (n == -1) {
+            printf("%s encoder failed\n", bt_codec_name(e.codec));
+            break;
         }
-        ts += AAC_FRAME_SAMPLES;
         frames++;
         // The real-time pace, so the sound service is held back as Sony's transmitter holds it. A
         // read that waited (the stream was starved) moves the clock on instead of bursting after.
-        long long due = frames * AAC_FRAME_SAMPLES * 1000000000LL / rate;
+        long long due = frames * e.samples * 1000000000LL / rate;
         struct timespec now, d = {t0.tv_sec + (time_t)(due / 1000000000LL), t0.tv_nsec + (long)(due % 1000000000LL)};
         if (d.tv_nsec >= 1000000000L) { d.tv_sec++; d.tv_nsec -= 1000000000L; }
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -479,8 +512,8 @@ static int serve(int c, struct link* k, double dflt_db) {
         }
     }
     g_playing = 0;
-    printf("stream ended: %lld frames sent, %lld lost, last %d kb/s\n", sent, lost, aac_enc_bitrate(e) / 1000);
-    aac_enc_close(e);
+    printf("stream ended: %lld packets sent, %lld lost, %s at %d kb/s\n", sent, lost, bt_codec_name(e.codec), bt_enc_bitrate(&e) / 1000);
+    bt_enc_close(&e);
     if (!rc) stream_suspend(k);
     return rc;
 }
@@ -494,6 +527,8 @@ int main(int argc, char** argv) {
     }
     for (int i = 0; i < 6; i++) g_addr[i] = (unsigned char)a[5 - i];
     const double dflt_db = argc > 2 ? atof(argv[2]) : -20;
+    const char* only = getenv("CINDER_BT_CODEC");
+    if (only) g_only = !strcmp(only, "ldac") ? BT_LDAC : !strcmp(only, "aac") ? BT_AAC : !strcmp(only, "sbc") ? BT_SBC : BT_NONE;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);

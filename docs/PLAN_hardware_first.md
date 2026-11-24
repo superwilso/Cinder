@@ -328,6 +328,32 @@ RemoteCmdInjCtrl, Nfc, Memmon, Update) and whether `appmgr` or the shutdown barr
 them. Removing a service is a boot-image (`init.hagoromo.rc`) change on partition 8, which the
 kernel option already writes.
 
+**Read 2026-11-24 (boot script, firmware, Cinder's source; nothing run).** Every service runs in
+its own `hagodaemon` (28 `sub_sm` daemons). The master, `hagoromo1`, is started with
+`daemonNum=28`, and `libpstcore.so`'s `ServiceManager` counts sub-daemons in
+(`SetDaemonSubCount`, `NotifyReady`), so readiness waits for all 28 and removing one means
+removing its `service` block **and** lowering `daemonNum` to match, or the master waits for a
+daemon that never comes. `ServiceManager::TimeMeasure` / `GetLatestLog` suggest Sony logs its own
+per-service start times: read those on the player first (no change needed) to see which daemons
+are slow, before choosing. Candidates by Cinder's use (a name search of `cinder-home/src`,
+`player/cinder-ffi/src` and `cinder-audio`):
+
+| Daemon | Service | Cinder uses it? |
+|---|---|---|
+| hagoromo10 | OneTrackPlayerService | no |
+| hagoromo15 | RecorderService | no (FM recording is Cinder's own `fmrec`, through AudioIn) |
+| hagoromo21 | RemoteCmdInjCtrlDaemon | no |
+| hagoromo26 | MemmonService | no |
+| hagoromo7 | UpdateService | not by name; the on-player update arms Sony's boot-time updater through NVP (`cinder-power update`), so check the updater does not call it before removing |
+| hagoromo4 | EventRouter | not by name, but Sony's own services may route through it: keep |
+| hagoromo16 | AudioAnalyzerService | **yes** (the analyzer shim) |
+| hagoromo25 | NfcService | **yes** (NFC) |
+| hagoromo12 | NcServiceFw | **yes** (noise cancelling) |
+
+Sony's services also call one another, so a "no" here is a candidate, not a verdict: each removal
+is one boot with the cable escape armed, then a check that playback, Bluetooth, USB and power off
+still work (power off waits on an ACK from every service, so fewer services also shortens it).
+
 **Check.** The boot timeline (`docs/` boot measurements) before and after; free memory after an
 hour of use.
 
@@ -434,10 +460,27 @@ marked; everything else runs with the player on the cable.
 5. **Phase 4b: codecs** (2 days). LDAC from Android's open encoder (Apache 2.0, its own folder and
    licence like `cinder-aac/`), SBC (a small encoder of our own), AAC already done. Check: the
    headphones report each codec; no drops at 990 kb/s LDAC in the next room.
+   *Built 2026-11-24, host- and qemu-tested, not yet on headphones.* `tools/bt_codec.h` picks LDAC,
+   then AAC, then SBC from the headphones' endpoints and builds each configuration (LDAC passed
+   over when the media channel's MTU is under 679 + 13 bytes); `tools/bt_enc.h` puts the three
+   encoders behind one call: AAC as before, LDAC from AOSP's libldac (`cinder-aac/build_ldac.sh`,
+   pinned commit, `-fsigned-char` because its tables keep -1 in plain `char`), and SBC from the
+   firmware's own `libsbc_enc.so` (BlueZ's interface), so no SBC encoder of our own was needed.
+   `CINDER_BT_CODEC=ldac|aac|sbc` allows one codec, to try each. Checks: `tools/bt_codec_selftest.cpp`,
+   and `tools/test_bt_enc.sh` under qemu with the player's libraries (SBC decoded back by the
+   firmware's own decoder at a 68–70 dB tone SNR; LDAC HQ at 909 kbit/s at 44.1 kHz, 990 at 48 kHz,
+   every packet within the MTU). Open: LDAC's adaptive rate (AOSP's `abr/`, fed by the send
+   queue), and Sony's certification note in libldac's NOTICE before LDAC ships to anyone.
 6. **Phase 4c: the kernel HCI driver** (2–3 days). Replace the vhci bridge with a module that
    registers an `hci_dev` and calls STP directly, so no user process wakes for every packet.
    Measure BTIF interrupts and battery against Sony's stack with the same headphones and codec.
    Ships with the kernel option (partition 8 only; the little kernel is never touched).
+   *Designed and built 2026-11-24, not yet loaded* ([`analysis/DESIGN_hci_stp.md`](../analysis/DESIGN_hci_stp.md)):
+   STP already has a BlueZ mode that hands each Bluetooth packet to a registered callback, and
+   every call needed is exported by the kernel image, so `wifi/bt/hci_stp.c` is an ordinary module
+   (`wifi/build-bluetooth.sh` → `out/bt/hci_stp.ko`) loaded next to `bluetooth.ko`; no partition 8
+   change after all. It runs btbridge's power-on commands as the device's setup and keeps its
+   feature-page fix.
 7. **Phase 4d: what Sony's stack does that ours must too** (a week, in pieces). Receiver mode
    (A2DP sink), headphone battery level, NFC pairing, the BLE remote. Until each exists, the
    switch hands that job back to Sony's stack.
