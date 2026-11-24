@@ -31,6 +31,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Repeat album on Cinder's own FLAC playback** (the `own_engine` test switch) played the
+  album's last song again instead of going back to its first. *Device-verified.*
 - **AirPlay 2 shows up on iPhones.** The receiver crashed a few seconds after it started
   whenever a phone or computer on the network looked for AirPlay speakers, so the player never
   appeared in the list. Its network announcement had one entry longer than the built-in

@@ -378,6 +378,7 @@ marked; everything else runs with the player on the cable.
    repeat-album through the engine with `devctl.sh cmd`; play a 32-bit FLAC through the engine
    (needs one 32-bit file the owner agrees to add, or a path in `/tmp` the dev channel can play).
    Then the gapless check on the capture rig (owner plugs the jack lead in).
+   *11-24 (devctl):* album skip at both edges, end of queue and repeat album pass through the engine; repeat album needed a fix (a queue edit renumbered the list under the engine thread's own indices, `engine.hpp` `rebase`). Left: a skip between two albums, the 32-bit FLAC.
 2. **Phase 2 to default** (a week of use, then 30 min). `own_index` on for the owner's daily use;
    the 30-minute memory line and a scan log per boot show cost and drift. If nothing differs for
    a week, the index becomes the default source and MTPDB the fallback; a Sony rescan cut short

@@ -163,6 +163,9 @@ struct Engine {
     int crossfade_ms = 0;   // 0 = gapless, the default
     // The audible song, for current_uri; under mu.
     int audible_idx = -1;
+    // edit() moved the playing song from index a to start: the engine thread adds this to its own
+    // indices (the decoder's and each queued song's) next time it holds mu. Under mu.
+    int idx_shift = 0;
     bool active = false;    // a queue is loaded
     bool playing = false;
     bool paused = false;    // paused by the listener: a seek or skip waits for the next resume
@@ -257,6 +260,19 @@ static void* run(void*) {
         return true;
     };
 
+    // Under lk: a queue edit renumbered the list under the playing song (edit()). Without this the
+    // next position report wrote the old index back and the song's end played old index + 1 of the
+    // new list: repeat album's lap `[last, first…]` replayed the last song (2026-11-24).
+    auto rebase = [&]() {
+        const int d = E.idx_shift;
+        if (!d) return;
+        E.idx_shift = 0;
+        if (dec_idx >= 0) dec_idx += d;
+        if (dec2_idx >= 0) dec2_idx += d;
+        if (fade_tried >= 0) fade_tried += d;
+        for (Song& s : songs) s.idx += d;
+    };
+
     std::unique_lock<std::mutex> lk(E.mu);
     // Called with lk held and the track already closed: PlayerService takes the queue at `idx`.
     auto hand_over = [&](int idx, long long ms) {
@@ -270,6 +286,7 @@ static void* run(void*) {
         E.cv.notify_all();
     };
     for (;;) {
+        rebase();
         // ── commands ──
         if (E.cmd != NONE) {
             const Cmd c = E.cmd;
@@ -470,6 +487,7 @@ static void* run(void*) {
         }
         if (now - last_pub >= 250) {
             last_pub = now;
+            rebase();
             const Song s = audible();
             if (s.idx != E.audible_idx)
                 std::fprintf(stderr, "[cinder-audio] engine: %lld.%03lld now #%d (%lld ms) %s\n", now / 1000, now % 1000, s.idx, s.dur_ms,
@@ -610,6 +628,8 @@ static int edit(const char* const* uris, int count, int start) {
     if (cur.empty() || cur != uris[start]) return -1;
     E.uris.assign(uris, uris + count);
     // ponytail: a song already queued gapless past the edit still plays; the next end reads the new list.
+    E.idx_shift += start - a;
+    if (E.paused) E.want_idx += start - a;   // where RESUME starts
     E.audible_idx = start;
     return 0;
 }
