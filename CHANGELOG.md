@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.5] — 2026-11-24
+
 ### Fixed
 
 - **Auto power-off no longer switches the player off mid-song.** After 30 minutes of listening
@@ -4433,7 +4435,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.5-rc1...HEAD
+[0.4.5]: https://github.com/superwilso/Cinder/compare/v0.4.4...v0.4.5-rc1
 [0.4.4]: https://github.com/superwilso/Cinder/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/superwilso/Cinder/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/superwilso/Cinder/compare/v0.4.1...v0.4.2
