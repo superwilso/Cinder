@@ -1108,6 +1108,9 @@ fn the_ab_segments_are_a_real_target_that_matches_what_is_drawn() {
 /// the render-vs-hit defect this codebase keeps producing.
 #[test]
 fn the_balance_slider_tracks_the_finger_end_to_end() {
+    // Its last part grabs the text-size slider, which SETS the global text scale: without the
+    // crate-wide lock that raced `reset_settings_restores_defaults…` (pre-push, 2026-11-25).
+    let _scale = lock_scale();
     use crate::sound::{self, balance_label, BALANCE_CENTRE, BALANCE_MAX};
     let mut a = unlocked();
     assert_eq!(a.balance(), BALANCE_CENTRE, "centre is the default");
