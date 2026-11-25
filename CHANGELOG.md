@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.4.5] — 2026-11-25
+
 ### Fixed
 
 - **An artist's albums are no longer in a random-looking order** (#61). Albums from the same year,
@@ -24,11 +26,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **`tools/cinder-install.sh --rollback` now restores the previous binary.** It backed up the
   current binary over the one it was about to restore, so a rollback reinstalled what was already
   there.
-
-## [0.4.5] — 2026-11-24
-
-### Fixed
-
 - **Auto power-off no longer switches the player off mid-song.** After 30 minutes of listening
   with the screen off and no button pressed, one late position update could make Cinder think
   nothing was playing, and it powered off; pausing after a long listen powered off at once the same
@@ -49,12 +46,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- **Big cover at night** (Settings ▸ Now Playing, off by default; #60). Night normally shows a
+  small, dark cover; with this on it shows the full cover and the day screen instead, still in the
+  night colours and with the cover dimmed to match, so it does not light up a dark room.
 - **`long_ring` (Advanced, off by default): longer sleeps during headphone playback.** The
   player's low-power playback path lets the main processor sleep until its music buffer is nearly
   empty; Sony's software asks for a 1 s buffer. With `long_ring` in `cinder_advanced.conf` Cinder
   asks for the largest the kernel allows (2 MB, about 12 s of CD-quality music), so the processor
   wakes about ten times less often. The research behind it is `analysis/RE_lowest_power_wired.md`.
-  *Host-tested; device-unverified.*
+  *Known issue: skipping to another song while it is on can break up the audio; leave it off for
+  now.* No battery gain was measured on the player.
 - **AirPlay shows the song.** Now Playing shows the title, artist and cover the sending phone or
   computer names, instead of just "AirPlay", and the song's own time and length when the
   sender gives them. Both receivers (AirPlay and AirPlay 2) now pass the
@@ -4449,8 +4450,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.5-rc1...HEAD
-[0.4.5]: https://github.com/superwilso/Cinder/compare/v0.4.4...v0.4.5-rc1
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.4.5-rc2...HEAD
+[0.4.5]: https://github.com/superwilso/Cinder/compare/v0.4.4...v0.4.5-rc2
 [0.4.4]: https://github.com/superwilso/Cinder/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/superwilso/Cinder/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/superwilso/Cinder/compare/v0.4.1...v0.4.2

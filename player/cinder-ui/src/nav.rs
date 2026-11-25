@@ -3183,6 +3183,7 @@ impl App {
             Opt::Quick if !on => self.quick_open = false,
             Opt::FoldersTab => self.lib.folders_tab = on,
             Opt::NpBack => crate::now_playing::set_back(on),
+            Opt::NpNightCover => crate::now_playing::set_night_cover(on),
             _ => {}
         }
     }
@@ -11827,6 +11828,7 @@ impl App {
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
         crate::now_playing::set_button(self.np_button);
         crate::now_playing::set_back(self.opt(Opt::NpBack));
+        crate::now_playing::set_night_cover(self.opt(Opt::NpNightCover));
         // Now Playing grows its own controls with Big view, and onboarding is drawn to fit, so
         // Bigger icons stays out of both (`scale::IconsExempt`).
         let _own_sizes = crate::scale::IconsExempt::new(matches!(

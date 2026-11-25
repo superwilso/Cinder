@@ -345,7 +345,7 @@ impl Theme {
     ///
     /// 55% keeps every relationship in the palette (ink over dim over faint, accent still the
     /// brightest thing) while roughly halving the light the panel actually emits.
-    const NIGHT_DIM_PCT: u32 = 55;
+    pub(crate) const NIGHT_DIM_PCT: u32 = 55;
 
     pub fn night_with(a: Accent) -> Self {
         CINDER.theme(true, a)

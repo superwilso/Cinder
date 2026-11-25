@@ -404,6 +404,12 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 now_playing::render(c, &theme, &fonts, &np);
                 now_playing::sleep_badge(c, &theme, &fonts, 23, false);
             }),
+            // Settings ▸ Big cover at night (#60): by night, the day screen in night's colours.
+            ("now_playing_big_cover", &|c: &mut Canvas| {
+                now_playing::set_night_cover(true);
+                now_playing::render(c, &theme, &fonts, &np);
+                now_playing::set_night_cover(false);
+            }),
             // The Lyrics chip (community B2), beside the sleep badge so both corners are checked.
             ("now_playing_lyrics", &|c: &mut Canvas| {
                 now_playing::render(
@@ -2400,6 +2406,21 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
             cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
             save(&c, &format!("confirm_{name}"));
+        }
+
+        // Settings ▸ Now Playing, with Big cover at night on its last row.
+        {
+            let mut c = Canvas::new();
+            settings::render(
+                &mut c,
+                &theme,
+                &fonts,
+                settings::ROW_NP_NIGHT_COVER,
+                0,
+                &sample_settings(settings::page_of(settings::ROW_NP_NIGHT_COVER)),
+            );
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78, None);
+            save(&c, "settings_now_playing");
         }
 
         // A topic page: System, where the value column is densest.

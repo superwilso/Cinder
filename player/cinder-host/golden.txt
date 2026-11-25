@@ -4,6 +4,7 @@
 #   cargo run -p cinder-host -- --bless
 b1a1d9e8972e90e7 now_playing_day
 f36c6d5f0c054eea now_playing_sleep_day
+b1a1d9e8972e90e7 now_playing_big_cover_day
 6e4e62b4cb83d0e5 now_playing_lyrics_day
 487fd2b77d52fc99 now_playing_idle_day
 913f3ff06aeb344d now_playing_nocturne_day
@@ -124,6 +125,7 @@ d369e6f8e2ee9980 library_artists_grid_day
 b101c2d436e5a306 library_playlists_grid_day
 4ce9456a9ddd7a29 now_playing_night
 2bdf4fc569d8588f now_playing_sleep_night
+f12fb132bd6569e5 now_playing_big_cover_night
 0f69425bd3646a5f now_playing_lyrics_night
 8151a921daf0786a now_playing_idle_night
 756075be4ddeee37 now_playing_nocturne_night
@@ -247,6 +249,7 @@ a41fb60d04e3c4ff viz_size_0_off
 29b9883e713e131a viz_size_2_full
 9974537d9fa9416a confirm_restart
 021f37ff4496f782 confirm_poweroff
+31eec397bb926dd2 settings_now_playing
 f6862b037826054d settings_scrolled
 29d598206f182408 device
 282fb2e404152b60 storage

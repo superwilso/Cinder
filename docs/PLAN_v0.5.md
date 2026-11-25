@@ -60,6 +60,10 @@ is the starting point for its v0.5 screen.
 **Fewer options.** Every row and setting is either cut, given a default instead of a switch, merged
 into another, or moved to Advanced. Only what survives is built.
 
+**Night keeps a choice (owner 2026-11-25).** Night shows a small, dark cover by default, or the
+full cover in the night colours with the cover dimmed (*Big cover at night*, v0.4.5's switch,
+same settings key `np_night_cover`). v0.5's Now Playing needs both.
+
 **Gestures that stay:**
 - tap the clock to reach Now Playing;
 - swipe in from the left edge to go back;

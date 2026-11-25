@@ -59,6 +59,8 @@ pub enum Opt {
     RgAlbum,
     /// Now Playing's Lyrics chip (`settings::ROW_NP_LYRICS`).
     NpLyrics,
+    /// Night shows the full cover, dimmed, instead of the small one (#60; `settings::ROW_NP_NIGHT_COVER`).
+    NpNightCover,
     /// Settings ▸ Playback ▸ Line out: the volume keys stop changing the volume, for an amplifier
     /// or a car's aux input. NEVER LOADED (see `from_key`): it starts off at every boot, because a
     /// player started later with earphones in would otherwise come up at line level, and pulling
@@ -67,7 +69,7 @@ pub enum Opt {
 }
 
 impl Opt {
-    pub const ALL: [Opt; 24] = [
+    pub const ALL: [Opt; 25] = [
         Opt::Quick,
         Opt::FoldersTab,
         Opt::DeleteMusic,
@@ -91,6 +93,7 @@ impl Opt {
         Opt::ReplayGain,
         Opt::RgAlbum,
         Opt::NpLyrics,
+        Opt::NpNightCover,
         Opt::LineOut,
     ];
 
@@ -120,6 +123,7 @@ impl Opt {
             Opt::ReplayGain => "replaygain",
             Opt::RgAlbum => "replaygain_album",
             Opt::NpLyrics => "np_lyrics",
+            Opt::NpNightCover => "np_night_cover",
             Opt::LineOut => "line_out",
         }
     }
@@ -143,6 +147,7 @@ impl Opt {
             Opt::NpTint => Some(s::ROW_NP_TINT),
             Opt::DsdNative => Some(s::ROW_DSD_NATIVE),
             Opt::NpLyrics => Some(s::ROW_NP_LYRICS),
+            Opt::NpNightCover => Some(s::ROW_NP_NIGHT_COVER),
             Opt::LineOut => Some(s::ROW_LINE_OUT),
             _ => None,
         }

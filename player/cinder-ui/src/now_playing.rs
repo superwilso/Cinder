@@ -177,6 +177,23 @@ pub fn back() -> bool {
     BACK.with(|c| c.get())
 }
 
+thread_local! {
+    /// Settings ▸ Big cover at night (#60): Night draws the day screen, full cover and all, in the
+    /// night colours (the cover dimmed like the rest) instead of its small-cover screen. Set by the
+    /// navigator, like [`BACK`].
+    static NIGHT_COVER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_night_cover(on: bool) {
+    NIGHT_COVER.with(|c| c.set(on));
+}
+
+/// Is `night` drawn as Night's own small-cover screen? False by day, and at night with
+/// [`set_night_cover`] on. Render and layout both ask, so a tap lands where the screen drew.
+pub fn compact_night(night: bool) -> bool {
+    night && !NIGHT_COVER.with(|c| c.get())
+}
+
 /// The back arrow's chip: the same pill as the Lyrics chip, square, at the left of the top band.
 pub const BACK_CHIP_W: i32 = 40;
 /// How far the Lyrics chip moves right while the arrow is shown.
@@ -425,7 +442,7 @@ impl Layout {
 /// Now Playing's layout in `style`. `night` matters to Cinder, whose night layout is a different
 /// screen; `lyrics` adds the Lyrics chip's target when the song has lyrics.
 pub fn layout(style: crate::style::Style, night: bool, lyrics: bool) -> Layout {
-    let l = style.look().np_layout(night, lyrics);
+    let l = style.look().np_layout(compact_night(night), lyrics);
     if big() {
         big_targets(l)
     } else {
@@ -1052,6 +1069,17 @@ fn level_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 
 /// Now Playing, drawn in `t.style` (see `style::Look::np_render`).
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
+    if t.night && !compact_night(true) {
+        // The day screen in the night palette. The cover is dimmed as far as the palette is, or
+        // further if the night dim step says so: a full-size cover at full brightness is the glare
+        // Night exists to avoid.
+        let day = Theme {
+            night: false,
+            dim_pct: t.dim_pct.min(Theme::NIGHT_DIM_PCT),
+            ..*t
+        };
+        return t.style.look().np_render(c, &day, f, np);
+    }
     t.style.look().np_render(c, t, f, np)
 }
 
@@ -1160,7 +1188,11 @@ pub fn cinder_render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
                     // 480x480 is past the cache's edge limit, so this still bakes per frame — but
                     // only when the shell supplied no image at all, which on device it always does
                     // (cinder-ffi bakes one per track). See art::block_cached.
-                    None => art::block_cached(c, t, 0, 34, 480, 480, np.art, 1.0),
+                    // The night dim, as `draw_image` applies it: 1.0 by day.
+                    None => {
+                        let op = t.dim_pct.min(100) as f32 / 100.0;
+                        art::block_cached(c, t, 0, 34, 480, 480, np.art, op)
+                    }
                 }
                 // The visualiser stands on the BOTTOM EDGE of the cover (y=508, six px clear of
                 // the art's real edge at 514) and grows upward into it, so changing size moves
@@ -1449,6 +1481,45 @@ mod tests {
                 "size {size} drew nothing at all"
             );
         }
+    }
+
+    /// #60: with Big cover at night on, Night is the day screen in night's colours, for taps and
+    /// for pixels; off, it is Night's own small-cover screen.
+    #[test]
+    fn big_cover_at_night_is_the_day_screen_in_night_colours() {
+        use crate::style::Style;
+        let _scale = crate::text::scale_guard();
+        let day = layout(Style::Cinder, false, false);
+        assert_ne!(
+            layout(Style::Cinder, true, false),
+            day,
+            "off: Night's own screen"
+        );
+        set_night_cover(true);
+        assert_eq!(layout(Style::Cinder, true, false), day);
+        let f = FontSet::load();
+        let night = Theme::night();
+        let np = crate::np5::sample();
+        let (mut a, mut b) = (Canvas::new(), Canvas::new());
+        render(&mut a, &night, &f, &np);
+        cinder_render(
+            &mut b,
+            &Theme {
+                night: false,
+                dim_pct: Theme::NIGHT_DIM_PCT,
+                ..night
+            },
+            &f,
+            &np,
+        );
+        set_night_cover(false);
+        assert!(a.to_rgb_bytes() == b.to_rgb_bytes());
+        let mut c = Canvas::new();
+        render(&mut c, &night, &f, &np);
+        assert!(
+            c.to_rgb_bytes() != a.to_rgb_bytes(),
+            "and off again at once"
+        );
     }
 
     /// Turning the cover visualiser off must not touch the pages — the spectrum page still draws.
