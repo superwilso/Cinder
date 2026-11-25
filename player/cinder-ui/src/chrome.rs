@@ -165,6 +165,13 @@ const BUSY_CX: f32 = zone_right() - 9.0;
 /// `busy` = the phase of the ring (`widgets::spinner`) while the player is working on something —
 /// a library scan, a Bluetooth or speaker search, a connect, Wi-Fi coming up, a station tuning in
 /// — so it shows from every screen, not only the one that started it. `None` draws nothing.
+static BARE_BAR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// v0.5's status bar: clock, badge and battery, without the ≡ and the bookmark. Set once by the app.
+pub fn set_bare_bar(on: bool) {
+    BARE_BAR.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn status_bar(
     c: &mut Canvas,
     t: &Theme,
@@ -274,8 +281,11 @@ pub fn status_bar(
     // right: menu ≡, bookmark, bt, [battery].
     // The ≡ sits LEFT of the Shelf zone on purpose: the whole strip opens the Menu, so the glyph
     // only has to be outside SHELF_CX ± SHELF_HALF_W for "tap the ≡" to mean what it looks like.
-    icons::menu(c, MENU_CX, STATUS_MID, MENU_W * k, t.dim);
-    icons::bookmark(c, SHELF_CX as f32, STATUS_MID, 23.0 * k, t.dim);
+    // v0.5 drops both (its boards): Places and the swipe-up Shelf replace them.
+    if !BARE_BAR.load(std::sync::atomic::Ordering::Relaxed) {
+        icons::menu(c, MENU_CX, STATUS_MID, MENU_W * k, t.dim);
+        icons::bookmark(c, SHELF_CX as f32, STATUS_MID, 23.0 * k, t.dim);
+    }
     let batt = format!("{}", battery);
     let bs = sty(Family::Mono, Weight::Regular, 13.0 * k, t.faint, 0.04);
     let bwid = text::measure(f, &batt, &bs);

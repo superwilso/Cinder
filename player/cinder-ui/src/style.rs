@@ -226,6 +226,9 @@ pub enum Style {
     Clock,
     /// A classic Winamp skin (`.wsz`) from the top of the drive. Terminal's geometry.
     Winamp,
+    /// A Themes v2 folder (`look.rs`), the one `look::set_active` loaded. v0.5 only: not in `ALL`,
+    /// so v0.4's Settings never offers it and no settings file names it.
+    Data,
 }
 
 impl Style {
@@ -249,6 +252,7 @@ impl Style {
             Style::Cassette => &cassette::Cassette,
             Style::Clock => &clock::Clock,
             Style::Winamp => &winamp::Winamp,
+            Style::Data => crate::look::active(),
         }
     }
 

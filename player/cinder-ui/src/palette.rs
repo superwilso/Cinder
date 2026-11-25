@@ -239,7 +239,7 @@ fn parse_colour(v: &str) -> Option<u32> {
     u32::from_str_radix(hex, 16).ok()
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_ID
         && id

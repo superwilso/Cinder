@@ -1,6 +1,16 @@
 # Cinder v0.5.0: a new app on today's shell
 
-**State (2026-11-24): P0 done** (`cinder-core`, `cinder-app5` with the stall test, `CINDER_APP=5` builds). P1 next. v0.4 gets fixes only until v0.5 replaces it.
+**State (2026-11-25): P0 and P1 done.**
+- P0: `cinder-core`, `cinder-app5` with the stall test, `CINDER_APP=5` builds.
+- P1: `cinder-ui/src/look.rs` reads a theme folder's `theme.conf` (tokens and component variants)
+  and draws it through `Style::Data`. `cinder-ui/themes/` ships Cinder plus three examples, and a
+  test proves the Cinder theme draws exactly what the code does. `cinder-host --v5` checks and
+  previews every theme folder.
+
+- P2 (offline part): `cinder-ui/src/np5.rs` (Now Playing at Big and Huge from the boards, the chosen
+  toolbar), `sheet5.rs` (this song's actions, Places), the app drawing them with taps, buttons and
+  swipes, and D1 behind `/contents/cinder_fb_queue` (`cinder-core/src/ovl.rs`). Next: the first
+  player run (`tools/cinder-install.sh --v5`), then P3. v0.4 gets fixes only until v0.5 replaces it.
 
 ## What v0.5 is
 v0.5.0 is a separate Cinder app, built alongside v0.4 in this repo. It replaces v0.4 when it is
@@ -123,6 +133,41 @@ how v0.5 answers them:
 - **Speed:** layouts are resolved once at load, not every frame.
 - **Taps landing in the wrong place:** drawing and taps read the same rectangles.
 
+## GPU and display hardware (researched 2026-11-25)
+**Verdict: no GPU rendering. Use the display hardware instead.**
+
+Why not the Mali-450 GPU:
+- **It was tried and lost.** A GLES 2 present path was built and measured in 2026-07: 45.6 ms a
+  frame against 9.6 ms in software (4.7× slower). It was deleted in 2026-10.
+- **Cinder can't reach it safely.** EGL needs `/dev/ion`, `/dev/sw_sync`, `/dev/mtk_disp` and
+  `/dev/mtkfb_vsync`, which are root-only. Opening them up once hung the player at boot.
+- **It costs power and a rewrite.** The GPU clock (MMPLL) is off while unused, and a GL renderer
+  is the new UI framework this plan rules out.
+- **A GPU visualiser doesn't avoid this.** It still needs the same GL present path. The
+  visualiser's own CPU cost has never been measured, so measure it before moving it anywhere.
+
+Where the frame time really goes:
+- The panel runs in video mode. `FBIOPUT_VSCREENINFO` turns the overlay layers off, queues a
+  full-screen compose, then **sleeps until the next frame** (up to ~16 ms). That sleep is most of
+  the 9–10 ms "flip".
+- Raster is always the full screen; only the copy to the framebuffer skips unchanged rows.
+
+What v0.5 does instead, in `cinder-core/src/display.rs`, smallest first:
+
+| Step | Change | Expected gain |
+|---|---|---|
+| D1 | Flip with `MTKFB_QUEUE_OVERLAY_CONFIG` (returns a fence at once) instead of `FBIOPUT_VSCREENINFO` | the present thread stops sleeping; scroll frames limited by raster (7–8 ms), not present (~14.5 ms) |
+| D2 | Dirty rectangles in the raster: redraw only what changed | most frames are a clock, a progress bar or a pressed row |
+| D3 | The visualiser in its own small overlay layer (alpha-blended over Now Playing) | it updates without redrawing or copying the screen |
+| D4 | Experiment: scroll a pre-drawn strip by moving the layer's source offset | no copy while flinging; limited to the ~1.4 MB spare in the framebuffer |
+
+Rules for this work:
+- Never mix the overlay calls with the old pan call: every pan switches layers 1–3 off.
+- Never read from `/dev/graphics/fb0`: it is write-combined.
+- Each step is a dev-build switch with its own player run, measured with `devctl.sh stalls`.
+- D1 lands with P2 (the first run on a player). D2 lands with P2's Now Playing. D3 and D4 come
+  after P3.
+
 ## Phases
 Each phase ends with `tools/ci_checks.sh` green and v0.4's behaviour unchanged.
 
@@ -149,7 +194,8 @@ Each phase ends with `tools/ci_checks.sh` green and v0.4's behaviour unchanged.
   - test counts are the same before and after;
   - v0.4's golden previews are unchanged;
   - `nm` shows every `cinder_*` symbol in both libraries.
-- **Stall test:** while the backend sleeps 500 ms, the UI draws 30 frames, none over 20 ms, and no
-  call from the shell blocks for more than 1 ms.
+- **Stall test:** while the backend sleeps 500 ms, the UI draws 30 frames, none anywhere near the
+  500 ms a wait would cost, and no call from the shell blocks for more than 1 ms. The 16 ms raster
+  budget is measured on the player.
 - **On a player:** `tools/devctl.sh stalls` shows nothing over 50 ms during a library reload, a
   cover fling or opening Settings.

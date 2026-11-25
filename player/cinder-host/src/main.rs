@@ -7,6 +7,8 @@
 //! cargo run -p cinder-host -- --palette FILE.palette
 //!                                       check a palette the way the player will, then draw every
 //!                                       preview in it -> out/palette_<id>/
+//! cargo run -p cinder-host -- --v5      every Themes v2 folder in cinder-ui/themes: checked the way
+//!                                       the player will, its kit drawn -> out/v5/<id>[-night].png
 //! cargo run -p cinder-host -- --cut 120 every preview at that text size: list the text cut short
 //!                                       with "…" (a report; song names are expected in it)
 //! ```
@@ -4549,8 +4551,150 @@ fn big_view() {
     );
 }
 
+/// `--v5`: each theme folder in `cinder-ui/themes`, refused with its reasons or drawn as the kit
+/// sheet, day and night.
+fn v5_previews() {
+    use cinder_ui::look::{self, DataLook};
+    use cinder_ui::np5;
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../cinder-ui");
+    std::fs::create_dir_all("out/v5").ok();
+    let f = FontSet::load();
+    cinder_ui::chrome::set_bare_bar(true);
+    let mut ids: Vec<String> = std::fs::read_dir(format!("{root}/themes"))
+        .expect("themes folder")
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .collect();
+    ids.sort();
+    let mut bad = 0;
+    for id in ids {
+        let body = std::fs::read_to_string(format!("{root}/themes/{id}/{}", look::FILE_NAME))
+            .unwrap_or_default();
+        let d = match DataLook::parse(&id, &body) {
+            Ok(d) => d,
+            Err(p) => {
+                eprintln!("{id}: refused:\n  {}", p.join("\n  "));
+                bad += 1;
+                continue;
+            }
+        };
+        let tokens = match (&d.colours, d.palette.as_deref()) {
+            (Some(t), _) => *t,
+            (None, Some(p)) if p != cinder_ui::palette::BUILTIN_ID => {
+                let body = std::fs::read_to_string(format!("{root}/palettes/{p}.palette"))
+                    .unwrap_or_default();
+                match cinder_ui::palette::Palette::parse(p, &body) {
+                    Ok(p) => p.tokens,
+                    Err(e) => {
+                        eprintln!("{id}: palette `{p}`: {}", e.join("; "));
+                        bad += 1;
+                        continue;
+                    }
+                }
+            }
+            _ => cinder_ui::theme::CINDER,
+        };
+        look::set_active(d);
+        for (size, name, bar) in [
+            (np5::Size::Big, "np-big", false),
+            (np5::Size::Huge, "np-huge", true),
+        ] {
+            let t = {
+                let mut t = tokens.theme(false, cinder_ui::theme::Accent::Amber);
+                t.style = cinder_ui::style::Style::Data;
+                t
+            };
+            let np = np5::sample();
+            let base = || {
+                let mut c = Canvas::new();
+                c.fill(t.bg);
+                cinder_ui::scale::set_big_bar(bar);
+                cinder_ui::chrome::status_bar(&mut c, &t, &f, np.clock, np.badge, np.battery, None);
+                cinder_ui::scale::set_big_bar(false);
+                np5::render(&mut c, &t, &f, &np, size, &np5::Tool::DEFAULT);
+                c
+            };
+            save_png(&base(), &format!("v5/{id}-{name}"));
+            if size == np5::Size::Big {
+                use cinder_ui::kit::Row;
+                use cinder_ui::sheet5;
+                let mut a = base();
+                sheet5::song_actions(
+                    &mut a,
+                    &t,
+                    &f,
+                    np.title,
+                    &[
+                        Row::new("Lyrics").sub("Synced, from the file"),
+                        Row::new("Track info and rating").sub("FLAC · 24-bit / 96 kHz · 4:32"),
+                        Row::new("Go to album").sub("Last Smoke Before the Snowstorm"),
+                        Row::new("Add to playlist").sub("Or save Up Next as one"),
+                        Row::new("Sleep timer")
+                            .sub("30 min · 24 min left")
+                            .sel(true),
+                        Row::new("Output").sub("WH-1000XM5 · LDAC 990"),
+                    ],
+                );
+                save_png(&a, &format!("v5/{id}-np-actions"));
+                let mut p = base();
+                sheet5::places(
+                    &mut p,
+                    &t,
+                    &f,
+                    &[
+                        sheet5::Tile {
+                            name: "Library",
+                            sub: "412 albums",
+                        },
+                        sheet5::Tile {
+                            name: "Up Next",
+                            sub: "14 songs · 52 min",
+                        },
+                        sheet5::Tile {
+                            name: "Sound",
+                            sub: "DSEE HX · VPT",
+                        },
+                        sheet5::Tile {
+                            name: "Bluetooth",
+                            sub: "WH-1000XM5 · LDAC",
+                        },
+                        sheet5::Tile {
+                            name: "Wi-Fi",
+                            sub: "Home · radio · speakers",
+                        },
+                        sheet5::Tile {
+                            name: "Settings",
+                            sub: "Look · playback · system",
+                        },
+                    ],
+                    &[
+                        "Folders",
+                        "FM radio",
+                        "Soundscapes",
+                        "USB-DAC",
+                        "Audiobooks",
+                        "Help",
+                    ],
+                );
+                save_png(&p, &format!("v5/{id}-np-places"));
+            }
+        }
+        for night in [false, true] {
+            let mut t = tokens.theme(night, cinder_ui::theme::Accent::Amber);
+            t.style = cinder_ui::style::Style::Data;
+            save_png(
+                &look::kit_preview(&t, &f),
+                &format!("v5/{id}{}", if night { "-night" } else { "" }),
+            );
+        }
+    }
+    if bad > 0 {
+        std::process::exit(1);
+    }
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
+        Some("--v5") => v5_previews(),
         Some("--big") => big_view(),
         Some("--cut") => {
             let pct = std::env::args()
@@ -4666,7 +4810,7 @@ fn main() {
             }
         }
         Some(other) => {
-            eprintln!("unknown argument {other:?}\nusage: cinder-host [--check | --bless | --audit | --cut PCT | --palette FILE]");
+            eprintln!("unknown argument {other:?}\nusage: cinder-host [--check | --bless | --audit | --cut PCT | --palette FILE | --v5]");
             std::process::exit(2);
         }
     }

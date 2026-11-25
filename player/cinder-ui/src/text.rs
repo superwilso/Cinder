@@ -128,7 +128,7 @@ pub enum Family {
     Mono,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Weight {
     Light,
     Regular,

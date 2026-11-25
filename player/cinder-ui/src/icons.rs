@@ -286,6 +286,16 @@ pub fn library(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     vbox(c, cx, cy, s, col, w, 13.4, 13.4, 6.6, 6.6, false);
 }
 
+/// "Library" as books on a shelf: two spines and one leaning (v0.5's toolbar, where the 2x2 grid
+/// [`library`] means Places).
+pub fn books(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let s = crate::scale::icon(s);
+    let w = stroke_w(s);
+    polyline(c, cx, cy, s, col, w, &[(4.0, 4.0), (4.0, 20.0)]);
+    polyline(c, cx, cy, s, col, w, &[(9.0, 4.0), (9.0, 20.0)]);
+    polyline(c, cx, cy, s, col, w, &[(14.0, 5.0), (19.0, 19.0)]);
+}
+
 /// "List view": three rows, each a small cover and a line. Drawn beside [`library`]'s 2x2 grid,
 /// which is the grid view's icon, on the Library header's view button.
 pub fn list_view(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {

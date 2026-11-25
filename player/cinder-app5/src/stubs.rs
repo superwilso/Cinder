@@ -131,14 +131,6 @@ pub unsafe extern "C" fn cinder_zappin_take_handoff_confirmed() -> libc::c_int {
     0
 }
 #[no_mangle]
-pub unsafe extern "C" fn cinder_input(_a0: libc::c_int) -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_tap(_a0: libc::c_int, _a1: libc::c_int) -> libc::c_int {
-    0
-}
-#[no_mangle]
 pub unsafe extern "C" fn cinder_touch_drag(_a0: libc::c_int) {}
 #[no_mangle]
 pub unsafe extern "C" fn cinder_touch_fling(_a0: libc::c_int) {}
@@ -162,14 +154,6 @@ pub unsafe extern "C" fn cinder_pending_play_uri(
 }
 #[no_mangle]
 pub unsafe extern "C" fn cinder_pending_play_start() -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_swipe(
-    _a0: libc::c_int,
-    _a1: libc::c_int,
-    _a2: libc::c_int,
-) -> libc::c_int {
     0
 }
 #[no_mangle]

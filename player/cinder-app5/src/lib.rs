@@ -11,26 +11,15 @@
 
 mod backend;
 mod stubs;
+mod ui;
 
-use backend::{Backend, Cmd, Snapshot};
+use backend::{Backend, Cmd};
 use cinder_core::display::{Framebuffer, Sink, FRAMES_PRESENTED};
 use cinder_core::present;
-use cinder_ui::theme::Theme;
-use cinder_ui::{now_playing, Canvas, FontSet};
 use std::ffi::{c_char, CStr};
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
-
-/// The UI half: touched only by the shell's render thread (render tick and input).
-struct Ui {
-    sink: Option<Sink>,
-    canvas: Canvas,
-    fonts: FontSet,
-    theme: Theme,
-    /// The snapshot version last drawn; a newer one means repaint.
-    drawn: u64,
-    dirty: bool,
-}
+use ui::Ui;
 
 fn backend() -> &'static Backend {
     static B: OnceLock<Backend> = OnceLock::new();
@@ -49,39 +38,6 @@ unsafe fn cstr(p: *const c_char) -> String {
     CStr::from_ptr(p).to_string_lossy().into_owned()
 }
 
-fn draw(u: &mut Ui, s: &Snapshot) {
-    let np = now_playing::NowPlaying {
-        skin: None,
-        tape: None,
-        title: &s.title,
-        artist: "",
-        codec: "",
-        badge: "",
-        clock: "",
-        battery: s.battery,
-        elapsed: "",
-        remaining: "",
-        progress: s.progress,
-        art: "kind",
-        art_full: None,
-        art_thumb: None,
-        liked: false,
-        playing: s.playing,
-        shuffle: false,
-        repeat: 0,
-        viz_seed: 0.0,
-        viz_kind: 0,
-        viz_size: 0,
-        page: 0,
-        viz_levels: None,
-        viz_peaks: None,
-        viz_sig: None,
-        scrubbing: false,
-        lyrics: false,
-    };
-    now_playing::render(&mut u.canvas, &u.theme, &u.fonts, &np);
-}
-
 /// Open the panel and start the backend. 0 = ok, < 0 = error.
 #[no_mangle]
 pub extern "C" fn cinder_render_init() -> libc::c_int {
@@ -97,14 +53,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
             }
         }
     };
-    *ui().lock().unwrap() = Some(Ui {
-        sink,
-        canvas: Canvas::new(),
-        fonts: FontSet::load(),
-        theme: Theme::day(),
-        drawn: u64::MAX,
-        dirty: true,
-    });
+    *ui().lock().unwrap() = Some(Ui::new(sink));
     0
 }
 
@@ -118,7 +67,7 @@ pub extern "C" fn cinder_render_tick() {
     if !u.dirty && u.drawn == s.version {
         return;
     }
-    draw(u, &s);
+    u.draw(&s);
     u.drawn = s.version;
     u.dirty = false;
     let Ui { sink, canvas, .. } = u;
@@ -167,9 +116,27 @@ pub unsafe extern "C" fn cinder_set_now_playing_uri(
     1
 }
 
+/// A tap at UI coordinates; returns a `cinder_action_t`.
+#[no_mangle]
+pub extern "C" fn cinder_tap(x: libc::c_int, y: libc::c_int) -> libc::c_int {
+    ui().lock().unwrap().as_mut().map_or(0, |u| u.tap(x, y))
+}
+
+/// A horizontal swipe (`dir` < 0 = leftward) starting at `(x, y)`.
+#[no_mangle]
+pub extern "C" fn cinder_swipe(dir: libc::c_int, _x: libc::c_int, _y: libc::c_int) -> libc::c_int {
+    ui().lock().unwrap().as_mut().map_or(0, |u| u.swipe(dir))
+}
+
+/// A hardware button (`cinder_button_t`).
+#[no_mangle]
+pub extern "C" fn cinder_input(button: libc::c_int) -> libc::c_int {
+    ui().lock().unwrap().as_mut().map_or(0, |u| u.input(button))
+}
+
 /// For tests: the latest snapshot.
 #[cfg(test)]
-fn latest() -> std::sync::Arc<Snapshot> {
+fn latest() -> std::sync::Arc<backend::Snapshot> {
     backend().snapshot()
 }
 
@@ -191,15 +158,15 @@ mod tests {
             t.elapsed() < Duration::from_millis(1),
             "a call waited on the backend"
         );
+        // A frame that waited on the backend would take its 500 ms; the limit sits well under that
+        // and well over a raster (~5 ms release, ~50 ms unoptimised), so a busy test machine cannot
+        // fail it. The 16 ms raster budget is measured on the player (`devctl.sh stalls`).
+        let budget = Duration::from_millis(if cfg!(debug_assertions) { 200 } else { 100 });
         for _ in 0..30 {
             cinder_force_dirty();
             let t = Instant::now();
             cinder_render_tick();
-            assert!(
-                t.elapsed() < Duration::from_millis(20),
-                "frame took {:?}",
-                t.elapsed()
-            );
+            assert!(t.elapsed() < budget, "frame took {:?}", t.elapsed());
         }
         // The title arrives once the backend is free.
         let t = Instant::now();

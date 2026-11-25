@@ -8,6 +8,7 @@ pub mod display;
 pub mod flac;
 pub mod likes;
 pub mod mdns;
+pub mod ovl;
 pub mod pcm_tap;
 pub mod present;
 pub mod scrobble;

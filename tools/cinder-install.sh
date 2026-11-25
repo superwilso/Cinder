@@ -16,6 +16,8 @@
 #                                          #   boot guard and mono shim (deploy/cinder-preload.sh)
 #   tools/cinder-install.sh --fast-boot    # also the `fast-boot` component: Sony's boot-time
 #                                          #   firmware checks skipped (deploy/cinder-fastboot.sh)
+#   tools/cinder-install.sh --v5           # the v0.5 app (docs/PLAN_v0.5.md) from dist/v5-<channel>/;
+#                                          # --rollback puts the previous binary back
 #   tools/cinder-install.sh --keep-escape  # a dev player whose owner keeps the cable escape off:
 #                                          #   refuse unless bootcount reads 0 and no library scan
 #                                          #   is running, then put cable_escape_off back after
@@ -74,6 +76,7 @@ while [ $# -gt 0 ]; do
         --preload)  PRELOAD=1; shift;;
         --fast-boot) FASTBOOT=1; shift;;
         --keep-escape) KEEP_ESCAPE=1; shift;;
+        --v5)       export CINDER_APP=5; shift;;
         --logs)     MODE="logs"; shift;;
         --status)   MODE="status"; shift;;
         --rollback) MODE="rollback"; shift;;
@@ -83,6 +86,7 @@ while [ $# -gt 0 ]; do
 done
 
 DIST="$REPO/cinder-home/dist/$CHANNEL"
+[ "${CINDER_APP:-}" = 5 ] && DIST="$REPO/cinder-home/dist/v5-$CHANNEL"
 BIN="$DIST/cinder-home"
 INSTALL_PATH="/system/vendor/cinder/bin/cinder-home"
 STAGE="/data/local/tmp/cinder-home.new"

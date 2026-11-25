@@ -114,6 +114,8 @@ pub struct Framebuffer {
     stat_frames: u32,
     stat_rows: u64,
     stat_done: bool,
+    /// D1, opt-in: flip by queueing the overlay instead of `flip`'s blocking ioctl (`ovl.rs`).
+    queued: Option<crate::ovl::Queued>,
 }
 
 /// How often to write every row whether it changed or not. Insurance, not correctness: nothing
@@ -212,6 +214,7 @@ impl Framebuffer {
             stat_frames: 0,
             stat_rows: 0,
             stat_done: false,
+            queued: crate::ovl::Queued::new(fd, fix.smem_start as u32, stride, pages),
         })
     }
 
@@ -225,6 +228,12 @@ impl Framebuffer {
     /// skipped rather than written. Worst case is a cosmetically clipped frame, never a crash.
     pub fn blit(&mut self, buf: &[u32]) {
         let base = self.base as *mut u8;
+        if self.opened.elapsed().as_secs() >= UNCONTESTED_AFTER_S {
+            if let Some(q) = self.queued.as_mut() {
+                q.present(base, self.map_len, buf);
+                return;
+            }
+        }
         let copy_bytes = (W * 4).min(self.stride);
 
         // PAGES AND ROWS ARE INDEPENDENT QUESTIONS, and conflating them cost a regression.
