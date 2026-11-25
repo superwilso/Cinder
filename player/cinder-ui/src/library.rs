@@ -3314,8 +3314,9 @@ pub enum ArtistRowKind {
 impl ArtistRowKind {
     fn h(self) -> i32 {
         match self {
-            ArtistRowKind::AlbumsSection | ArtistRowKind::TopSection => ARTIST_SEC_H,
-            ArtistRowKind::SongsSection => ARTIST_SONGS_H,
+            ArtistRowKind::TopSection => ARTIST_SEC_H,
+            // Both headers are controls (sort, show/hide), so both get a touch target.
+            ArtistRowKind::AlbumsSection | ArtistRowKind::SongsSection => ARTIST_SONGS_H,
             ArtistRowKind::Album(_) => ARTIST_ALBUM_RH(),
             ArtistRowKind::Song(_) | ArtistRowKind::Top(_) => ARTIST_TRACK_RH(),
         }
@@ -3351,17 +3352,27 @@ pub struct ArtistPage<'a> {
     /// call, 2026-10-04: an artist with 300 tracks was 300 rows under three albums), and always
     /// open for an artist with no album rows, where the songs are the whole page.
     pub songs_open: bool,
+    /// Index into [`ARTIST_SORTS`].
+    pub sort: usize,
 }
+
+/// The artist page's album orders, as its ALBUMS header shows them (tap to cycle). Saved as the
+/// index (`lib_place=`'s fourth field).
+pub const ARTIST_SORTS: [&str; 3] = ["A–Z", "NEWEST", "OLDEST"];
 
 /// Resolve an artist's page out of the library, by name.
 ///
 /// Albums come from `album_groups`, which cinder-ffi groups by ALBUM ARTIST — the same key the
-/// Artists tab is built from, so the two always agree. They are NEWEST FIRST (handoff 5m): by
-/// release year, then by when they arrived in the library, and an album with no year after every
-/// dated one. Tracks are the albums' track lists in that order; if the artist has no albums at all
+/// Artists tab is built from, so the two always agree. They are in the `sort` order of
+/// [`ARTIST_SORTS`] (A–Z by default). Tracks are the albums' track lists in that order; if the artist has no albums at all
 /// (tracks with no album row behind them), it falls back to matching the Songs list on artist
 /// name, so a page is never empty when the tab said it has tracks.
-pub fn artist_page<'a>(lib: &'a Library, name: &'a str, songs_open: bool) -> ArtistPage<'a> {
+pub fn artist_page<'a>(
+    lib: &'a Library,
+    name: &'a str,
+    songs_open: bool,
+    sort: usize,
+) -> ArtistPage<'a> {
     let mut albums: Vec<(usize, &crate::model::AlbumRow)> = Vec::new();
     let mut flat = 0usize;
     for g in &lib.album_groups {
@@ -3372,13 +3383,21 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str, songs_open: bool) -> Art
             flat += 1;
         }
     }
-    // Newest year first; albums of the same year (or none) by title, as the Albums tab collates.
-    // Ties used to fall back to when each album arrived, which reads as random (issue #61).
-    let year = |a: &crate::model::AlbumRow| a.year.trim().parse::<i32>().unwrap_or(0);
+    // ARTIST_SORTS: A–Z by title (the default, issue #61), or by year either way. Ties and
+    // undated albums go by title, and an undated album sorts after every dated one.
+    let year = |a: &crate::model::AlbumRow| a.year.trim().parse::<i32>().ok();
+    let by_name = |a: &crate::model::AlbumRow, b: &crate::model::AlbumRow| {
+        crate::collate::cmp(&a.name, &b.name)
+    };
     albums.sort_by(|(_, a), (_, b)| {
-        year(b)
-            .cmp(&year(a))
-            .then_with(|| crate::collate::cmp(&a.name, &b.name))
+        let (ya, yb) = (year(a), year(b));
+        let dated = ya.is_none().cmp(&yb.is_none());
+        match sort {
+            1 => dated.then(yb.cmp(&ya)),
+            2 => dated.then(ya.cmp(&yb)),
+            _ => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| by_name(a, b))
     });
     let mut tracks: Vec<ArtistTrack> = albums
         .iter()
@@ -3419,7 +3438,7 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str, songs_open: bool) -> Art
     let mut y = 0;
     if !albums.is_empty() {
         rows.push((y, ArtistRowKind::AlbumsSection));
-        y += ARTIST_SEC_H;
+        y += ArtistRowKind::AlbumsSection.h();
         for i in 0..albums.len() {
             rows.push((y, ArtistRowKind::Album(i)));
             y += ARTIST_ALBUM_RH();
@@ -3452,6 +3471,7 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str, songs_open: bool) -> Art
         rows,
         content_h: y + 8,
         songs_open,
+        sort: sort.min(ARTIST_SORTS.len() - 1),
     }
 }
 
@@ -3474,6 +3494,8 @@ pub enum ArtistHit {
     Track(usize),
     /// The "SONGS · n" header: show or hide the full list.
     ToggleSongs,
+    /// The "ALBUMS · n" header: the next album order.
+    CycleSort,
 }
 
 /// Which artist-page row is under touch-`y`? Reads the SAME `page.rows` the renderer draws, so a
@@ -3492,6 +3514,7 @@ pub fn artist_hit(page: &ArtistPage, scroll_px: i32, y: i32) -> Option<ArtistHit
             ArtistRowKind::Song(i) | ArtistRowKind::Top(i) => Some(ArtistHit::Track(i)),
             // Not a control where there is nothing to fold away (see `ArtistPage::songs_open`).
             ArtistRowKind::SongsSection if !page.albums.is_empty() => Some(ArtistHit::ToggleSongs),
+            ArtistRowKind::AlbumsSection if page.albums.len() > 1 => Some(ArtistHit::CycleSort),
             _ => None,
         })
 }
@@ -3576,10 +3599,17 @@ pub fn artist_view(
                     c,
                     f,
                     22.0,
-                    (y + 24) as f32,
+                    (y + 30) as f32,
                     &crate::ui_format!("ALBUMS · {}", page.albums.len()),
                     &lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.faint, 0.18),
                 );
+                // The order, in words, where SONGS says SHOW ALL: a tap moves to the next one.
+                if page.albums.len() > 1 {
+                    let word = crate::i18n::text(ARTIST_SORTS[page.sort]);
+                    let act = lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.acc, 0.18);
+                    let w = text::measure(f, word, &act);
+                    text::draw(c, f, W as f32 - 22.0 - w, (y + 30) as f32, word, &act);
+                }
             }
             ArtistRowKind::SongsSection => {
                 let cap = lib_sty(t, Family::Mono, Weight::Regular, 11.0, t.faint, 0.18);
@@ -5380,8 +5410,8 @@ mod tests {
     }
 
     #[test]
-    fn an_artists_albums_of_one_year_or_none_are_in_title_order() {
-        // Issue #61: ties used to keep arrival order, which reads as random.
+    fn an_artists_albums_are_in_title_order_whatever_their_year() {
+        // Issue #61: arrival order read as random; then newest year first. Now title only.
         let mut l = artist_lib();
         let g = &mut l.album_groups[0].albums;
         g.reverse(); // A2 arrived first
@@ -5390,15 +5420,43 @@ mod tests {
             a.added = 0;
         }
         g[0].added = 9; // and most recently
-        let p = artist_page(&l, "One", true);
+        g[0].year = "2024".into(); // and is newer than A1
+        g[1].year = "1999".into();
+        let p = artist_page(&l, "One", true, 0);
         let names: Vec<&str> = p.albums.iter().map(|(_, a)| a.name.as_str()).collect();
         assert_eq!(names, ["A1", "A2"]);
+    }
+
+    /// The ALBUMS header cycles A–Z, newest, oldest; undated albums go last in both year orders.
+    #[test]
+    fn an_artists_albums_follow_the_chosen_order() {
+        let mut l = artist_lib();
+        let g = &mut l.album_groups[0].albums;
+        g[0].year = "2001".into(); // A1
+        g[1].year = String::new(); // A2: no year
+        let order = |l: &Library, sort| {
+            let p = artist_page(l, "One", true, sort);
+            p.albums
+                .iter()
+                .map(|(_, a)| a.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&l, 0), ["A1", "A2"]);
+        assert_eq!(order(&l, 1), ["A1", "A2"], "undated after dated");
+        assert_eq!(order(&l, 2), ["A1", "A2"], "undated after dated");
+        l.album_groups[0].albums[1].year = "2010".into();
+        assert_eq!(order(&l, 1), ["A2", "A1"]);
+        assert_eq!(order(&l, 2), ["A1", "A2"]);
+        // The header is the control, with two or more albums.
+        let p = artist_page(&l, "One", true, 0);
+        let top = artist_content_top();
+        assert_eq!(artist_hit(&p, 0, top + 10), Some(ArtistHit::CycleSort));
     }
 
     #[test]
     fn artist_page_collects_that_artists_albums_and_tracks() {
         let l = artist_lib();
-        let p = artist_page(&l, "One", true);
+        let p = artist_page(&l, "One", true, 0);
         // Both of One's albums, and NOT Two's — with the flat indices the Album screen takes.
         assert_eq!(
             p.albums
@@ -5413,7 +5471,7 @@ mod tests {
         assert_eq!(p.tracks[4].album, "A2");
         // An artist with tracks but no album rows still gets a page (the Songs fallback) rather
         // than an empty one, which is what the Artists tab's track count promised.
-        let solo = artist_page(&l, "Solo", false);
+        let solo = artist_page(&l, "Solo", false, 0);
         assert!(solo.albums.is_empty());
         assert_eq!(solo.tracks.len(), 1);
         assert_eq!(solo.tracks[0].song.object_id, 900);
@@ -5430,7 +5488,7 @@ mod tests {
             .first()
             .map(|s| s.artist.clone())
             .expect("the sample has songs");
-        let p = artist_page(&l, &name, false);
+        let p = artist_page(&l, &name, false, 0);
         assert!(p.songs_open);
         assert!(p
             .rows
@@ -5444,12 +5502,15 @@ mod tests {
         // Renders text; shares the crate-wide UI-scale lock. See text::scale_guard.
         let _scale = crate::text::scale_guard();
         let l = artist_lib();
-        let p = artist_page(&l, "One", true);
+        let p = artist_page(&l, "One", true, 0);
         let top = artist_content_top();
-        // Section headers are labels, not targets.
-        assert_eq!(artist_hit(&p, 0, top + ARTIST_SEC_H / 2), None);
+        // The ALBUMS header is the order control (two albums here).
+        assert_eq!(
+            artist_hit(&p, 0, top + ARTIST_SONGS_H / 2),
+            Some(ArtistHit::CycleSort)
+        );
         // First album row → its FLAT index, which is what opens the Album drill-in.
-        let a0 = top + ARTIST_SEC_H + ARTIST_ALBUM_RH() / 2;
+        let a0 = top + ARTIST_SONGS_H + ARTIST_ALBUM_RH() / 2;
         assert_eq!(artist_hit(&p, 0, a0), Some(ArtistHit::Album(0)));
         assert_eq!(
             artist_hit(&p, 0, a0 + ARTIST_ALBUM_RH()),

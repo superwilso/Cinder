@@ -437,7 +437,7 @@ fn the_artist_page_orders_albums_by_year_and_lists_the_most_played() {
         }],
         ..Default::default()
     };
-    let p = library::artist_page(&lib, "A", true);
+    let p = library::artist_page(&lib, "A", true, 0);
     assert_eq!(
         p.albums
             .iter()
@@ -464,7 +464,7 @@ fn the_artist_page_orders_albums_by_year_and_lists_the_most_played() {
             },
         );
     }
-    let p = library::artist_page(&lib, "A", true);
+    let p = library::artist_page(&lib, "A", true, 0);
     let top: Vec<i64> = p.top.iter().map(|&i| p.tracks[i].song.object_id).collect();
     assert_eq!(top, [31, 20, 10], "three, most played first");
     let (vy, i) = p

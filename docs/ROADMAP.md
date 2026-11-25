@@ -42,6 +42,15 @@ the Library view bar, Search scopes, the sideways page swipe, saved views, the i
 CUE tracks listed in Songs, the RMT-NWS20 remote, and Flint 0.3 (setup, convert-on-transfer,
 copying, the palette preview).
 
+**Future: mood channels without SensMe.** SensMe sorts songs into channels with Sony's 2009-era
+analyser, which only Music Center runs and which adds data to every file. The plan is to replace it:
+Flint analyses the library on the PC with a current, openly licensed music model (tempo, energy,
+mood and similar-song embeddings), writes the results as small tags or one sidecar file, and Cinder
+builds its channels and "more like this" from those instead of Sony's `WMCHANNELINFO`. To be
+decided first: which model (accuracy on a test set against SensMe's channels, licence compatible
+with PolyForm Noncommercial, size and speed on an ordinary PC), and whether existing SensMe tags
+stay readable alongside. See [`PLAN_sensme_sync.md`](PLAN_sensme_sync.md) for how SensMe works today.
+
 ## Help wanted
 
 **Testers with a Mac.** The installer has a macOS build (Apple silicon and Intel, one binary). It

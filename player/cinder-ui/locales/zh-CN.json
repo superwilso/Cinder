@@ -346,6 +346,8 @@
   "SONGS · {}": "歌曲 · {}",
   "HIDE": "收起",
   "SHOW ALL": "显示全部",
+  "NEWEST": "年份降序",
+  "OLDEST": "年份升序",
   "MOST PLAYED": "播放最多",
   "1 PLAY": "播放 1 次",
   "{plays} PLAYS": "播放 {plays} 次",

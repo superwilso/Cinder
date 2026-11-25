@@ -1277,7 +1277,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // the artist was, which is precisely why nothing ever pushed it.
             ("artist", &|c: &mut Canvas| {
                 let name = lib.artists.first().map(|a| a.name.as_str()).unwrap_or("");
-                let page = library::artist_page(&lib, name, false);
+                let page = library::artist_page(&lib, name, false, 0);
                 library::artist_view(c, &theme, &fonts, &lib, &page, 0, 0, None, false);
                 cinder_ui::chrome::np_bar(
                     c,
@@ -1292,7 +1292,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // …and with SONGS opened from its header (2026-10-04: folded away until asked for).
             ("artist_songs_open", &|c: &mut Canvas| {
                 let name = lib.artists.first().map(|a| a.name.as_str()).unwrap_or("");
-                let page = library::artist_page(&lib, name, true);
+                let page = library::artist_page(&lib, name, true, 0);
                 library::artist_view(c, &theme, &fonts, &lib, &page, 0, 0, None, false);
             }),
             // ── Redesign R4: ratings, plays, smart playlists, the two editors ──────────────────
@@ -1351,7 +1351,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     .first()
                     .map(|a| a.name.clone())
                     .unwrap_or_default();
-                let page = library::artist_page(&l, &name, false);
+                let page = library::artist_page(&l, &name, false, 0);
                 library::artist_view(c, &theme, &fonts, &l, &page, 0, 0, None, false);
             }),
             // The Playlists tab with a smart playlist above the others and an EDITED tag (5g).

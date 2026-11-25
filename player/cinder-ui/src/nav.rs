@@ -1259,6 +1259,8 @@ pub struct App {
     /// 3 year) + the one expanded accordion album (a lib.albums_flat() index, stable across
     /// re-orders; None = all collapsed). Session state — not persisted.
     album_sort: usize,
+    /// The artist page's album order (`library::ARTIST_SORTS`), saved with `lib_place=`.
+    artist_sort: usize,
     album_expanded: Option<usize>,
     /// Album drill-in: the flat album index being viewed + the track cursor/pixel-scroll inside it.
     album_view: usize,
@@ -2133,6 +2135,7 @@ impl Default for App {
             lib_band_hide: 0,
             lib_sort: 0,
             album_sort: 0,
+            artist_sort: 0,
             album_expanded: None,
             album_view: 0,
             album_track_idx: 0,
@@ -6974,10 +6977,9 @@ impl App {
     /// The open artist's page, resolved against the library. Borrows `self.lib`, so callers that
     /// need to mutate must copy what they want out first.
     fn artist_page(&self) -> Option<crate::library::ArtistPage<'_>> {
-        self.lib
-            .artists
-            .get(self.artist_view)
-            .map(|a| library::artist_page(&self.lib, &a.name, self.artist_songs_open))
+        self.lib.artists.get(self.artist_view).map(|a| {
+            library::artist_page(&self.lib, &a.name, self.artist_songs_open, self.artist_sort)
+        })
     }
 
     /// The open artist page's tracks, in page order, as object ids.
@@ -7036,6 +7038,10 @@ impl App {
                 self.start_play_list(ids, i)
             }
             // Folding the list away can leave the page scrolled past its new end.
+            Some((library::ArtistHit::CycleSort, _)) => {
+                self.artist_sort = (self.artist_sort + 1) % library::ARTIST_SORTS.len();
+                vec![]
+            }
             Some((library::ArtistHit::ToggleSongs, _)) => {
                 self.artist_songs_open = !self.artist_songs_open;
                 self.fling_v = 0.0;
@@ -8796,10 +8802,11 @@ impl App {
     /// (`lib_place=`), so the Library opens as it was left whatever Start on says.
     pub fn lib_place_str(&self) -> String {
         format!(
-            "{}|{}|{}",
+            "{}|{}|{}|{}",
             tab_token(self.lib_tab),
             self.lib_sort,
-            self.album_sort
+            self.album_sort,
+            self.artist_sort
         )
     }
 
@@ -8807,8 +8814,11 @@ impl App {
     /// changes nothing.
     pub fn set_lib_place_str(&mut self, s: &str) {
         let f: Vec<&str> = s.split('|').collect();
-        let [tab, sort, album_sort] = f[..] else {
-            return;
+        // The fourth field (the artist page's album order) came later; older files have three.
+        let (tab, sort, album_sort, artist_sort) = match f[..] {
+            [a, b, c] => (a, b, c, "0"),
+            [a, b, c, d] => (a, b, c, d),
+            _ => return,
         };
         let (Ok(sort), Ok(album_sort)) = (
             sort.trim().parse::<usize>(),
@@ -8819,6 +8829,11 @@ impl App {
         self.lib_tab = tab_from_token(tab);
         self.lib_sort = sort.min(library::SORTS.len() - 1);
         self.album_sort = album_sort.min(library::ALBUM_SORTS.len() - 1);
+        self.artist_sort = artist_sort
+            .trim()
+            .parse::<usize>()
+            .unwrap_or(0)
+            .min(library::ARTIST_SORTS.len() - 1);
     }
 
     /// Read `lib_views_str`'s format. An unknown word leaves that tab as it was; a view the tab

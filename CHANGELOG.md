@@ -16,6 +16,12 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **An artist's albums are in plain A–Z order by default, and you can pick another** (#61). Tap the
+  order at the right of the ALBUMS header to switch between A–Z, newest first and oldest first;
+  the choice is remembered. rc2 listed the newest year first, then titles.
+
 ## [0.4.5] — 2026-11-25
 
 ### Fixed

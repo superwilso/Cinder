@@ -2304,13 +2304,17 @@ fn library_tab_and_sorts_round_trip() {
     a.lib_tab = Tab::Albums;
     a.lib_sort = library::SORTS.len() - 1;
     a.album_sort = library::ALBUM_SORTS.len() - 1;
+    a.artist_sort = 2;
     let saved = a.lib_place_str();
     let mut b = App::unlocked();
     b.set_lib_place_str(&saved);
     assert_eq!(
-        (b.lib_tab, b.lib_sort, b.album_sort),
-        (a.lib_tab, a.lib_sort, a.album_sort)
+        (b.lib_tab, b.lib_sort, b.album_sort, b.artist_sort),
+        (a.lib_tab, a.lib_sort, a.album_sort, 2)
     );
+    // A file written before the artist order existed has three fields: A–Z.
+    b.set_lib_place_str("albums|0|0");
+    assert_eq!((b.lib_tab, b.artist_sort), (Tab::Albums, 0));
     b.set_lib_place_str("songs|x|0");
     b.set_lib_place_str("songs");
     assert_eq!(b.lib_tab, Tab::Albums, "garbage changes nothing");
@@ -8189,7 +8193,7 @@ fn random_album_plays_one_of_the_artists_albums() {
     let idx = (0..a.lib.artists.len())
         .find(|&i| {
             let name = a.lib.artists[i].name.clone();
-            library::artist_page(&a.lib, &name, false).albums.len() > 1
+            library::artist_page(&a.lib, &name, false, 0).albums.len() > 1
         })
         .expect("the sample has an artist with two albums");
     a.tap(200, artist_row_y(idx));
