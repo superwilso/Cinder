@@ -1,7 +1,7 @@
 //! v0.5's Now Playing (`docs/PLAN_v0.5.md` P2), drawn from the 2026-11-24 boards
 //! (`docs/design/v0.5/NowPlaying.dc.html` for Big, `ProposalHugeNP.dc.html` for Huge).
 //!
-//! What changed from v0.4's: the cover is inset, not full bleed; the title is bigger; the seek bar
+//! What changed from v0.4's: the title is bigger; the seek bar
 //! always shows its thumb; the toolbar is labelled and its slots are the owner's choice (default
 //! Library, Up Next, Bluetooth, Places); and a tap on the title block opens this song's actions
 //! (`Hit::Info`). The status bar is the app's, as on every screen.
@@ -48,23 +48,24 @@ struct Geo {
     bar_icon: f32,
 }
 
+// Big: the cover runs edge to edge (owner 11-25), so the block under it is the board's, tightened.
 const BIG: Geo = Geo {
     top: 44,
-    cover: (24, 52, 432),
-    title_top: 496,
+    cover: (0, 44, 480),
+    title_top: 530,
     title_px: 34.0,
-    title_lh: 40,
+    title_lh: 38,
     artist_px: 18.0,
     heart: 56,
     heart_icon: 28.0,
-    rail_band: (568, 612),
+    rail_band: (592, 628),
     rail_h: 6,
     thumb: 20,
     times_px: 15.0,
-    times_base: 628,
-    row_top: 644,
-    row_h: 88,
-    buttons: [(64, 28.0), (88, 36.0), (88, 34.0), (88, 36.0), (64, 28.0)],
+    times_base: 642,
+    row_top: 648,
+    row_h: 86,
+    buttons: [(64, 28.0), (84, 36.0), (84, 34.0), (84, 36.0), (64, 28.0)],
     bar_top: 736,
     bar_icon: 24.0,
 };

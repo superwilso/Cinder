@@ -196,6 +196,9 @@ impl Framebuffer {
         // The shadow starts as zeroes and so does the mapping (the clear above), so the very first
         // blit can already trust it — no special first-frame case, and no 1.5 MB write of pixels
         // that are already black.
+        // smem_start is u32 on the player (32-bit ARM) and u64 on a PC: the cast is only a no-op there.
+        #[allow(clippy::unnecessary_cast)]
+        let pa = fix.smem_start as u32;
         Ok(Framebuffer {
             _file: file,
             fd,
@@ -214,7 +217,7 @@ impl Framebuffer {
             stat_frames: 0,
             stat_rows: 0,
             stat_done: false,
-            queued: crate::ovl::Queued::new(fd, fix.smem_start as u32, stride, pages),
+            queued: crate::ovl::Queued::new(fd, pa, stride, pages),
         })
     }
 

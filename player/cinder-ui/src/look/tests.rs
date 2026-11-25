@@ -13,6 +13,8 @@ fn the_cinder_theme_file_is_cinder() {
 
 #[test]
 fn the_cinder_theme_draws_exactly_what_the_code_does() {
+    // The text size is process-wide; another test changing it between the two draws moved a pixel.
+    let _scale = crate::text::scale_guard();
     let f = FontSet::load();
     for night in [false, true] {
         let mut t = if night { Theme::night() } else { Theme::day() };
@@ -97,6 +99,7 @@ fn outside(a: &[u8], b: &[u8], (x0, y0, x1, y1): (i32, i32, i32, i32)) -> usize 
 /// 2 px ring sits outside its edge, as Cinder's own chip ring does).
 #[test]
 fn every_variant_draws_inside_its_box() {
+    let _scale = crate::text::scale_guard();
     let f = FontSet::load();
     let t = Theme::day();
     let mut blank = Canvas::new();

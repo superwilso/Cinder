@@ -17,10 +17,6 @@ pub unsafe extern "C" fn cinder_show_usb_storage() -> libc::c_int {
     0
 }
 #[no_mangle]
-pub unsafe extern "C" fn cinder_settings_load(_a0: *const libc::c_char) -> libc::c_int {
-    0
-}
-#[no_mangle]
 pub unsafe extern "C" fn cinder_resume_load(
     _a0: *const libc::c_char,
     _a1: *const libc::c_char,
@@ -275,8 +271,6 @@ pub unsafe extern "C" fn cinder_index_scan() -> libc::c_int {
     0
 }
 #[no_mangle]
-pub unsafe extern "C" fn cinder_set_own_index(_a0: libc::c_int) {}
-#[no_mangle]
 pub unsafe extern "C" fn cinder_dev_set_repeat(_a0: libc::c_int) -> libc::c_int {
     0
 }
@@ -309,10 +303,6 @@ pub unsafe extern "C" fn cinder_dev_radio(_a0: libc::c_int) -> libc::c_int {
 }
 #[no_mangle]
 pub unsafe extern "C" fn cinder_dev_fm(_a0: libc::c_int) -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_index_take_changed() -> libc::c_int {
     0
 }
 #[no_mangle]
@@ -640,10 +630,6 @@ pub unsafe extern "C" fn cinder_fm_set_rec_available(_a0: libc::c_int) {}
 #[no_mangle]
 pub unsafe extern "C" fn cinder_fm_report_rec(_a0: libc::c_int) {}
 #[no_mangle]
-pub unsafe extern "C" fn cinder_get_volume() -> libc::c_int {
-    0
-}
-#[no_mangle]
 pub unsafe extern "C" fn cinder_set_volume(_a0: libc::c_int) {}
 #[no_mangle]
 pub unsafe extern "C" fn cinder_line_out_jack_change() -> libc::c_int {
@@ -727,10 +713,6 @@ pub unsafe extern "C" fn cinder_get_bt_scanning() -> libc::c_int {
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_bt_scanning(_a0: libc::c_int) {}
 #[no_mangle]
-pub unsafe extern "C" fn cinder_get_bt_volume() -> libc::c_int {
-    0
-}
-#[no_mangle]
 pub unsafe extern "C" fn cinder_set_bt_volume(_a0: libc::c_int) {}
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_bt_route(_a0: libc::c_int) {}
@@ -756,14 +738,6 @@ pub unsafe extern "C" fn cinder_viz_analyzer_window_ms() -> libc::c_int {
 }
 #[no_mangle]
 pub unsafe extern "C" fn cinder_get_night() -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_get_bt_codec() -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_get_bt_ldac_quality() -> libc::c_int {
     0
 }
 #[no_mangle]
@@ -801,26 +775,6 @@ pub unsafe extern "C" fn cinder_get_repeat_one() -> libc::c_int {
     0
 }
 #[no_mangle]
-pub unsafe extern "C" fn cinder_get_brightness() -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_get_screen_off_s() -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_get_auto_off_min() -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_get_balance() -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_get_mono() -> libc::c_int {
-    0
-}
-#[no_mangle]
 pub unsafe extern "C" fn cinder_set_mono_shim(_a0: libc::c_int) {}
 #[no_mangle]
 pub unsafe extern "C" fn cinder_get_ambient(
@@ -831,10 +785,6 @@ pub unsafe extern "C" fn cinder_get_ambient(
 }
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_ambient_route(_a0: libc::c_int) {}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_get_bt_on() -> libc::c_int {
-    0
-}
 #[no_mangle]
 pub unsafe extern "C" fn cinder_set_bt_on(_a0: libc::c_int) {}
 #[no_mangle]

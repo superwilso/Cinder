@@ -201,6 +201,12 @@ fn now_playing(s: &Snapshot) -> NowPlaying<'_> {
         art: "kind",
         lyrics: false,
         liked: false,
+        // ponytail: no times, codec or modes until the backend owns playback state (P2b).
+        elapsed: "",
+        remaining: "",
+        codec: "",
+        shuffle: false,
+        repeat: 0,
         ..np5::sample()
     }
 }

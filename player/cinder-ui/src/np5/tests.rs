@@ -75,6 +75,7 @@ fn the_rail_band_belongs_to_the_rail() {
 
 #[test]
 fn nothing_runs_off_the_screen_or_into_anything() {
+    let _scale = crate::text::scale_guard();
     let f = FontSet::load();
     let t = Theme::day();
     let np = NowPlaying {

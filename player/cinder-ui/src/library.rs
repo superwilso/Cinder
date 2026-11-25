@@ -3372,9 +3372,14 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str, songs_open: bool) -> Art
             flat += 1;
         }
     }
-    // Stable, so albums of the same year and arrival keep the order the Albums tab gives them.
+    // Newest year first; albums of the same year (or none) by title, as the Albums tab collates.
+    // Ties used to fall back to when each album arrived, which reads as random (issue #61).
     let year = |a: &crate::model::AlbumRow| a.year.trim().parse::<i32>().unwrap_or(0);
-    albums.sort_by(|(_, a), (_, b)| year(b).cmp(&year(a)).then_with(|| b.added.cmp(&a.added)));
+    albums.sort_by(|(_, a), (_, b)| {
+        year(b)
+            .cmp(&year(a))
+            .then_with(|| crate::collate::cmp(&a.name, &b.name))
+    });
     let mut tracks: Vec<ArtistTrack> = albums
         .iter()
         .flat_map(|(_, al)| {
@@ -5372,6 +5377,22 @@ mod tests {
         let mut l = lib();
         l.songs.push(song("orphan", "Solo", "2:00", 900));
         l
+    }
+
+    #[test]
+    fn an_artists_albums_of_one_year_or_none_are_in_title_order() {
+        // Issue #61: ties used to keep arrival order, which reads as random.
+        let mut l = artist_lib();
+        let g = &mut l.album_groups[0].albums;
+        g.reverse(); // A2 arrived first
+        for a in g.iter_mut() {
+            a.year = String::new();
+            a.added = 0;
+        }
+        g[0].added = 9; // and most recently
+        let p = artist_page(&l, "One", true);
+        let names: Vec<&str> = p.albums.iter().map(|(_, a)| a.name.as_str()).collect();
+        assert_eq!(names, ["A1", "A2"]);
     }
 
     #[test]

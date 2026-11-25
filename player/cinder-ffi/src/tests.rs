@@ -38,7 +38,7 @@ fn a_folder_lists_its_tracks_in_file_name_order_not_tag_order() {
     let (tracks, songs): (Vec<_>, Vec<_>) = [t("02 b.flac", "Bee", 1), t("01 a.flac", "Ay", 2)]
         .into_iter()
         .unzip();
-    let (folders, _) = super::build_folders(&tracks, &songs);
+    let (folders, _) = build_folders(&tracks, &songs);
     let album = folders.iter().find(|f| f.name == "Album").unwrap();
     let titles: Vec<&str> = album.tracks.iter().map(|r| r.title.as_str()).collect();
     assert_eq!(titles, ["Ay", "Bee"]);

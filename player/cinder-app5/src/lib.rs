@@ -10,6 +10,7 @@
 //! (`cinder-home/harness/gen_stubs.py --no-ffi=`).
 
 mod backend;
+mod settings;
 mod stubs;
 mod ui;
 

@@ -16,6 +16,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **An artist's albums are no longer in a random-looking order** (#61). Albums from the same year,
+  or with no year, were listed in the order they reached the player; they are now in title order,
+  after the newest year first.
+- **`tools/cinder-install.sh --rollback` now restores the previous binary.** It backed up the
+  current binary over the one it was about to restore, so a rollback reinstalled what was already
+  there.
+
 ## [0.4.5] — 2026-11-24
 
 ### Fixed

@@ -139,6 +139,7 @@ impl Store {
         self.by_path.get(path).copied().unwrap_or_default()
     }
 
+    #[allow(clippy::len_without_is_empty)] // moved from cinder-ffi, where it was crate-private
     pub fn len(&self) -> usize {
         self.by_path.len()
     }

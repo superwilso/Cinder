@@ -383,7 +383,7 @@ jobs:
           exit 1
       - name: Clippy for the player's target
         working-directory: player
-        run: cargo clippy --target arm-unknown-linux-gnueabihf -p cinder-ffi --all-targets -- -D warnings
+        run: cargo clippy --target arm-unknown-linux-gnueabihf -p cinder-ffi -p cinder-app5 --all-targets -- -D warnings
 
   payload:
     name: dist payload is complete
