@@ -1,7 +1,7 @@
 //! The UI half of v0.5: screen state, drawing and taps. Runs only on the shell's render/input
 //! thread and reads the backend's latest snapshot; nothing here waits for the backend.
 
-use crate::backend::Snapshot;
+use crate::backend::{LoadState, Snapshot};
 use cinder_core::display::Sink;
 use cinder_ui::kit::Row;
 use cinder_ui::now_playing::{Hit, NowPlaying};
@@ -76,7 +76,15 @@ impl Ui {
         let (c, t, f) = (&mut self.canvas, &self.theme, &self.fonts);
         c.fill(t.bg);
         cinder_ui::scale::set_big_bar(self.size == Size::Huge);
-        cinder_ui::chrome::status_bar(c, t, f, np.clock, np.badge, np.battery, None);
+        // The ring turns while the library builds; seconds mod 8, as v0.4's `busy_phase`.
+        let busy = (s.lib == LoadState::Loading).then(|| {
+            static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            T0.get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_secs_f32()
+                % 8.0
+        });
+        cinder_ui::chrome::status_bar(c, t, f, np.clock, np.badge, np.battery, busy);
         cinder_ui::scale::set_big_bar(false);
         np5::render(c, t, f, &np, self.size, &self.tools);
         match self.sheet {

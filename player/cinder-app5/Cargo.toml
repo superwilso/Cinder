@@ -15,5 +15,6 @@ dev = ["cinder-ui/dev", "cinder-core/dev"]
 
 [dependencies]
 cinder-core = { path = "../cinder-core" }
+cinder-db = { path = "../cinder-db" }
 cinder-ui = { path = "../cinder-ui" }
 libc = "0.2"

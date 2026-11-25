@@ -12,6 +12,10 @@
   swipes, and D1 behind `/contents/cinder_fb_queue` (`cinder-core/src/ovl.rs`). Next: the first
   player run (`tools/cinder-install.sh --v5`), then P3. v0.4 gets fixes only until v0.5 replaces it.
 
+- P3 (started): the library builder, stats and books moved to `cinder-core`. The app's
+  `cinder_db_open` builds the library on the shell's own worker thread and hands it to the backend
+  as one shared value; the status-bar ring turns while it builds. Next: the Library screen.
+
 ## What v0.5 is
 v0.5.0 is a separate Cinder app, built alongside v0.4 in this repo. It replaces v0.4 when it is
 complete. Its goals:

@@ -198,10 +198,6 @@ pub unsafe extern "C" fn cinder_modal_open() -> libc::c_int {
     0
 }
 #[no_mangle]
-pub unsafe extern "C" fn cinder_db_open(_a0: *const libc::c_char) -> libc::c_int {
-    0
-}
-#[no_mangle]
 pub unsafe extern "C" fn cinder_version() -> *const libc::c_char {
     std::ptr::null_mut()
 }
@@ -209,10 +205,6 @@ pub unsafe extern "C" fn cinder_version() -> *const libc::c_char {
 pub unsafe extern "C" fn cinder_art_cache_defer() {}
 #[no_mangle]
 pub unsafe extern "C" fn cinder_art_cache_start() -> libc::c_int {
-    0
-}
-#[no_mangle]
-pub unsafe extern "C" fn cinder_db_content_signature(_a0: *const libc::c_char) -> u64 {
     0
 }
 #[no_mangle]

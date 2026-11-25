@@ -5,6 +5,18 @@
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+/// Where a slow resource is. The UI draws a placeholder (or the busy ring) while `Loading`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LoadState {
+    /// Never asked for (host tests, the harness before its first open).
+    #[default]
+    None,
+    Loading,
+    Ready,
+    /// The open failed with this `cinder_db_open` code.
+    Failed(i32),
+}
+
 /// What the backend is asked to do. Each shell entry point that changes state becomes one of these.
 pub enum Cmd {
     NowPlaying {
@@ -13,6 +25,10 @@ pub enum Cmd {
         playing: bool,
         battery: u8,
     },
+    /// A library open has started (on the shell's worker thread, see `cinder_db_open`).
+    LibLoading,
+    /// It finished: the new library, or the code it failed with.
+    Library(Result<Arc<cinder_ui::Library>, i32>),
     /// Tests only: a slow command, standing in for a library reload or a file write.
     #[cfg(test)]
     Sleep(u64),
@@ -27,6 +43,8 @@ pub struct Snapshot {
     pub progress: f32,
     pub playing: bool,
     pub battery: u8,
+    pub library: Arc<cinder_ui::Library>,
+    pub lib: LoadState,
 }
 
 pub struct Backend {
@@ -91,6 +109,13 @@ fn apply(s: &mut Snapshot, c: Cmd) {
             s.playing = playing;
             s.battery = battery;
         }
+        Cmd::LibLoading => s.lib = LoadState::Loading,
+        // A failed reopen keeps the library already shown; v0.4 blanked it only on the first open.
+        Cmd::Library(Ok(lib)) => {
+            s.library = lib;
+            s.lib = LoadState::Ready;
+        }
+        Cmd::Library(Err(rc)) => s.lib = LoadState::Failed(rc),
         #[cfg(test)]
         Cmd::Sleep(ms) => std::thread::sleep(std::time::Duration::from_millis(ms)),
     }
