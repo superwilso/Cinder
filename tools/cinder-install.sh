@@ -218,9 +218,10 @@ FULL=$FULL
 echo "[swap] source: \$STAGE"
 echo "[swap] target: \$INSTALL_PATH"
 
-# 1. backup current binary (for --rollback)
+# 1. backup current binary (for --rollback). Not when the source IS the backup (--rollback): that
+#    copied the current binary over the one being restored, so a rollback reinstalled the current.
 mkdir -p /data/cinder
-if [ -f "\$INSTALL_PATH" ]; then
+if [ -f "\$INSTALL_PATH" ] && [ "\$STAGE" != "\$BACKUP" ]; then
     cp "\$INSTALL_PATH" "\$BACKUP"
     echo "[swap] backed up current binary -> \$BACKUP"
 fi
